@@ -17,5 +17,9 @@ fi
   echo 'depot_tools revision mismatch; refusing to overwrite another checkout' >&2
   exit 1
 }
+# With self-update disabled, bootstrap the pinned Python/CIPD tools explicitly.
+# The gclient wrapper otherwise cannot locate python3_bin_reldir.txt on a fresh checkout.
+export DEPOT_TOOLS_UPDATE=0
+"$DEST/ensure_bootstrap"
 printf 'depot_tools source=%s\nlocation=%s\n' "$REV" "$DEST"
 echo 'Add this location to PATH and set DEPOT_TOOLS_UPDATE=0.'

@@ -99,3 +99,12 @@ The official tool source is now pinned to Chromium DEPS revision
 `1eb46f8b23b4c6b3caa2be8e05999b6d1f4d0253`, and self-update is disabled so a
 reproducible checkout is not immediately replaced by an unversioned network fetch.
 No ANGLE substitute, alternate driver or unofficial tool mirror is introduced.
+
+
+Run 39494542779 passed the current host and patched ARM64 compile checks again.
+Run 39494542835 passed the pinned source fetch, then reported
+`python3_bin_reldir.txt not found`: disabling self-update on a fresh checkout also
+requires explicit initialization of depot_tools' pinned Python/CIPD helpers.
+`bootstrap-angle-tools.sh` now calls upstream `ensure_bootstrap` before invoking
+gclient. This is the upstream initialization path named in the diagnostic; no
+homemade Python marker or unverified binary was substituted.
