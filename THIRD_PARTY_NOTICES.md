@@ -3,7 +3,7 @@
 PodNative graphics/loader/UI source is newly written here; no TouchHLE/HyperHLE
 renderer or framework code is incorporated. Research is not component reuse.
 
-## ANGLE — integration target, not yet built in this environment
+## ANGLE — source-built and packaged in the debug APK
 
 * Origin: https://github.com/google/angle
 * Exact revision: `378b820f1c00d511565ab9990ae03de77908b373`.
@@ -12,7 +12,9 @@ renderer or framework code is incorporated. Research is not component reuse.
 * Intended use: build and embed upstream EGL/GLES libraries and use upstream API
   headers. Top-level terms permit source/binary redistribution subject to notices
   and no endorsement. No upstream source modifications.
-* Built artifacts: not yet generated, so no binary dependency manifest is claimed.
+* Actual upstream build and ELF dependency closure passed in CI run 39495542750;
+  the debug APK packages the uniquely suffixed EGL/GLES libraries. Runtime
+  initialization/device rendering remains unverified.
 * Dependencies: exact versions are pinned by that ANGLE revision's DEPS. Build
   script collects license and README.chromium texts with an index into APK assets.
   **All compiled dependency terms and attribution must still be reviewed against

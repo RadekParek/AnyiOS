@@ -1,8 +1,12 @@
 # PodNative
 
 An independent Android-native foundation for researching ARM32 iOS game compatibility.
-**Not yet an emulator capable of running games. No APK has been produced yet, and
-no rendered frame has been verified on a device.**
+**Not yet an emulator capable of running games. A signed debug APK has been built
+and published; no rendered frame has been verified on a device.**
+
+[Download the first debug build](https://github.com/RadekParek/PodNative/actions/runs/39495542750/artifacts/12297629398)
+(extract GitHub's archive, then install `PodNative-debug.apk`).
+[Build evidence and exact source revision](docs/FIRST_APK_REPORT.md).
 
 ## First slice
 
@@ -28,7 +32,7 @@ Android: follow [ANGLE integration](docs/ANGLE_INTEGRATION.md), then use Gradle
 Real upstream ANGLE libraries are mandatory build inputs; no stub mode exists.
 See [device tests](docs/DEVICE_TESTING.md) before claiming rendering success.
 
-CI debug artifacts, **if the workflow succeeds**, are named `PodNative-debug.apk`.
+CI debug artifacts are published only after a successful workflow and are named `PodNative-debug.apk`.
 Tagged builds produce `PodNative.apk`, SHA256SUMS and BUILD-INFO.txt. Without
 signing secrets the release output is explicitly unsigned and not installable.
 Public GitHub Release publication additionally requires the repository variable

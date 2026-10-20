@@ -37,9 +37,9 @@ implementation. Check current GitHub Actions artifact status before assuming an 
 |---|---|
 | Host parser/memory/loader + 35,000 malformed/mutated inputs | Passed locally with ASan/UBSan |
 | Real Dynarmic ARM/Thumb execution on x86-64 host | Passed |
-| Android compile / lint | Not run; SDK/JDK unavailable |
-| Source-pinned ANGLE build | Not run; Chromium download hosts unavailable |
-| APK produced/published | No |
+| Android compile / lint | Passed in CI run 39495542750 |
+| Source-pinned ANGLE build / dependency audit | Passed in CI run 39495542750 |
+| APK produced/published | Yes; see FIRST_APK_REPORT.md |
 | Embedded Vulkan ANGLE init | Unverified |
 | Textured 3D cube / real screenshot | Unverified / none |
 | Surface recreation, pause/resume, rotation | Implemented source paths; device tests pending |

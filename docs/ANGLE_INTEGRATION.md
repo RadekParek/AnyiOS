@@ -1,5 +1,13 @@
 # Actual upstream ANGLE integration
 
+## Current build evidence
+
+Run [39495542750](https://github.com/RadekParek/PodNative/actions/runs/39495542750)
+successfully compiled and audited real ANGLE and published the signed debug APK.
+See FIRST_APK_REPORT.md for the exact source/artifact. Device initialization and
+rendering remain unverified. Earlier failure descriptions below document the path
+to that successful build, not current compilation blockers.
+
 ## Status and provenance
 
 Pinned source: `google/angle` revision `378b820f1c00d511565ab9990ae03de77908b373`.
@@ -29,7 +37,7 @@ Unique library names avoid confusing Android's system drivers with our build.
 The build audits ELF64/AArch64 and DT_NEEDED closure. New unbundled dependencies
 cause an explicit failure; investigate and license them rather than weakening the
 check. The audit currently expects static ordinary dependencies; this expectation
-still needs confirmation by a real upstream build. App packaging uses AGP/NDK's
+was checked successfully in the completed upstream build. App packaging uses AGP/NDK's
 normal shared-library handling. Validate 16 KiB page-size alignment on a real APK
 and supported Android versions before release distribution.
 
@@ -68,8 +76,8 @@ Run 39493714456 diagnosed an HTTP 503 specifically during depot_tools' automatic
 self-update after a successful clone. The pinned bootstrap plus
 `DEPOT_TOOLS_UPDATE=0` removes that unversioned update fetch, not dependency checks.
 Full offline/CIPD toolchain hermeticity remains unfinished.
-ANGLE compilation succeeded in CI; full Android application compilation and
-packaging have not yet passed. Build outputs are cached by upstream revision and
+ANGLE and full Android application compilation, lint, packaging and debug signing
+verification passed in CI run 39495542750. Build outputs are cached by upstream revision and
 build/audit script hashes, then audited again on restore.
 
 The sandbox cannot perform gclient/CIPD downloads or Android builds due to absent

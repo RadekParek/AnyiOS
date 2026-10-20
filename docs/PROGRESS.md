@@ -108,3 +108,16 @@ requires explicit initialization of depot_tools' pinned Python/CIPD helpers.
 `bootstrap-angle-tools.sh` now calls upstream `ensure_bootstrap` before invoking
 gclient. This is the upstream initialization path named in the diagnostic; no
 homemade Python marker or unverified binary was substituted.
+
+
+## First successful APK build
+
+Android run 39495542750 **passed** at source
+`ed0f08e97c7272ab515daa206bf28cb3d4dadb56`, including real ANGLE compilation,
+ABI/dependency closure, Android lint/build, debug signing verification and APK
+publication. Artifact ID 12297629398 contains the actual PodNative-debug.apk,
+checksums and build provenance. Runtime run 39495542649 also passed host execution
+and patched ARM64 diagnostic compilation. Full evidence, download links and exact
+limits are in [FIRST_APK_REPORT.md](FIRST_APK_REPORT.md). No device frame, gameplay
+or Android CPU execution is claimed. The next required gate is the user's real
+S23 Ultra graphics test; it cannot be verified from this unattached sandbox.
