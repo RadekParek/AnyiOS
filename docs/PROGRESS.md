@@ -1,7 +1,16 @@
 # Continuation progress — 2026-10-20
 
-This supersedes the initial BUILD_REPORT.md where noted. No rendered-frame,
-Android instruction-execution or game-compatibility result is claimed.
+This supersedes the initial BUILD_REPORT.md where noted. The user reports the
+previous graphics preview working on their S23 Ultra; no screenshot/log was supplied.
+No Android instruction-execution or game-compatibility result is claimed.
+
+## Latest: library preview
+
+[0.2 APK and verified CI evidence](LIBRARY_APK_REPORT.md): persistent private IPA/folder
+library, universal ARM32 selection, metadata parser, modern native UI and original
+launcher icon. Android build/lint/tests/signing and runtime host/cross-build checks
+passed. New UI/import behavior still needs physical-device review. Game launch
+remains unavailable; see [limits](LIBRARY_PREVIEW.md).
 
 ## Engineering changes
 

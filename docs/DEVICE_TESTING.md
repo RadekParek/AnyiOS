@@ -1,12 +1,14 @@
 # S23 Ultra graphics acceptance
 
 No connected device, Android emulator or captured image was available during
-implementation. Check current GitHub Actions artifact status before assuming an APK exists. This checklist is for an actual future build, not a test report.
+implementation. The user reported the previous 3D test working on their S23 Ultra;
+no screenshot/log was supplied. The new library APK is built (see LIBRARY_APK_REPORT.md),
+but the new UI/import flow still needs device review. This is a checklist, not a test report.
 
 1. Download a **successfully built** `PodNative-debug.apk` CI artifact. Review
    `BUILD-INFO.txt` and SHA256SUMS. Install with `adb install -r PodNative-debug.apk`.
 2. Clear logcat: `adb logcat -c`; launch `org.podnative/.MainActivity`.
-3. Library → Launch 3D graphics test. Confirm an animated checker-textured 3D cube,
+3. Diagnostics → Run graphics test. Confirm an animated checker-textured 3D cube,
    perspective and correct self-occlusion, not just a clear color or static UI.
 4. Confirm diagnostics identify embedded ANGLE, actual GL version/renderer, Vulkan
    candidate/driver, dimensions and no shader/link/GL/EGL/framebuffer errors.
@@ -35,13 +37,28 @@ implementation. Check current GitHub Actions artifact status before assuming an 
 
 | Test | Result |
 |---|---|
-| Host parser/memory/loader + 35,000 malformed/mutated inputs | Passed locally with ASan/UBSan |
+| Host parser/memory/loader/FAT + 55,000 malformed/mutated inputs | Passed locally with ASan/UBSan |
 | Real Dynarmic ARM/Thumb execution on x86-64 host | Passed |
-| Android compile / lint | Passed in CI run 39495542750 |
+| Android compile / lint | Passed in CI run 39501999659 |
 | Source-pinned ANGLE build / dependency audit | Passed in CI run 39495542750 |
-| APK produced/published | Yes; see FIRST_APK_REPORT.md |
-| Embedded Vulkan ANGLE init | Unverified |
-| Textured 3D cube / real screenshot | Unverified / none |
+| APK produced/published | Yes; see LIBRARY_APK_REPORT.md |
+| Embedded Vulkan ANGLE init | Previous 3D test user-reported working; no backend log supplied |
+| Textured 3D cube / real screenshot | Previous test user-reported working / no screenshot |
 | Surface recreation, pause/resume, rotation | Implemented source paths; device tests pending |
 | S23 Ultra FHD / QHD / 60 / 120 FPS | Not measured |
 | Game stages A–G | None reached |
+
+## Library acceptance (new preview)
+
+- Import your own IPA and the equivalent extracted `.app` folder. Verify title,
+  version, ARM32/universal status, retained size and artwork/fallback. Never upload
+  game files to this repository, CI or issue reports.
+- Restart/force-stop/reopen: entries, rename and settings must persist. Rotate or
+  background during copying; progress must continue without duplicate publication.
+- Cancel a large import; previous entries must remain and staging must be removed.
+  Provider-blocked reads may delay cancellation. Kill the process during an import,
+  reopen, and verify interrupted staging is cleaned and no incomplete entry appears.
+- Try ARM64-only, encrypted ARM32, malformed IPA and universal ARM32 binaries.
+  Expect explicit status/errors; successful imports must not imply game launch.
+- Export an import report and diagnostic log. Remove a private copy and verify the
+  original IPA/folder is untouched. Check light/dark/system, large font and rotation.

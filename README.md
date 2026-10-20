@@ -2,11 +2,13 @@
 
 An independent Android-native foundation for researching ARM32 iOS game compatibility.
 **Not yet an emulator capable of running games. A signed debug APK has been built
-and published; no rendered frame has been verified on a device.**
+and published; the user reports the previous 3D test working on their S23 Ultra.
+The new library/UI has not been device-tested here.**
 
-[Download the first debug build](https://github.com/RadekParek/PodNative/actions/runs/39495542750/artifacts/12297629398)
+[Download the 0.2 library preview](https://github.com/RadekParek/PodNative/actions/runs/39501999659/artifacts/12301256622)
 (extract GitHub's archive, then install `PodNative-debug.apk`).
-[Build evidence and exact source revision](docs/FIRST_APK_REPORT.md).
+[Build evidence and exact source revision](docs/LIBRARY_APK_REPORT.md).
+[Historical first APK report](docs/FIRST_APK_REPORT.md).
 
 ## First slice
 
@@ -47,7 +49,7 @@ Public GitHub Release publication additionally requires the repository variable
 
 ### 0.2 library preview
 
-The next preview adds persistent private IPA/folder imports, ARM32 selection in
+This preview adds persistent private IPA/folder imports, ARM32 selection in
 universal Mach-O containers, a library-first light/dark UI and an original launcher
 icon. Imported does **not** mean runnable. See [library limits, workflow and update
 signing caveats](docs/LIBRARY_PREVIEW.md). The previous graphics preview was
