@@ -172,7 +172,9 @@ jobs:
           python3 - <<'PYCODE'
           from pathlib import Path
           for path in Path('.local/logs').glob('*.log'):
-              lines = path.read_text(errors='replace').splitlines()[-12:]
+              all_lines = path.read_text(errors='replace').splitlines()
+              errors = [line for line in all_lines if any(token in line for token in ('e: file:', 'error:', ' FAILED', ' > ', 'Duplicate class', 'FAILURES!!!'))][:30]
+              lines = errors + all_lines[-12:]
               message = (path.name + ': ' + '\n'.join(lines)).replace('%', '%25').replace('\r', '%0D').replace('\n', '%0A')
               print('::warning::' + message)
           PYCODE

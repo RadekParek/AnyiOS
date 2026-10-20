@@ -17,6 +17,7 @@ except ImportError:
 
 
 @unittest.skipUnless(HAVE_CAPSTONE, "capstone is required for the game disassembler")
+@unittest.skipUnless(DATA.is_file(), "Authorized local game fixture not supplied; never downloaded by CI")
 class GameDisasmTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls):

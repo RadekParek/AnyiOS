@@ -15,6 +15,7 @@ def load_image():
     return macho.parse(raw)
 
 
+@unittest.skipUnless(DATA.is_file(), "Authorized local game fixture not supplied; never downloaded by CI")
 class GameMachOTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls):

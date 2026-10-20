@@ -9,6 +9,7 @@ from radek.game import macho, objc_meta
 DATA = Path(__file__).resolve().parent / "data" / "AngryBirds_v1.0_os30.ipa"
 
 
+@unittest.skipUnless(DATA.is_file(), "Authorized local game fixture not supplied; never downloaded by CI")
 class GameObjcTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls):

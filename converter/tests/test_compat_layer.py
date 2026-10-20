@@ -50,6 +50,7 @@ class CompatLayerTests(unittest.TestCase):
             self.assertEqual(report["guestRuntimeSlotFixupsStatus"], "NOT_RUN")
             self.assertEqual(report["staticGameCallsitesRewritten"], 0)
 
+    @unittest.skipUnless((Path(__file__).resolve().parent / "data/AngryBirds_v1.0_os30.ipa").is_file(), "Authorized local game fixture not supplied")
     def test_angry_birds_provider_ledger_is_181_ndk_plus_73_catalog_matches(self):
         """The exact catalogs partition the fixture without implying runtime links.
 

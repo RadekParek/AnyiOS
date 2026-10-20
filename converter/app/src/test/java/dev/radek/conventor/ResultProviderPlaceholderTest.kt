@@ -19,7 +19,7 @@ import java.security.MessageDigest
 class ResultProviderPlaceholderTest {
     @Test fun servesOnlyTheExplicitPlaceholderNameUnderItsOwnMetadataContract() {
         val context = RuntimeEnvironment.getApplication()
-        val directory = File(context.filesDir, "library/1-12345678-1234-1234-1234-123456789abc").apply { mkdirs() }
+        val directory = File(context.filesDir, "games/game-12345678-1234-1234-1234-123456789abc").apply { mkdirs() }
         val provider = ResultProvider()
         provider.attachInfo(context, ProviderInfo().apply {
             authority = "org.podnative.converter.results"
@@ -43,7 +43,7 @@ class ResultProviderPlaceholderTest {
 
     @Test fun placeholderCannotBeServedAtTheCompleteGameHostPath() {
         val context = RuntimeEnvironment.getApplication()
-        val directory = File(context.filesDir, "library/2-12345678-1234-1234-1234-123456789abc").apply { mkdirs() }
+        val directory = File(context.filesDir, "games/game-12345678-1234-1234-1234-123456789abc").apply { mkdirs() }
         val provider = ResultProvider()
         provider.attachInfo(context, ProviderInfo().apply {
             authority = "org.podnative.converter.results"

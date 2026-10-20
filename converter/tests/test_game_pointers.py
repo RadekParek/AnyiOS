@@ -34,6 +34,7 @@ GENERIC = {
 
 
 @unittest.skipUnless(HAVE_CAPSTONE, "capstone is required for the game pipeline")
+@unittest.skipUnless(DATA.is_file(), "Authorized local game fixture not supplied; never downloaded by CI")
 class GamePointersTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls):

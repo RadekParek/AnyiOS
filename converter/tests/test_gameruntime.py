@@ -308,6 +308,7 @@ class AngryBirdsBootTests(unittest.TestCase):
 
 
 class GlesShaderAuditTests(unittest.TestCase):
+    @unittest.skipUnless(ANGRY_BIRDS_IPA.is_file(), "Authorized local game fixture not supplied")
     def test_angry_birds_gl_imports_have_explicit_forwarders_and_no_shader_api_imports(self):
         self.assertTrue(ANGRY_BIRDS_IPA.is_file(), "committed authorized fixture is missing")
         with zipfile.ZipFile(ANGRY_BIRDS_IPA) as archive:
@@ -374,6 +375,8 @@ class SplashScreenLauncherTests(unittest.TestCase):
         self.assertIn("readSplash", converted_java)
         self.assertIn("Color.BLACK", converted_java)
 
+        if not ANGRY_BIRDS_IPA.is_file():
+            self.skipTest("Source checks ran; private splash asset fixture not supplied")
         with zipfile.ZipFile(ANGRY_BIRDS_IPA) as zf:
             dat = zf.read("Payload/AngryBirds.app/data/SPLASHES.dat")
             png = zf.read("Payload/AngryBirds.app/data/SPLASHES.png")

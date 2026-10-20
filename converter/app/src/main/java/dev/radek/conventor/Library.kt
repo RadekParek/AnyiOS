@@ -86,7 +86,7 @@ class Library(private val context: Context) {
     }.getOrNull()
 
     fun analyzeShared(dir: File, progress: (Int, String) -> Unit): Pair<File, JSONObject> =
-        import(Uri.EMPTY, progress, dir)
+        import(Uri.EMPTY, dir, progress)
 
     fun save(dir: File, report: JSONObject) {
         val temporary = File(dir, "report.json.tmp")
@@ -176,7 +176,7 @@ class Library(private val context: Context) {
         return fallbackName to queried?.second
     }
 
-    fun import(uri: Uri, progress: (Int, String) -> Unit, existing: File? = null): Pair<File, JSONObject> {
+    fun import(uri: Uri, existing: File? = null, progress: (Int, String) -> Unit): Pair<File, JSONObject> {
         val (originalName, expectedSourceBytes) = if (existing == null) sourceDetails(uri) else
             (sharedReport(existing)?.optJSONObject("application")?.optString("name", "Imported app") + ".ipa") to File(existing, "source.bin").length()
         val dir = existing ?: File(root, "game-${UUID.randomUUID()}").apply { check(mkdir()) }
