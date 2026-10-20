@@ -44,3 +44,12 @@ Public GitHub Release publication additionally requires the repository variable
 [Architecture](docs/ARCHITECTURE.md) · [ANGLE](docs/ANGLE_INTEGRATION.md) ·
 [Ninjago status](docs/NINJAGO_COMPATIBILITY.md) ·
 [Third-party notices](THIRD_PARTY_NOTICES.md) · [Build report](docs/BUILD_REPORT.md)
+
+### 0.2 library preview
+
+The next preview adds persistent private IPA/folder imports, ARM32 selection in
+universal Mach-O containers, a library-first light/dark UI and an original launcher
+icon. Imported does **not** mean runnable. See [library limits, workflow and update
+signing caveats](docs/LIBRARY_PREVIEW.md). The previous graphics preview was
+reported working by the user on their S23 Ultra; this does not validate gameplay
+or the new UI.

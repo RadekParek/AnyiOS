@@ -58,3 +58,10 @@ No proprietary game executable, asset, Apple framework implementation, signing k
 or credential is included. A standalone PodNative source license has not yet been
 chosen by the repository owner; third-party licenses do not license this project's
 original code automatically.
+
+## JVM test dependencies (not shipped in the APK)
+
+JUnit 4.13.2 (junit-team/junit4, tag r4.13.2), Eclipse Public License 1.0;
+license retained in `third_party/licenses/junit/LICENSE-junit.txt`.
+Its transitive Hamcrest Core 1.3 dependency is BSD-3-Clause; both are used
+only by Gradle local unit tests. Neither is a runtime implementation/dependency.

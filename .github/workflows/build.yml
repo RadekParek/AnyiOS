@@ -29,6 +29,14 @@ jobs:
         with:
           distribution: temurin
           java-version: '17'
+      # Development keys only, never release signing material. Cache eviction can
+      # change this certificate; durable distribution requires configured signing secrets.
+      - name: Reuse development signing identity when cached
+        if: inputs.variant == 'debug'
+        uses: actions/cache@v4
+        with:
+          path: ~/.android/debug.keystore
+          key: podnative-debug-keystore-v1-${{ github.repository_id }}
       - name: Inspect runner Android toolchain
         run: |
           mkdir -p .local/logs

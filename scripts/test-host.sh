@@ -12,6 +12,9 @@ c++ -std=c++17 -Wall -Wextra -Werror -fsanitize=address,undefined -g -Iapp/src/m
 c++ -std=c++17 -Wall -Wextra -Werror -fsanitize=address,undefined -g -Iapp/src/main/cpp \
   tests/imports_test.cpp app/src/main/cpp/{macho,macho_info}.cpp -o .local/tests/imports-test
 .local/tests/imports-test
+c++ -std=c++17 -Wall -Wextra -Werror -fsanitize=address,undefined -g -Iapp/src/main/cpp \
+  tests/fat_test.cpp app/src/main/cpp/macho_container.cpp -o .local/tests/fat-test
+.local/tests/fat-test
 python3 -m unittest discover -s tests -p "test_*.py"
 python3 -m py_compile scripts/*.py tests/*.py
 # Whitespace/conflict check is intentionally separate from compile and runtime tests.

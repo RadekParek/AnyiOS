@@ -7,6 +7,7 @@
 
 #include "graphics.h"
 #include "macho.h"
+#include "macho_container.h"
 #include "macho_info.h"
 #include "runtime/error.h"
 #include "runtime/loader.h"
@@ -78,6 +79,28 @@ extern "C" JNIEXPORT jstring JNICALL Java_org_podnative_NativeBridge_inspect(JNI
             }
         }
         return env->NewStringUTF(report.c_str());
+    } catch (const std::exception& e) {
+        fail(env, e);
+        return nullptr;
+    }
+}
+
+extern "C" JNIEXPORT jlongArray JNICALL
+Java_org_podnative_NativeBridge_arm32Slice(JNIEnv* env, jclass, jbyteArray header, jlong length) {
+    try {
+        const auto n = env->GetArrayLength(header);
+        if (n > 4096 || length < 0)
+            throw std::runtime_error("CONTAINER_ARGUMENT: invalid header/file length");
+        std::vector<uint8_t> bytes(n);
+        env->GetByteArrayRegion(header, 0, n, reinterpret_cast<jbyte*>(bytes.data()));
+        if (env->ExceptionCheck()) return nullptr;
+        const auto slice =
+            podnative::selectArm32Slice(bytes.data(), bytes.size(), uint64_t(length));
+        const jlong result[] = {jlong(slice.offset), jlong(slice.size), jlong(slice.subtype),
+                                slice.universal ? 1 : 0};
+        auto array = env->NewLongArray(4);
+        if (array) env->SetLongArrayRegion(array, 0, 4, result);
+        return array;
     } catch (const std::exception& e) {
         fail(env, e);
         return nullptr;
