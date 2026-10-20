@@ -19,3 +19,24 @@ The report is static evidence of 539 imports, not a specification for all framew
 ## Source/license handling
 
 Converter inclusion is explicitly requested by its owner. Upstream has no root license declaration; do not invent a broad open-source license for its original code. Preserve upstream attribution and third-party notices; record pinned dependency revisions. Review additional runtime dependencies before distribution. Exclude upstream proprietary IPA fixtures, generated binaries, caches and build outputs.
+
+## Implemented integration and validation record
+
+- Owner choices confirmed: preserve `org.podnative`; one catalog with confirmed cross-module deletion; recursive IPA directory search.
+- `converter/` includes the pinned source, Android UI/analyzer, all three APK template builders, host CLI and tests. It is an Android library dependency of the existing application, not a second installed app or a launcher pointing to an unavailable package.
+- Launcher is `org.podnative.ModuleActivity`; Emulator and Converter are internal activities. Result URIs use the non-exported `${applicationId}.converter.results` provider and continue enforcing output contracts.
+- Canonical source is `files/games/game-<UUID>/source.bin`; existing emulator entries require no migration or copy. Converter reports/outputs are separate files alongside it. Entries without converter reports are visible immediately with an explicit Analyze action. Re-analysis reads the existing source without opening it for writing. Recovery never deletes source bytes or an emulator entry for lacking a converter report.
+- Shared cross-module job ownership prevents concurrent import/build/remove operations. Module views receive catalog updates. Confirmation text warns that removal affects both modules; generated converter APKs cannot replace the IPA.
+- `Import game folder` recursively discovers IPA files and commits each independently. Extraction-folder import is a separate action. Directory depth 32, 30,000 document traversal/cycle checks, free-space checks and per-file failure/cancellation behavior remain explicit. No fixed whole-library size quota is introduced.
+- Common converter theme tokens/preferences, module chooser, emulator label, artifact names and application label are AnyiOS. Native/JNI names and signing-cache identity are intentionally stable. Recovered converter artwork can supply emulator covers; existing covers also appear immediately in Converter.
+- `DYLD_ADDRESS` terminal-stride regression is covered for rebase/bind single and repeat forms. Actual out-of-segment next fixups and 64-bit cursor arithmetic overflow still fail. Local native regression suite including 65,000 deterministic malformed-input mutations passed. The private Ninjago executable was not available locally, so device confirmation is still required.
+- Local converter native analyzer/runtime/API regression tool passed; Python suite: **395 tests, 51 skips**. Separate compatibility database/contract tests: **7 passed**. Skips identify unavailable private-game fixtures or toolchain-dependent tests; they are not runtime/gameplay evidence. Only synthetic fixture generators run in CI.
+- Android compilation/lint/JVM/unit integration tests and APK packaging verification run in the unified Android/PC workflow; no APK is declared verified before that workflow succeeds. Additional tests cover recursive SAF import, partial read failure, cycles, per-entry source bytes, shared not-analyzed entries, interrupted report recovery and cross-module job ownership.
+
+### Remote rename limitation
+
+`gh repo rename AnyiOS --yes` was refused with **HTTP 403: Resource not accessible by integration**. The app and local Gradle project are named AnyiOS, but GitHub's repository name is unchanged. The owner can use **repository Settings → General → Repository name → AnyiOS**. GitHub normally redirects the old URL; once changed, update the local origin URL as appropriate. Do not rename the Arena checkout root or session branch.
+
+### Remaining runtime work
+
+This increment fixes the decoder rejection class shown in the supplied launch log, not all 539 imported APIs. Production Emulator still blocks on required dyld exports/guest trampolines and Darwin/Objective-C/UIKit/EAGL process bootstrap. Converter's independent experimental runtime and API implementations remain in its own pipeline; they are not silently presented as a complete implementation of the independent ANGLE emulator. Compiled asset catalogs, procedural launch scenes and complete game rendering remain unproven here. A separately installed converter's old private Android sandbox is not automatically readable; reimport its original IPAs into the new shared catalog.

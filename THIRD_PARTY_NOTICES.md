@@ -65,3 +65,34 @@ JUnit 4.13.2 (junit-team/junit4, tag r4.13.2), Eclipse Public License 1.0;
 license retained in `third_party/licenses/junit/LICENSE-junit.txt`.
 Its transitive Hamcrest Core 1.3 dependency is BSD-3-Clause; both are used
 only by Gradle local unit tests. Neither is a runtime implementation/dependency.
+
+## Integrated converter (AnyiOS 0.5)
+
+The repository owner explicitly requested inclusion of RadekParek/RadekiOSconventor
+at `e20c76f33fec87bb311711074c219c3fd32f1911`. Its original source is retained under
+`converter/`; no root license was declared upstream and this integration does not
+invent a blanket license. Proprietary IPA fixtures and generated logs/binaries are
+excluded. See `docs/ANYIOS_INTEGRATION.md` and `converter/UPSTREAM_REVISION`.
+
+The converter's separate CPU runtime uses suyu-emu/dynarmic
+`a2ef15df6d833ab7bc66131a90350637f26dd2d4` (0BSD). Its exact license is retained in
+`third_party/converter-runtime/`. Bundled mcl/fmt/oaknut/robin-map and Zydis/zycore
+are MIT; xbyak is BSD-3-Clause. `scripts/prepare-converter.sh` checks the CPU license
+against the retained copy and packages external license texts and their pinned
+Git tree-object hashes in `assets/converter-notices/`. Boost headers are reused
+from the emulator's separately pinned Boost 1.88 preparation (BSL-1.0), not the
+upstream converter's unversioned pruned header copy. The two CPU runtimes are
+separate; the converter does not replace the emulator's ANGLE renderer.
+
+Additional APK runtime dependencies: Kotlin standard library 2.0.21 (JetBrains,
+Apache-2.0) and Android apksig 8.7.3 (Android Open Source Project, Apache-2.0).
+The Apache-2.0 text and Kotlin notice are retained under
+`third_party/licenses/converter/` and packaged in the app's notice assets.
+Android SDK/NDK runtime dependencies continue to carry their upstream terms.
+
+Robolectric 4.14.1 (MIT), AndroidX test infrastructure and Android framework test
+images are JVM-test dependencies only. Optional converter host differential tests
+install Capstone 5.0.7 (BSD-family upstream terms) and Unicorn 2.1.4 (GPL-2.0);
+these are test/host tooling, never packaged into the Android APK. The emulator
+CPU remains Dynarmic, not Unicorn. A full transitive distribution audit is still
+required before a public production release.

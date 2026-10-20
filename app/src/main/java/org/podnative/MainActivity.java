@@ -26,6 +26,7 @@ import android.widget.LinearLayout;
 import android.widget.ProgressBar;
 import android.widget.ScrollView;
 import android.widget.TextView;
+import dev.radek.conventor.SharedCatalog;
 import java.io.File;
 import java.io.OutputStream;
 import java.nio.charset.StandardCharsets;
@@ -48,7 +49,7 @@ public final class MainActivity extends Activity {
     private final Runnable libraryChanged = () -> {
         if (prototype != null || isFinishing() || isDestroyed())
             return;
-        if (renderedRevision == library.revision && renderedBusy == library.busy
+        if (renderedRevision == library.revision && renderedBusy == SharedCatalog.isBusy()
             && renderedNotice.equals(library.notice) && progressLabel != null)
             progressLabel.setText(library.progress);
         else
@@ -72,10 +73,12 @@ public final class MainActivity extends Activity {
         ink = color(dark ? "#FFFFFF" : "#16202E");
         muted = color(dark ? "#A0B2C7" : "#5C6877");
         line = color(dark ? "#2D3B4F" : "#DCE2EA");
-        accent = color(dark ? "#5CE3B5" : "#007D70");
+        accent = dev.radek.conventor.SharedTheme.accent(this);
         soft = color(dark ? "#203E30" : "#DDF3E7");
         Diagnostics.record("APP", "library preview; game execution remains unavailable");
         home();
+        if (state == null && getIntent().getBooleanExtra("importIpaFolder", false))
+            selectFolder(IMPORT_FOLDER);
     }
     private static int color(String value) {
         return Color.parseColor(value);
@@ -223,6 +226,9 @@ public final class MainActivity extends Activity {
         preview.setBackground(shape(soft, 8, false));
         brand.addView(preview);
         root.addView(brand);
+        brand.setContentDescription("AnyiOS Emulator. Tap to return to module selection.");
+        brand.setFocusable(true);
+        brand.setOnClickListener(v -> finish());
         ScrollView scroll = new ScrollView(this);
         scroll.setFillViewport(true);
         scroll.setClipToPadding(false);
@@ -265,7 +271,7 @@ public final class MainActivity extends Activity {
         }
         root.addView(navigation);
         renderedRevision = library.revision;
-        renderedBusy = library.busy;
+        renderedBusy = SharedCatalog.isBusy();
         renderedNotice = library.notice;
         setContentView(root);
         root.requestApplyInsets();
@@ -281,8 +287,8 @@ public final class MainActivity extends Activity {
         if (largeText)
             gap(titleRow, 12);
         Button add = action("＋ Add game", true, this::addGame);
-        add.setEnabled(!library.busy);
-        add.setAlpha(library.busy ? 0.5f : 1);
+        add.setEnabled(!SharedCatalog.isBusy());
+        add.setAlpha(SharedCatalog.isBusy() ? 0.5f : 1);
         titleRow.addView(add);
         gap(parent, 18);
         parent.addView(titleRow);
@@ -316,7 +322,7 @@ public final class MainActivity extends Activity {
             empty.addView(explanation);
             gap(empty, 16);
             Button button = action("Add your first game", true, this::addGame);
-            button.setEnabled(!library.busy);
+            button.setEnabled(!SharedCatalog.isBusy());
             empty.addView(button, new LinearLayout.LayoutParams(-1, -2));
         } else {
             gap(parent, 18);
@@ -359,7 +365,7 @@ public final class MainActivity extends Activity {
             for (File file : legacy)
                 if (file.isFile())
                     button(old, file.getName(), false, () -> library.importLegacy(file))
-                        .setEnabled(!library.busy);
+                        .setEnabled(!SharedCatalog.isBusy());
         }
     }
     private void operationState(LinearLayout parent) {
@@ -463,7 +469,7 @@ public final class MainActivity extends Activity {
         });
         gap(content, 14);
         content.addView(text(
-            "Select an extracted .app bundle or its parent. ARM64-only and broken imports can be kept in your library, but cannot execute.",
+            "Import game folder searches subfolders for separate IPAs. Use extracted app folder for .app bundles. Unsupported sources stay visible in both modules.",
             12, muted, false));
         sheet.setContentView(content);
         sheet.show();
@@ -521,7 +527,7 @@ public final class MainActivity extends Activity {
                     activity.presentGameArtwork(game, files);
             });
         });
-        launch.setEnabled(!library.busy);
+        launch.setEnabled(!SharedCatalog.isBusy());
         LinearLayout.LayoutParams launchLp = new LinearLayout.LayoutParams(-1, -2);
         launchLp.topMargin = dp(18);
         content.addView(launch, launchLp);
@@ -545,7 +551,7 @@ public final class MainActivity extends Activity {
         button(content, "Refresh details & artwork", false, () -> {
             sheet.dismiss();
             library.refreshGame(game);
-        }).setEnabled(!library.busy);
+        }).setEnabled(!SharedCatalog.isBusy());
         button(content, "Rename", false, () -> {
             if (library.busy)
                 return;
@@ -565,7 +571,7 @@ public final class MainActivity extends Activity {
                         sheet.dismiss();
                     })
                 .show();
-        }).setEnabled(!library.busy);
+        }).setEnabled(!SharedCatalog.isBusy());
         button(content, "Remove local copy", false, () -> {
             if (library.busy)
                 return;
@@ -580,7 +586,7 @@ public final class MainActivity extends Activity {
                         sheet.dismiss();
                     })
                 .show();
-        }).setEnabled(!library.busy);
+        }).setEnabled(!SharedCatalog.isBusy());
         sheet.setContentView(scroll);
         sheet.show();
         sheet.getWindow().setBackgroundDrawableResource(android.R.color.transparent);
@@ -647,10 +653,9 @@ public final class MainActivity extends Activity {
                 -> choose("Frame limit",
                     new String[] {"30 FPS", "60 FPS", "120 FPS · experimental"},
                     new int[] {30, 60, 120}, "fps", 60));
-        String[] appearances = {"System", "Light", "Dark"};
-        settingRow(display, "Appearance", "Choose your preferred look",
-            appearances[Math.max(0, Math.min(2, prefs.getInt("theme", 0)))],
-            () -> choose("Appearance", appearances, new int[] {0, 1, 2}, "theme", 0));
+        String[] appearances = {"Light", "Dark"};
+        settingRow(display, "Appearance", "Choose your preferred look", dark ? "Dark" : "Light",
+            () -> choose("Appearance", appearances, new int[] {1, 2}, "theme", dark ? 2 : 1));
         display.addView(
             text("Rendering changes apply on the next graphics-test launch.", 12, muted, false));
         LinearLayout graphics = card(parent);
@@ -696,7 +701,7 @@ public final class MainActivity extends Activity {
     private void choose(String title, String[] labels, int[] values, String key, int fallback) {
         int selected = 0;
         for (int i = 0; i < values.length; i++)
-            if (values[i] == prefs.getInt(key, fallback))
+            if (values[i] == (key.equals("theme") ? (dark ? 2 : 1) : prefs.getInt(key, fallback)))
                 selected = i;
         new AlertDialog.Builder(this)
             .setTitle(title)
@@ -733,7 +738,7 @@ public final class MainActivity extends Activity {
         button(tools, "Export diagnostic log", true, () -> exportReport(null));
         button(tools, "Run graphics test", false, this::launch);
         button(tools, "Run ARM/Thumb CPU self-test", false, library::runCpuProbe)
-            .setEnabled(!library.busy);
+            .setEnabled(!SharedCatalog.isBusy());
         String backend = prefs.getString("lastBackend", "");
         if (!backend.isEmpty()) {
             LinearLayout renderer = card(parent);

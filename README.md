@@ -1,12 +1,25 @@
-# PodNative
+# AnyiOS
 
-An independent Android-native foundation for researching ARM32 iOS game compatibility.
-**Not yet an emulator capable of running games. A signed debug APK has been built
-and published; the user reports the previous 3D test working on their S23 Ultra.
-The new library/UI has not been device-tested here.**
+One Android app with **Emulator** and **Converter** modules and a shared private source library.
+The emulator is the independent former PodNative ARM32/ANGLE project; the converter
+integrates the owner's RadekiOSconventor source at a recorded revision.
+**Real-game compatibility remains unfinished. A successful build or generated
+experimental APK is not proof that Ninjago (or another game) runs.**
+
+- Launch into an Emulator / Converter chooser with a common teal design and shared appearance settings.
+- Import IPAs in either module; both use `files/games/<id>/source.bin`, not duplicate IPA copies.
+- Import a folder of IPAs recursively as separate entries; extracted .app import remains separate.
+- Converter analysis and generated APKs are separate from the immutable original source.
+- Confirmed removal deletes the shared entry from both modules. Existing emulator data and Android package id `org.podnative` are preserved. A separately installed converter's private storage cannot be read automatically; reimport its original IPAs.
+
+[Integration, tests and boundaries](docs/ANYIOS_INTEGRATION.md) ·
+[Converter fork review](docs/CONVERTER_FORK_REVIEW.md).
+The remote GitHub repository rename was denied by the integration's admin permissions;
+its URL remains `RadekParek/PodNative` until the owner renames it in repository settings.
+Technical JNI namespaces, signing/cache names and historical engineering records intentionally retain their original names.
 
 [Download current Android and PC diagnostic artifacts](https://github.com/RadekParek/PodNative/actions/workflows/android.yml)
-(choose a successful run; extract GitHub's archive, then install `PodNative-debug.apk`).
+(choose a successful run; extract GitHub's archive, then install `AnyiOS-debug.apk`).
 The PC artifact is a Linux CPU diagnostic build, not a desktop emulator GUI.
 [Current implementation boundaries](docs/GRAPHICS_FRAMEWORK_INCREMENT.md).
 [Historical 0.2.1 build evidence](docs/STARTUP_APK_REPORT.md).
@@ -32,12 +45,15 @@ Real CPU engine tests: `scripts/test-cpu.sh` (CMake/C++20/git required).
 See [runtime contracts and device test](docs/RUNTIME.md).
 
 Android: follow [ANGLE integration](docs/ANGLE_INTEGRATION.md), then use Gradle
-8.11.1/JDK17: `gradle lintDebug testDebugUnitTest assembleDebug`.
+8.11.1/JDK17: run `scripts/prepare-cpu.sh`, `scripts/prepare-converter.sh` and the ANGLE preparation first, then
+`gradle :app:lintDebug :converter:lintDebug :app:testDebugUnitTest :converter:testDebugUnitTest :app:assembleDebug`.
+Converter host checks: install test-only `capstone==5.0.7` and `unicorn==2.1.4`, then run `scripts/test-converter.sh`.
+Proprietary game-dependent upstream tests are explicitly skipped unless a locally supplied authorized fixture exists; CI never fetches one.
 Real upstream ANGLE libraries are mandatory build inputs; no stub mode exists.
 See [device tests](docs/DEVICE_TESTING.md) before claiming rendering success.
 
-CI debug artifacts are published only after a successful workflow and are named `PodNative-debug.apk`.
-Tagged builds produce `PodNative.apk`, SHA256SUMS and BUILD-INFO.txt. Without
+CI debug artifacts are published only after a successful workflow and are named `AnyiOS-debug.apk`.
+Tagged builds produce `AnyiOS.apk`, SHA256SUMS and BUILD-INFO.txt. Without
 signing secrets the release output is explicitly unsigned and not installable.
 Public GitHub Release publication additionally requires the repository variable
 `PODNATIVE_PUBLISH_RELEASE=true` after license/device review and configured signing.

@@ -35,7 +35,7 @@ public final class ModuleActivity extends Activity {
         panel = Color.parseColor(light ? "#FFFFFF" : "#141D2F");
         ink = Color.parseColor(light ? "#16202E" : "#FFFFFF");
         muted = Color.parseColor(light ? "#5C6877" : "#A0B2C7");
-        accent = Color.parseColor(light ? "#007D70" : "#5CE3B5");
+        accent = dev.radek.conventor.SharedTheme.accent(this);
         getWindow().setStatusBarColor(background);
         getWindow().setNavigationBarColor(background);
         getWindow().getDecorView().setSystemUiVisibility(light

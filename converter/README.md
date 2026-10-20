@@ -1,3 +1,5 @@
+> **AnyiOS integration:** This is the owner-authorized source snapshot of RadekParek/RadekiOSconventor at e20c76f33fec87bb311711074c219c3fd32f1911, with shared-library integration changes. Android is built from the repository root; this directory is not a separate Gradle root. See [the integration record](../docs/ANYIOS_INTEGRATION.md). The standalone upstream documentation below describes its original layout. No proprietary IPA fixtures are included. Python CLI usage is from this directory, after preparing its native analyzer and optional host dependencies.
+
 # RadekiOSConventor
 
 An **offline IPA inspection and bounded native-reconstruction workbench** for authorized inputs. It includes an Android importer/analyzer, a C++ Mach-O parser, and Python reconstruction tools.

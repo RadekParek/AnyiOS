@@ -164,7 +164,14 @@ class MainActivity : Activity() {
         } else 0
     }
 
+    private val sharedChanged: () -> Unit = {
+        if (!isFinishing && !isDestroyed && !Jobs.busy && currentScreen == Screen.LIBRARY) home()
+    }
+    private val sharedObserver = Runnable { sharedChanged() }
+    private fun sharedIcon(dir: File): File = File(dir, "cover.png").takeIf { it.isFile } ?: File(dir, "icon.png")
+
     override fun onCreate(state: Bundle?) {
+        setTheme(if (preferences.getBoolean("light_theme", false)) android.R.style.Theme_Material_Light_NoActionBar else android.R.style.Theme_Material_NoActionBar)
         super.onCreate(state)
         applyThemePalette()
         library = Library(applicationContext)
@@ -186,8 +193,12 @@ class MainActivity : Activity() {
     }
     override fun onSaveInstanceState(out: Bundle) { super.onSaveInstanceState(out); out.putString("selected", selected?.name) }
     override fun onDestroy() { Jobs.listener = null; super.onDestroy() }
+    override fun onPause() { SharedCatalog.unobserve(sharedObserver); super.onPause() }
     override fun onResume() {
         super.onResume()
+        SharedCatalog.observe(sharedObserver)
+        applyThemePalette()
+        if (!Jobs.busy && !wasBusy && currentScreen == Screen.LIBRARY) home()
         if (Jobs.busy) {
             wasBusy = true
             progressLabel?.text = "${Jobs.percent}% · ${Jobs.message}"
@@ -362,8 +373,12 @@ class MainActivity : Activity() {
         val info = card()
         text("Bounded conversion, honest everywhere else", 17f, textColor, true, info)
         text("The on-device app analyzes every IPA, and converts the proven subset automatically during import: an executable whose whole code is one closed-integer routine becomes a signed, installable APK whose statically recompiled entry runs through JNI — no extra tap needed. Anything outside that subset is not statically recompiled; Force builds a game-runtime boot APK that runs the guest without an artificial instruction/time cutoff, plus a separate source-free preview shell fallback. Host APKs are accepted only when they declare a complete game conversion and pass provenance and package checks.", 14f, muted, parent = info)
-        val add = button("Choose IPA", true) { authorize() }; add.isEnabled = !Jobs.busy
-        button("Settings", parent = body) { settingsScreen() }.isEnabled = !Jobs.busy
+        val add = button("Choose IPA", true) { authorize() }; add.isEnabled = !SharedCatalog.isBusy()
+        button("Import folder of IPAs") {
+            startActivity(Intent().setClassName(this, "org.podnative.MainActivity").putExtra("importIpaFolder", true))
+        }.isEnabled = !SharedCatalog.isBusy()
+        if (SharedCatalog.isBusy() && !Jobs.busy) text("Emulator is updating the shared library. New entries will appear here when it finishes.", 13f, muted)
+        button("Settings", parent = body) { settingsScreen() }.isEnabled = !SharedCatalog.isBusy()
         if (Jobs.busy) {
             wasBusy = true
             addJobProgressCard()
@@ -378,7 +393,7 @@ class MainActivity : Activity() {
         entries.take(visibleEntries).forEach { (dir, report) ->
             val item = card(); val app = report.optJSONObject("application") ?: JSONObject()
             val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }; item.addView(row)
-            val iconPath = File(dir, "icon.png")
+            val iconPath = sharedIcon(dir)
             val icon = ImageView(this).apply {
                 setImageResource(dev.radek.conventor.R.drawable.ic_launcher)
                 contentDescription = report.optJSONObject("icon")?.optString("reason")?.takeIf { it.isNotBlank() } ?: "Icon unavailable"
@@ -636,7 +651,7 @@ class MainActivity : Activity() {
         }
         val app = report.optJSONObject("application") ?: JSONObject()
         button("← Game Library") { home() }
-        val iconPath = File(dir, "icon.png")
+        val iconPath = sharedIcon(dir)
         if (iconPath.isFile) {
             val bitmap = android.graphics.BitmapFactory.decodeFile(iconPath.path)
             if (bitmap != null) {

@@ -119,6 +119,7 @@ final class GameLibrary {
         observers.remove(callback);
     }
     private void changed() {
+        SharedCatalog.notifyViews();
         main.post(() -> {
             List<Runnable> copy;
             synchronized (this) {
@@ -501,6 +502,15 @@ final class GameLibrary {
                 if (!directory.isDirectory() || !directory.getName().matches("game-[0-9a-f-]{36}"))
                     continue;
                 try {
+                    if (!new File(directory, "cover.png").isFile()
+                        && new File(directory, "icon.png").isFile()) {
+                        try (InputStream icon =
+                                 new FileInputStream(new File(directory, "icon.png"))) {
+                            saveCover(directory, GameInspector.bounded(icon, 8 * 1024 * 1024));
+                        } catch (Exception e) {
+                            Diagnostics.record("SHARED_ICON", e.toString());
+                        }
+                    }
                     loaded.add(new Game(directory, readMetadata(directory)));
                 } catch (Exception e) {
                     Diagnostics.record(

@@ -77,6 +77,13 @@ int main() {
     assert(decodeDyld(terminalRebase, sizeof(terminalRebase), tiny, true).fixups.size() == 1);
     uint8_t terminalBind[] = {0x11, 0x40, 'x', 0, 0x70, 4, 0xb3, 0};
     assert(decodeDyld(terminalBind, sizeof(terminalBind), tiny, false).fixups.size() == 1);
+    std::vector<DyldSegment> twelve = {{0x1000, 12, uint8_t(Read | Write)}};
+    uint8_t terminalRepeatedRebase[] = {0x11, 0x20, 0, 0x80, 2, 4, 0};
+    assert(decodeDyld(terminalRepeatedRebase, sizeof(terminalRepeatedRebase), twelve, true)
+               .fixups.size() == 2);
+    uint8_t terminalRepeatedBind[] = {0x11, 0x40, 'x', 0, 0x70, 0, 0xc0, 2, 4, 0};
+    assert(decodeDyld(terminalRepeatedBind, sizeof(terminalRepeatedBind), twelve, false)
+               .fixups.size() == 2);
     uint8_t repeatRebase[] = {0x11, 0x20, 0, 0x80, 2, 4, 0};
     try {
         decodeDyld(repeatRebase, sizeof(repeatRebase), tiny, true);
