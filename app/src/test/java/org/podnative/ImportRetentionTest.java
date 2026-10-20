@@ -13,8 +13,9 @@ public class ImportRetentionTest {
     @Test
     public void arm64BundleKeepsMetadataAndArtworkWithoutNativeExecution() throws Exception {
         File folder = temporary.newFolder("Game.app");
-        Files.writeString(new File(folder, "Info.plist").toPath(),
-            "<plist><dict><key>CFBundleDisplayName</key><string>Owned 64-bit game</string><key>CFBundleExecutable</key><string>Game</string></dict></plist>");
+        Files.write(new File(folder, "Info.plist").toPath(),
+            "<plist><dict><key>CFBundleDisplayName</key><string>Owned 64-bit game</string><key>CFBundleExecutable</key><string>Game</string></dict></plist>"
+                .getBytes(java.nio.charset.StandardCharsets.UTF_8));
         byte[] header = new byte[32];
         header[0] = (byte) 0xcf;
         header[1] = (byte) 0xfa;
