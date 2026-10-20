@@ -76,7 +76,7 @@ final class PngArtwork {
         } finally {
             inflater.end();
         }
-        byte[] previous = new byte[stride], row = new byte[stride];
+        byte[] previous = new byte[stride], row = new byte[stride], rgbaRow = new byte[w * 4 + 1];
         ByteArrayOutputStream idat = new ByteArrayOutputStream();
         try (DeflaterOutputStream raw = new DeflaterOutputStream(idat)) {
             for (int y = 0; y < h; y++) {
@@ -93,14 +93,15 @@ final class PngArtwork {
                                                  : paeth(a, b, c);
                     row[x] = (byte) ((filtered[y * (stride + 1) + 1 + x] & 255) + prediction);
                 }
-                raw.write(0);
                 for (int x = 0; x < stride; x += channels) {
                     int alpha = channels == 4 ? row[x + 3] & 255 : 255;
-                    raw.write(unmultiply(row[x + 2] & 255, alpha));
-                    raw.write(unmultiply(row[x + 1] & 255, alpha));
-                    raw.write(unmultiply(row[x] & 255, alpha));
-                    raw.write(alpha);
+                    int target = 1 + (x / channels) * 4;
+                    rgbaRow[target] = (byte) unmultiply(row[x + 2] & 255, alpha);
+                    rgbaRow[target + 1] = (byte) unmultiply(row[x + 1] & 255, alpha);
+                    rgbaRow[target + 2] = (byte) unmultiply(row[x] & 255, alpha);
+                    rgbaRow[target + 3] = (byte) alpha;
                 }
+                raw.write(rgbaRow);
                 byte[] swap = previous;
                 previous = row;
                 row = swap;
