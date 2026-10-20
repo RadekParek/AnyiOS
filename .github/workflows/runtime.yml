@@ -57,9 +57,10 @@ jobs:
           cmake --build .local/cpu-arm64 --parallel 2 2>&1 | tee .local/logs/cpu-android-build.log
           mkdir -p .local/cpu-artifact
           cp .local/cpu-arm64/cpu_test .local/cpu-artifact/PodNative-arm64-cpu-test
+          cp .local/cpu-arm64/oaknut_wx_test .local/cpu-artifact/PodNative-arm64-wx-test
           readelf -h .local/cpu-artifact/PodNative-arm64-cpu-test | grep AArch64
           cd .local/cpu-artifact
-          sha256sum PodNative-arm64-cpu-test > SHA256SUMS
+          sha256sum PodNative-arm64-cpu-test PodNative-arm64-wx-test > SHA256SUMS
           printf 'source=%s\ndynarmic=%s\nAndroid compilation only; no device execution occurred.\n' \
             "$GITHUB_SHA" "$(cat ../../third_party/dynarmic/revision.txt)" > BUILD-INFO.txt
       - uses: actions/upload-artifact@v4

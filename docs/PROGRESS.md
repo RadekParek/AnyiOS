@@ -71,3 +71,18 @@ cancellation of the duplicate known-failing Android run was denied by GitHub tok
 permissions; no permission or credential workaround was attempted. Future Android
 runs are serialized, and successful ANGLE outputs will be cached before app
 compilation to avoid repeating a long source build for unrelated app fixes.
+
+## Further observed results
+
+Runtime run https://github.com/RadekParek/PodNative/actions/runs/39492740731 passed
+both host execution and ARM64 Android cross-compilation at revision
+`9e380159e4d2c09c12d59c2c7be72d8cda5ec77f`. GitHub published the initial diagnostic
+artifact (ID 12296712326, 7,154,331 bytes); no device execution occurred. Subsequent
+review found that the pinned Oaknut Linux/Android allocator's RWX/MAP_FAILED handling
+needs hardening before APK integration. The follow-up patch and host permission
+regressions are documented under third_party/dynarmic/; the old artifact predates them.
+
+Android run 39492740897 stopped at depot_tools bootstrap (exit 128) before compiling
+ANGLE. Its uncaptured clone output prevents an exact root-cause assertion. The next
+workflow captures that output and emits the failure tail through the API; no
+unverified download mirror or silent substitute has been added.

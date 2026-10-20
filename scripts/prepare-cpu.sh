@@ -19,6 +19,15 @@ fetch_pin() {
 }
 fetch_pin https://github.com/lioncash/dynarmic.git "$DEPS/dynarmic" "$(cat "$ROOT/third_party/dynarmic/revision.txt")"
 fetch_pin https://github.com/boostorg/boost.git "$DEPS/boost" "$(cat "$ROOT/third_party/dynarmic/boost-revision.txt")"
+PATCH="$ROOT/third_party/dynarmic/patches/oaknut-wx.patch"
+if git -C "$DEPS/dynarmic" apply --check "$PATCH" 2>/dev/null; then
+  git -C "$DEPS/dynarmic" apply "$PATCH"
+elif git -C "$DEPS/dynarmic" apply --reverse --check "$PATCH" 2>/dev/null; then
+  echo 'Reviewed Oaknut W^X patch already applied'
+else
+  echo 'CPU dependency differs from the reviewed patch; refusing to overwrite it' >&2
+  exit 1
+fi
 cd "$DEPS/boost"
 git submodule update --init --depth 1 tools/boostdep libs/icl libs/variant
 python3 tools/boostdep/depinst/depinst.py --exclude test --git_args '--depth 1' icl

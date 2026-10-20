@@ -73,7 +73,8 @@ jobs:
       - name: Bootstrap upstream ANGLE build tools
         if: steps.angle-cache.outputs.cache-hit != 'true'
         run: |
-          git clone https://chromium.googlesource.com/chromium/tools/depot_tools.git "$RUNNER_TEMP/depot_tools"
+          set -o pipefail
+          git clone https://chromium.googlesource.com/chromium/tools/depot_tools.git "$RUNNER_TEMP/depot_tools" 2>&1 | tee .local/logs/depot-bootstrap.log
           echo "$RUNNER_TEMP/depot_tools" >> "$GITHUB_PATH"
           git -C "$RUNNER_TEMP/depot_tools" rev-parse HEAD > .local/logs/depot-tools-revision.txt
       - name: Build pinned real ANGLE

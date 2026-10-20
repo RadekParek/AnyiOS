@@ -1,7 +1,8 @@
 # Exact CPU component provenance
 
 Dynarmic 6.7.0 source pin: `a41c380246d3d9f9874f0f792d234dc0cc17c180`.
-No upstream modifications. Root license: 0BSD, retained at LICENSE.txt.
+PodNative applies `patches/oaknut-wx.patch` to the bundled Oaknut allocator; other
+upstream code is unchanged. Root license: 0BSD, retained at LICENSE.txt.
 
 These subtrees are contained in that exact Dynarmic commit (not floating external
 repositories). Tree object IDs identify their exact contents. License texts were
@@ -28,3 +29,20 @@ objects and binaries stay under ignored `.local/`.
 Host validation is not Android validation. The CPU adapter is not linked into the
 Android app until AArch64 compilation and on-device instruction/ABI tests pass.
 No code from HyperHLE or its Dynarmic wrapper is included.
+
+## Reviewed allocator modification
+
+The pinned Oaknut CodeBlock requests RWX on Linux/Android, treats nullptr rather
+than MAP_FAILED as mmap failure, and does not change permissions on those systems
+in protect/unprotect even when Dynarmic's no-execute support is enabled.
+`oaknut-wx.patch` adds an opt-in OAKNUT_USE_WX path: initial RW allocation,
+checked RW/RX transitions, and checked MAP_FAILED with standard system errors.
+No fallback requests RWX. This is enabled for the Android correctness target only;
+no claim is made about upstream block-mode execution or concurrency.
+
+Tests verify real Linux /proc/self/maps permissions, readable contents across
+transitions and structured mmap failure. The Android artifact includes the same
+allocator test separately from the instruction test. Actual Android app-UID
+execution, 16 KiB host pages and SELinux policy behavior still require a device.
+The modified allocator remains under the retained Oaknut MIT license. The patch
+is idempotently applied to the exact source pin; mismatching code is rejected.

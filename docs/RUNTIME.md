@@ -62,8 +62,11 @@ API absence, and compressed texture imports do not establish PVRTC usage.
 ## CPU adapter contract
 
 `Cpu` owns a Dynarmic A32 JIT, configured for v7, safe optimizations, callback-based
-checked memory, memory-access halt checking and a bounded 16 MiB code cache. The
-upstream build enables its no-execute/W^X support. The initial execution path uses
+checked memory, memory-access halt checking and a bounded 16 MiB code cache. The upstream build enables its no-execute support; a reviewed opt-in Oaknut
+allocator patch is additionally required because the original Linux/Android path
+still uses RWX and fails to recognize MAP_FAILED. The patch allocates RW then
+switches RW/RX with checked errors and no RWX fallback. Host kernel-permission
+tests pass; actual Android policy behavior remains unverified. The initial execution path uses
 Dynarmic `Step()` for bounded correctness slices; it is not a fast-path benchmark.
 No iOS syscall is emulated as a successful no-op. SVC returns a service-trap result
 requiring an actual guest ABI handler. Interpreter fallbacks, architectural
@@ -97,13 +100,18 @@ resolves ICL/Variant headers using pinned superproject gitlinks, not floating HE
 cross-compilation. Android compilation success alone must never be recorded as
 instruction execution on the S23 Ultra.
 
-## Android ARM64 device test, when the CI artifact exists
+## Android ARM64 device test, when the current CI artifact exists
 
-The cross-build workflow is intended to produce an executable diagnostic, **not an
-APK**, named `PodNative-arm64-cpu-test`. If it is successfully produced, extract the
-artifact and verify its SHA256SUMS and BUILD-INFO.txt before running:
+Run 39492740731 successfully published the initial cross-compiled CPU diagnostic
+at source `9e380159e4d2c09c12d59c2c7be72d8cda5ec77f`; it does **not** include the
+subsequent allocator patch. Do not treat that earlier artifact as W^X-validated.
+Use a later successful build containing `PodNative-arm64-wx-test` as well as the
+instruction test. These executable diagnostics are **not APKs**. Extract the artifact and verify its SHA256SUMS and BUILD-INFO.txt before running:
 
 ```sh
+adb push PodNative-arm64-wx-test /data/local/tmp/PodNative-arm64-wx-test
+adb shell chmod 700 /data/local/tmp/PodNative-arm64-wx-test
+adb shell /data/local/tmp/PodNative-arm64-wx-test
 adb push PodNative-arm64-cpu-test /data/local/tmp/PodNative-arm64-cpu-test
 adb shell chmod 700 /data/local/tmp/PodNative-arm64-cpu-test
 adb shell /data/local/tmp/PodNative-arm64-cpu-test
@@ -112,3 +120,7 @@ adb shell /data/local/tmp/PodNative-arm64-cpu-test
 A real success must print the test pass line and return exit code zero. Attach the
 actual output, source revision, Android build and device model. Failure is a CPU
 integration blocker; it does not justify bypassing memory or JIT permission checks.
+
+An ADB-shell executable runs under a different UID/policy than the installed app.
+A passing shell test is useful evidence but does not certify execution inside the
+APK. App-UID tests and the graphics scene remain required before game execution.

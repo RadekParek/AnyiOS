@@ -149,7 +149,14 @@ CpuStop Cpu::run(uint64_t budget) {
     }
     for (uint64_t i = 0; i < budget; i++) {
         impl_->instructionPC = impl_->jit->Regs()[15];
-        const auto flags = impl_->jit->Step();
+        Dynarmic::HaltReason flags;
+        try {
+            flags = impl_->jit->Step();
+        } catch (const std::exception& e) {
+            impl_->poisoned = true;
+            return {StopReason::Fault,    i + 1,   impl_->instructionPC, 0, 0,
+                    "CPU_HOST_EXECUTION", e.what()};
+        }
         if (impl_->stopped) {
             auto result = *impl_->stopped;
             result.attemptedInstructions = i + 1;

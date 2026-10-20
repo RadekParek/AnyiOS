@@ -25,7 +25,9 @@ renderer or framework code is incorporated. Research is not component reuse.
 * Origin: https://github.com/lioncash/dynarmic
 * Exact revision: `a41c380246d3d9f9874f0f792d234dc0cc17c180` (6.7.0).
 * Root license: 0BSD, read and preserved in `third_party/dynarmic/LICENSE.txt`.
-* Original PodNative adapter; no inherited HyperHLE CPU wrapper or upstream modifications.
+* Original PodNative adapter; no inherited HyperHLE CPU wrapper. A reviewed Oaknut
+  allocator patch adds opt-in checked W^X transitions and MAP_FAILED handling;
+  provenance, modifications and retained MIT terms are documented in DEPENDENCIES.md.
 * CPU and dependency licenses were read before build. All included components have
   permissive terms allowing the intended use with retained notices. Exact dependency
   tree hashes and host applicability: `third_party/dynarmic/DEPENDENCIES.md`.
