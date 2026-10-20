@@ -61,8 +61,9 @@ public class PngArtworkTest {
             }
             assertNotNull(idat);
             try (var inflater = new InflaterInputStream(new ByteArrayInputStream(idat))) {
-                assertArrayEquals(
-                    new byte[] {0, (byte) 255, 0, 0, (byte) 128}, inflater.readAllBytes());
+                assertArrayEquals(rgb ? new byte[] {0, 120, 80, 40, (byte) 255}
+                                      : new byte[] {0, (byte) 255, 0, 0, (byte) 128},
+                    inflater.readAllBytes());
             }
         }
     }
