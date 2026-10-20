@@ -138,11 +138,12 @@ public final class MainActivity extends Activity {
         clickable(view, primary ? accent : soft, 14, callback);
         return view;
     }
-    private void button(LinearLayout parent, String title, boolean primary, Runnable callback) {
+    private Button button(LinearLayout parent, String title, boolean primary, Runnable callback) {
         Button view = action(title, primary, callback);
         LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(-1, -2);
         lp.topMargin = dp(10);
         parent.addView(view, lp);
+        return view;
     }
     private LinearLayout card(LinearLayout parent) {
         LinearLayout card = column();
@@ -252,9 +253,14 @@ public final class MainActivity extends Activity {
     }
     private void libraryPage(LinearLayout parent) {
         List<GameLibrary.Game> games = library.games();
-        LinearLayout titleRow = row();
+        boolean largeText = getResources().getConfiguration().fontScale > 1.35f;
+        LinearLayout titleRow = largeText ? column() : row();
         TextView title = text("Library", 31, ink, true);
-        titleRow.addView(title, new LinearLayout.LayoutParams(0, -2, 1));
+        titleRow.addView(title,
+            largeText ? new LinearLayout.LayoutParams(-1, -2)
+                      : new LinearLayout.LayoutParams(0, -2, 1));
+        if (largeText)
+            gap(titleRow, 12);
         Button add = action("＋ Add game", true, this::addGame);
         add.setEnabled(!library.busy);
         add.setAlpha(library.busy ? 0.5f : 1);
@@ -333,7 +339,8 @@ public final class MainActivity extends Activity {
                 13, muted, false));
             for (File file : legacy)
                 if (file.isFile())
-                    button(old, file.getName(), false, () -> library.importLegacy(file));
+                    button(old, file.getName(), false, () -> library.importLegacy(file))
+                        .setEnabled(!library.busy);
         }
     }
     private void operationState(LinearLayout parent) {
@@ -500,7 +507,7 @@ public final class MainActivity extends Activity {
                         sheet.dismiss();
                     })
                 .show();
-        });
+        }).setEnabled(!library.busy);
         button(content, "Remove local copy", false, () -> {
             if (library.busy)
                 return;
@@ -515,7 +522,7 @@ public final class MainActivity extends Activity {
                         sheet.dismiss();
                     })
                 .show();
-        });
+        }).setEnabled(!library.busy);
         sheet.setContentView(scroll);
         sheet.show();
         sheet.getWindow().setBackgroundDrawableResource(android.R.color.transparent);
@@ -772,6 +779,13 @@ public final class MainActivity extends Activity {
         if (request == IMPORT_FILE)
             library.importFile(uri);
         else if (request == IMPORT_FOLDER) {
+            if (library.busy) {
+                android.widget.Toast
+                    .makeText(this, "Wait for the current library action to finish",
+                        android.widget.Toast.LENGTH_LONG)
+                    .show();
+                return;
+            }
             try {
                 getContentResolver().takePersistableUriPermission(
                     uri, Intent.FLAG_GRANT_READ_URI_PERMISSION);
@@ -806,16 +820,20 @@ public final class MainActivity extends Activity {
                         throw new java.io.IOException("Provider could not open the destination");
                     stream.write(output.getBytes(StandardCharsets.UTF_8));
                     Diagnostics.record("EXPORT", "Report saved");
+                    new android.os.Handler(android.os.Looper.getMainLooper())
+                        .post(()
+                                  -> android.widget.Toast
+                                      .makeText(
+                                          app, "Report saved", android.widget.Toast.LENGTH_SHORT)
+                                      .show());
                 } catch (Exception e) {
                     Diagnostics.record("EXPORT_ERROR", e.toString());
-                    runOnUiThread(() -> {
-                        if (!isFinishing() && !isDestroyed())
-                            new AlertDialog.Builder(this)
-                                .setTitle("Could not export report")
-                                .setMessage(e.getMessage())
-                                .setPositiveButton("OK", null)
-                                .show();
-                    });
+                    new android.os.Handler(android.os.Looper.getMainLooper())
+                        .post(()
+                                  -> android.widget.Toast
+                                      .makeText(app, "Report export failed: " + e.getMessage(),
+                                          android.widget.Toast.LENGTH_LONG)
+                                      .show());
                 }
             }, "PodNative-export").start();
         }

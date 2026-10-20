@@ -22,6 +22,6 @@ final class LibraryRules {
         if (!(value instanceof String) || ((String) value).trim().isEmpty())
             return fallback;
         String text = ((String) value).replaceAll("[\\p{Cntrl}]", " ").trim();
-        return text.substring(0, Math.min(240, text.length()));
+        return text.isEmpty() ? fallback : text.substring(0, Math.min(240, text.length()));
     }
 }

@@ -66,6 +66,9 @@ final class GameInspector {
         }
         if (!result.metadataWarning.isEmpty())
             result.report += "\nMetadata note: " + result.metadataWarning;
+        if (result.report.length() > 128000)
+            result.report = result.report.substring(0, 128000)
+                + "\nReport output limited to 128,000 characters.";
         return result;
     }
     private static Map<String, Object> metadata(byte[] data, Result result) {
@@ -283,7 +286,7 @@ final class GameInspector {
             throw new IOException(
                 "No Mach-O executable found. Select the extracted .app folder, not a folder of IPA downloads");
         inspectExecutable(executable, result);
-        result.executable = executable.getName();
+        result.executable = folder.toPath().relativize(executable.toPath()).toString();
         for (String name : iconCandidates(info)) {
             File icon = new File(bundle, name);
             if (icon.isFile())

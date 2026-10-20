@@ -241,8 +241,7 @@ final class GameLibrary {
                 checkCancelled();
                 progress = "Reading app details and validating ARM32…";
                 changed();
-                GameInspector.Result result =
-                    GameInspector.analyze(source, name, context.getCacheDir());
+                GameInspector.Result result = GameInspector.analyze(source, name, pending);
                 checkCancelled();
                 JSONObject metadata = new JSONObject();
                 metadata.put("title", result.title);
@@ -257,6 +256,7 @@ final class GameLibrary {
                 metadata.put("importedAt", System.currentTimeMillis());
                 writeMetadata(pending, metadata);
                 saveCover(pending, result.icon);
+                checkCancelled();
                 File published = new File(root, "game-" + UUID.randomUUID());
                 if (!pending.renameTo(published))
                     throw new IOException(
@@ -345,7 +345,10 @@ final class GameLibrary {
         FileOutputStream out = null;
         try {
             out = atomic.startWrite();
-            out.write(metadata.toString().getBytes(StandardCharsets.UTF_8));
+            byte[] bytes = metadata.toString().getBytes(StandardCharsets.UTF_8);
+            if (bytes.length > 1024 * 1024)
+                throw new IOException("Library metadata exceeds its storage limit");
+            out.write(bytes);
             atomic.finishWrite(out);
         } catch (IOException e) {
             if (out != null)

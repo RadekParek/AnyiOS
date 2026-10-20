@@ -29,7 +29,9 @@ Up to 64 entries, 2 GiB copied data per import, 30,000 tree documents/ZIP entrie
 32 tree levels, 512 MiB executable container, 64 MiB selected ARM32 slice,
 1 MiB metadata, 64 FAT records; folder bundle discovery is bounded to depth 4.
 64 MiB free-space reserve is checked during copying. Duplicate/unsafe file names,
-ambiguous bundles, malformed metadata and invalid slice ranges fail the import.
+ambiguous bundles and invalid slice ranges fail the import. Invalid metadata is
+reported; when possible, executable-magic discovery supplies a fallback.
+Stored native reports are limited to 128,000 characters with an explicit note.
 New data is staged and published only after inspection. Previous entries remain
 on failure; interrupted staging is removed on the next process start.
 

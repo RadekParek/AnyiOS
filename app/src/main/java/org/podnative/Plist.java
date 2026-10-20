@@ -35,6 +35,8 @@ final class Plist {
                     xml = new String(data, StandardCharsets.UTF_16);
                 else
                     xml = new String(data, StandardCharsets.UTF_8);
+                if (xml.startsWith("\ufeff"))
+                    xml = xml.substring(1);
                 if (xml.contains("<!ENTITY"))
                     throw new IOException("Entity declarations are not permitted in metadata");
                 // Bound nesting before building a DOM (Android's DOM parser recurses).
