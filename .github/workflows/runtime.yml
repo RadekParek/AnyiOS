@@ -21,6 +21,10 @@ jobs:
           mkdir -p .local/pc-artifact
           cp .local/cpu-tests/cpu_test .local/pc-artifact/PodNative-linux-x86_64-cpu-test
           cp .local/cpu-tests/oaknut_wx_test .local/pc-artifact/PodNative-linux-x86_64-wx-test
+          cp -r third_party/dynarmic/notices .local/pc-artifact/third-party-notices
+          cp third_party/dynarmic/LICENSE.txt .local/pc-artifact/third-party-notices/dynarmic.txt
+          cp THIRD_PARTY_NOTICES.md .local/pc-artifact/
+          cp third_party/dynarmic/revision.txt .local/pc-artifact/CPU-REVISION.txt
           printf 'source=%s\nLinux x86-64 CPU diagnostics, not a desktop game emulator.\n' "$GITHUB_SHA" > .local/pc-artifact/BUILD-INFO.txt
           cd .local/pc-artifact
           sha256sum PodNative-* > SHA256SUMS
@@ -69,6 +73,9 @@ jobs:
           mkdir -p .local/cpu-artifact
           cp .local/cpu-arm64/cpu_test .local/cpu-artifact/PodNative-arm64-cpu-test
           cp .local/cpu-arm64/oaknut_wx_test .local/cpu-artifact/PodNative-arm64-wx-test
+          cp -r third_party/dynarmic/notices .local/cpu-artifact/third-party-notices
+          cp third_party/dynarmic/LICENSE.txt .local/cpu-artifact/third-party-notices/dynarmic.txt
+          cp THIRD_PARTY_NOTICES.md .local/cpu-artifact/
           readelf -h .local/cpu-artifact/PodNative-arm64-cpu-test | grep AArch64
           cd .local/cpu-artifact
           sha256sum PodNative-arm64-cpu-test PodNative-arm64-wx-test > SHA256SUMS

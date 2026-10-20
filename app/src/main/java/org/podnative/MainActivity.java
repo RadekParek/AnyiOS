@@ -145,7 +145,7 @@ public final class MainActivity extends Activity {
         view.setMinimumWidth(0);
         view.setMinWidth(0);
         view.setPadding(dp(18), dp(12), dp(18), dp(12));
-        view.setTextColor(primary ? (dark ? color("#172044") : Color.WHITE) : ink);
+        view.setTextColor(primary ? (dark ? color("#1D1237") : Color.WHITE) : ink);
         clickable(view, primary ? accent : soft, 14, callback);
         return view;
     }
@@ -396,10 +396,14 @@ public final class MainActivity extends Activity {
         card.setContentDescription(game.title + ", " + game.architecture + ", " + game.status
             + ", game launch unavailable");
         FrameLayout artwork = new FrameLayout(this);
-        artwork.setBackground(shape(soft, 16, false));
+        GradientDrawable artworkBackdrop = new GradientDrawable(GradientDrawable.Orientation.TL_BR,
+            new int[] {color(dark ? "#382853" : "#E5DBFF"), color(dark ? "#172E39" : "#DBF5EF")});
+        artworkBackdrop.setCornerRadius(dp(16));
+        artwork.setBackground(artworkBackdrop);
         artwork.setClipToOutline(true);
-        TextView letter =
-            text(game.title.substring(0, 1).toUpperCase(java.util.Locale.ROOT), 42, accent, true);
+        TextView letter = text(game.title.substring(0, game.title.offsetByCodePoints(0, 1))
+                                   .toUpperCase(java.util.Locale.ROOT),
+            42, accent, true);
         letter.setGravity(Gravity.CENTER);
         artwork.addView(letter, new FrameLayout.LayoutParams(-1, -1));
         if (game.cover().isFile()) {
