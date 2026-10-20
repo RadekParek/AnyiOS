@@ -379,6 +379,61 @@ final class GameLibrary {
             revision++;
         }
     }
+    void preparePresentation(Game game, java.util.function.Consumer<List<File>> callback) {
+        if (!begin("Preparing launch artwork…"))
+            return;
+        worker.execute(() -> {
+            File scratch = new File(root, ".pending-art-" + UUID.randomUUID());
+            List<File> images = new ArrayList<>();
+            try {
+                mkdir(scratch);
+                File source =
+                    new File(game.directory, game.kind.equals("Folder") ? "bundle" : "source.bin");
+                GameInspector.Result result = GameInspector.analyze(source, game.title, scratch);
+                for (int i = 0; i < result.splashImages.size(); i++) {
+                    byte[] encoded = result.splashImages.get(i);
+                    BitmapFactory.Options options = new BitmapFactory.Options();
+                    options.inJustDecodeBounds = true;
+                    BitmapFactory.decodeByteArray(encoded, 0, encoded.length, options);
+                    if (options.outWidth <= 0 || options.outHeight <= 0 || options.outWidth > 8192
+                        || options.outHeight > 8192)
+                        continue;
+                    options.inSampleSize = 1;
+                    while (
+                        Math.max(options.outWidth, options.outHeight) / options.inSampleSize > 1024)
+                        options.inSampleSize *= 2;
+                    options.inJustDecodeBounds = false;
+                    Bitmap bitmap =
+                        BitmapFactory.decodeByteArray(encoded, 0, encoded.length, options);
+                    if (bitmap == null)
+                        continue;
+                    File image = new File(game.directory, "launch-" + i + ".png");
+                    try {
+                        try (FileOutputStream out = new FileOutputStream(image)) {
+                            if (!bitmap.compress(Bitmap.CompressFormat.PNG, 100, out))
+                                throw new IOException("Could not normalize launch artwork");
+                        }
+                        images.add(image);
+                    } finally {
+                        bitmap.recycle();
+                    }
+                }
+            } catch (Exception | LinkageError e) {
+                Diagnostics.record("LAUNCH_ARTWORK", e.toString());
+            } finally {
+                try {
+                    if (scratch.exists())
+                        deleteTree(scratch);
+                } catch (IOException e) {
+                    Diagnostics.record("LAUNCH_CLEANUP", e.toString());
+                }
+                busy = false;
+                progress = "";
+                changed();
+                main.post(() -> callback.accept(images));
+            }
+        });
+    }
     void attemptLaunch(Game game) {
         if (!begin("Checking game startup…"))
             return;

@@ -1,10 +1,12 @@
-name: Android release
+name: Android and PC release builds
 on:
   push:
     tags: ['v[0-9]*']
 permissions:
   contents: read
 jobs:
+  runtime-and-pc:
+    uses: ./.github/workflows/runtime.yml
   build:
     uses: ./.github/workflows/build.yml
     with:
@@ -12,7 +14,7 @@ jobs:
       artifact: PodNative.apk
     secrets: inherit
   publish:
-    needs: build
+    needs: [build, runtime-and-pc]
     if: vars.PODNATIVE_PUBLISH_RELEASE == 'true'
     runs-on: ubuntu-24.04
     permissions:

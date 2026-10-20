@@ -27,6 +27,7 @@ final class GameInspector {
         String title, version = "Unknown version", bundleId = "", executable = "", report = "";
         String architecture = "ARM32", status = "Imported", metadataWarning = "";
         byte[] icon;
+        final List<byte[]> splashImages = new ArrayList<>();
         boolean launchAttempt;
         String launchOutcome = "";
     }
@@ -181,6 +182,22 @@ final class GameInspector {
                     info = metadata(bounded(in, 1024 * 1024), result);
                 }
             applyMetadata(info, result);
+            Set<String> artwork = new HashSet<>();
+            for (String name : names)
+                if (name.startsWith(root))
+                    artwork.add(name.substring(root.length()));
+            for (String name : LaunchImages.candidates(info, artwork)) {
+                if (result.splashImages.size() == LaunchImages.MAX_IMAGES)
+                    break;
+                ZipEntry image = zip.getEntry(root + name);
+                if (image == null || image.isDirectory())
+                    continue;
+                try (InputStream in = zip.getInputStream(image)) {
+                    result.splashImages.add(bounded(in, 4 * 1024 * 1024));
+                } catch (IOException ignored) { /* Optional, bounded artwork. */
+                }
+            }
+
             String declared = LibraryRules.metadataText(info.get("CFBundleExecutable"), "");
             String chosen = null;
             if (!declared.isEmpty()) {
@@ -271,6 +288,21 @@ final class GameInspector {
                 info = metadata(bounded(in, 1024 * 1024), result);
             }
         applyMetadata(info, result);
+        Set<String> artwork = new HashSet<>();
+        File[] imageFiles = bundle.listFiles();
+        if (imageFiles != null)
+            for (File image : imageFiles)
+                if (image.isFile())
+                    artwork.add(image.getName());
+        for (String name : LaunchImages.candidates(info, artwork)) {
+            if (result.splashImages.size() == LaunchImages.MAX_IMAGES)
+                break;
+            try (InputStream in = new FileInputStream(new File(bundle, name))) {
+                result.splashImages.add(bounded(in, 4 * 1024 * 1024));
+            } catch (IOException ignored) { /* Optional, bounded artwork. */
+            }
+        }
+
         String declared = LibraryRules.metadataText(info.get("CFBundleExecutable"), "");
         File executable = null;
         if (!declared.isEmpty()) {

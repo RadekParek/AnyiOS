@@ -9,6 +9,7 @@ final class NativeBridge {
     private NativeBridge() {}
     static native String start(Surface surface, int width, int height);
     static native void frame(float seconds);
+    static native void image(byte[] rgba, int width, int height);
     static native void stop();
     static native String inspect(byte[] bytes);
     static native String attemptLaunch(byte[] bytes);

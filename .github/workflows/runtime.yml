@@ -1,9 +1,6 @@
 name: Runtime correctness
 on:
-  push:
-    branches: ['**']
-  pull_request:
-  workflow_dispatch:
+  workflow_call:
 permissions:
   contents: read
 jobs:
@@ -19,6 +16,20 @@ jobs:
           set -o pipefail
           scripts/test-host.sh 2>&1 | tee .local/logs/runtime-sanitizers.log
           scripts/test-cpu.sh 2>&1 | tee .local/logs/cpu-host.log
+      - name: Package Linux PC diagnostic build
+        run: |
+          mkdir -p .local/pc-artifact
+          cp .local/cpu-tests/cpu_test .local/pc-artifact/PodNative-linux-x86_64-cpu-test
+          cp .local/cpu-tests/oaknut_wx_test .local/pc-artifact/PodNative-linux-x86_64-wx-test
+          printf 'source=%s\nLinux x86-64 CPU diagnostics, not a desktop game emulator.\n' "$GITHUB_SHA" > .local/pc-artifact/BUILD-INFO.txt
+          cd .local/pc-artifact
+          sha256sum PodNative-* > SHA256SUMS
+      - uses: actions/upload-artifact@v4
+        with:
+          name: PodNative-PC-linux-x86_64-diagnostics
+          include-hidden-files: true
+          path: .local/pc-artifact/
+          if-no-files-found: error
       - uses: actions/upload-artifact@v4
         if: always()
         with:

@@ -104,7 +104,8 @@ class AngleBackend final : public GraphicsBackend {
     EGLContext context = EGL_NO_CONTEXT;
     EGLSurface surface = EGL_NO_SURFACE;
     GLuint program = 0, texture = 0, vertices = 0, indices = 0;
-    GLint angle = -1, aspect = -1;
+    GLint angle = -1, aspect = -1, imageMode = -1;
+    bool showingImage = false;
     int width = 0, height = 0;
     std::string report;
     GLuint shader(GLenum type, const char* source) {
@@ -200,7 +201,7 @@ class AngleBackend final : public GraphicsBackend {
             error("ANGLE_IDENTITY_MISMATCH: refusing unidentified renderer");
         const char* vs =
             "attribute vec3 position; attribute vec2 uv; varying vec2 tex; uniform float angle; "
-            "uniform float aspect; void main(){ float c=cos(angle), s=sin(angle); vec3 "
+            "uniform float aspect; uniform float imageMode; void main(){ if(imageMode>0.5){gl_Position=vec4(position,1.0); tex=uv; return;} float c=cos(angle), s=sin(angle); vec3 "
             "p=vec3(c*position.x+s*position.z,position.y,-s*position.x+c*position.z); "
             "p=vec3(p.x,0.9*p.y-0.435*p.z,0.435*p.y+0.9*p.z); p.z-=4.5; "
             "gl_Position=vec4(1.73*p.x/aspect,1.73*p.y,-1.02*p.z-0.202,-p.z); tex=uv; }";
@@ -268,6 +269,8 @@ class AngleBackend final : public GraphicsBackend {
         glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, 8, 8, 0, GL_RGBA, GL_UNSIGNED_BYTE, pixels);
         glUseProgram(program);
         glUniform1i(glGetUniformLocation(program, "image"), 0);
+        imageMode = glGetUniformLocation(program, "imageMode");
+        glUniform1f(imageMode, 0);
         angle = glGetUniformLocation(program, "angle");
         aspect = glGetUniformLocation(program, "aspect");
         glEnable(GL_DEPTH_TEST);
@@ -278,8 +281,31 @@ class AngleBackend final : public GraphicsBackend {
             error("FRAMEBUFFER_INCOMPLETE");
         __android_log_print(ANDROID_LOG_INFO, "PodNative", "%s", report.c_str());
     }
+    void image(const uint8_t* rgba, int w, int h) override {
+        if (!rgba || w <= 0 || h <= 0 || w > 2048 || h > 2048) error("IMAGE_BOUNDS");
+        const float ratio = float(w) / h, screen = float(width) / height;
+        const float x = ratio > screen ? 1.0f : ratio / screen;
+        const float y = ratio > screen ? screen / ratio : 1.0f;
+        const GLfloat quad[] = {-x, -y, 0, 0, 1, x, -y, 0, 1, 1, x, y, 0, 1, 0, -x, y, 0, 0, 0};
+        glBindBuffer(GL_ARRAY_BUFFER, vertices);
+        glBufferData(GL_ARRAY_BUFFER, sizeof(quad), quad, GL_STATIC_DRAW);
+        glActiveTexture(GL_TEXTURE0);
+        glBindTexture(GL_TEXTURE_2D, texture);
+        glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, w, h, 0, GL_RGBA, GL_UNSIGNED_BYTE, rgba);
+        glUseProgram(program);
+        glUniform1f(imageMode, 1);
+        glDisable(GL_DEPTH_TEST);
+        glEnable(GL_BLEND);
+        glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+        showingImage = true;
+        glCheck("IMPORTED_IMAGE_UPLOAD");
+    }
     void draw(float seconds) override {
-        glClearColor(0.035f, 0.06f, 0.09f, 1);
+        glClearColor(showingImage ? 0 : 0.035f, showingImage ? 0 : 0.06f, showingImage ? 0 : 0.09f,
+                     1);
         glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
         glUseProgram(program);
         glUniform1f(angle, seconds * 0.55f);
@@ -291,7 +317,7 @@ class AngleBackend final : public GraphicsBackend {
         glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 5 * sizeof(float), nullptr);
         glVertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE, 5 * sizeof(float),
                               reinterpret_cast<void*>(3 * sizeof(float)));
-        glDrawElements(GL_TRIANGLES, 36, GL_UNSIGNED_SHORT, nullptr);
+        glDrawElements(GL_TRIANGLES, showingImage ? 6 : 36, GL_UNSIGNED_SHORT, nullptr);
         glCheck("DRAW");
         eglCheck(eglSwapBuffers(display, surface), "PRESENT");
     }

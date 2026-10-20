@@ -124,3 +124,21 @@ Java_org_podnative_NativeBridge_attemptLaunch(JNIEnv* env, jclass, jbyteArray by
         return nullptr;
     }
 }
+
+extern "C" JNIEXPORT void JNICALL Java_org_podnative_NativeBridge_image(JNIEnv* env, jclass,
+                                                                        jbyteArray pixels,
+                                                                        jint width, jint height) {
+    try {
+        if (width <= 0 || height <= 0 || width > 2048 || height > 2048 ||
+            env->GetArrayLength(pixels) != width * height * 4)
+            throw std::runtime_error("IMAGE_BOUNDS");
+        if (!backend) throw std::runtime_error("BACKEND_NOT_READY");
+        std::vector<uint8_t> rgba(size_t(width) * height * 4);
+        env->GetByteArrayRegion(pixels, 0, jsize(rgba.size()),
+                                reinterpret_cast<jbyte*>(rgba.data()));
+        if (env->ExceptionCheck()) return;
+        backend->image(rgba.data(), width, height);
+    } catch (const std::exception& e) {
+        fail(env, e);
+    }
+}

@@ -1,4 +1,4 @@
-name: Android debug
+name: Android and PC builds
 on:
   push:
     branches: ['**']
@@ -10,6 +10,8 @@ concurrency:
 permissions:
   contents: read
 jobs:
+  runtime-and-pc:
+    uses: ./.github/workflows/runtime.yml
   build:
     uses: ./.github/workflows/build.yml
     with:

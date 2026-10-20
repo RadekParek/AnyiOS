@@ -38,7 +38,8 @@ public final class MainActivity extends Activity {
     private PrototypeView prototype;
     private TextView liveStatus, progressLabel;
     private String tab = "Library", exportGame = "";
-    private boolean resumeTest, dark;
+    private boolean resumeTest, dark, showingSplashes, resumed;
+    private int presentationGeneration;
     private int background, surface, ink, muted, line, accent, soft;
     private long renderedRevision;
     private boolean renderedBusy;
@@ -68,13 +69,13 @@ public final class MainActivity extends Activity {
             tab = state.getString("tab", "Library");
             exportGame = state.getString("exportGame", "");
         }
-        background = color(dark ? "#10141D" : "#F6F7FB");
-        surface = color(dark ? "#1A202D" : "#FFFFFF");
+        background = color(dark ? "#0B0B17" : "#F4F5FB");
+        surface = color(dark ? "#17172B" : "#FFFFFF");
         ink = color(dark ? "#EDF1FC" : "#192238");
         muted = color(dark ? "#A3ADC2" : "#6B758B");
         line = color(dark ? "#2B3445" : "#E6EAF2");
-        accent = color(dark ? "#AAB8FF" : "#3155E7");
-        soft = color(dark ? "#252E45" : "#EDF1FF");
+        accent = color(dark ? "#B9A2FF" : "#6B42E8");
+        soft = color(dark ? "#29223F" : "#EEE8FC");
         Diagnostics.record("APP", "library preview; game execution remains unavailable");
         home();
     }
@@ -107,7 +108,17 @@ public final class MainActivity extends Activity {
             new RippleDrawable(ColorStateList.valueOf(dark ? 0x20ffffff : 0x14000000),
                 shape(fill, radius, false), shape(Color.WHITE, radius, false)));
         view.setFocusable(true);
-        view.setOnClickListener(v -> action.run());
+        view.setOnClickListener(v -> {
+            if (android.animation.ValueAnimator.areAnimatorsEnabled()) {
+                v.animate()
+                    .scaleX(0.97f)
+                    .scaleY(0.97f)
+                    .setDuration(70)
+                    .withEndAction(() -> v.animate().scaleX(1).scaleY(1).setDuration(140).start())
+                    .start();
+            }
+            action.run();
+        });
     }
     private TextView text(String content, int size, int textColor, boolean bold) {
         TextView view = new TextView(this);
@@ -152,6 +163,16 @@ public final class MainActivity extends Activity {
         LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(-1, -2);
         lp.topMargin = dp(16);
         parent.addView(card, lp);
+        if (android.animation.ValueAnimator.areAnimatorsEnabled()) {
+            card.setAlpha(0);
+            card.setTranslationY(dp(12));
+            card.animate()
+                .alpha(1)
+                .translationY(0)
+                .setStartDelay(Math.min(160, parent.getChildCount() * 18))
+                .setDuration(260)
+                .start();
+        }
         return card;
     }
     private void heading(LinearLayout parent, String title, String subtitle) {
@@ -481,8 +502,15 @@ public final class MainActivity extends Activity {
                 : "Attempt launch reopens the saved executable and checks it with the native loader. It reports the first startup blocker. Guest execution and iOS frameworks are not integrated yet; no game code runs in this build.",
             14, muted, false));
         Button launch = action("Attempt launch · experimental", true, () -> {
-            library.attemptLaunch(game);
             sheet.dismiss();
+            java.lang.ref.WeakReference<MainActivity> owner =
+                new java.lang.ref.WeakReference<>(this);
+            library.preparePresentation(game, files -> {
+                MainActivity activity = owner.get();
+                if (activity != null && activity.resumed && !activity.isFinishing()
+                    && !activity.isDestroyed())
+                    activity.presentGameArtwork(game, files);
+            });
         });
         launch.setEnabled(!library.busy);
         LinearLayout.LayoutParams launchLp = new LinearLayout.LayoutParams(-1, -2);
@@ -704,6 +732,43 @@ public final class MainActivity extends Activity {
             "Reports can contain app names, imported symbols and device information. Review them before sharing. Proprietary game files are never included.",
             12, muted, false));
     }
+    private void presentGameArtwork(GameLibrary.Game game, List<File> files) {
+        if (files.isEmpty()) {
+            library.attemptLaunch(game);
+            return;
+        }
+        showingSplashes = true;
+        int generation = ++presentationGeneration;
+        LinearLayout root = column();
+        root.setBackgroundColor(Color.BLACK);
+        root.setOnApplyWindowInsetsListener((view, insets) -> {
+            view.setPadding(insets.getSystemWindowInsetLeft(), insets.getSystemWindowInsetTop(),
+                insets.getSystemWindowInsetRight(), insets.getSystemWindowInsetBottom());
+            return insets;
+        });
+        root.addView(
+            action("‹  Cancel startup", false, this::stop), new LinearLayout.LayoutParams(-1, -2));
+        liveStatus =
+            text("Game launch artwork · embedded ANGLE/Vulkan\nNot frames rendered by guest code",
+                12, Color.WHITE, false);
+        liveStatus.setPadding(dp(16), dp(12), dp(16), dp(12));
+        root.addView(liveStatus);
+        prototype = new PrototypeView(this, files,
+            info
+            -> {
+                if (liveStatus != null)
+                    liveStatus.setText(info);
+            },
+            () -> {
+                if (showingSplashes && generation == presentationGeneration && resumed) {
+                    stop();
+                    library.attemptLaunch(game);
+                }
+            });
+        root.addView(prototype, new LinearLayout.LayoutParams(-1, 0, 1));
+        setContentView(root);
+        root.requestApplyInsets();
+    }
     private void launch() {
         LinearLayout root = column();
         root.setBackgroundColor(color("#10141D"));
@@ -734,6 +799,8 @@ public final class MainActivity extends Activity {
                 | View.SYSTEM_UI_FLAG_HIDE_NAVIGATION | View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY);
     }
     private void stop() {
+        showingSplashes = false;
+        presentationGeneration++;
         resumeTest = false;
         if (prototype != null) {
             prototype.halt();
@@ -754,16 +821,19 @@ public final class MainActivity extends Activity {
     }
     @Override
     protected void onPause() {
+        resumed = false;
         boolean wasRunning = prototype != null;
+        boolean wasArtwork = showingSplashes;
         if (wasRunning)
             stop();
-        resumeTest = wasRunning;
+        resumeTest = wasRunning && !wasArtwork;
         Diagnostics.record("LIFECYCLE", "paused; graphics resources released if active");
         super.onPause();
     }
     @Override
     protected void onResume() {
         super.onResume();
+        resumed = true;
         if (resumeTest) {
             resumeTest = false;
             launch();
@@ -772,7 +842,7 @@ public final class MainActivity extends Activity {
     }
     @Override
     protected void onSaveInstanceState(Bundle out) {
-        out.putBoolean("prototype", prototype != null || resumeTest);
+        out.putBoolean("prototype", (prototype != null && !showingSplashes) || resumeTest);
         out.putString("tab", tab);
         out.putString("exportGame", exportGame);
         super.onSaveInstanceState(out);

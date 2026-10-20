@@ -9,6 +9,8 @@ import java.util.function.Consumer;
 // All backend operations, including teardown, run on one owner thread.
 final class PrototypeView extends SurfaceView implements SurfaceHolder.Callback {
     private volatile boolean running;
+    private java.util.List<java.io.File> images = java.util.Collections.emptyList();
+    private Runnable completed;
     private Thread worker;
     private final Consumer<String> status;
     private final int fps;
@@ -19,6 +21,35 @@ final class PrototypeView extends SurfaceView implements SurfaceHolder.Callback 
         this.shortEdge = shortEdge;
         this.status = status;
         getHolder().addCallback(this);
+    }
+    PrototypeView(Context context, java.util.List<java.io.File> images, Consumer<String> status,
+        Runnable completed) {
+        this(context, 60, 1080, status);
+        this.images = new java.util.ArrayList<>(
+            images.subList(0, Math.min(LaunchImages.MAX_IMAGES, images.size())));
+        this.completed = completed;
+    }
+    private void upload(java.io.File file) {
+        android.graphics.Bitmap bitmap = android.graphics.BitmapFactory.decodeFile(file.getPath());
+        if (bitmap == null)
+            throw new IllegalStateException("Launch artwork could not be decoded");
+        try {
+            int w = bitmap.getWidth(), h = bitmap.getHeight();
+            if (w > 2048 || h > 2048)
+                throw new IllegalStateException("Launch artwork is too large");
+            int[] argb = new int[w * h];
+            bitmap.getPixels(argb, 0, w, 0, 0, w, h);
+            byte[] rgba = new byte[w * h * 4];
+            for (int i = 0; i < argb.length; i++) {
+                rgba[i * 4] = (byte) (argb[i] >> 16);
+                rgba[i * 4 + 1] = (byte) (argb[i] >> 8);
+                rgba[i * 4 + 2] = (byte) argb[i];
+                rgba[i * 4 + 3] = (byte) (argb[i] >>> 24);
+            }
+            NativeBridge.image(rgba, w, h);
+        } finally {
+            bitmap.recycle();
+        }
     }
     @Override public void surfaceCreated(SurfaceHolder holder) { /* Wait for dimensions. */ }
     @Override
@@ -39,13 +70,32 @@ final class PrototypeView extends SurfaceView implements SurfaceHolder.Callback 
                 Diagnostics.record(
                     "BACKEND", info + "\nrender size=" + w + "x" + h + " cap=" + fps);
                 post(() -> status.accept(info));
+                int imageIndex = 0;
+                long imagePresented = 0;
+                if (!images.isEmpty())
+                    upload(images.get(0));
                 while (running) {
+                    if (!images.isEmpty() && imagePresented != 0
+                        && System.nanoTime() - imagePresented
+                            >= LaunchImages.DISPLAY_MILLIS * 1_000_000L) {
+                        imageIndex++;
+                        if (imageIndex >= images.size()) {
+                            running = false;
+                            if (completed != null)
+                                post(completed);
+                            break;
+                        }
+                        upload(images.get(imageIndex));
+                        imagePresented = 0;
+                    }
                     long before = System.nanoTime();
                     NativeBridge.frame((before - start) / 1_000_000_000f);
+                    if (!images.isEmpty() && imagePresented == 0)
+                        imagePresented = System.nanoTime();
                     if (first) {
                         Diagnostics.record("FIRST_PRESENT",
-                            "textured cube draw and eglSwapBuffers returned successfully; visual "
-                                + "confirmation still required");
+                            (images.isEmpty() ? "textured cube" : "imported launch artwork")
+                                + " draw and eglSwapBuffers returned successfully; visual confirmation still required; not guest execution");
                         first = false;
                     }
                     long duration = System.nanoTime() - before;
