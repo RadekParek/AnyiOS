@@ -78,8 +78,8 @@ final class GameInspector {
             }
         } catch (IOException | IllegalStateException e) {
             result.blockReason = e.getMessage() == null ? e.toString() : e.getMessage();
-            result.status = result.blockReason.contains("ARM64")
-                    || result.blockReason.contains("64-bit")
+            result.status = result.architecture.equals("ARM64")
+                    || result.architecture.equals("64-bit")
                     || result.blockReason.contains("FAT_NO_ARM32")
                 ? "Unsupported"
                 : "Invalid";

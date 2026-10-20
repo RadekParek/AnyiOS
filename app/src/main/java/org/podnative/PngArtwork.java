@@ -37,6 +37,8 @@ final class PngArtwork {
             if (type == 0x49444154)
                 compressed.write(png, p + 8, size);
             p += size + 12;
+            if (type == 0x49454e44)
+                break;
         }
         if (!cgbi)
             return png;
@@ -61,6 +63,11 @@ final class PngArtwork {
                 if (n == 0)
                     break;
                 count += n;
+            }
+            if (count == filtered.length && !inflater.finished()) {
+                byte[] extra = new byte[1];
+                if (inflater.inflate(extra) != 0)
+                    throw new IOException("CgBI pixel data exceeds dimensions");
             }
             if (count != filtered.length || !inflater.finished() || inflater.getRemaining() != 0)
                 throw new IOException("Invalid CgBI compressed pixel size");

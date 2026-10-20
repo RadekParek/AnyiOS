@@ -66,6 +66,11 @@ int main() {
     } catch (const Error& e) {
         assert(e.code == "DYLD_COALESCING_UNIMPLEMENTED");
     }
+    uint8_t signedBinding[] = {0x11, 0x40, 'x', 0, 0x60, 0x7f, 0x70, 0, 0x90, 0};
+    auto negative = decodeDyld(signedBinding, sizeof(signedBinding), segments, false);
+    assert(negative.fixups[0].addend == -1);
+    negative.apply(memory, 0, [](int, const std::string&) -> std::optional<uint32_t> { return 2; });
+    assert(memory.read32(0x1000) == 1);
     std::mt19937 random(197);
     for (int i = 0; i < 10000; i++) {
         std::vector<uint8_t> fuzz(binding, binding + sizeof(binding));

@@ -35,6 +35,37 @@ public class ImportRetentionTest {
         assertTrue(new File(folder, "Game").exists());
     }
     @Test
+    public void arm64IpaRetainsIconAndOriginalBytes() throws Exception {
+        File ipa = temporary.newFile("Universal64.ipa");
+        byte[] header = new byte[32];
+        header[0] = (byte) 0xcf;
+        header[1] = (byte) 0xfa;
+        header[2] = (byte) 0xed;
+        header[3] = (byte) 0xfe;
+        header[4] = 12;
+        header[7] = 1;
+        try (var zip = new java.util.zip.ZipOutputStream(new java.io.FileOutputStream(ipa))) {
+            String[] names = {"Info.plist", "Game", "Icon.png", "Default.png"};
+            byte[][] data = {
+                "<plist><dict><key>CFBundleExecutable</key><string>Game</string><key>CFBundleDisplayName</key><string>IPA metadata</string></dict></plist>"
+                    .getBytes(java.nio.charset.StandardCharsets.UTF_8),
+                header, new byte[] {1, 2}, new byte[] {3, 4}};
+            for (int i = 0; i < names.length; i++) {
+                zip.putNextEntry(new java.util.zip.ZipEntry("Payload/Game.app/" + names[i]));
+                zip.write(data[i]);
+                zip.closeEntry();
+            }
+        }
+        byte[] original = Files.readAllBytes(ipa.toPath());
+        var result = GameInspector.analyze(ipa, "Universal64.ipa", temporary.getRoot());
+        assertEquals("IPA", result.kind);
+        assertEquals("IPA metadata", result.title);
+        assertEquals("Unsupported", result.status);
+        assertNotNull(result.icon);
+        assertEquals(1, result.splashImages.size());
+        assertArrayEquals(original, Files.readAllBytes(ipa.toPath()));
+    }
+    @Test
     public void missingExecutableAndCorruptIpaRemainInspectable() throws Exception {
         File folder = temporary.newFolder("Broken.app");
         var missing = GameInspector.analyze(folder, "Broken.app", temporary.getRoot());
