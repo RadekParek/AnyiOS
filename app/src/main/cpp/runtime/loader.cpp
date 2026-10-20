@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cstring>
 #include <limits>
+#include <map>
 #include <sstream>
 
 #include "../macho.h"
@@ -58,7 +59,12 @@ LoadedImage loadMachO(const uint8_t* data, size_t size, size_t budget) {
     uint64_t entry = 0;
     size_t p = 28;
     bool hasSymbols = false, hasDynamicSymbols = false;
-    uint32_t symbolCount = 0;
+    uint32_t symbolCount = 0, symbolOffset = 0, stringOffset = 0, stringBytes = 0;
+    struct IndirectSection {
+        uint32_t address, count, first, stride;
+        bool lazy, stub;
+    };
+    std::vector<IndirectSection> indirectSections;
     size_t dynamicSymbols = 0;
     bool hasDyldInfo = false;
     std::array<std::pair<uint32_t, uint32_t>, 4> dyldStreams{};
@@ -88,6 +94,14 @@ LoadedImage loadMachO(const uint8_t* data, size_t size, size_t budget) {
                                sectionOffset = r.u32(q + 40);
                 const uint32_t relocationOffset = r.u32(q + 48), relocationCount = r.u32(q + 52),
                                type = r.u32(q + 56) & 0xff;
+                if (type == 6 || type == 7 || type == 8) {
+                    uint32_t stride = type == 8 ? r.u32(q + 64) : 4;
+                    if (!stride || sectionSize % stride || indirectSections.size() >= 4096)
+                        throw Error("DYLD_INDIRECT_SECTION",
+                                    "invalid indirect section stride or budget");
+                    indirectSections.push_back({address, sectionSize / stride, r.u32(q + 60),
+                                                stride, type == 7, type == 8});
+                }
                 if (address < vm || uint64_t(address) + sectionSize > uint64_t(vm) + vmSize)
                     throw Error("LOAD_SECTION_VM", "section outside its segment", address);
                 // S_ZEROFILL and S_GB_ZEROFILL have no file bytes. TLS is not implemented.
@@ -156,6 +170,9 @@ LoadedImage loadMachO(const uint8_t* data, size_t size, size_t budget) {
                 throw Error("LOAD_SYMTAB", "invalid or duplicate symbol table");
             hasSymbols = true;
             symbolCount = r.u32(p + 12);
+            symbolOffset = r.u32(p + 8);
+            stringOffset = r.u32(p + 16);
+            stringBytes = r.u32(p + 20);
             r.range(r.u32(p + 8), uint64_t(r.u32(p + 12)) * 12);
             r.range(r.u32(p + 16), r.u32(p + 20));
             // Symbol binding is explicitly deferred; even local-only tables need audit.
@@ -222,6 +239,7 @@ LoadedImage loadMachO(const uint8_t* data, size_t size, size_t budget) {
             decodeDyld(data + offset, bytes, dyldSegments, stream == 0, stream == 3, stream == 2);
         if (decoded.fixups.size() > 100000 - result.dyld.fixups.size())
             throw Error("DYLD_LIMIT", "combined fixup budget exceeded");
+        result.dyld.needsCoalescing |= decoded.needsCoalescing;
         for (auto& fixup : decoded.fixups) {
             if (fixup.ordinal > 0 && size_t(fixup.ordinal) > result.dependencies.size())
                 throw Error("DYLD_ORDINAL", "binding references nonexistent dylib");
@@ -229,6 +247,59 @@ LoadedImage loadMachO(const uint8_t* data, size_t size, size_t budget) {
                 throw Error("DYLD_LIMIT", "combined symbol budget exceeded");
             dyldNames += fixup.symbol.size();
             result.dyld.fixups.push_back(std::move(fixup));
+        }
+    }
+    std::map<uint32_t, size_t> planned;
+    for (size_t index = 0; index < result.dyld.fixups.size(); index++)
+        planned.emplace(result.dyld.fixups[index].address, index);
+    for (const auto& section : indirectSections) {
+        if (!hasDynamicSymbols)
+            throw Error("DYLD_INDIRECT_SECTION", "indirect section requires LC_DYSYMTAB");
+        uint32_t table = r.u32(dynamicSymbols + 56), entries = r.u32(dynamicSymbols + 60);
+        if (section.first > entries || section.count > entries - section.first)
+            throw Error("DYLD_INDIRECT_SECTION", "section indexes exceed indirect table");
+        if (section.stub) {
+            result.legacyStubs += section.count;
+            continue;
+        }
+        if (section.count > 100000)
+            throw Error("DYLD_LIMIT", "indirect pointer count exceeds budget");
+        for (uint32_t index = 0; index < section.count; index++) {
+            uint32_t symbol = r.u32(uint64_t(table) + uint64_t(section.first + index) * 4);
+            if (symbol & 0xc0000000u)
+                continue;  // Local/absolute pointer, not an external symbol binding.
+            uint64_t record = uint64_t(symbolOffset) + uint64_t(symbol) * 12;
+            uint32_t nameIndex = r.u32(record);
+            if (nameIndex >= stringBytes || (data[record + 4] & 0xe0))
+                throw Error("DYLD_SYMBOL", "invalid indirect nlist symbol");
+            size_t start = size_t(stringOffset) + nameIndex, end = start;
+            while (end < size_t(stringOffset) + stringBytes && data[end] && end - start <= 4096)
+                end++;
+            if (end == start || end == size_t(stringOffset) + stringBytes || end - start > 4096)
+                throw Error("DYLD_SYMBOL", "invalid indirect symbol name");
+            std::string name(reinterpret_cast<const char*>(data + start), end - start);
+            int ordinal = data[record + 7];
+            if (ordinal == 255)
+                ordinal = -1;
+            else if (ordinal == 254)
+                ordinal = -2;
+            if (ordinal > 0 && size_t(ordinal) > result.dependencies.size())
+                throw Error("DYLD_ORDINAL", "indirect symbol references missing dylib");
+            uint32_t address = section.address + index * 4;
+            if (!result.memory) throw Error("DYLD_TARGET", "missing image storage");
+            auto existing = planned.find(address);
+            if (existing != planned.end()) {
+                const auto& old = result.dyld.fixups[existing->second];
+                if (old.rebase || old.symbol != name || old.ordinal != ordinal)
+                    throw Error("DYLD_BIND_CONFLICT", "indirect/stream binding mismatch");
+                continue;
+            }
+            if (result.dyld.fixups.size() >= 100000 || name.size() > 8 * 1024 * 1024 - dyldNames)
+                throw Error("DYLD_LIMIT", "combined indirect binding budget");
+            dyldNames += name.size();
+            result.dyld.fixups.push_back({address, false, bool(data[record + 6] & 0x40),
+                                          section.lazy, ordinal, 0, std::move(name)});
+            planned.emplace(address, result.dyld.fixups.size() - 1);
         }
     }
     if (!hasEntry) throw Error("LOAD_ENTRY_MISSING", "no LC_MAIN or supported LC_UNIXTHREAD");
@@ -277,6 +348,9 @@ std::string LoadedImage::summary() const {
     s << "\nExecution BLOCKED: " << (requiresDyld ? "dyld/symbol resolution required; " : "")
       << "guest CPU, application ABI and frameworks not initialized.";
     s << "\n" << dyld.summary();
+    if (legacyStubs)
+        s << "\nLegacy symbol stubs=" << std::dec << legacyStubs
+          << "; ARM stub execution/dispatch is not initialized.";
     for (const auto& dependency : dependencies) s << "\nrequires " << dependency;
     return s.str();
 }

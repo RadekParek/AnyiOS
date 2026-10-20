@@ -22,14 +22,20 @@ original code implementing the format, not a drop-in port of Apple's dyld.
 
 - Bounded ARM32 pointer rebase and regular/weak/lazy bind opcode decoding, checked
   ULEB/SLEB, ordinals/addends, segment offsets, repeat/work/name-allocation budgets.
+- Legacy LC_DYSYMTAB non-lazy/lazy pointer sections now produce symbol/ordinal
+  fixups from the indirect table and bounded nlist/string records, even without
+  LC_DYLD_INFO. Local/absolute slots are distinguished; section ranges, ordinals
+  and duplicate/conflicting stream bindings are checked. ARM stub counts are
+  reported but stub execution is not initialized.
 - Loader now parses LC_DYLD_INFO streams and includes target symbol/ordinal/lazy
   information in its report (up to 120 displayed binding entries).
 - A tested fixup applier resolves through an explicit callback and validates all
   targets/values before writing. Required unresolved symbols leave memory unchanged;
-  missing weak imports may become null. Segment addresses passed to the decoder are
+  missing weak imports may become null. Weak-definition coalescing plans explicitly
+  refuse application until dependency-graph semantics exist. Segment addresses passed to the decoder are
   mapped addresses; the applier's slide adjusts pointer contents only.
 - **Production startup does not apply this plan or enter guest code.** Guest service
-  trampolines, framework exports, dependency loading, legacy indirect bindings,
+  trampolines, framework exports, dependency loading, legacy stub execution,
   export tries, weak coalescing, threaded/chained fixups, text fixups, PIE and Darwin
   process/Objective-C/UIKit/EAGL bootstrapping remain unfinished. A decoded plan is
   not a resolved process. Unsupported/malformed streams fail explicitly.

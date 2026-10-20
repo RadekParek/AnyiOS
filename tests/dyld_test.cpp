@@ -50,6 +50,22 @@ int main() {
     assert(memory.read32(0x1000) == 77);
     uint8_t lazy[] = {0x11, 0x40, 'x', 0, 0x70, 4, 0x90, 0, 0x11, 0x40, 'y', 0, 0x70, 8, 0x90, 0};
     assert(decodeDyld(lazy, sizeof(lazy), segments, false, true).fixups.size() == 2);
+    auto overflow = plan;
+    overflow.fixups[0].addend = INT64_MAX;
+    try {
+        overflow.apply(memory, 0,
+                       [](int, const std::string&) -> std::optional<uint32_t> { return 2; });
+        assert(false);
+    } catch (const Error& e) {
+        assert(e.code == "DYLD_VALUE");
+    }
+    auto coalescing = decodeDyld(binding, sizeof(binding), segments, false, false, true);
+    try {
+        coalescing.apply(memory, 0, {});
+        assert(false);
+    } catch (const Error& e) {
+        assert(e.code == "DYLD_COALESCING_UNIMPLEMENTED");
+    }
     std::mt19937 random(197);
     for (int i = 0; i < 10000; i++) {
         std::vector<uint8_t> fuzz(binding, binding + sizeof(binding));

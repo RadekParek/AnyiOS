@@ -14,6 +14,7 @@ struct LoadedImage {
     std::vector<std::string> dependencies;
     bool requiresDyld = false;
     DyldPlan dyld;
+    size_t legacyStubs = 0;
     std::string summary() const;
 };
 // Fixed-address, non-PIE mapping only. This does not execute code or resolve imports.

@@ -49,6 +49,7 @@ DyldPlan decodeDyld(const uint8_t* bytes, size_t size, const std::vector<DyldSeg
         throw Error("DYLD_LIMIT", "stream exceeds budget");
     Stream s{bytes, size};
     DyldPlan plan;
+    plan.needsCoalescing = weakStream;
     size_t segment = segments.size();
     uint64_t offset = 0;
     int type = 1, ordinal = weakStream ? -3 : 0;
@@ -219,6 +220,9 @@ DyldPlan decodeDyld(const uint8_t* bytes, size_t size, const std::vector<DyldSeg
 void DyldPlan::apply(
     Memory& memory, uint32_t slide,
     const std::function<std::optional<uint32_t>(int, const std::string&)>& resolve) const {
+    if (needsCoalescing)
+        throw Error("DYLD_COALESCING_UNIMPLEMENTED",
+                    "weak-definition coalescing requires a dependency/export graph");
     std::vector<std::pair<uint32_t, uint32_t>> writes;
     std::set<uint32_t> used;
     for (const auto& f : fixups) {
@@ -228,8 +232,11 @@ void DyldPlan::apply(
         if (f.rebase)
             value = int64_t(memory.read32(f.address)) + slide;
         else {
-            auto found = resolve(f.ordinal, f.symbol);
-            if (!found && !f.weak) throw Error("DYLD_UNRESOLVED", f.symbol);
+            auto found = resolve ? resolve(f.ordinal, f.symbol) : std::optional<uint32_t>{};
+            if (!found && !f.weak)
+                throw Error("DYLD_UNRESOLVED", "required symbol has no resolver result");
+            if (found && f.addend > INT64_MAX - int64_t(*found))
+                throw Error("DYLD_VALUE", "signed addend overflow");
             value = found ? int64_t(*found) + f.addend : 0;
         }
         if (value < 0 || value > UINT32_MAX) throw Error("DYLD_VALUE", "pointer value overflow");
@@ -244,11 +251,14 @@ std::string DyldPlan::summary() const {
     out << "DYLD_PLAN: " << rebases << " pointer rebases, " << bindings
         << " pointer bindings. Decoded, not resolved or applied.";
     size_t shown = 0;
-    for (const auto& f : fixups)
-        if (!f.rebase && shown++ < 120)
-            out << "\n"
-                << (f.weak ? "weak " : "required ") << "ordinal=" << f.ordinal << " " << f.symbol
-                << (f.lazy ? " (lazy)" : "");
+    for (const auto& f : fixups) {
+        if (f.rebase || shown++ >= 120) continue;
+        out << "\n" << (f.weak ? "weak " : "required ") << "ordinal=" << f.ordinal << " ";
+        for (unsigned char c : f.symbol) out << (c >= 32 && c < 127 ? char(c) : '?');
+        out << (f.lazy ? " (lazy)" : "");
+    }
+    if (needsCoalescing)
+        out << "\nWeak-definition coalescing is not implemented; this plan cannot be applied.";
     if (bindings > 120) out << "\nDisplay limited to 120 bindings.";
     return out.str();
 }

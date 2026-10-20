@@ -19,6 +19,7 @@ struct DyldFixup {
 };
 struct DyldPlan {
     std::vector<DyldFixup> fixups;
+    bool needsCoalescing = false;
     std::string summary() const;
     // All resolutions/ranges are checked before writes. No unresolved required import is zeroed.
     void apply(
