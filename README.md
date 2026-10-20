@@ -5,9 +5,11 @@ An independent Android-native foundation for researching ARM32 iOS game compatib
 and published; the user reports the previous 3D test working on their S23 Ultra.
 The new library/UI has not been device-tested here.**
 
-[Download the 0.2.1 startup preview](https://github.com/RadekParek/PodNative/actions/runs/39504099819/artifacts/12301983317)
-(extract GitHub's archive, then install `PodNative-debug.apk`).
-[Build evidence and exact source revision](docs/STARTUP_APK_REPORT.md).
+[Download current Android and PC diagnostic artifacts](https://github.com/RadekParek/PodNative/actions/workflows/android.yml)
+(choose a successful run; extract GitHub's archive, then install `PodNative-debug.apk`).
+The PC artifact is a Linux CPU diagnostic build, not a desktop emulator GUI.
+[Current implementation boundaries](docs/GRAPHICS_FRAMEWORK_INCREMENT.md).
+[Historical 0.2.1 build evidence](docs/STARTUP_APK_REPORT.md).
 [Historical first APK report](docs/FIRST_APK_REPORT.md).
 
 ## First slice
