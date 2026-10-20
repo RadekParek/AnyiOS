@@ -38,7 +38,7 @@ renderer or framework code is incorporated. Research is not component reuse.
 * Boost 1.88.0 pin: `199ef13d6034c85232431130142159af3adfce22`, with modules
   fixed by its gitlinks. These are build/test source checkouts, not vendored code.
 * Used for actual ARM/Thumb host correctness tests. Android compilation and device
-  execution are separate gates. Not yet linked into the application or used for games.
+  execution are separate gates. Linked into the application for a bounded fixed-program CPU diagnostic; not used for game execution. Engine/dependency texts are also shipped in `app/src/main/assets/cpu-notices/`.
 
 ## Research only, not redistributed or linked
 

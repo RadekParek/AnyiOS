@@ -701,6 +701,7 @@ public final class MainActivity extends Activity {
     }
     private void diagnostics(LinearLayout parent) {
         heading(parent, "Diagnostics", "Useful evidence, without uploading your games.");
+        operationState(parent);
         LinearLayout tools = card(parent);
         tools.addView(text("Graphics & runtime", 18, ink, true));
         gap(tools, 8);
@@ -709,6 +710,8 @@ public final class MainActivity extends Activity {
             14, muted, false));
         button(tools, "Export diagnostic log", true, () -> exportReport(null));
         button(tools, "Run graphics test", false, this::launch);
+        button(tools, "Run ARM/Thumb CPU self-test", false, library::runCpuProbe)
+            .setEnabled(!library.busy);
         String backend = prefs.getString("lastBackend", "");
         if (!backend.isEmpty()) {
             LinearLayout renderer = card(parent);

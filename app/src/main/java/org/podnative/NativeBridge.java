@@ -12,6 +12,7 @@ final class NativeBridge {
     static native void image(byte[] rgba, int width, int height);
     static native void stop();
     static native String inspect(byte[] bytes);
+    static native String cpuProbe();
     static native String attemptLaunch(byte[] bytes);
     static native long[] arm32Slice(byte[] header, long fileLength);
 }

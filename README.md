@@ -17,7 +17,7 @@ The new library/UI has not been device-tested here.**
   integration, with explicit failure and no disguised native-GLES fallback.
 * Shader-based animated textured cube with depth testing and reusable resources.
 * Bounded ARM32 Mach-O inspection and temporary validated guest-memory mapping.
-* Actual Dynarmic CPU adapter with host-tested ARM/Thumb execution; Android CPU integration remains pending.
+* Actual Dynarmic CPU adapter with host-tested ARM/Thumb execution and an in-app CPU self-test; device execution and game-session integration remain pending.
 * GitHub Actions debug/tagged-release build recipes with artifacts and provenance.
 
 No inherited TouchHLE/HyperHLE renderer. No proprietary game files. No universal
@@ -62,3 +62,12 @@ This APK removes the fixed 2 GiB import quota and library entry cap, validates
 `LC_DYSYMTAB`, and enables a real native-loader startup attempt with persistent,
 exportable blocker reports. It does not execute guest code yet. Resource/parser
 safety bounds and low-space checks remain; see [current behavior](docs/LIBRARY_PREVIEW.md).
+
+### 0.3 graphics/framework foundation
+
+Unified Android/PC diagnostic CI, a new handheld launcher mark, animated native
+UI, actual imported launch-artwork presentation through ANGLE (max 3 × 900 ms),
+CoreFoundation bit-vector/lifetime services, CoreGraphics affine math and an
+app-linked ARM/Thumb CPU self-test. These are **not playable-game compatibility**;
+[implementation boundaries and device checklist](docs/GRAPHICS_FRAMEWORK_INCREMENT.md).
+Local Android builds now also require `scripts/prepare-cpu.sh` before Gradle.

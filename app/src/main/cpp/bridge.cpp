@@ -9,6 +9,7 @@
 #include "macho.h"
 #include "macho_container.h"
 #include "macho_info.h"
+#include "runtime/cpu_probe.h"
 #include "runtime/error.h"
 #include "runtime/launch.h"
 #include "runtime/loader.h"
@@ -141,4 +142,9 @@ extern "C" JNIEXPORT void JNICALL Java_org_podnative_NativeBridge_image(JNIEnv* 
     } catch (const std::exception& e) {
         fail(env, e);
     }
+}
+
+extern "C" JNIEXPORT jstring JNICALL Java_org_podnative_NativeBridge_cpuProbe(JNIEnv* env, jclass) {
+    const auto report = podnative::runtime::cpuProbe();
+    return env->NewStringUTF(report.c_str());
 }

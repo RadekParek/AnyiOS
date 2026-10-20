@@ -379,6 +379,26 @@ final class GameLibrary {
             revision++;
         }
     }
+    void runCpuProbe() {
+        if (!begin("Running bounded ARM/Thumb CPU self-test…"))
+            return;
+        worker.execute(() -> {
+            try {
+                String result = NativeBridge.cpuProbe();
+                Diagnostics.record("APP_UID_CPU_PROBE", result);
+                notice = result;
+                error = !result.startsWith("CPU_SELF_TEST_PASS:");
+            } catch (Exception | LinkageError e) {
+                notice = "CPU self-test failed: " + e.toString();
+                Diagnostics.record("APP_UID_CPU_PROBE", notice);
+                error = true;
+            } finally {
+                busy = false;
+                progress = "";
+                changed();
+            }
+        });
+    }
     void preparePresentation(Game game, java.util.function.Consumer<List<File>> callback) {
         if (!begin("Preparing launch artwork…"))
             return;

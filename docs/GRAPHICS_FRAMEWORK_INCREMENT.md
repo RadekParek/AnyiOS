@@ -30,12 +30,27 @@
   translation and scale have original mathematical implementations and tests.
   Aggregate ARM ABI marshalling for these CG functions is not implemented.
 
+## In-app CPU execution diagnostic
+
+The APK now source-builds and links the exact reviewed Dynarmic pin with the W^X
+allocator patch, rather than leaving the engine only in a separate test binary.
+**Diagnostics → Run ARM/Thumb CPU self-test** executes two short original fixed
+programs inside the app UID, checking actual register and SVC results. This is a
+bounded native execution diagnostic, not game execution. Native faults may still
+terminate a diagnostic build; successful compilation is not app-UID execution proof.
+The same probe is asserted by the host CPU regression suite and cross-compiled for
+Android. Engine/dependency license texts and revision are shipped in CPU notices.
+
+No self-test has been run on a physical device here. A phone report is required to
+establish Android app-UID behavior. Game startup still stops at missing dyld/guest
+ABI/framework services and does not enter an unresolved executable.
+
 ## What is still not implemented
 
 The exported game's 20 library dependencies and 539 imports are not satisfied by
 these two subsets. No dummy dylibs/no-op framework exports have been installed.
 The CF dispatcher is tested with guest register/memory objects but **not wired into
-an executing game session**. Dyld binding, app-linked CPU, Objective-C/UIKit bootstrap,
+an executing game session**. Dyld binding, CPU-backed game sessions, Objective-C/UIKit bootstrap,
 EAGL/guest GLES state/resource semantics, game input/audio and actual gameplay remain
 unfinished. The cube and imported-artwork presentation are real ANGLE draws, not
 proof that guest glDraw calls run. See EXECUTION_NEXT.md for the dependency order.

@@ -68,6 +68,13 @@ jobs:
           mkdir -p .local/logs
           set -o pipefail
           scripts/test-host.sh 2>&1 | tee .local/logs/host-tests.log
+      - name: Prepare pinned application CPU engine
+        run: |
+          set -o pipefail
+          scripts/prepare-cpu.sh 2>&1 | tee .local/logs/app-cpu-prepare.log
+          cmp third_party/dynarmic/revision.txt app/src/main/assets/cpu-notices/revision.txt
+          cmp third_party/dynarmic/LICENSE.txt app/src/main/assets/cpu-notices/dynarmic.txt
+          for text in third_party/dynarmic/notices/*.txt; do cmp "$text" "app/src/main/assets/cpu-notices/$(basename "$text")"; done
       - name: Restore verified upstream ANGLE build outputs
         id: angle-cache
         uses: actions/cache/restore@v4

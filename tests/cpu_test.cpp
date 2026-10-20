@@ -5,6 +5,7 @@
 #include <iostream>
 #include <vector>
 
+#include "runtime/cpu_probe.h"
 #include "runtime/error.h"
 using namespace podnative::runtime;
 void put(std::vector<uint8_t>& bytes, size_t offset, uint32_t value) {
@@ -17,6 +18,7 @@ CpuState initial(bool thumb = false) {
     return state;
 }
 int main() {
+    assert(cpuProbe().find("CPU_SELF_TEST_PASS:") == 0);
     Memory memory;
     std::vector<uint8_t> code(4096);
     // ARM: mov r0,#42; add r1,r0,#8; str r1,[r2]; ldr r3,[r2]; svc #7; b .
