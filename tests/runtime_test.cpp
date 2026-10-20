@@ -7,6 +7,7 @@
 #include <vector>
 
 #include "runtime/error.h"
+#include "runtime/launch.h"
 #include "runtime/loader.h"
 #include "runtime/memory.h"
 using namespace podnative::runtime;
@@ -139,6 +140,61 @@ int main() {
     put(b, 132, 0x70000000);
     put(b, 136, 4096);
     fault("LOAD_STACK_OVERLAP", [&] { loadMachO(b.data(), b.size()); });
+    // LC_DYSYMTAB may precede LC_SYMTAB; validate all spans and linkedit ranges.
+    auto dynamic = [] {
+        auto fixture = executable();
+        put(fixture, 16, 4);
+        put(fixture, 20, 184);
+        put(fixture, 108, 0xb);
+        put(fixture, 112, 80);
+        put(fixture, 188, 2);
+        put(fixture, 192, 24);
+        put(fixture, 196, 0x300);
+        put(fixture, 200, 3);
+        put(fixture, 204, 0x340);
+        put(fixture, 208, 1);
+        put(fixture, 116, 0);
+        put(fixture, 120, 1);
+        put(fixture, 124, 1);
+        put(fixture, 128, 1);
+        put(fixture, 132, 2);
+        put(fixture, 136, 1);
+        put(fixture, 164, 0x350);
+        put(fixture, 168, 3);
+        put(fixture, 0x350, 2);
+        put(fixture, 0x354, 0x80000000);
+        put(fixture, 0x358, 0xc0000000);
+        return fixture;
+    };
+    b = dynamic();
+    image = loadMachO(b.data(), b.size());
+    assert(image.requiresDyld);
+    assert(attemptLaunch(b.data(), b.size()).find("DYLD_NOT_IMPLEMENTED") != std::string::npos);
+    b = executable();
+    assert(attemptLaunch(b.data(), b.size()).find("CPU_NOT_INTEGRATED") != std::string::npos);
+    b = dynamic();
+    put(b, 120, 4);
+    fault("LOAD_DYSYMTAB", [&] { loadMachO(b.data(), b.size()); });
+    b = dynamic();
+    put(b, 124, 0);
+    fault("LOAD_DYSYMTAB", [&] { loadMachO(b.data(), b.size()); });
+    b = dynamic();
+    put(b, 0x350, 3);
+    fault("LOAD_DYSYMTAB", [&] { loadMachO(b.data(), b.size()); });
+    b = dynamic();
+    put(b, 0x354, 0x80000001);
+    fault("LOAD_DYSYMTAB", [&] { loadMachO(b.data(), b.size()); });
+    for (size_t table = 0; table < 6; table++) {
+        b = dynamic();
+        put(b, 140 + table * 8, 4092);
+        put(b, 144 + table * 8, 2);
+        fault("LOAD_BOUNDS", [&] { loadMachO(b.data(), b.size()); });
+    }
+    b = dynamic();
+    put(b, 112, 76);
+    put(b, 184, 0);
+    put(b, 188, 0);  // malformed command chain
+    assert(attemptLaunch(b.data(), b.size()).find("LAUNCH_BLOCKED:") == 0);
     // Mutate valid headers and command bytes with a low allocation budget. Never execute fuzz data.
     std::mt19937 random(9032);
     for (int i = 0; i < 10000; i++) {

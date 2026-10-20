@@ -57,6 +57,9 @@ LoadedImage loadMachO(const uint8_t* data, size_t size, size_t budget) {
     bool hasEntry = false, entryIsOffset = false;
     uint64_t entry = 0;
     size_t p = 28;
+    bool hasSymbols = false, hasDynamicSymbols = false;
+    uint32_t symbolCount = 0;
+    size_t dynamicSymbols = 0;
     for (uint32_t i = 0; i < r.u32(16); i++) {
         uint32_t cmd = r.u32(p), length = r.u32(p + 4);
         if (cmd == 1) {
@@ -143,11 +146,24 @@ LoadedImage loadMachO(const uint8_t* data, size_t size, size_t budget) {
                 if (bytes) result.requiresDyld = true;
             }
         } else if (cmd == 2) {
-            if (length < 24) throw Error("LOAD_SYMTAB", "truncated symbol table");
+            if (length != 24 || hasSymbols)
+                throw Error("LOAD_SYMTAB", "invalid or duplicate symbol table");
+            hasSymbols = true;
+            symbolCount = r.u32(p + 12);
             r.range(r.u32(p + 8), uint64_t(r.u32(p + 12)) * 12);
             r.range(r.u32(p + 16), r.u32(p + 20));
             // Symbol binding is explicitly deferred; even local-only tables need audit.
             if (r.u32(p + 12)) result.requiresDyld = true;
+        } else if (cmd == 0xb) {  // LC_DYSYMTAB; validated, never silently bound.
+            if (length != 80 || hasDynamicSymbols)
+                throw Error("LOAD_DYSYMTAB", "invalid or duplicate dynamic symbol table");
+            hasDynamicSymbols = true;
+            dynamicSymbols = p;
+            constexpr uint32_t widths[] = {8, 52, 4, 4, 8, 8};
+            for (size_t table = 0; table < 6; table++)
+                r.range(r.u32(p + 32 + table * 8),
+                        uint64_t(r.u32(p + 36 + table * 8)) * widths[table]);
+            result.requiresDyld = true;
         } else if (cmd == 0x1d || cmd == 0x26 ||
                    cmd == 0x29) {  // code signature / function starts / data-in-code
             if (length < 16) throw Error("LOAD_LINKEDIT", "truncated linkedit command");
@@ -163,6 +179,30 @@ LoadedImage loadMachO(const uint8_t* data, size_t size, size_t budget) {
             throw Error("LOAD_COMMAND_UNSUPPORTED", out.str());
         }
         p += length;
+    }
+    if (hasDynamicSymbols) {
+        if (!hasSymbols) throw Error("LOAD_DYSYMTAB", "dynamic symbol table requires LC_SYMTAB");
+        for (size_t span = 0; span < 3; span++) {
+            uint32_t start = r.u32(dynamicSymbols + 8 + span * 8);
+            uint32_t count = r.u32(dynamicSymbols + 12 + span * 8);
+            if (start > symbolCount || count > symbolCount - start)
+                throw Error("LOAD_DYSYMTAB", "symbol partition exceeds LC_SYMTAB");
+            for (size_t previous = 0; previous < span; previous++) {
+                uint32_t oldStart = r.u32(dynamicSymbols + 8 + previous * 8);
+                uint32_t oldCount = r.u32(dynamicSymbols + 12 + previous * 8);
+                if (count && oldCount && uint64_t(start) < uint64_t(oldStart) + oldCount &&
+                    uint64_t(oldStart) < uint64_t(start) + count)
+                    throw Error("LOAD_DYSYMTAB", "dynamic symbol partitions overlap");
+            }
+        }
+        const uint32_t offset = r.u32(dynamicSymbols + 56);
+        const uint32_t count = r.u32(dynamicSymbols + 60);
+        for (uint32_t index = 0; index < count; index++) {
+            uint32_t symbol = r.u32(uint64_t(offset) + uint64_t(index) * 4);
+            constexpr uint32_t flags = 0xc0000000u;  // INDIRECT_SYMBOL_LOCAL / ABS
+            if ((symbol & flags) ? bool(symbol & ~flags) : symbol >= symbolCount)
+                throw Error("LOAD_DYSYMTAB", "invalid indirect symbol reference");
+        }
     }
     if (!hasEntry) throw Error("LOAD_ENTRY_MISSING", "no LC_MAIN or supported LC_UNIXTHREAD");
     if (entryIsOffset) {

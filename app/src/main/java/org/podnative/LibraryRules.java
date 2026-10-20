@@ -4,6 +4,12 @@ import java.io.IOException;
 
 final class LibraryRules {
     private LibraryRules() {}
+    // Streaming byte accounting, not an import quota. Do not overflow at 2/4 GiB.
+    static long addCopiedBytes(long total, int count) throws IOException {
+        if (total < 0 || count < 0 || total > Long.MAX_VALUE - count)
+            throw new IOException("Import byte count exceeds supported accounting range");
+        return total + count;
+    }
     static String fileName(String name) throws IOException {
         if (name == null || name.isEmpty() || name.equals(".") || name.equals("..")
             || name.length() > 255 || name.indexOf('/') >= 0 || name.indexOf('\\') >= 0

@@ -27,6 +27,8 @@ final class GameInspector {
         String title, version = "Unknown version", bundleId = "", executable = "", report = "";
         String architecture = "ARM32", status = "Imported", metadataWarning = "";
         byte[] icon;
+        boolean launchAttempt;
+        String launchOutcome = "";
     }
     private GameInspector() {}
     static byte[] bounded(InputStream in, int limit) throws IOException {
@@ -44,7 +46,12 @@ final class GameInspector {
         return analyze(source, source.getName(), source.getParentFile()).report;
     }
     static Result analyze(File source, String displayName, File scratch) throws IOException {
+        return analyze(source, displayName, scratch, false);
+    }
+    static Result analyze(File source, String displayName, File scratch, boolean launchAttempt)
+        throws IOException {
         Result result = new Result();
+        result.launchAttempt = launchAttempt;
         result.title = LibraryRules.title(displayName);
         if (source.isDirectory())
             analyzeFolder(source, result);
@@ -137,6 +144,10 @@ final class GameInspector {
                 result.architecture += " · Universal";
             if (report.startsWith("MACHO_ENCRYPTED:"))
                 result.status = "Encrypted";
+            if (result.launchAttempt) {
+                result.launchOutcome = NativeBridge.attemptLaunch(bytes);
+                report += "\n\n" + result.launchOutcome;
+            }
             result.report =
                 "Container: " + (slice[3] != 0 ? "universal; selected ARM32 slice" : "thin ARM32")
                 + "\nSlice offset=" + slice[0] + " size=" + slice[1] + " bytes\n\n" + report;

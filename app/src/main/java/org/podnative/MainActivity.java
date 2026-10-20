@@ -478,15 +478,32 @@ public final class MainActivity extends Activity {
         gap(content, 8);
         content.addView(text(game.status.equals("Encrypted")
                 ? "The game was added, but its executable is protected. This build does not bypass DRM."
-                : "Your complete import is preserved. The iOS runtime and guest framework support are still under development; this build does not execute games.",
+                : "Attempt launch reopens the saved executable and checks it with the native loader. It reports the first startup blocker. Guest execution and iOS frameworks are not integrated yet; no game code runs in this build.",
             14, muted, false));
-        Button launch = action("Launch unavailable in this build", false, () -> {});
-        launch.setEnabled(false);
-        launch.setAlpha(0.55f);
+        Button launch = action("Attempt launch · experimental", true, () -> {
+            library.attemptLaunch(game);
+            sheet.dismiss();
+        });
+        launch.setEnabled(!library.busy);
         LinearLayout.LayoutParams launchLp = new LinearLayout.LayoutParams(-1, -2);
         launchLp.topMargin = dp(18);
         content.addView(launch, launchLp);
-        button(content, "View import report", true, () -> showReport(game));
+        if (!game.launchReport.isEmpty()) {
+            button(content, "Latest launch report", false, () -> {
+                TextView output = text(game.launchReport, 12, ink, false);
+                output.setTextIsSelectable(true);
+                output.setPadding(dp(20), dp(16), dp(20), dp(16));
+                ScrollView reportScroll = new ScrollView(this);
+                reportScroll.addView(output);
+                new AlertDialog.Builder(this)
+                    .setTitle("Launch attempt")
+                    .setView(reportScroll)
+                    .setPositiveButton("Done", null)
+                    .setNeutralButton("Export", (dialog, which) -> exportReport(game))
+                    .show();
+            });
+        }
+        button(content, "View import report", false, () -> showReport(game));
         button(content, "Export report", false, () -> exportReport(game));
         button(content, "Rename", false, () -> {
             if (library.busy)
@@ -810,7 +827,10 @@ public final class MainActivity extends Activity {
                 }
                 report = "PodNative game import report\nApp=" + selected.title
                     + "\nVersion=" + selected.version + "\nBuild=" + BuildConfig.SOURCE_REVISION
-                    + "\n\n" + selected.report;
+                    + "\n\n" + selected.report
+                    + (selected.launchReport.isEmpty()
+                            ? ""
+                            : "\n\nLATEST LAUNCH ATTEMPT\n" + selected.launchReport);
             }
             final String output = report;
             final android.content.Context app = getApplicationContext();

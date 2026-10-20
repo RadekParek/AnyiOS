@@ -6,7 +6,7 @@ c++ -std=c++17 -Wall -Wextra -Werror -fsanitize=address,undefined -g -Iapp/src/m
   tests/macho_test.cpp app/src/main/cpp/macho.cpp -o .local/tests/macho-test
 .local/tests/macho-test
 c++ -std=c++17 -Wall -Wextra -Werror -fsanitize=address,undefined -g -Iapp/src/main/cpp \
-  tests/runtime_test.cpp app/src/main/cpp/macho.cpp app/src/main/cpp/runtime/{memory,loader}.cpp \
+  tests/runtime_test.cpp app/src/main/cpp/macho.cpp app/src/main/cpp/runtime/{memory,loader,launch}.cpp \
   -o .local/tests/runtime-test
 .local/tests/runtime-test
 c++ -std=c++17 -Wall -Wextra -Werror -fsanitize=address,undefined -g -Iapp/src/main/cpp \

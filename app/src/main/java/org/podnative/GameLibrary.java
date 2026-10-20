@@ -29,7 +29,6 @@ import org.json.JSONObject;
 
 /** App-scoped storage worker: imports survive Activity recreation, not process termination. */
 final class GameLibrary {
-    static final long GAME_LIMIT = 2L * 1024 * 1024 * 1024;
     private static GameLibrary instance;
     static synchronized GameLibrary get(Context context) {
         if (instance == null)
@@ -40,6 +39,7 @@ final class GameLibrary {
         final File directory;
         final String id, title, version, bundleId, kind, architecture, status, report, executable;
         final long bytes, importedAt;
+        final String launchReport;
         Game(File directory, JSONObject data) throws Exception {
             this.directory = directory;
             id = directory.getName();
@@ -53,6 +53,7 @@ final class GameLibrary {
             status = data.optString("status", "Imported");
             report = data.optString("report");
             executable = data.optString("executable");
+            launchReport = data.optString("lastLaunchReport");
             bytes = data.optLong("bytes");
             importedAt = data.optLong("importedAt");
         }
@@ -176,8 +177,7 @@ final class GameLibrary {
             int count;
             while ((count = in.read(buffer)) != -1) {
                 checkCancelled();
-                if (count > GAME_LIMIT - copied)
-                    throw new IOException("Game exceeds the 2 GiB private-copy limit");
+                copied = LibraryRules.addCopiedBytes(copied, count);
                 if (copied >= nextSpaceCheck) {
                     if (destination.getParentFile().getUsableSpace() < count + 64L * 1024 * 1024)
                         throw new IOException(
@@ -185,7 +185,6 @@ final class GameLibrary {
                     nextSpaceCheck = copied + 4L * 1024 * 1024;
                 }
                 out.write(buffer, 0, count);
-                copied += count;
                 tick(destination.getName());
             }
         }
@@ -215,9 +214,6 @@ final class GameLibrary {
         worker.execute(() -> {
             File pending = null;
             try {
-                if (games().size() >= 64)
-                    throw new IOException(
-                        "Library limit reached (64 games). Remove a local copy before importing another");
                 pending = new File(root, ".pending-" + UUID.randomUUID());
                 mkdir(pending);
                 String name;
@@ -382,6 +378,56 @@ final class GameLibrary {
             games = loaded;
             revision++;
         }
+    }
+    void attemptLaunch(Game game) {
+        if (!begin("Checking game startup…"))
+            return;
+        worker.execute(() -> {
+            File scratch = new File(root, ".pending-launch-" + UUID.randomUUID());
+            String outcome;
+            try {
+                if (!game.directory.getCanonicalFile().getParentFile().equals(
+                        root.getCanonicalFile()))
+                    throw new IOException("Invalid library entry");
+                mkdir(scratch);
+                File source =
+                    new File(game.directory, game.kind.equals("Folder") ? "bundle" : "source.bin");
+                GameInspector.Result result =
+                    GameInspector.analyze(source, game.title, scratch, true);
+                outcome = result.launchOutcome;
+                if (outcome.isEmpty())
+                    throw new IOException("No native launch result was returned");
+            } catch (Exception | LinkageError e) {
+                outcome = "LAUNCH_BLOCKED: " + e.toString() + "\nGuest code was not executed.";
+            }
+            try {
+                if (outcome.length() > 16000)
+                    outcome = outcome.substring(0, 16000) + "\nLaunch report shortened.";
+                outcome = "Attempt at " + new java.util.Date()
+                    + "\nBuild=" + BuildConfig.SOURCE_REVISION + "\n" + outcome;
+                Diagnostics.record("LAUNCH_ATTEMPT", game.title + "\n" + outcome);
+                JSONObject data = readMetadata(game.directory);
+                data.put("lastLaunchReport", outcome);
+                writeMetadata(game.directory, data);
+                refresh();
+                error = true;
+                notice =
+                    "Startup stopped safely. Open the game’s latest launch report for the blocker.";
+            } catch (Exception e) {
+                error = true;
+                notice = "Could not save launch report: " + e.getMessage() + ". See Diagnostics.";
+            } finally {
+                try {
+                    if (scratch.exists())
+                        deleteTree(scratch);
+                } catch (IOException e) {
+                    Diagnostics.record("LAUNCH_CLEANUP", e.toString());
+                }
+                busy = false;
+                progress = "";
+                changed();
+            }
+        });
     }
     void rename(Game game, String title) {
         if (!begin("Updating game…"))

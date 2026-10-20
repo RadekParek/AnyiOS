@@ -55,3 +55,10 @@ icon. Imported does **not** mean runnable. See [library limits, workflow and upd
 signing caveats](docs/LIBRARY_PREVIEW.md). The previous graphics preview was
 reported working by the user on their S23 Ultra; this does not validate gameplay
 or the new UI.
+
+### Startup preview follow-up
+
+The next APK removes the fixed 2 GiB import quota and library entry cap, validates
+`LC_DYSYMTAB`, and enables a real native-loader startup attempt with persistent,
+exportable blocker reports. It does not execute guest code yet. Resource/parser
+safety bounds and low-space checks remain; see [current behavior](docs/LIBRARY_PREVIEW.md).

@@ -17,6 +17,15 @@ public class MetadataTest {
         assertThrows(IOException.class, () -> Plist.read(bytes));
     }
     @Test
+    public void importAccountingHasNoTwoOrFourGiBLimit() throws Exception {
+        assertEquals(2L * 1024 * 1024 * 1024 + 65536,
+            LibraryRules.addCopiedBytes(2L * 1024 * 1024 * 1024, 65536));
+        assertEquals(8L * 1024 * 1024 * 1024 + 65536,
+            LibraryRules.addCopiedBytes(8L * 1024 * 1024 * 1024, 65536));
+        assertThrows(IOException.class, () -> LibraryRules.addCopiedBytes(Long.MAX_VALUE, 1));
+        assertThrows(IOException.class, () -> LibraryRules.addCopiedBytes(0, -1));
+    }
+    @Test
     public void xmlMetadataAndExternalDtd() throws Exception {
         var parsed = Plist.read(xml(
             "<dict><key>name</key><string>Owned game</string><key>negative</key><integer>-7</integer><key>enabled</key><true/></dict>"));

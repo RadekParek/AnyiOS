@@ -10,6 +10,7 @@
 #include "macho_container.h"
 #include "macho_info.h"
 #include "runtime/error.h"
+#include "runtime/launch.h"
 #include "runtime/loader.h"
 namespace {
 std::unique_ptr<podnative::GraphicsBackend> backend;
@@ -101,6 +102,23 @@ Java_org_podnative_NativeBridge_arm32Slice(JNIEnv* env, jclass, jbyteArray heade
         auto array = env->NewLongArray(4);
         if (array) env->SetLongArrayRegion(array, 0, 4, result);
         return array;
+    } catch (const std::exception& e) {
+        fail(env, e);
+        return nullptr;
+    }
+}
+
+extern "C" JNIEXPORT jstring JNICALL
+Java_org_podnative_NativeBridge_attemptLaunch(JNIEnv* env, jclass, jbyteArray bytes) {
+    try {
+        const auto n = env->GetArrayLength(bytes);
+        if (n > 64 * 1024 * 1024)
+            throw std::runtime_error("LAUNCH_SIZE: ARM32 slice exceeds inspection budget");
+        std::vector<uint8_t> data(n);
+        env->GetByteArrayRegion(bytes, 0, n, reinterpret_cast<jbyte*>(data.data()));
+        if (env->ExceptionCheck()) return nullptr;
+        const auto report = podnative::runtime::attemptLaunch(data.data(), data.size());
+        return env->NewStringUTF(report.c_str());
     } catch (const std::exception& e) {
         fail(env, e);
         return nullptr;

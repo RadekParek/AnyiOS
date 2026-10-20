@@ -11,5 +11,6 @@ final class NativeBridge {
     static native void frame(float seconds);
     static native void stop();
     static native String inspect(byte[] bytes);
+    static native String attemptLaunch(byte[] bytes);
     static native long[] arm32Slice(byte[] header, long fileLength);
 }
