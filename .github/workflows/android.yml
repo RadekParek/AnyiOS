@@ -1,0 +1,14 @@
+name: Android debug
+on:
+  push:
+    branches: ['**']
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  build:
+    uses: ./.github/workflows/build.yml
+    with:
+      variant: debug
+      artifact: PodNative-debug.apk

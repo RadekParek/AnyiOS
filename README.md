@@ -1,1 +1,39 @@
 # PodNative
+
+An independent Android-native foundation for researching ARM32 iOS game compatibility.
+**Not yet an emulator capable of running games. No APK or verified rendered frame
+has been produced in the current sandbox.**
+
+## First slice
+
+* Native Android library/inspection flow, settings, diagnostics and log export.
+* PodNative-owned graphics backend; source-pinned upstream ANGLE embedded Vulkan
+  integration, with explicit failure and no disguised native-GLES fallback.
+* Shader-based animated textured cube with depth testing and reusable resources.
+* Bounded ARM32 Mach-O inspection with sanitizer-tested malformed-input handling.
+* GitHub Actions debug/tagged-release build recipes with artifacts and provenance.
+
+No inherited TouchHLE/HyperHLE renderer. No proprietary game files. No universal
+compatibility or performance claims. Ninjago stages A–G are all unverified.
+
+## Build / test
+
+Host: `scripts/test-host.sh` (g++/Python required).
+
+Android: follow [ANGLE integration](docs/ANGLE_INTEGRATION.md), then use Gradle
+8.11.1/JDK17: `gradle lintDebug testDebugUnitTest assembleDebug`.
+Real upstream ANGLE libraries are mandatory build inputs; no stub mode exists.
+See [device tests](docs/DEVICE_TESTING.md) before claiming rendering success.
+
+CI debug artifacts, **if the workflow succeeds**, are named `PodNative-debug.apk`.
+Tagged builds produce `PodNative.apk`, SHA256SUMS and BUILD-INFO.txt. Without
+signing secrets the release output is explicitly unsigned and not installable.
+Public GitHub Release publication additionally requires the repository variable
+`PODNATIVE_PUBLISH_RELEASE=true` after license/device review and configured signing.
+
+## Engineering records
+
+[Plan](docs/PLAN.md) · [Research](docs/RESEARCH.md) ·
+[Architecture](docs/ARCHITECTURE.md) · [ANGLE](docs/ANGLE_INTEGRATION.md) ·
+[Ninjago status](docs/NINJAGO_COMPATIBILITY.md) ·
+[Third-party notices](THIRD_PARTY_NOTICES.md) · [Build report](docs/BUILD_REPORT.md)

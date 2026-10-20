@@ -1,0 +1,119 @@
+name: Android build pipeline
+on:
+  workflow_call:
+    inputs:
+      variant:
+        required: true
+        type: string
+      artifact:
+        required: true
+        type: string
+    secrets:
+      ANDROID_KEYSTORE_BASE64:
+        required: false
+      ANDROID_STORE_PASSWORD:
+        required: false
+      ANDROID_KEY_ALIAS:
+        required: false
+      ANDROID_KEY_PASSWORD:
+        required: false
+permissions:
+  contents: read
+jobs:
+  android:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 150
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: android-actions/setup-android@v3
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.11.1'
+      # No Rust runtime is used yet, but provision the planned CPU integration toolchain.
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Install application SDK
+        run: sdkmanager 'platforms;android-35' 'build-tools;35.0.0' 'ndk;27.2.12479018' 'cmake;3.22.1'
+      - name: Formatting and script lint
+        run: |
+          pipx install clang-format==19.1.7
+          pipx install ruff==0.11.13
+          scripts/check-format.sh
+          for script in scripts/*.sh; do bash -n "$script"; done
+      - name: Host regression tests
+        run: |
+          mkdir -p .local/logs
+          set -o pipefail
+          scripts/test-host.sh 2>&1 | tee .local/logs/host-tests.log
+      - name: Bootstrap upstream ANGLE build tools
+        run: |
+          git clone https://chromium.googlesource.com/chromium/tools/depot_tools.git "$RUNNER_TEMP/depot_tools"
+          echo "$RUNNER_TEMP/depot_tools" >> "$GITHUB_PATH"
+          git -C "$RUNNER_TEMP/depot_tools" rev-parse HEAD > .local/logs/depot-tools-revision.txt
+      - name: Build pinned real ANGLE
+        env:
+          ANGLE_INSTALL_DEPS: '1'
+        run: |
+          set -o pipefail
+          scripts/build-angle.sh 2>&1 | tee .local/logs/angle-build.log
+      - name: Configure optional release signing
+        if: inputs.variant == 'release'
+        env:
+          KEYSTORE: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+        run: |
+          if [ -n "$KEYSTORE" ]; then
+            printf '%s' "$KEYSTORE" | base64 --decode > "$RUNNER_TEMP/podnative.jks"
+            echo "PODNATIVE_KEYSTORE=$RUNNER_TEMP/podnative.jks" >> "$GITHUB_ENV"
+          fi
+      - name: Lint, test and build
+        env:
+          VARIANT: ${{ inputs.variant }}
+          PODNATIVE_STORE_PASSWORD: ${{ secrets.ANDROID_STORE_PASSWORD }}
+          PODNATIVE_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          PODNATIVE_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          set -o pipefail
+          if [ "$VARIANT" = debug ]; then
+            gradle --no-daemon lintDebug testDebugUnitTest assembleDebug 2>&1 | tee .local/logs/android-build.log
+          else
+            gradle --no-daemon lintRelease testReleaseUnitTest assembleRelease 2>&1 | tee .local/logs/android-build.log
+          fi
+      - name: Prepare APK and provenance
+        env:
+          VARIANT: ${{ inputs.variant }}
+          ARTIFACT: ${{ inputs.artifact }}
+        run: |
+          mkdir -p .local/artifacts
+          APK=$(find "app/build/outputs/apk/$VARIANT" -name '*.apk' -print -quit)
+          test -n "$APK"
+          cp "$APK" ".local/artifacts/$ARTIFACT"
+          cd .local/artifacts
+          sha256sum "$ARTIFACT" > SHA256SUMS
+          printf 'source=%s\nangle=%s\nvariant=%s\nsigning=%s\n' "$GITHUB_SHA" "$(cat ../../third_party/angle/revision.txt)" "$VARIANT" "${PODNATIVE_KEYSTORE:+configured}" > BUILD-INFO.txt
+          "$ANDROID_HOME/build-tools/35.0.0/apksigner" verify --print-certs "$ARTIFACT" >> BUILD-INFO.txt || {
+            if [ "$VARIANT" = debug ] || [ -n "${PODNATIVE_KEYSTORE:-}" ]; then exit 1; fi
+            echo 'UNSIGNED release: not installable until signed; not a published signed release.' >> BUILD-INFO.txt
+          }
+          unzip -l "$ARTIFACT" | grep 'lib/arm64-v8a/libEGL_podnative.so'
+          unzip -l "$ARTIFACT" | grep 'lib/arm64-v8a/libGLESv2_podnative.so'
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ inputs.artifact }}
+          path: .local/artifacts/*
+          if-no-files-found: error
+      - name: Preserve build logs and test reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-diagnostics-${{ inputs.variant }}
+          path: |
+            .local/logs/
+            app/build/reports/
+            app/build/test-results/
+            .local/angle-build/angle/out/PodNative/args.gn
+      - name: Remove temporary signing material
+        if: always()
+        run: rm -f "$RUNNER_TEMP/podnative.jks"

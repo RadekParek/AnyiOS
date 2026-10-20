@@ -1,0 +1,35 @@
+plugins { id 'com.android.application' }
+android {
+    namespace 'org.podnative'
+    compileSdk 35
+    ndkVersion '27.2.12479018'
+    defaultConfig {
+        applicationId 'org.podnative'
+        minSdk 29
+        targetSdk 35
+        versionCode 1
+        versionName '0.1.0-foundation'
+        ndk { abiFilters 'arm64-v8a' }
+        externalNativeBuild { cmake { cppFlags '-std=c++17 -Wall -Wextra -Werror' } }
+        buildConfigField 'String', 'SOURCE_REVISION', '"' + (System.getenv('GITHUB_SHA') ?: 'local-uncommitted') + '"'
+    }
+    buildFeatures { buildConfig true }
+    externalNativeBuild { cmake { path 'src/main/cpp/CMakeLists.txt'; version '3.22.1' } }
+    signingConfigs {
+        if (System.getenv('PODNATIVE_KEYSTORE')) {
+            release {
+                storeFile file(System.getenv('PODNATIVE_KEYSTORE'))
+                storePassword System.getenv('PODNATIVE_STORE_PASSWORD')
+                keyAlias System.getenv('PODNATIVE_KEY_ALIAS')
+                keyPassword System.getenv('PODNATIVE_KEY_PASSWORD')
+            }
+        }
+    }
+    buildTypes {
+        release {
+            minifyEnabled false
+            if (System.getenv('PODNATIVE_KEYSTORE')) signingConfig signingConfigs.release
+        }
+    }
+    lint { abortOnError true }
+}
