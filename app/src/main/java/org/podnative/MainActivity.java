@@ -69,13 +69,13 @@ public final class MainActivity extends Activity {
             tab = state.getString("tab", "Library");
             exportGame = state.getString("exportGame", "");
         }
-        background = color(dark ? "#0B0B17" : "#F4F5FB");
-        surface = color(dark ? "#17172B" : "#FFFFFF");
+        background = color(dark ? "#091813" : "#F2F8F4");
+        surface = color(dark ? "#14271F" : "#FFFFFF");
         ink = color(dark ? "#EDF1FC" : "#192238");
         muted = color(dark ? "#A3ADC2" : "#6B758B");
         line = color(dark ? "#2B3445" : "#E6EAF2");
-        accent = color(dark ? "#B9A2FF" : "#6B42E8");
-        soft = color(dark ? "#29223F" : "#EEE8FC");
+        accent = color(dark ? "#7AE8B5" : "#087F5B");
+        soft = color(dark ? "#203E30" : "#DDF3E7");
         Diagnostics.record("APP", "library preview; game execution remains unavailable");
         home();
     }
@@ -145,7 +145,7 @@ public final class MainActivity extends Activity {
         view.setMinimumWidth(0);
         view.setMinWidth(0);
         view.setPadding(dp(18), dp(12), dp(18), dp(12));
-        view.setTextColor(primary ? (dark ? color("#1D1237") : Color.WHITE) : ink);
+        view.setTextColor(primary ? (dark ? color("#08291D") : Color.WHITE) : ink);
         clickable(view, primary ? accent : soft, 14, callback);
         return view;
     }
@@ -397,7 +397,7 @@ public final class MainActivity extends Activity {
             + ", game launch unavailable");
         FrameLayout artwork = new FrameLayout(this);
         GradientDrawable artworkBackdrop = new GradientDrawable(GradientDrawable.Orientation.TL_BR,
-            new int[] {color(dark ? "#382853" : "#E5DBFF"), color(dark ? "#172E39" : "#DBF5EF")});
+            new int[] {color(dark ? "#174C38" : "#CAF2DD"), color(dark ? "#15342C" : "#E4F4BC")});
         artworkBackdrop.setCornerRadius(dp(16));
         artwork.setBackground(artworkBackdrop);
         artwork.setClipToOutline(true);
@@ -425,9 +425,10 @@ public final class MainActivity extends Activity {
         subtitle.setEllipsize(TextUtils.TruncateAt.END);
         card.addView(subtitle);
         gap(card, 9);
-        TextView status =
-            text(game.status.equals("Encrypted") ? "Encrypted executable" : "Runtime not ready", 10,
-                muted, true);
+        TextView status = text(!game.blockReason.isEmpty() ? game.status
+                : game.status.equals("Encrypted")          ? "Encrypted executable"
+                                                           : "Runtime not ready",
+            10, muted, true);
         status.setPadding(dp(8), dp(5), dp(8), dp(5));
         status.setBackground(shape(soft, 7, false));
         card.addView(status);
@@ -497,11 +498,13 @@ public final class MainActivity extends Activity {
                 + (game.bundleId.isEmpty() ? "" : "\n" + game.bundleId),
             13, muted, false));
         gap(content, 18);
-        content.addView(text(game.status.equals("Encrypted") ? "Encrypted executable"
-                                                             : "Game launch is not available yet",
+        content.addView(text(!game.blockReason.isEmpty() ? "Cannot launch this import"
+                : game.status.equals("Encrypted")        ? "Encrypted executable"
+                                                         : "Game launch is not available yet",
             17, ink, true));
         gap(content, 8);
-        content.addView(text(game.status.equals("Encrypted")
+        content.addView(text(!game.blockReason.isEmpty() ? game.blockReason
+                : game.status.equals("Encrypted")
                 ? "The game was added, but its executable is protected. This build does not bypass DRM."
                 : "Attempt launch reopens the saved executable and checks it with the native loader. It reports the first startup blocker. Guest execution and iOS frameworks are not integrated yet; no game code runs in this build.",
             14, muted, false));

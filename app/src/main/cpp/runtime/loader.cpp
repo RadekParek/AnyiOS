@@ -60,6 +60,8 @@ LoadedImage loadMachO(const uint8_t* data, size_t size, size_t budget) {
     bool hasSymbols = false, hasDynamicSymbols = false;
     uint32_t symbolCount = 0;
     size_t dynamicSymbols = 0;
+    bool hasDyldInfo = false;
+    std::array<std::pair<uint32_t, uint32_t>, 4> dyldStreams{};
     for (uint32_t i = 0; i < r.u32(16); i++) {
         uint32_t cmd = r.u32(p), length = r.u32(p + 4);
         if (cmd == 1) {
@@ -106,6 +108,7 @@ LoadedImage loadMachO(const uint8_t* data, size_t size, size_t budget) {
             }
             if (!protection && fileSize)
                 throw Error("LOAD_GUARD_DATA", "inaccessible segment has initialized data", vm);
+            if (segments.size() >= 256) throw Error("LOAD_LIMIT", "too many segments");
             segments.push_back(
                 {{vm, vmSize, uint8_t(protection), r.fixed(p + 8, 16)}, offset, fileSize});
         } else if (cmd == 0x80000028) {  // LC_MAIN: file-relative entryoff, not a guest pointer.
@@ -139,10 +142,13 @@ LoadedImage loadMachO(const uint8_t* data, size_t size, size_t budget) {
             (void)r.commandString(p, length, 12);
             result.requiresDyld = true;
         } else if (cmd == 0x22 || cmd == 0x80000022) {
-            if (length < 48) throw Error("LOAD_DYLD_INFO", "truncated dyld info");
+            if (length != 48 || hasDyldInfo)
+                throw Error("LOAD_DYLD_INFO", "invalid or duplicate dyld info");
+            hasDyldInfo = true;
             for (size_t n = 0; n < 5; n++) {
                 const uint32_t offset = r.u32(p + 8 + n * 8), bytes = r.u32(p + 12 + n * 8);
                 r.range(offset, bytes);
+                if (n < 4) dyldStreams[n] = {offset, bytes};
                 if (bytes) result.requiresDyld = true;
             }
         } else if (cmd == 2) {
@@ -204,6 +210,27 @@ LoadedImage loadMachO(const uint8_t* data, size_t size, size_t budget) {
                 throw Error("LOAD_DYSYMTAB", "invalid indirect symbol reference");
         }
     }
+    std::vector<DyldSegment> dyldSegments;
+    for (const auto& segment : segments)
+        dyldSegments.push_back(
+            {segment.region.base, segment.region.size, segment.region.permissions});
+    size_t dyldNames = 0;
+    for (size_t stream = 0; stream < 4; stream++) {
+        const auto [offset, bytes] = dyldStreams[stream];
+        if (!bytes) continue;
+        auto decoded =
+            decodeDyld(data + offset, bytes, dyldSegments, stream == 0, stream == 3, stream == 2);
+        if (decoded.fixups.size() > 100000 - result.dyld.fixups.size())
+            throw Error("DYLD_LIMIT", "combined fixup budget exceeded");
+        for (auto& fixup : decoded.fixups) {
+            if (fixup.ordinal > 0 && size_t(fixup.ordinal) > result.dependencies.size())
+                throw Error("DYLD_ORDINAL", "binding references nonexistent dylib");
+            if (fixup.symbol.size() > 8 * 1024 * 1024 - dyldNames)
+                throw Error("DYLD_LIMIT", "combined symbol budget exceeded");
+            dyldNames += fixup.symbol.size();
+            result.dyld.fixups.push_back(std::move(fixup));
+        }
+    }
     if (!hasEntry) throw Error("LOAD_ENTRY_MISSING", "no LC_MAIN or supported LC_UNIXTHREAD");
     if (entryIsOffset) {
         bool found = false;
@@ -249,6 +276,7 @@ std::string LoadedImage::summary() const {
       << " SP=0x" << registers[13];
     s << "\nExecution BLOCKED: " << (requiresDyld ? "dyld/symbol resolution required; " : "")
       << "guest CPU, application ABI and frameworks not initialized.";
+    s << "\n" << dyld.summary();
     for (const auto& dependency : dependencies) s << "\nrequires " << dependency;
     return s.str();
 }

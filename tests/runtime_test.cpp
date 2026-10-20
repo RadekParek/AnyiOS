@@ -169,7 +169,7 @@ int main() {
     b = dynamic();
     image = loadMachO(b.data(), b.size());
     assert(image.requiresDyld);
-    assert(attemptLaunch(b.data(), b.size()).find("DYLD_NOT_IMPLEMENTED") != std::string::npos);
+    assert(attemptLaunch(b.data(), b.size()).find("DYLD_RESOLUTION_BLOCKED") != std::string::npos);
     b = executable();
     assert(attemptLaunch(b.data(), b.size()).find("CPU_NOT_INTEGRATED") != std::string::npos);
     b = dynamic();

@@ -39,7 +39,7 @@ final class GameLibrary {
         final File directory;
         final String id, title, version, bundleId, kind, architecture, status, report, executable;
         final long bytes, importedAt;
-        final String launchReport;
+        final String launchReport, blockReason;
         Game(File directory, JSONObject data) throws Exception {
             this.directory = directory;
             id = directory.getName();
@@ -54,6 +54,7 @@ final class GameLibrary {
             report = data.optString("report");
             executable = data.optString("executable");
             launchReport = data.optString("lastLaunchReport");
+            blockReason = data.optString("blockReason");
             bytes = data.optLong("bytes");
             importedAt = data.optLong("importedAt");
         }
@@ -246,6 +247,7 @@ final class GameLibrary {
                 metadata.put("architecture", result.architecture);
                 metadata.put("executable", result.executable);
                 metadata.put("status", result.status);
+                metadata.put("blockReason", result.blockReason);
                 metadata.put("report", result.report);
                 metadata.put("kind", tree ? "Folder" : result.kind);
                 metadata.put("bytes", copied);
@@ -260,6 +262,8 @@ final class GameLibrary {
                 pending = null;
                 refresh();
                 notice = result.title + " added to your library.";
+                if (!result.blockReason.isEmpty())
+                    notice += " Cannot launch: " + result.blockReason;
                 if (result.status.equals("Encrypted"))
                     notice +=
                         " Its executable is encrypted and cannot run; no DRM bypass is provided.";
@@ -414,6 +418,7 @@ final class GameLibrary {
                     byte[] encoded = result.splashImages.get(i);
                     BitmapFactory.Options options = new BitmapFactory.Options();
                     options.inJustDecodeBounds = true;
+                    encoded = PngArtwork.normalize(encoded);
                     BitmapFactory.decodeByteArray(encoded, 0, encoded.length, options);
                     if (options.outWidth <= 0 || options.outHeight <= 0 || options.outWidth > 8192
                         || options.outHeight > 8192)
@@ -558,6 +563,7 @@ final class GameLibrary {
         if (encoded == null)
             return;
         try {
+            encoded = PngArtwork.normalize(encoded);
             BitmapFactory.Options options = new BitmapFactory.Options();
             options.inJustDecodeBounds = true;
             BitmapFactory.decodeByteArray(encoded, 0, encoded.length, options);

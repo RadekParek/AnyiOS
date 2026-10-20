@@ -9,7 +9,7 @@ std::string attemptLaunch(const uint8_t* data, size_t size) {
         auto image = loadMachO(data, size, 64 * 1024 * 1024);
         const std::string blocker =
             image.requiresDyld
-                ? "DYLD_NOT_IMPLEMENTED: imports, indirect symbols and relocations are not resolved."
+                ? "DYLD_RESOLUTION_BLOCKED: pointer rebase/bind streams are decoded where present; required dylib exports, legacy indirect bindings and guest service trampolines remain unresolved."
 #ifdef PODNATIVE_CPU_IN_APP
                 : "GUEST_ABI_UNIMPLEMENTED: CPU engine is linked; Darwin process bootstrap and service dispatch are not ready. Run Diagnostics CPU self-test separately.";
 #else

@@ -25,7 +25,8 @@ final class GameInspector {
     static final class Result {
         String kind = "Executable";
         String title, version = "Unknown version", bundleId = "", executable = "", report = "";
-        String architecture = "ARM32", status = "Imported", metadataWarning = "";
+        String architecture = "Unknown", status = "Imported", metadataWarning = "",
+               blockReason = "";
         byte[] icon;
         final List<byte[]> splashImages = new ArrayList<>();
         boolean launchAttempt;
@@ -54,23 +55,38 @@ final class GameInspector {
         Result result = new Result();
         result.launchAttempt = launchAttempt;
         result.title = LibraryRules.title(displayName);
-        if (source.isDirectory())
-            analyzeFolder(source, result);
-        else {
-            boolean archive;
-            try (RandomAccessFile input = new RandomAccessFile(source, "r")) {
-                archive = input.length() >= 4 && input.readInt() == 0x504b0304;
-            }
-            if (archive)
-                analyzeArchive(source, scratch, result);
+        if (displayName.toLowerCase(java.util.Locale.ROOT).endsWith(".ipa"))
+            result.kind = "IPA";
+        try {
+            if (source.isDirectory())
+                analyzeFolder(source, result);
             else {
-                inspectExecutable(source, result);
-                result.executable = displayName;
-                if (!result.status.equals("Encrypted"))
-                    result.status = "Executable only";
-                result.report +=
-                    "\nResources: executable-only import; app bundle assets are not present.";
+                boolean archive;
+                try (RandomAccessFile input = new RandomAccessFile(source, "r")) {
+                    archive = input.length() >= 4 && input.readInt() == 0x504b0304;
+                }
+                if (archive)
+                    analyzeArchive(source, scratch, result);
+                else {
+                    inspectExecutable(source, result);
+                    result.executable = displayName;
+                    if (!result.status.equals("Encrypted"))
+                        result.status = "Executable only";
+                    result.report +=
+                        "\nResources: executable-only import; app bundle assets are not present.";
+                }
             }
+        } catch (IOException | IllegalStateException e) {
+            result.blockReason = e.getMessage() == null ? e.toString() : e.getMessage();
+            result.status = result.blockReason.contains("ARM64")
+                    || result.blockReason.contains("64-bit")
+                    || result.blockReason.contains("FAT_NO_ARM32")
+                ? "Unsupported"
+                : "Invalid";
+            result.report += "\nIMPORT_RETAINED: Original private copy preserved. Cannot launch: "
+                + result.blockReason;
+            result.launchOutcome =
+                "LAUNCH_BLOCKED: " + result.blockReason + "\nGuest code was not executed.";
         }
         if (!result.metadataWarning.isEmpty())
             result.report += "\nMetadata note: " + result.metadataWarning;
@@ -106,8 +122,8 @@ final class GameInspector {
             return false;
         long magic = 0;
         for (byte value : b) magic = magic << 8 | value & 255;
-        return magic == 0xcefaedfeL || magic == 0xcafebabeL || magic == 0xbebafecaL
-            || magic == 0xcafebabfL || magic == 0xbfbafecaL;
+        return magic == 0xcffaedfeL || magic == 0xcefaedfeL || magic == 0xcafebabeL
+            || magic == 0xbebafecaL || magic == 0xcafebabfL || magic == 0xbfbafecaL;
     }
     private static void inspectExecutable(File executable, Result result) throws IOException {
         try (RandomAccessFile file = new RandomAccessFile(executable, "r")) {
@@ -116,10 +132,21 @@ final class GameInspector {
                     "Executable container exceeds 512 MiB; import a smaller supported ARM32 bundle");
             byte[] header = new byte[(int) Math.min(4096, file.length())];
             file.readFully(header);
+            if (header.length >= 8 && (header[0] & 255) == 0xcf && (header[1] & 255) == 0xfa
+                && (header[2] & 255) == 0xed && (header[3] & 255) == 0xfe) {
+                result.architecture =
+                    (header[4] & 255) == 12 && header[5] == 0 && header[6] == 0 && header[7] == 1
+                    ? "ARM64"
+                    : "64-bit";
+                throw new IOException(result.architecture
+                    + " 64-bit executable retained, but this ARM32 runtime cannot execute it");
+            }
             long[] slice;
             try {
                 slice = NativeBridge.arm32Slice(header, file.length());
             } catch (IllegalStateException e) {
+                if (e.getMessage() != null && e.getMessage().contains("FAT_NO_ARM32"))
+                    result.architecture = "No ARM32 slice";
                 throw new IOException(e.getMessage(), e);
             }
             if (slice[1] > MAX_EXECUTABLE)
@@ -198,6 +225,17 @@ final class GameInspector {
                 }
             }
 
+            for (String candidate : iconCandidates(info)) {
+                ZipEntry icon = zip.getEntry(root + candidate);
+                if (icon == null || icon.isDirectory())
+                    continue;
+                try (InputStream in = zip.getInputStream(icon)) {
+                    result.icon = bounded(in, 4 * 1024 * 1024);
+                    break;
+                } catch (
+                    IOException ignored) { /* Optional artwork never makes the executable valid. */
+                }
+            }
             String declared = LibraryRules.metadataText(info.get("CFBundleExecutable"), "");
             String chosen = null;
             if (!declared.isEmpty()) {
@@ -246,17 +284,6 @@ final class GameInspector {
                         "STORAGE_CLEANUP", "Inspection temporary file could not be removed");
             }
             result.executable = chosen.substring(root.length());
-            for (String candidate : iconCandidates(info)) {
-                ZipEntry icon = zip.getEntry(root + candidate);
-                if (icon == null || icon.isDirectory())
-                    continue;
-                try (InputStream in = zip.getInputStream(icon)) {
-                    result.icon = bounded(in, 4 * 1024 * 1024);
-                    break;
-                } catch (
-                    IOException ignored) { /* Optional artwork never makes the executable valid. */
-                }
-            }
         }
     }
     private static void findBundles(File dir, int depth, List<File> found) {
@@ -303,6 +330,15 @@ final class GameInspector {
             }
         }
 
+        for (String name : iconCandidates(info)) {
+            File icon = new File(bundle, name);
+            if (icon.isFile())
+                try (InputStream in = new FileInputStream(icon)) {
+                    result.icon = bounded(in, 4 * 1024 * 1024);
+                    break;
+                } catch (IOException ignored) { /* Optional cover. */
+                }
+        }
         String declared = LibraryRules.metadataText(info.get("CFBundleExecutable"), "");
         File executable = null;
         if (!declared.isEmpty()) {
@@ -330,15 +366,6 @@ final class GameInspector {
                 "No Mach-O executable found. Select the extracted .app folder, not a folder of IPA downloads");
         inspectExecutable(executable, result);
         result.executable = folder.toPath().relativize(executable.toPath()).toString();
-        for (String name : iconCandidates(info)) {
-            File icon = new File(bundle, name);
-            if (icon.isFile())
-                try (InputStream in = new FileInputStream(icon)) {
-                    result.icon = bounded(in, 4 * 1024 * 1024);
-                    break;
-                } catch (IOException ignored) { /* Optional cover. */
-                }
-        }
     }
     @SuppressWarnings("unchecked")
     private static List<String> iconCandidates(Map<String, Object> info) {
@@ -359,6 +386,10 @@ final class GameInspector {
             base.add((String) single);
         Collections.reverse(base);
         base.add("Icon");
+        base.add("Icon-72");
+        base.add("Icon-Small");
+        base.add("AppIcon60x60");
+        base.add("AppIcon");
         List<String> result = new ArrayList<>();
         for (String name : base) {
             try {

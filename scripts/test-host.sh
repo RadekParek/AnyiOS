@@ -6,7 +6,7 @@ c++ -std=c++17 -Wall -Wextra -Werror -fsanitize=address,undefined -g -Iapp/src/m
   tests/macho_test.cpp app/src/main/cpp/macho.cpp -o .local/tests/macho-test
 .local/tests/macho-test
 c++ -std=c++17 -Wall -Wextra -Werror -fsanitize=address,undefined -g -Iapp/src/main/cpp \
-  tests/runtime_test.cpp app/src/main/cpp/macho.cpp app/src/main/cpp/runtime/{memory,loader,launch}.cpp \
+  tests/runtime_test.cpp app/src/main/cpp/macho.cpp app/src/main/cpp/runtime/{memory,loader,launch,dyld}.cpp \
   -o .local/tests/runtime-test
 .local/tests/runtime-test
 c++ -std=c++17 -Wall -Wextra -Werror -fsanitize=address,undefined -g -Iapp/src/main/cpp \
@@ -18,6 +18,9 @@ c++ -std=c++17 -Wall -Wextra -Werror -fsanitize=address,undefined -g -Iapp/src/m
 c++ -std=c++17 -Wall -Wextra -Werror -fsanitize=address,undefined -g -Iapp/src/main/cpp \
   tests/frameworks_test.cpp app/src/main/cpp/runtime/{memory,frameworks}.cpp -o .local/tests/frameworks-test
 .local/tests/frameworks-test
+c++ -std=c++17 -Wall -Wextra -Werror -fsanitize=address,undefined -g -Iapp/src/main/cpp \
+  tests/dyld_test.cpp app/src/main/cpp/runtime/{memory,dyld}.cpp -o .local/tests/dyld-test
+.local/tests/dyld-test
 python3 -m unittest discover -s tests -p "test_*.py"
 python3 -m py_compile scripts/*.py tests/*.py
 # Whitespace/conflict check is intentionally separate from compile and runtime tests.

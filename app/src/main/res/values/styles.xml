@@ -1,22 +1,22 @@
 <resources>
     <style name="AppTheme" parent="android:style/Theme.Material.Light.NoActionBar">
         <item name="android:fontFamily">sans</item>
-        <item name="android:colorAccent">#6B42E8</item>
+        <item name="android:colorAccent">#087F5B</item>
         <item name="android:windowLightStatusBar">true</item>
         <item name="android:windowLightNavigationBar">true</item>
-        <item name="android:statusBarColor">#F4F5FB</item>
+        <item name="android:statusBarColor">#F2F8F4</item>
         <item name="android:navigationBarColor">#FFFFFF</item>
-        <item name="android:windowBackground">#F4F5FB</item>
+        <item name="android:windowBackground">#F2F8F4</item>
         <item name="android:windowActionModeOverlay">true</item>
     </style>
     <style name="AppThemeDark" parent="android:style/Theme.Material.NoActionBar">
         <item name="android:fontFamily">sans</item>
-        <item name="android:colorAccent">#B9A2FF</item>
+        <item name="android:colorAccent">#7AE8B5</item>
         <item name="android:windowLightStatusBar">false</item>
         <item name="android:windowLightNavigationBar">false</item>
-        <item name="android:statusBarColor">#0B0B17</item>
-        <item name="android:navigationBarColor">#17172B</item>
-        <item name="android:windowBackground">#0B0B17</item>
+        <item name="android:statusBarColor">#091813</item>
+        <item name="android:navigationBarColor">#14271F</item>
+        <item name="android:windowBackground">#091813</item>
         <item name="android:windowActionModeOverlay">true</item>
     </style>
 </resources>
