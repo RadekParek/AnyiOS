@@ -1,0 +1,35 @@
+name: Android and PC release builds
+on:
+  push:
+    tags: ['v[0-9]*']
+permissions:
+  contents: read
+jobs:
+  runtime-and-pc:
+    uses: ./.github/workflows/runtime.yml
+  build:
+    uses: ./.github/workflows/build.yml
+    with:
+      variant: release
+      artifact: PodNative.apk
+    secrets: inherit
+  publish:
+    needs: [build, runtime-and-pc]
+    if: vars.PODNATIVE_PUBLISH_RELEASE == 'true'
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: PodNative.apk
+          path: release
+      - name: Publish reviewed, signed build only
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          grep -q 'signing=configured' release/BUILD-INFO.txt
+          ! grep -q UNSIGNED release/BUILD-INFO.txt
+          gh release create "$TAG" --verify-tag --title "PodNative $TAG" --notes 'Foundation prototype. Device rendering and game compatibility require separate evidence. See attached source revision, signing information and checksums.' release/*

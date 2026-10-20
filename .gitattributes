@@ -1,0 +1,2 @@
+# Unified patches require a single space on otherwise blank context lines.
+third_party/dynarmic/patches/*.patch -whitespace

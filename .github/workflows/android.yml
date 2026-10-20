@@ -1,0 +1,19 @@
+name: Android and PC builds
+on:
+  push:
+    branches: ['**']
+  pull_request:
+  workflow_dispatch:
+concurrency:
+  group: android-${{ github.ref }}
+  cancel-in-progress: false
+permissions:
+  contents: read
+jobs:
+  runtime-and-pc:
+    uses: ./.github/workflows/runtime.yml
+  build:
+    uses: ./.github/workflows/build.yml
+    with:
+      variant: debug
+      artifact: PodNative-debug.apk

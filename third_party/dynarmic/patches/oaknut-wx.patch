@@ -1,0 +1,59 @@
+diff --git a/externals/oaknut/include/oaknut/code_block.hpp b/externals/oaknut/include/oaknut/code_block.hpp
+index bfa87d9..424397b 100644
+--- a/externals/oaknut/include/oaknut/code_block.hpp
++++ b/externals/oaknut/include/oaknut/code_block.hpp
+@@ -7,6 +7,8 @@
+ #include <cstddef>
+ #include <cstdint>
+ #include <new>
++#include <cerrno>
++#include <system_error>
+ 
+ #if defined(_WIN32)
+ #    define NOMINMAX
+@@ -30,6 +32,8 @@ public:
+     {
+ #if defined(_WIN32)
+         m_memory = (std::uint32_t*)VirtualAlloc(nullptr, size, MEM_COMMIT, PAGE_EXECUTE_READWRITE);
++#elif defined(OAKNUT_USE_WX)
++        m_memory = (std::uint32_t*)mmap(nullptr, size, PROT_READ | PROT_WRITE, MAP_ANON | MAP_PRIVATE, -1, 0);
+ #elif defined(__APPLE__)
+ #    if TARGET_OS_IPHONE
+         m_memory = (std::uint32_t*)mmap(nullptr, size, PROT_READ | PROT_EXEC, MAP_ANON | MAP_PRIVATE, -1, 0);
+@@ -44,6 +48,12 @@ public:
+         m_memory = (std::uint32_t*)mmap(nullptr, size, PROT_READ | PROT_WRITE | PROT_EXEC, MAP_ANON | MAP_PRIVATE, -1, 0);
+ #endif
+ 
++#if defined(OAKNUT_USE_WX)
++        if (m_memory == MAP_FAILED) {
++            m_memory = nullptr;
++            throw std::system_error(errno, std::generic_category(), "oaknut mmap RW");
++        }
++#endif
+         if (m_memory == nullptr)
+             throw std::bad_alloc{};
+     }
+@@ -72,7 +82,10 @@ public:
+ 
+     void protect()
+     {
+-#if defined(__APPLE__) && !TARGET_OS_IPHONE
++#if defined(OAKNUT_USE_WX)
++        if (mprotect(m_memory, m_size, PROT_READ | PROT_EXEC) != 0)
++            throw std::system_error(errno, std::generic_category(), "oaknut mprotect RX");
++#elif defined(__APPLE__) && !TARGET_OS_IPHONE
+         pthread_jit_write_protect_np(1);
+ #elif defined(__APPLE__) || defined(__NetBSD__) || defined(__OpenBSD__)
+         mprotect(m_memory, m_size, PROT_READ | PROT_EXEC);
+@@ -81,7 +94,10 @@ public:
+ 
+     void unprotect()
+     {
+-#if defined(__APPLE__) && !TARGET_OS_IPHONE
++#if defined(OAKNUT_USE_WX)
++        if (mprotect(m_memory, m_size, PROT_READ | PROT_WRITE) != 0)
++            throw std::system_error(errno, std::generic_category(), "oaknut mprotect RW");
++#elif defined(__APPLE__) && !TARGET_OS_IPHONE
+         pthread_jit_write_protect_np(0);
+ #elif defined(__APPLE__) || defined(__NetBSD__) || defined(__OpenBSD__)
+         mprotect(m_memory, m_size, PROT_READ | PROT_WRITE);

@@ -1,0 +1,17 @@
+.gradle/
+.local/
+**/build/
+local.properties
+third_party/angle/include/
+app/src/main/jniLibs/
+*.apk
+*.ipa
+*.keystore
+*.jks
+research/
+
+__pycache__/
+*.pyc
+app/src/main/assets/angle-notices/
+app/src/main/assets/angle-revision.txt
+third_party/angle/lib/
