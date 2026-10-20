@@ -14,3 +14,4 @@ __pycache__/
 *.pyc
 app/src/main/assets/angle-notices/
 app/src/main/assets/angle-revision.txt
+third_party/angle/lib/

@@ -28,7 +28,10 @@ OS build, firmware and Vulkan driver: **not recorded**.
    at most 8 private imports). It validates MH_EXECUTE, ARM32, command ranges,
    segment file ranges and encryption metadata, not loadability or compatibility.
 4. Import diagnostics now also attempt temporary fixed-address mapping and report
-   `MAPPED_ARM32` or `LOAD_BLOCKED`; mappings are released, not executed. Export diagnostic log. `INSPECTED_ARM32` is not Stage A. Fat, ARM64,
+   `MAPPED_ARM32` or `LOAD_BLOCKED`; mappings are released, not executed. The static
+   import report now lists bounded required/weak symbols and libraries, with GLES
+   import hints. Missing import hints do not prove that an API is unused; dyld bind
+   streams and actual execution are not yet analyzed. Export diagnostic log. `INSPECTED_ARM32` is not Stage A. Fat, ARM64,
    malformed or encrypted files are explicit limitations; no DRM bypass is supplied.
 5. After future loader/CPU integration, capture stage transition, guest PC,
    unresolved symbol/selector/API, first-frame/presentation result and crash log.

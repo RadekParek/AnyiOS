@@ -37,7 +37,7 @@ use_remoteexec = false
 ARGS
 gn gen out/PodNative --fail-on-unused-args
 autoninja -C out/PodNative libEGL libGLESv2
-DEST="$ROOT/app/src/main/jniLibs/arm64-v8a"
+DEST="$ROOT/third_party/angle/lib/arm64-v8a"
 mkdir -p "$DEST" "$ROOT/third_party/angle/include" "$ROOT/app/src/main/assets/angle-notices"
 cp -a include/. "$ROOT/third_party/angle/include/"
 # Non-component builds fold ordinary dependencies into the two ANGLE libraries.

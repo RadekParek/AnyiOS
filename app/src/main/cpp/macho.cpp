@@ -10,8 +10,8 @@ std::string inspectMachO(const uint8_t* b, size_t n) {
     };
     if (n < 28) return "MACHO_TRUNCATED: 28-byte header required";
     if (u32(0) != 0xfeedface)
-        return "MACHO_FORMAT: only thin little-endian 32-bit Mach-O supported; fat/encrypted "
-               "archives need preprocessing";
+        return "MACHO_FORMAT: only thin little-endian 32-bit Mach-O supported; unsupported fat, "
+               "big-endian or non-Mach-O input";
     if (u32(4) != 12) return "MACHO_CPU: executable is not ARM32";
     if (u32(12) != 2) return "MACHO_TYPE: expected MH_EXECUTE";
     uint32_t count = u32(16), total = u32(20);

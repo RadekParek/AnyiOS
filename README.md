@@ -1,8 +1,8 @@
 # PodNative
 
 An independent Android-native foundation for researching ARM32 iOS game compatibility.
-**Not yet an emulator capable of running games. No APK or verified rendered frame
-has been verified on a device.**
+**Not yet an emulator capable of running games. No APK has been produced yet, and
+no rendered frame has been verified on a device.**
 
 ## First slice
 

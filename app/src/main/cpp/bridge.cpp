@@ -7,6 +7,7 @@
 
 #include "graphics.h"
 #include "macho.h"
+#include "macho_info.h"
 #include "runtime/error.h"
 #include "runtime/loader.h"
 namespace {
@@ -61,6 +62,11 @@ extern "C" JNIEXPORT jstring JNICALL Java_org_podnative_NativeBridge_inspect(JNI
         if (env->ExceptionCheck()) return nullptr;
         std::string report = podnative::inspectMachO(b.data(), b.size());
         if (report.rfind("INSPECTED_ARM32:", 0) == 0) {
+            try {
+                report += "\n\n" + podnative::inspectRequirements(b.data(), b.size()).summary();
+            } catch (const podnative::runtime::Error& e) {
+                report += "\n\nIMPORT_ANALYSIS_BLOCKED: " + std::string(e.what());
+            }
             try {
                 // Validation is bounded and temporary; not game launch and not retained runtime
                 // state.

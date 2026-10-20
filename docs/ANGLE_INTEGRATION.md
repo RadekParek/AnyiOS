@@ -5,15 +5,22 @@
 Pinned source: `google/angle` revision `378b820f1c00d511565ab9990ae03de77908b373`.
 Top-level license: BSD-style 3-clause, retained in `third_party/angle/LICENSE`.
 No upstream libraries or vendored renderer were present initially. This change
-adds **source-build and integration code**, not verified ANGLE binaries. No Android
-compilation, EGL initialization or rendered frame has occurred in this sandbox.
+adds **source-build and integration code**, not verified ANGLE binaries. The second GitHub Actions run successfully compiled actual upstream ANGLE; its
+post-build audit then stopped on the previously unrecognized Android platform
+`libnativewindow.so` dependency. The audit now recognizes that public API-26+
+library (PodNative minimum: API 29), with regression tests that continue to reject
+unknown vendor libraries and any native-GLES substitution. EGL initialization and
+rendered frames remain unverified. See PROGRESS.md for current run evidence.
 
 ## Selected strategy: app-embedded, arm64 shared libraries
 
 Build upstream `libEGL` and `libGLESv2` with `angle_libs_suffix="_podnative"`,
 `is_component_build=false`, Vulkan enabled and GL/null/SwiftShader disabled.
 GN's suffix mechanism is present in the pinned `gni/angle.gni` and `BUILD.gn`.
-Package `libEGL_podnative.so` and `libGLESv2_podnative.so` in the app ABI directory.
+Build `libEGL_podnative.so` and `libGLESv2_podnative.so` into ignored
+`third_party/angle/lib/arm64-v8a`. AGP packages the linked CMake IMPORTED targets
+into the app ABI directory. They are not also copied to jniLibs, which would
+risk duplicate packaging.
 Link PodNative to these exact imports, never to Android's `libEGL`/`libGLESv2`.
 NDK EGL/GLES declarations come from the same ANGLE source checkout. A missing
 binary causes CMake to fail with instructions rather than build a fake substitute.
@@ -55,7 +62,9 @@ ANGLE has its own DEPS-pinned Android toolchain (the inspected DEPS currently
 specifies NDK `30.0.16248370`), independent of the app's NDK. Do not replace it
 speculatively with the app NDK. CI records depot_tools' revision because bootstrap
 is currently fetched at HEAD; full tool-bootstrap hermeticity is still unfinished.
-No claim is made that this unexecuted CI recipe already builds successfully.
+ANGLE compilation succeeded in CI; full Android application compilation and
+packaging have not yet passed. Build outputs are cached by upstream revision and
+build/audit script hashes, then audited again on restore.
 
 The sandbox cannot perform gclient/CIPD downloads or Android builds due to absent
 tools and host restrictions. CI is the next compilation gate. Any GN, SDK, ABI,

@@ -1,7 +1,9 @@
 cmake_minimum_required(VERSION 3.22)
 project(podnative LANGUAGES CXX)
 set(ANGLE_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/../../../../third_party/angle")
-set(ANGLE_LIB "${CMAKE_CURRENT_SOURCE_DIR}/../jniLibs/${ANDROID_ABI}")
+# AGP packages linked CMake IMPORTED shared libraries. Keep them outside jniLibs
+# to avoid packaging the same native library twice.
+set(ANGLE_LIB "${ANGLE_ROOT}/lib/${ANDROID_ABI}")
 foreach(name EGL GLESv2)
     if(NOT EXISTS "${ANGLE_LIB}/lib${name}_podnative.so")
         message(FATAL_ERROR "Real ANGLE missing. Run scripts/build-angle.sh; no native-GLES substitution is permitted.")
@@ -9,6 +11,6 @@ foreach(name EGL GLESv2)
     add_library(angle_${name} SHARED IMPORTED)
     set_target_properties(angle_${name} PROPERTIES IMPORTED_LOCATION "${ANGLE_LIB}/lib${name}_podnative.so")
 endforeach()
-add_library(podnative SHARED renderer.cpp bridge.cpp macho.cpp runtime/memory.cpp runtime/loader.cpp)
+add_library(podnative SHARED renderer.cpp bridge.cpp macho.cpp macho_info.cpp runtime/memory.cpp runtime/loader.cpp)
 target_include_directories(podnative PRIVATE "${ANGLE_ROOT}/include")
 target_link_libraries(podnative PRIVATE angle_EGL angle_GLESv2 android log vulkan)

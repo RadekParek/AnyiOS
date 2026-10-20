@@ -49,6 +49,16 @@ validation** after structural inspection. Mapping results or `LOAD_BLOCKED` reas
 are logged. Memory is released afterward. This is not a retained game session and
 there is still no game-launch button that pretends to work.
 
+## Static import evidence
+
+The importer can also analyze a bounded Mach-O symbol table and dylib load commands.
+It reports required versus weak undefined symbols (a required duplicate overrides
+weak), ignores defined/debug/local symbols, and identifies a few fixed-function,
+programmable and compressed-texture API imports. It validates offsets, terminators,
+counts and total stored-name budgets. Names are escaped for diagnostics. This is
+not a dynamic trace or a complete dyld binding parser; missing symbols do not prove
+API absence, and compressed texture imports do not establish PVRTC usage.
+
 ## CPU adapter contract
 
 `Cpu` owns a Dynarmic A32 JIT, configured for v7, safe optimizations, callback-based

@@ -2,7 +2,9 @@
 
 #include <algorithm>
 #include <cstring>
+#include <iterator>
 #include <limits>
+#include <utility>
 
 #include "error.h"
 namespace podnative::runtime {

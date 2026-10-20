@@ -60,17 +60,44 @@ jobs:
           mkdir -p .local/logs
           set -o pipefail
           scripts/test-host.sh 2>&1 | tee .local/logs/host-tests.log
+      - name: Restore verified upstream ANGLE build outputs
+        id: angle-cache
+        uses: actions/cache/restore@v4
+        with:
+          key: ${{ runner.os }}-arm64-angle-${{ hashFiles('third_party/angle/revision.txt', 'scripts/build-angle.sh', 'scripts/check-native-deps.py', 'scripts/collect-angle-notices.py') }}
+          path: |
+            third_party/angle/lib/arm64-v8a/
+            third_party/angle/include/
+            app/src/main/assets/angle-notices/
+            app/src/main/assets/angle-revision.txt
       - name: Bootstrap upstream ANGLE build tools
+        if: steps.angle-cache.outputs.cache-hit != 'true'
         run: |
           git clone https://chromium.googlesource.com/chromium/tools/depot_tools.git "$RUNNER_TEMP/depot_tools"
           echo "$RUNNER_TEMP/depot_tools" >> "$GITHUB_PATH"
           git -C "$RUNNER_TEMP/depot_tools" rev-parse HEAD > .local/logs/depot-tools-revision.txt
       - name: Build pinned real ANGLE
+        id: build-angle
+        if: steps.angle-cache.outputs.cache-hit != 'true'
         env:
           ANGLE_INSTALL_DEPS: '1'
         run: |
           set -o pipefail
           scripts/build-angle.sh 2>&1 | tee .local/logs/angle-build.log
+      - name: Audit cached or freshly built ANGLE inputs
+        run: |
+          python3 scripts/check-native-deps.py third_party/angle/lib/arm64-v8a
+          cmp third_party/angle/revision.txt app/src/main/assets/angle-revision.txt
+      - name: Cache verified ANGLE before compiling the application
+        if: steps.angle-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          key: ${{ steps.angle-cache.outputs.cache-primary-key }}
+          path: |
+            third_party/angle/lib/arm64-v8a/
+            third_party/angle/include/
+            app/src/main/assets/angle-notices/
+            app/src/main/assets/angle-revision.txt
       - name: Configure optional release signing
         if: inputs.variant == 'release'
         env:
