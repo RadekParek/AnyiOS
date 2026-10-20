@@ -4,7 +4,15 @@ This supersedes the initial BUILD_REPORT.md where noted. The user reports the
 previous graphics preview working on their S23 Ultra; no screenshot/log was supplied.
 No Android instruction-execution or game-compatibility result is claimed.
 
-## Latest: library preview
+## Latest: 0.2.1 startup preview
+
+[Verified APK and CI evidence](STARTUP_APK_REPORT.md): no fixed import-byte/library
+entry quota, bounded LC_DYSYMTAB handling and an enabled startup-validation action
+with saved/exportable launch blockers. Android lint/build/tests/signing and runtime
+host/ARM64 cross-build checks passed. No game code runs in the app yet; the next
+execution contracts are recorded in EXECUTION_NEXT.md.
+
+## Previous: library preview
 
 [0.2 APK and verified CI evidence](LIBRARY_APK_REPORT.md): persistent private IPA/folder
 library, universal ARM32 selection, metadata parser, modern native UI and original

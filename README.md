@@ -5,9 +5,9 @@ An independent Android-native foundation for researching ARM32 iOS game compatib
 and published; the user reports the previous 3D test working on their S23 Ultra.
 The new library/UI has not been device-tested here.**
 
-[Download the 0.2 library preview](https://github.com/RadekParek/PodNative/actions/runs/39501999659/artifacts/12301256622)
+[Download the 0.2.1 startup preview](https://github.com/RadekParek/PodNative/actions/runs/39504099819/artifacts/12301983317)
 (extract GitHub's archive, then install `PodNative-debug.apk`).
-[Build evidence and exact source revision](docs/LIBRARY_APK_REPORT.md).
+[Build evidence and exact source revision](docs/STARTUP_APK_REPORT.md).
 [Historical first APK report](docs/FIRST_APK_REPORT.md).
 
 ## First slice
@@ -58,7 +58,7 @@ or the new UI.
 
 ### Startup preview follow-up
 
-The next APK removes the fixed 2 GiB import quota and library entry cap, validates
+This APK removes the fixed 2 GiB import quota and library entry cap, validates
 `LC_DYSYMTAB`, and enables a real native-loader startup attempt with persistent,
 exportable blocker reports. It does not execute guest code yet. Resource/parser
 safety bounds and low-space checks remain; see [current behavior](docs/LIBRARY_PREVIEW.md).
