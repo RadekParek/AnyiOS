@@ -59,9 +59,10 @@ DyldPlan decodeDyld(const uint8_t* bytes, size_t size, const std::vector<DyldSeg
     size_t operations = 0, nameBytes = 0;
     bool done = false;
     auto advance = [&](uint64_t amount) {
-        if (segment >= segments.size() || offset > segments[segment].size ||
-            amount > segments[segment].size - offset)
-            throw Error("DYLD_ADDRESS", "address advancement leaves segment");
+        // A stride after the final fixup may leave the segment. Only emit()
+        // dereferences the cursor; rejecting that terminal stride rejects valid dyld streams.
+        if (segment >= segments.size() || amount > UINT64_MAX - offset)
+            throw Error("DYLD_ADDRESS", "invalid segment or cursor arithmetic overflow");
         offset += amount;
     };
     auto emit = [&] {

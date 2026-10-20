@@ -1,0 +1,143 @@
+# Modules and extension points
+
+- `app/`: Kotlin framework-only Android UI. `Library` owns private IPA storage, analysis reports,
+  progress and architecture-independent icon recovery; `AssetCatalogIcon` reads bounded raster
+  renditions from compiled `Assets.car`; `AndroidApiMapper` reports NDK name candidates, checks
+  public NDK exports on the current device, dynamically registers explicit compat stub handlers for
+  otherwise-unmapped symbols, and clearly separates all of those checks from implementation;
+  `SafeZip` handles untrusted extraction; `Plist` handles
+  XML/binary parsing; `NativeBridge` calls C++ through JNI (including the compat-registry bridge
+  and the bounded-conversion prover `recompileTrivial`); `ConvertedApkBuilder` converts IPAs proven
+  to be one closed-integer routine into a signed APK whose statically recompiled entry runs through JNI;
+  `PlaceholderApkBuilder` customizes, signs and verifies a bundled source-free Android preview shell
+  for everything else; both builders finish with `InstallAudit`, which re-runs the installer's own
+  structural checks so a failure is reported instead of collapsing into Android's "app not installed".
+  `AndroidApiMapper` separately checks compiled compatibility exports;
+  `ResultProvider` has strict paths for complete-game host APKs and explicitly non-playable preview APKs.
+- `placeholder-template/`: minimal Android activity and fallback icon for the preview shell, and
+  `converted-template/`: the JNI launcher (`dev.radek.generated.MainActivity`) for bounded
+  conversions. The converter build extracts only each template's manifest, resource table, DEX and
+  fallback icon as assets (not the signed template APKs); per-import metadata/icon branding is
+  applied only after the user invokes **Force convert to .apk**.
+- `native/src/macho.cpp`: host/Android shared C++ Mach-O analyzer. It never executes the input.
+  JSON describes source structure, not conversion success.
+- `native/include/runtime.hpp`: experimental portable runtime and storage primitives with host tests.
+  `native/src/apple_time_compat.cpp` implements four Darwin time functions. `native/src/radek_ios_shims.cpp`
+  contains tested libc/POSIX and limited CoreFoundation object/collection/run-loop C APIs; it is not
+  the full Foundation/CoreFoundation or Objective-C ABI.
+- `native/src/cad_display_link_compat.cpp` and `converted-template/.../FrameClockBridge.java`:
+  lifecycle-scoped Choreographer-to-C-callback dispatch for the native frame-link service. It is
+  not an Objective-C `CADisplayLink` class/selector bridge and is not connected to IPA callsites.
+- `native/src/ioscompat_registry.cpp`: the libioscompat dynamic resolution registry. Individual
+  tested compatibility exports are seeded; unmapped Darwin imports are registered at runtime
+  (`radek_compat_register_stub`, JNI `compatRegisterStub`) onto individually counted stub
+  trampolines. Stubs never masquerade as implementations.
+- `radek/archive.py`: authorized input staging, bounded archive/plist import and metadata.
+- `radek/analysis.py`: native analyzer invocation, dependency graph and fail-closed leaf eligibility.
+- `radek/ir.py`: explicit register/width/flag-aware instruction records, decoding, proof and
+  ARM64/ARMv7 lowering for the proven straight-line subset (MOV-immediate, MOVK, register MOV,
+  immediate ADD/SUB, RET). ARM32 inputs target `armeabi-v7a`; unsupported instruction classes
+  raise `Unsupported`.
+- `radek/compat_layer.py`: generates the per-IPA libioscompat registry source (`ioscompat/`) in
+  which every observed Darwin import is classified exactly as a verified implementation or an
+  explicitly unimplemented stub handler, plus `registry.json`. It reports resolution coverage
+  separately from implementation coverage and never links anything.
+- `radek/c_backend.py` and `radek/elf_writer.py`: lower only that proven leaf to executable C for
+  host semantic tests and a minimal ARM ET_DYN shared object exporting `radek_recompiled_entry`.
+  The `.so` is self-contained but isolated; it is not linked into the original program or an APK.
+- `radek/api_implementations.py`: emits source for selected host-tested C/time/CoreFoundation/POSIX
+  shims only when resolved reconstructed internal calls connect the selected entry to matching
+  imports. The report records source generation and separately records zero game links.
+- `radek/llvm_ir.py`: emits supplementary textual LLVM IR from the proven closed-integer leaf and
+  asks `llvm-as` to verify syntax when available. `leaf-experiment.ll` is not arbitrary ARM lifting,
+  recovered source, or a complete game package.
+- `radek/resources.py`: icon normalization, resource inventory, executable/signature exclusion.
+- `radek/dex.py`: bounded DEX integrity and class-identity inspection.
+- `radek/apk.py` and `radek/gamepack.py`: importer/host APK validation and bounded
+  `complete-game-v1` packaging for an executable proven to be exactly one closed-integer routine
+  with no imports, dependencies, fixups or runtime metadata. The separate honest
+  `experimental-shell-v1` builder (aapt2 → javac → d8 → zipalign → apksigner) packages isolated
+  artifacts with mandatory on-screen and metadata disclosure; its validator fails closed if the
+  disclosure or contract is missing.
+- `radek/pipeline.py`: guarded analysis states, durable JSON/JSONL reports and isolated temporary
+  workspace cleanup. The bounded proven subset can link a statically recompiled entry into a signed, statically
+  validated `complete-game-v1` APK; inputs outside it remain blocked and may receive only the
+  separately labelled experimental shell.
+- `radek/ceiling.py`: the conversion-ceiling ledger. It walks the same gates, in the same order, as
+  the fail-closed prover (`radek.analysis.prove_leaf`) and records one `PASS`, `BLOCKED` or
+  `NOT_REACHED` entry per stage, so `report.json` names the first gate a real game cannot pass
+  (`conversionCeiling.ceilingGate`, with the prover's own statement echoed as evidence) instead of
+  only reporting that it did not convert. Later gates are never estimated, and the ledger explicitly
+  carries `countsAsConversionProgress: false`, so triage, stub handlers and the isolated entry-leaf
+  artifact can never be read as progress.
+- `tests/`, `app/src/test/`, `native/tests/`: synthetic fixtures, negative/security tests, native
+  runtime tests and Robolectric importer tests. `tests/data/hello-test.ipa` exercises the smallest
+  complete conversion, while `tests/data/simple.ipa` exercises a much longer supported routine;
+  `tools/make_hello_ipa.py` and `tools/make_simple_ipa.py` regenerate them deterministically.
+
+## States
+
+The importer's analysis path is:
+
+`IMPORTED → ANALYZING → (CONVERTING → PACKAGING → VALIDATING → READY) | PARTIAL | BLOCKED | FAILED`
+
+The CONVERTING/PACKAGING/VALIDATING stages run only for IPAs inside the bounded complete-conversion
+subset; every other IPA resolves straight to `PARTIAL`, `BLOCKED` or `FAILED`.
+
+- `PARTIAL`: inspection completed and, if the proof succeeds, an isolated recompiled-entry library
+  and/or source for a reachable API in the bounded compiled-compatibility subset was emitted.
+  General game conversion is not implemented.
+- `BLOCKED`: input protection, unsupported executable semantics or missing conversion capabilities
+  prevent a game APK. A restricted integer-entry library may still be emitted, but is not a game.
+- `FAILED`: malformed input, analysis/tool failure or interrupted work.
+
+An embedded framework, dylib or secondary Mach-O image that cannot be decoded is reported under
+`dependencies.analysisErrors` instead of aborting the analysis: frameworks and libraries are a
+conversion blocker, never an analysis failure, so the report still completes with its dependency
+inventory and API triage.
+- `READY`: entered only when the bounded complete-conversion gate proves the executable is exactly
+  one closed-integer routine and a signed `complete-game-v1` APK was built and statically validated.
+
+Proven IPAs are converted automatically during import — the signed APK whose statically recompiled entry runs
+through JNI is built and attached with no user action, leaving the entry in `READY`. The red **Force
+convert to .apk** action never overrides these states: for proven IPAs it simply rebuilds the
+converted APK; everything else gets a separately named, signed `game-runtime-v1` boot-attempt APK
+that packs the selected ARM executable, bundle, `libcompat_runtime_v1.so`, and required `statically linked dynarmic`.
+The default compatibility guest-CPU path has no artificial instruction/time budget on the device. It stops at a documented runtime boundary — the first unimplemented import it touches, a guest exception, memory/execution fault, unavailable backend, or setup failure — while the diagnostic activity remains open; it does not claim playability. An optional, independently linked and hash-bound portable-C handoff can be imported and selected by the game-runtime boot path after ELF/dependency/export/JNI/payload checks. Its JNI runner is not connected to EGL/GLES, so pixels/gameplay are unverified; Android build/device validation remains outstanding. A source-free preview shell is available as an explicit fallback. Its
+launcher displays that the shell started and that no statically recompiled executable is included;
+it does not display converter branding or static-analysis details. The artifact metadata
+(`placeholder-info.json` retains the preview summary, and the report keeps
+`completeGameConversion`/`gameCodeIncluded` false and `placeholderOnly` true as appropriate), so
+nothing claims the game was converted. Runtime and preview APKs have separate filenames, metadata,
+progress and provider validation. A host result remains shareable/installable only after the
+`complete-game-v1` contract passes attachment checks; the CLI produces such a result only for the
+proven bounded subset (see `radek/gamepack.py`).
+The CLI `convert` path may additionally emit `experimental-shell.apk` (`experimental-shell-v1`): a
+signed shell whose launcher and metadata disclose that no game code is statically recompiled. It is reported
+in `experimentalShell` separately from `conversionProgress`, which stays `NOT_BUILT` for anything
+outside the bounded subset.
+
+## Adding real support
+
+Do not add bundle-ID exceptions or turn symbol matches into claimed implementations. Add parser,
+decoder, IR, linker, API/runtime provider and lifecycle code with positive and negative tests, then
+prove each reachable code path and API implementation is generated and linked. The tested C/time/
+CoreFoundation subset and native C frame-clock bridge have real bodies, but runtime export
+availability is not game integration. The bounded
+on-device APK packs `libioscompat.so` as a 16 KiB-aligned native dependency and declares it through
+`DT_NEEDED`; because the accepted executable has no imports, no individual API callsite is rewritten
+or counted as a linked replacement. A dependency can only be classified `converted`, `provided by
+compatibility layer`, or `Android equivalent` for the functions actually wired into output. The closed-integer backend statically recompiles one function only; it
+does not implement the app, resources, lifecycle, or arbitrary APIs.
+
+Stub handlers are a legitimate forward step only when they stay classified as stubs: the compat
+registry gives every unmapped import a stable, observable resolution target (`stubbed`) so a future
+linker has something to bind, and so accidental invocation is counted instead of undefined. Counts of stubbed handlers must never be merged into verified/implemented coverage. Removing
+placeholder/experimental status from artifact metadata is prohibited—the metadata keeps emitted
+artifacts honest without showing static-analysis details on the launcher.
+
+Future graphics providers should separate API command/state capture from an Android GLES backend;
+Metal requires shader/type static recompilation plus an appropriate Android rendering backend. Neither
+exists, so unsupported APIs remain blocked rather than bound to no-ops. Framework providers should
+be introduced behind a versioned ABI symbol registry and tests of observable behavior, not by
+accepting symbol names alone.

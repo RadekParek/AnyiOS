@@ -71,6 +71,34 @@ int main() {
     assert(negative.fixups[0].addend == -1);
     negative.apply(memory, 0, [](int, const std::string&) -> std::optional<uint32_t> { return 2; });
     assert(memory.read32(0x1000) == 1);
+    // Final stride/skip is not a fixup: old validation rejected valid streams.
+    std::vector<DyldSegment> tiny = {{0x1000, 8, uint8_t(Read | Write)}};
+    uint8_t terminalRebase[] = {0x11, 0x20, 4, 0x70, 8, 0};
+    assert(decodeDyld(terminalRebase, sizeof(terminalRebase), tiny, true).fixups.size() == 1);
+    uint8_t terminalBind[] = {0x11, 0x40, 'x', 0, 0x70, 4, 0xb3, 0};
+    assert(decodeDyld(terminalBind, sizeof(terminalBind), tiny, false).fixups.size() == 1);
+    uint8_t repeatRebase[] = {0x11, 0x20, 0, 0x80, 2, 4, 0};
+    try {
+        decodeDyld(repeatRebase, sizeof(repeatRebase), tiny, true);
+        assert(false);
+    } catch (const Error& e) {
+        assert(e.code == "DYLD_TARGET");
+    }
+    uint8_t badNextBind[] = {0x11, 0x40, 'x', 0, 0x70, 4, 0xb3, 0x90, 0};
+    try {
+        decodeDyld(badNextBind, sizeof(badNextBind), tiny, false);
+        assert(false);
+    } catch (const Error& e) {
+        assert(e.code == "DYLD_TARGET");
+    }
+    uint8_t arithmeticOverflow[] = {0x11, 0x20, 4,    0x30, 0xff, 0xff, 0xff, 0xff,
+                                    0xff, 0xff, 0xff, 0xff, 0xff, 1,    0};
+    try {
+        decodeDyld(arithmeticOverflow, sizeof(arithmeticOverflow), tiny, true);
+        assert(false);
+    } catch (const Error& e) {
+        assert(e.code == "DYLD_ADDRESS");
+    }
     std::mt19937 random(197);
     for (int i = 0; i < 10000; i++) {
         std::vector<uint8_t> fuzz(binding, binding + sizeof(binding));

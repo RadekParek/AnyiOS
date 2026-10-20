@@ -75,6 +75,8 @@ jobs:
           cmp third_party/dynarmic/revision.txt app/src/main/assets/cpu-notices/revision.txt
           cmp third_party/dynarmic/LICENSE.txt app/src/main/assets/cpu-notices/dynarmic.txt
           for text in third_party/dynarmic/notices/*.txt; do cmp "$text" "app/src/main/assets/cpu-notices/$(basename "$text")"; done
+      - name: Prepare pinned converter runtime and notices
+        run: scripts/prepare-converter.sh
       - name: Restore verified upstream ANGLE build outputs
         id: angle-cache
         uses: actions/cache/restore@v4
@@ -133,9 +135,9 @@ jobs:
         run: |
           set -o pipefail
           if [ "$VARIANT" = debug ]; then
-            gradle --no-daemon lintDebug testDebugUnitTest assembleDebug 2>&1 | tee .local/logs/android-build.log
+            gradle --no-daemon :app:lintDebug :app:testDebugUnitTest :converter:lintDebug :converter:testDebugUnitTest :gameruntime-template:testDebugUnitTest :app:assembleDebug 2>&1 | tee .local/logs/android-build.log
           else
-            gradle --no-daemon lintRelease testReleaseUnitTest assembleRelease 2>&1 | tee .local/logs/android-build.log
+            gradle --no-daemon :app:lintRelease :app:testReleaseUnitTest :converter:lintRelease :converter:testReleaseUnitTest :app:assembleRelease 2>&1 | tee .local/logs/android-build.log
           fi
       - name: Prepare APK and provenance
         env:
@@ -155,6 +157,9 @@ jobs:
           }
           unzip -l "$ARTIFACT" | grep 'lib/arm64-v8a/libEGL_podnative.so'
           unzip -l "$ARTIFACT" | grep 'lib/arm64-v8a/libGLESv2_podnative.so'
+          unzip -l "$ARTIFACT" | grep 'lib/arm64-v8a/libcompat_runtime_v1.so'
+          unzip -l "$ARTIFACT" | grep 'lib/arm64-v8a/libradek.so'
+          unzip -l "$ARTIFACT" | grep 'assets/gameruntime-template/classes.dex'
       - uses: actions/upload-artifact@v4
         with:
           name: ${{ inputs.artifact }}
@@ -181,6 +186,8 @@ jobs:
             .local/logs/
             app/build/reports/
             app/build/test-results/
+            converter/app/build/reports/
+            converter/app/build/test-results/
             .local/angle-build/angle/out/PodNative/args.gn
       - name: Remove temporary signing material
         if: always()

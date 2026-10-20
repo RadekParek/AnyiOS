@@ -1,0 +1,1576 @@
+package dev.radek.conventor
+
+import android.app.Activity
+import android.app.AlertDialog
+import android.content.Intent
+import android.graphics.Color
+import android.graphics.Typeface
+import android.graphics.drawable.GradientDrawable
+import android.net.Uri
+import android.content.ContentValues
+import android.os.Build
+import android.os.Environment
+import android.provider.MediaStore
+import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
+import android.provider.Settings
+import android.view.Gravity
+import android.view.View
+import android.widget.*
+import org.json.JSONArray
+import org.json.JSONObject
+import java.io.File
+import java.io.FileOutputStream
+import java.util.Locale
+import java.util.concurrent.Executors
+import java.util.zip.ZipFile
+
+private object Jobs {
+    private val executor = Executors.newSingleThreadExecutor()
+    private val main = Handler(Looper.getMainLooper())
+    @Volatile var busy = false
+    @Volatile var percent = 0
+    @Volatile var title = "Working"
+    @Volatile var message = ""
+    var listener: (() -> Unit)? = null
+    fun begin(jobTitle: String) { title = jobTitle; percent = 0; message = "Preparing" }
+    fun update(value: Int, text: String) {
+        percent = value.coerceIn(0, 100)
+        message = text
+        main.post { runCatching { listener?.invoke() } }
+    }
+    fun update(text: String) = update(percent, text)
+
+    /** Runs [block] unless a job is already running; never throws on the caller's thread. */
+    @Synchronized fun tryRun(block: () -> Unit): Boolean {
+        if (busy || !SharedCatalog.tryBegin()) return false
+        busy = true
+        executor.execute {
+            try {
+                block()
+            } catch (e: Throwable) {
+                update(percent, "Failed at $percent%: ${e.message ?: e.javaClass.simpleName}")
+            } finally {
+                busy = false
+                SharedCatalog.end()
+                SharedCatalog.changed()
+                main.post { runCatching { listener?.invoke() } }
+            }
+        }
+        return true
+    }
+}
+
+/** Downsampled, cached, off-main-thread icon loading for large libraries. */
+private object IconLoader {
+    private val executor = Executors.newFixedThreadPool(2)
+    private val main = Handler(Looper.getMainLooper())
+    private val cache = android.util.LruCache<String, android.graphics.Bitmap>(48)
+
+    fun load(file: File, targetPixels: Int, apply: (android.graphics.Bitmap?) -> Unit) {
+        if (!file.isFile) { apply(null); return }
+        val key = "${file.path}:${file.lastModified()}"
+        cache.get(key)?.let { apply(it); return }
+        executor.execute {
+            val bitmap = try {
+                val bounds = android.graphics.BitmapFactory.Options().apply { inJustDecodeBounds = true }
+                android.graphics.BitmapFactory.decodeFile(file.path, bounds)
+                if (bounds.outWidth <= 0 || bounds.outHeight <= 0) null else {
+                    var sample = 1
+                    while (bounds.outWidth / (sample * 2) >= targetPixels &&
+                        bounds.outHeight / (sample * 2) >= targetPixels && sample < 512
+                    ) sample *= 2
+                    android.graphics.BitmapFactory.decodeFile(
+                        file.path,
+                        android.graphics.BitmapFactory.Options().apply { inSampleSize = sample },
+                    )
+                }
+            } catch (_: Throwable) {
+                null
+            }
+            if (bitmap != null) runCatching { cache.put(key, bitmap) }
+            main.post { runCatching { apply(bitmap) } }
+        }
+    }
+}
+
+private fun formatPortPercent(value: Double): String =
+    String.format(Locale.ROOT, "%.6f", value.coerceIn(0.0, 100.0)).trimEnd('0').trimEnd('.')
+
+private fun isVerifiedAndroidCodeArtifact(link: JSONObject?): Boolean {
+    if (link == null) return false
+    return link.optString("status") in setOf("VERIFIED_ANDROID_SHARED_LIBRARY", "VERIFIED_ANDROID_APK_LIBRARY") &&
+        link.optBoolean("architectureVerified", false) &&
+        link.optBoolean("dependenciesVerified", false) &&
+        link.optBoolean("exportsVerified", false) &&
+        link.optBoolean("allVerificationsPassed", false)
+}
+
+class MainActivity : Activity() {
+    private var bgColor = Color.rgb(11, 16, 29)
+    private var panel = Color.rgb(20, 29, 47)
+    private var muted = Color.rgb(160, 178, 199)
+    private var accent = Color.rgb(92, 227, 181)
+    private var textColor = Color.WHITE
+    private var outlineColor = Color.rgb(45, 59, 79)
+    private var lightMode = false
+    private val preferences by lazy { getSharedPreferences("radek_settings", MODE_PRIVATE) }
+    private lateinit var library: Library
+    private lateinit var body: LinearLayout
+    private var selected: File? = null
+    private var progressLabel: TextView? = null
+    private var progressBar: ProgressBar? = null
+    private var wasBusy = false
+    private var returnToDetailAfterJob: File? = null
+    private var pendingInstall: Pair<File, String>? = null
+    private val pickerIpa = 100
+    private val pickerApk = 101
+    private val pickerTranslatedRuntimeInput = 102
+    private val maxTranslatedRuntimeInputBytes = 1024L * 1024 * 1024
+    private fun dp(n: Int) = (n * resources.displayMetrics.density).toInt()
+
+    /** Accent presets for the converter UI; each has a dark-theme and a light-theme tone. */
+    private data class AccentScheme(val id: String, val label: String, val dark: Int, val light: Int)
+    private val accentSchemes = listOf(
+        AccentScheme("teal", "Teal (default)", Color.rgb(92, 227, 181), Color.rgb(0, 125, 112)),
+        AccentScheme("blue", "Blue", Color.rgb(125, 180, 255), Color.rgb(29, 78, 216)),
+        AccentScheme("amber", "Amber", Color.rgb(251, 191, 36), Color.rgb(180, 83, 9)),
+        AccentScheme("violet", "Violet", Color.rgb(196, 167, 255), Color.rgb(109, 40, 217)),
+    )
+
+    private fun applyThemePalette() {
+        lightMode = preferences.getBoolean("light_theme", false)
+        val scheme = accentSchemes.firstOrNull { it.id == preferences.getString("accent_scheme", "teal") } ?: accentSchemes[0]
+        if (lightMode) {
+            bgColor = Color.rgb(245, 247, 250)
+            panel = Color.WHITE
+            muted = Color.rgb(92, 104, 119)
+            accent = scheme.light
+            textColor = Color.rgb(22, 32, 46)
+            outlineColor = Color.rgb(220, 226, 234)
+        } else {
+            bgColor = Color.rgb(11, 16, 29)
+            panel = Color.rgb(20, 29, 47)
+            muted = Color.rgb(160, 178, 199)
+            accent = scheme.dark
+            textColor = Color.WHITE
+            outlineColor = Color.rgb(45, 59, 79)
+        }
+        window.statusBarColor = bgColor
+        window.navigationBarColor = bgColor
+        window.decorView.systemUiVisibility = if (lightMode) {
+            View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR or View.SYSTEM_UI_FLAG_LIGHT_NAVIGATION_BAR
+        } else 0
+    }
+
+    override fun onCreate(state: Bundle?) {
+        super.onCreate(state)
+        applyThemePalette()
+        library = Library(applicationContext)
+        if (!SharedCatalog.isBusy()) library.recoverInterrupted()
+        selected = state?.getString("selected")?.let { File(library.root, it) }
+        Jobs.listener = {
+            runCatching {
+                progressLabel?.text = "${Jobs.percent}% · ${Jobs.message}"
+                progressBar?.progress = Jobs.percent
+                if (wasBusy && !Jobs.busy) {
+                    wasBusy = false
+                    val target = returnToDetailAfterJob
+                    returnToDetailAfterJob = null
+                    if (target != null && target.isDirectory && File(target, "report.json").isFile) detail(target) else home()
+                }
+            }
+        }
+        if (selected != null && File(selected, "report.json").isFile) detail(selected!!) else home()
+    }
+    override fun onSaveInstanceState(out: Bundle) { super.onSaveInstanceState(out); out.putString("selected", selected?.name) }
+    override fun onDestroy() { Jobs.listener = null; super.onDestroy() }
+    override fun onResume() {
+        super.onResume()
+        if (Jobs.busy) {
+            wasBusy = true
+            progressLabel?.text = "${Jobs.percent}% · ${Jobs.message}"
+            progressBar?.progress = Jobs.percent
+        } else if (wasBusy) {
+            // A job ended while we were away. Clear any build progress it left
+            // marked RUNNING so the entry is never stuck in a state the user has
+            // to wipe app data to escape.
+            wasBusy = false
+            runCatching { library.recoverInterrupted() }
+            if (selected != null && File(selected, "report.json").isFile) detail(selected!!) else home()
+        }
+        val pending = pendingInstall
+        if (pending != null && packageManager.canRequestPackageInstalls()) {
+            pendingInstall = null
+            installArtifact(pending.first, pending.second)
+        }
+    }
+
+    private fun rounded(color: Int): GradientDrawable = GradientDrawable().apply {
+        setColor(color)
+        cornerRadius = dp(18).toFloat()
+        setStroke(dp(1), outlineColor)
+    }
+    private fun screen() {
+        progressLabel = null
+        progressBar = null
+        val scroll = ScrollView(this).apply { setBackgroundColor(bgColor); isFillViewport = true }
+        body = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(22), dp(30), dp(22), dp(36)) }
+        scroll.addView(body); setContentView(scroll)
+    }
+    private fun text(value: String, size: Float = 16f, color: Int = textColor, bold: Boolean = false, parent: LinearLayout = body): TextView = TextView(this).apply {
+        text = value; textSize = size; setTextColor(color); if (bold) setTypeface(typeface, Typeface.BOLD)
+        setPadding(0, dp(6), 0, dp(7)); parent.addView(this)
+    }
+    private fun button(label: String, primary: Boolean = false, parent: LinearLayout = body, action: () -> Unit): Button = Button(this).apply {
+        text = label; isAllCaps = false; textSize = 15f; setTextColor(if (primary) bgColor else accent)
+        background = android.graphics.drawable.RippleDrawable(
+            android.content.res.ColorStateList.valueOf(if (primary) Color.WHITE else accent),
+            rounded(if (primary) accent else panel), null,
+        )
+        elevation = dp(1).toFloat()
+        parent.addView(this, LinearLayout.LayoutParams(-1, dp(54)).apply { topMargin = dp(10); bottomMargin = dp(3) })
+        setOnClickListener { action() }
+    }
+    private fun dangerButton(label: String, action: () -> Unit): Button = Button(this).apply {
+        text = label; isAllCaps = false; textSize = 15f; setTextColor(Color.WHITE)
+        background = android.graphics.drawable.RippleDrawable(
+            android.content.res.ColorStateList.valueOf(Color.WHITE), rounded(Color.rgb(189, 52, 58)), null,
+        )
+        elevation = dp(2).toFloat()
+        body.addView(this, LinearLayout.LayoutParams(-1, dp(54)).apply { topMargin = dp(12); bottomMargin = dp(4) })
+        setOnClickListener { action() }
+    }
+    private fun progressIndicator(parent: LinearLayout, value: Int, height: Int = 8) {
+        val indicator = ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal).apply {
+            max = 100
+            progress = value.coerceIn(0, 100)
+            progressTintList = android.content.res.ColorStateList.valueOf(accent)
+            progressBackgroundTintList = android.content.res.ColorStateList.valueOf(outlineColor)
+            contentDescription = "IPA analysis or validated host conversion progress ${progress}%"
+        }
+        parent.addView(indicator, LinearLayout.LayoutParams(-1, dp(height)).apply { topMargin = dp(4); bottomMargin = dp(4) })
+    }
+    private fun addJobProgressCard(parent: LinearLayout = body) {
+        val jobCard = card(parent)
+        text(Jobs.title, 17f, textColor, true, jobCard)
+        val bar = ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal).apply {
+            max = 100
+            progress = Jobs.percent
+            progressTintList = android.content.res.ColorStateList.valueOf(accent)
+        }
+        progressBar = bar
+        jobCard.addView(bar, LinearLayout.LayoutParams(-1, dp(12)).apply { topMargin = dp(8); bottomMargin = dp(4) })
+        progressLabel = text("${Jobs.percent}% · ${Jobs.message}", 13f, muted, parent = jobCard)
+    }
+    private fun card(parent: LinearLayout = body): LinearLayout = LinearLayout(this).apply {
+        orientation = LinearLayout.VERTICAL; background = rounded(panel); setPadding(dp(18), dp(14), dp(18), dp(16))
+        parent.addView(this, LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(14) })
+    }
+    // Rendering hundreds of library cards at once stalls the UI thread, so the
+    // home list is paginated; "Show more" reveals the next page.
+    private var visibleEntries = 60
+    private fun statusColor(state: String) = when (state) {
+        "READY", "ATTACHED", "GENERATED_ON_DEVICE" -> accent
+        "FAILED", "BLOCKED" -> if (lightMode) Color.rgb(179, 38, 30) else Color.rgb(255, 157, 139)
+        else -> if (lightMode) Color.rgb(145, 83, 0) else Color.rgb(245, 203, 116)
+    }
+    private fun formatBytes(n: Long) = "%.1f MiB".format(n / 1048576.0)
+
+    /**
+     * Headline for import triage: every reviewed Android mapping kind first (each
+     * import gets exactly one), then the strict same-name NDK subset, which is
+     * deliberately smaller. Neither number is implementation or linkage.
+     */
+    private fun mappingCoverageSummary(mapping: JSONObject): String {
+        val total = mapping.optInt("distinctImportSymbols", 0)
+        if (total == 0) return "Android API candidates: N/A (no imports)"
+        val direct = mapping.optInt("mappedNameCandidates", 0)
+        val directPercent = AndroidApiMapper.coveragePercent(direct, total)
+        val providers = mapping.optInt("runtimeProviderCount", 0)
+        val providerPercent = AndroidApiMapper.coveragePercent(providers, total)
+        val reviewed = mapping.optInt("reviewedMappingCount", direct)
+        val reviewedPercent = AndroidApiMapper.coveragePercent(reviewed, total)
+        val breakdown = mapping.optJSONObject("reviewedMapping")?.optJSONObject("breakdown")
+        val kinds = if (breakdown == null) emptyList() else listOf(
+            breakdown.optInt("sameNameNdkOrSystemExport", 0) to "same-name NDK/system exports",
+            breakdown.optInt("guestRuntimeAdapterCatalogued", 0) to "compat-runtime guest adapter catalog entries",
+            breakdown.optInt("concreteCompatImplementation", 0) to "compiled compat implementations",
+            breakdown.optInt("compilerRuntimeToolchain", 0) to "toolchain-runtime candidates",
+            breakdown.optInt("reviewedSemanticApiTarget", 0) to "semantic API targets",
+        ).filter { it.first > 0 }.map { "${it.first} ${it.second}" }
+        return "Catalogued import providers: $providerPercent% ($providers/$total = exact NDK/system candidates plus compat-runtime guest adapter entries)" +
+            " · Reviewed Android mappings: $reviewedPercent% ($reviewed/$total" +
+            (if (kinds.isEmpty()) "" else " = ${kinds.joinToString(" + ")}") + ")" +
+            " · strict same-name NDK subset (smaller by design, its own measure): $directPercent% ($direct/$total)"
+    }
+
+    /**
+     * Explains a strict same-name headline below 100% instead of making it look
+     * like the mapper dropped imports. Same-name NDK coverage is an
+     * exact-name catalog test; reviewed compat, semantic, and compiler-runtime
+     * targets deliberately stay outside that denominator.
+     */
+    private fun strictNdkSubsetExplanation(mapping: JSONObject): String {
+        val total = mapping.optInt("distinctImportSymbols", 0)
+        val direct = mapping.optInt("mappedNameCandidates", 0)
+        if (total == 0 || direct >= total) return ""
+        val remaining = total - direct
+        val breakdown = mapping.optJSONObject("reviewedMapping")?.optJSONObject("breakdown")
+        val reasons = if (breakdown == null) emptyList() else listOf(
+            breakdown.optInt("guestRuntimeAdapterCatalogued", 0) to "compat-runtime guest adapter catalog entries",
+            breakdown.optInt("concreteCompatImplementation", 0) to "compatibility implementations",
+            breakdown.optInt("reviewedSemanticApiTarget", 0) to "semantic API targets",
+            breakdown.optInt("compilerRuntimeToolchain", 0) to "compiler-runtime or unwind targets",
+        ).filter { it.first > 0 }.map { "${it.first} ${it.second}" }
+        val detail = if (reasons.isEmpty()) {
+            "$remaining imports need a non-name-based adapter or have no direct public NDK export."
+        } else {
+            "$remaining remaining imports are " + reasons.joinToString(", ") +
+                "; those are different mapping kinds, not same-name NDK exports."
+        }
+        return "Why the strict NDK figure is ${AndroidApiMapper.coveragePercent(direct, total)}%: " +
+            "it counts only exact public Android NDK/system export names ($direct/$total), " + detail +
+            " Reviewed mapping coverage is the separate measure for all reviewed targets."
+    }
+
+    /**
+     * Which top-level screen is showing, so the system back gesture navigates
+     * inside the app instead of closing it: detail/settings go back to the Game
+     * Library, and only the library itself closes the app.
+     */
+    private enum class Screen { LIBRARY, DETAIL, SETTINGS }
+    private var currentScreen = Screen.LIBRARY
+
+    @Deprecated("Deprecated in Java")
+    override fun onBackPressed() {
+        if (currentScreen == Screen.LIBRARY) {
+            super.onBackPressed()
+            return
+        }
+        home()
+    }
+
+    private fun home() {
+        selected = null; screen()
+        currentScreen = Screen.LIBRARY
+        text("ANYIOS  /  CONVERTER", 11f, accent, true)
+        text("Converter", 30f, textColor, true)
+        text("Import an IPA to automatically inspect its code and Android compatibility.", 15f, muted)
+        button("← AnyiOS modules") { finish() }
+        val info = card()
+        text("Bounded conversion, honest everywhere else", 17f, textColor, true, info)
+        text("The on-device app analyzes every IPA, and converts the proven subset automatically during import: an executable whose whole code is one closed-integer routine becomes a signed, installable APK whose statically recompiled entry runs through JNI — no extra tap needed. Anything outside that subset is not statically recompiled; Force builds a game-runtime boot APK that runs the guest without an artificial instruction/time cutoff, plus a separate source-free preview shell fallback. Host APKs are accepted only when they declare a complete game conversion and pass provenance and package checks.", 14f, muted, parent = info)
+        val add = button("Choose IPA", true) { authorize() }; add.isEnabled = !Jobs.busy
+        button("Settings", parent = body) { settingsScreen() }.isEnabled = !Jobs.busy
+        if (Jobs.busy) {
+            wasBusy = true
+            addJobProgressCard()
+        } else if (Jobs.message.startsWith("Failed")) text(Jobs.message, 14f, statusColor("FAILED"))
+        text("Game Library", 23f, textColor, true)
+        val entries = library.entries()
+        text("${entries.size} imported ${if (entries.size == 1) "application" else "applications"} · private device storage", 12f, muted)
+        if (entries.isEmpty()) {
+            val empty = card(); text("Your library starts here", 19f, textColor, true, empty)
+            text("Select an .ipa you own or have permission to convert. Encrypted and FairPlay-protected binaries are never decrypted.", 14f, muted, parent = empty)
+        }
+        entries.take(visibleEntries).forEach { (dir, report) ->
+            val item = card(); val app = report.optJSONObject("application") ?: JSONObject()
+            val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }; item.addView(row)
+            val iconPath = File(dir, "icon.png")
+            val icon = ImageView(this).apply {
+                setImageResource(dev.radek.conventor.R.drawable.ic_launcher)
+                contentDescription = report.optJSONObject("icon")?.optString("reason")?.takeIf { it.isNotBlank() } ?: "Icon unavailable"
+            }
+            // Decode off the main thread, downsampled: decoding hundreds of
+            // full-size icons synchronously is what froze large libraries.
+            IconLoader.load(iconPath, dp(56)) { bitmap ->
+                if (bitmap != null) {
+                    icon.setImageBitmap(bitmap)
+                    icon.contentDescription = "Application icon"
+                }
+            }
+            row.addView(icon, LinearLayout.LayoutParams(dp(56), dp(56)).apply { rightMargin = dp(14) })
+            val labels = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }; row.addView(labels, LinearLayout.LayoutParams(0, -2, 1f))
+            text(app.optString("name", "Import failed"), 19f, textColor, true, labels)
+            text(app.optString("bundleId", "No metadata available"), 12f, muted, parent = labels)
+            app.optString("minimumIOSVersion").takeIf { it.isNotBlank() }?.let { text("Minimum iOS $it", 11f, muted, parent = labels) }
+            val state = report.optString("state", "FAILED")
+            text(state, 11f, statusColor(state), true, item)
+            report.optJSONObject("portProgress")?.let { port ->
+                val androidLink = report.optJSONObject("androidLink")
+                val linkStatus = androidLink?.optString("status", "NOT_REPORTED") ?: "NOT_REPORTED"
+                val linkVerified = isVerifiedAndroidCodeArtifact(androidLink)
+                val percent = if (linkVerified) {
+                    androidLink?.optDouble("androidLinkedTextPercent", port.optDouble("percent", 0.0)) ?: 0.0
+                } else 0.0
+                val linkSummary = when {
+                    linkVerified && linkStatus == "VERIFIED_ANDROID_APK_LIBRARY" ->
+                        "Verified Android APK code-byte coverage: ${formatPortPercent(percent)}% · gameplay not tested"
+                    linkVerified && linkStatus == "VERIFIED_ANDROID_SHARED_LIBRARY" ->
+                        "Verified Android ELF code-byte coverage: ${formatPortPercent(percent)}% · standalone, not a game APK"
+                    else -> "Verified Android-linked code-byte coverage: 0% · no ELF/APK link verified"
+                }
+                val planPercent = report.optJSONObject("staticRecompilationPlan")
+                    ?.takeIf { it.optString("status", "") in listOf("COMPUTED", "TRUNCATED") }
+                    ?.optDouble("percent", 0.0)
+                val planClause = if (planPercent != null) " · host plan: ${formatPortPercent(planPercent)}% of __text (not linked)" else ""
+                text("$linkSummary$planClause", 11f, statusColor(if (linkVerified) "SUPPORTED" else "BLOCKED"), true, item)
+            }
+            report.optJSONObject("analysisProgress")?.let { analysis ->
+                val value = analysis.optInt("percent", 0)
+                text("IPA analysis: $value% · ${analysis.optString("stage", "queued")} · not an APK-build score", 12f, textColor, true, item)
+                progressIndicator(item, value, 6)
+                text(analysis.optString("message"), 11f, muted, parent = item)
+            }
+            report.optJSONObject("conversionProgress")?.let { conversion ->
+                text("Complete-game APK: ${conversion.optString("status", "NOT_BUILT")} · ${conversion.optString("message")}", 11f, muted, parent = item)
+            }
+            report.optJSONObject("apiMapping")?.let { mapping ->
+                val mapped = mapping.optInt("mappedNameCandidates", 0)
+                val total = mapping.optInt("distinctImportSymbols", 0)
+                val coverage = AndroidApiMapper.coveragePercent(mapped, total)
+                val semantic = mapping.optInt("semanticRewriteCandidates", 0)
+                val compilerRuntime = mapping.optInt("compilerRuntimeCandidateCount", 0)
+                val classified = mapping.optInt("classifiedImportSymbols", 0)
+                val triage = mapping.optInt("classificationCoveragePercent", 0)
+                val unmapped = mapping.optInt("unmappedSymbolCount", 0)
+                val verified = mapping.optInt("runtimeVerifiedNdkCandidates", 0)
+                // Legacy report key: count guest-adapter catalog matches, not
+                // per-image runtime bindings or semantic API implementations.
+                val compatCount = mapping.optInt("concreteDarwinProviderCount", 0)
+                val providerCount = mapping.optInt("runtimeProviderCount", 0)
+                val providerPercent = AndroidApiMapper.coveragePercent(providerCount, total)
+                val providerSummary = "catalogued import providers: $providerCount/$total ($providerPercent%)"
+                val totalVerifiedDevice = mapping.optJSONObject("evidence")
+                    ?.optInt("exportsVerifiedOnThisDevice", verified)
+                    ?: verified
+                val verifiedPercent = AndroidApiMapper.coveragePercent(totalVerifiedDevice, total)
+                val verifiedCandidateCount = mapping.optInt("runtimeVerifiedCandidateCount", mapped)
+                val verifiedCandidatePercent = AndroidApiMapper.coveragePercent(verified, verifiedCandidateCount)
+                val runtimeApi = mapping.optInt("runtimeVerifiedAndroidApiLevel", 0)
+                val runtimeStatus = mapping.optString("runtimeNdkResolverStatus", "NOT_RUN")
+                val runtimeSummary = if (runtimeStatus == "CURRENT_DEVICE_DLSYM")
+                    "Android API $runtimeApi exact exports: $verified/$verifiedCandidateCount NDK candidates ($verifiedCandidatePercent%); $totalVerifiedDevice/$total imports ($verifiedPercent%)"
+                else "device export check not run"
+                val runtimeLinked = report.optJSONObject("apiImplementationGeneration")?.optBoolean("runtimeLibraryLinked", false) == true
+                val guestRuntimeProviders = mapping.optInt("guestRuntimeProviderCount", compatCount)
+                val guestRuntimeCatalogStatus = mapping.optString("guestRuntimeProviderCatalogStatus", "NOT_REPORTED")
+                val compilerRuntimeGuestProviders = mapping.optInt("compilerRuntimeGuestProviderCount", 0)
+                val compatSummary = when {
+                    runtimeLinked -> "libioscompat.so runtime linked; individual IPA callsites were not rewritten"
+                    guestRuntimeProviders > 0 -> "$guestRuntimeProviders/$total guest-runtime adapter catalog name match(es); actual import-slot binding is reported at game launch"
+                    guestRuntimeCatalogStatus == "NO_MATCHES" -> "no guest-runtime adapter catalog names matched this IPA"
+                    else -> "guest-runtime adapter catalog status unavailable"
+                }
+                val compilerSummary = if (compilerRuntime > 0) " · compiler-rt/libunwind candidates: $compilerRuntime ($compilerRuntimeGuestProviders have guest-runtime adapter entries; no static NDK link)" else ""
+                val generated = report.optJSONObject("hostConversion")?.optInt("generatedApiReplacements", 0) ?: 0
+                val stubs = mapping.optInt("compatStubHandlerCount", 0)
+                val stubSummary = if (stubs > 0) "$stubs compat stub handlers (unimplemented; not API bodies) · " else ""
+                val summary = if (total == 0) "API symbol triage: N/A (no imported symbols) · $compatSummary$compilerSummary · generated replacements: $generated"
+                    else "Symbol triage: $triage% ($classified/$total) · $providerSummary · ${mappingCoverageSummary(mapping)} · $runtimeSummary · $compatSummary$compilerSummary · $stubSummary$semantic semantic · $unmapped unmapped · generated replacements: $generated"
+                text(summary, 11f, muted, parent = item)
+            }
+            report.optJSONObject("hostConversion")?.takeIf { it.optString("status") == "ATTACHED" }?.let { host ->
+                val origin = if (host.optString("origin") == "ON_DEVICE") "Complete-game conversion built on-device" else "Complete-game host APK attached"
+                text("$origin · ABI ${host.optString("targetAbi")} · ${host.optInt("nativeCodeBytes", 0)} generated native-code bytes · runtime not tested", 11f, accent, parent = item)
+            }
+            text("v${app.optString("version", "—")}  ·  ${architectures(report)}  ·  ${formatBytes(app.optLong("fileSize"))}", 12f, muted, parent = item)
+            item.isClickable = true; item.setOnClickListener { detail(dir) }; item.contentDescription = "View ${app.optString("name")} details"
+        }
+        if (entries.size > visibleEntries) {
+            button("Show ${entries.size - visibleEntries} more application(s)") {
+                visibleEntries += 120
+                home()
+            }
+        }
+        text("v${packageManager.getPackageInfo(packageName, 0).versionName}  /  ARM64 Android  /  offline inspection", 11f, muted)
+    }
+    private fun settingsScreen() {
+        if (Jobs.busy) return
+        screen()
+        currentScreen = Screen.SETTINGS
+        button("← Back") { home() }
+        text("Settings", 28f, textColor, true)
+        text("Appearance and host analysis target architecture.", 14f, muted)
+
+        val appearance = card()
+        text("Appearance", 17f, textColor, true, appearance)
+        val lightSwitch = android.widget.Switch(this).apply {
+            text = "Use light theme"
+            textSize = 15f
+            setTextColor(textColor)
+            isChecked = preferences.getBoolean("light_theme", false)
+        }
+        appearance.addView(lightSwitch, LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(4) })
+        lightSwitch.setOnCheckedChangeListener { _, enabled ->
+            preferences.edit().putBoolean("light_theme", enabled).apply()
+            applyThemePalette()
+            settingsScreen()
+        }
+
+        val accentCard = card()
+        text("Accent color", 17f, textColor, true, accentCard)
+        val currentScheme = preferences.getString("accent_scheme", "teal")
+        val currentLabel = accentSchemes.firstOrNull { it.id == currentScheme }?.label ?: accentSchemes[0].label
+        button("Accent · $currentLabel", parent = accentCard) {
+            val labels = accentSchemes.map { it.label }.toTypedArray()
+            val selectedIndex = accentSchemes.indexOfFirst { it.id == currentScheme }.coerceAtLeast(0)
+            AlertDialog.Builder(this)
+                .setTitle("Accent color")
+                .setSingleChoiceItems(labels, selectedIndex) { dialog, which ->
+                    preferences.edit().putString("accent_scheme", accentSchemes[which].id).apply()
+                    dialog.dismiss()
+                    applyThemePalette()
+                    settingsScreen()
+                }
+                .setNegativeButton("Cancel", null)
+                .show()
+        }
+
+        val host = card()
+        text("Host analysis target ABI", 17f, textColor, true, host)
+        val preferredAbi = preferences.getString("target_abi", "auto") ?: "auto"
+        val abiLabel = when (preferredAbi) {
+            "armeabi-v7a" -> "32-bit ARM (armeabi-v7a)"
+            "arm64-v8a" -> "64-bit ARM (arm64-v8a)"
+            else -> "Automatic · prefers 64-bit ARM64 when present"
+        }
+        button("Preferred host analysis ABI\n$abiLabel", parent = host) {
+            val options = arrayOf(
+                "Automatic (prefer ARM64 if the IPA contains it)",
+                "32-bit ARM (armeabi-v7a)",
+                "64-bit ARM (arm64-v8a)",
+            )
+            val selectedIndex = when (preferredAbi) { "armeabi-v7a" -> 1; "arm64-v8a" -> 2; else -> 0 }
+            AlertDialog.Builder(this)
+                .setTitle("Host analysis ABI")
+                .setSingleChoiceItems(options, selectedIndex) { dialog, which ->
+                    preferences.edit().putString("target_abi", when (which) {
+                        1 -> "armeabi-v7a"
+                        2 -> "arm64-v8a"
+                        else -> "auto"
+                    }).apply()
+                    dialog.dismiss()
+                    settingsScreen()
+                }
+                .setNegativeButton("Cancel", null)
+                .show()
+        }
+        text("Automatic analysis prefers the ARM64 slice in a FAT IPA containing both 32-bit and 64-bit code. Supported ARM32-only inputs select a 32-bit ARMv7 target.", 12f, muted, parent = host)
+        text("This preference only affects the copied host analysis command. It does not mean a game APK can currently be generated.", 12f, muted, parent = host)
+
+        button("Restore defaults") {
+            preferences.edit()
+                .putBoolean("light_theme", false)
+                .putString("accent_scheme", "teal")
+                .putString("target_abi", "auto")
+                .apply()
+            applyThemePalette()
+            settingsScreen()
+        }
+        button("Done", true) { home() }
+    }
+
+    private fun documentDisplayName(uri: Uri): String {
+        val queried = try {
+            contentResolver.query(uri, arrayOf(android.provider.OpenableColumns.DISPLAY_NAME), null, null, null)?.use { cursor ->
+                val index = cursor.getColumnIndex(android.provider.OpenableColumns.DISPLAY_NAME)
+                if (index >= 0 && cursor.moveToFirst()) cursor.getString(index) else null
+            }
+        } catch (_: Exception) { null }
+        return queried?.takeIf { it.isNotBlank() }
+            ?: uri.lastPathSegment?.substringAfterLast('/')?.takeIf { it.isNotBlank() }
+            ?: "Selected IPA"
+    }
+
+    private fun architectures(report: JSONObject): String {
+        val slices = report.optJSONObject("machO")?.optJSONArray("slices") ?: return "unknown CPU"
+        return (0 until slices.length()).joinToString(" / ") { slices.getJSONObject(it).getString("architecture") }
+    }
+    private fun authorize() {
+        AlertDialog.Builder(this).setTitle("Authorized files only")
+            .setMessage("Confirm that you own this IPA or have permission to convert it. Protection mechanisms will not be bypassed. The source IPA is retained in app-private storage for analysis until you delete this library entry. Force convert builds a real signed APK when the executable passes the complete static-conversion proof; otherwise it creates a game-runtime APK containing the authorized 32-bit ARM executable and bundle, with a source-free preview shell as fallback. Complete-game host APKs still require the strict conversion contract.")
+            .setNegativeButton("Cancel", null).setPositiveButton("I have permission") { _, _ ->
+                startActivityForResult(Intent(Intent.ACTION_OPEN_DOCUMENT).apply { type = "*/*"; addCategory(Intent.CATEGORY_OPENABLE) }, pickerIpa)
+            }.show()
+    }
+    private fun confirmDelete(dir: File) {
+        if (SharedCatalog.isBusy()) return
+        AlertDialog.Builder(this).setTitle("Delete shared entry from both modules?")
+            .setMessage("Removes this source and local outputs from BOTH Emulator and Converter. Original external files are unchanged.")
+            .setNegativeButton("Keep", null).setPositiveButton("Delete") { _, _ ->
+                if (Jobs.tryRun {
+                    Jobs.begin("Removing shared entry")
+                    require(dir.canonicalFile.parentFile == library.root.canonicalFile) { "Invalid shared entry" }
+                    require(dir.deleteRecursively()) { "Could not remove the complete entry" }
+                }) home()
+            }.show()
+    }
+    private fun detail(dir: File) {
+        selected = dir; screen()
+        currentScreen = Screen.DETAIL
+        val report = try {
+            (if (File(dir, "report.json").isFile) JSONObject(File(dir, "report.json").readText()) else library.sharedReport(dir)) ?: error("missing shared entry")
+        } catch (_: Exception) {
+            Toast.makeText(this, "Library entry is unreadable; returning to the library", Toast.LENGTH_LONG).show()
+            home()
+            return
+        }
+        if (report.optString("state") == "SHARED_SOURCE") {
+            button("← Game Library") { home() }
+            text(report.optJSONObject("application")?.optString("name", "Shared application") ?: "Shared application", 28f, textColor, true)
+            text("One source copy, shared with Emulator. Analysis and generated APKs never replace it.", 15f, muted)
+            text(report.optString("nextBlocker"), 14f, muted)
+            if (report.optString("sharedSourceKind") == "IPA") {
+                button("Analyze shared IPA", true) {
+                    if (Jobs.tryRun {
+                        Jobs.begin("Analyzing shared IPA")
+                        library.analyzeShared(dir) { percent, message -> Jobs.update(percent, message) }
+                    }) { returnToDetailAfterJob = dir; home() }
+                }.isEnabled = !SharedCatalog.isBusy()
+            } else text("Converter currently accepts IPA archives. This source remains available in Emulator.", 14f, muted)
+            button("Delete shared entry") { confirmDelete(dir) }
+            return
+        }
+        val app = report.optJSONObject("application") ?: JSONObject()
+        button("← Game Library") { home() }
+        val iconPath = File(dir, "icon.png")
+        if (iconPath.isFile) {
+            val bitmap = android.graphics.BitmapFactory.decodeFile(iconPath.path)
+            if (bitmap != null) {
+                val icon = ImageView(this).apply {
+                    setImageBitmap(bitmap)
+                    contentDescription = "${app.optString("name", "Application")} icon"
+                    scaleType = ImageView.ScaleType.FIT_CENTER
+                }
+                body.addView(icon, LinearLayout.LayoutParams(dp(84), dp(84)).apply { gravity = Gravity.CENTER_HORIZONTAL; topMargin = dp(10) })
+            }
+        }
+        text(app.optString("name", "Application details"), 28f, textColor, true)
+        val state = report.optString("state"); text(state, 12f, statusColor(state), true)
+        if (Jobs.busy) addJobProgressCard()
+        val metadata = card()
+        for ((name, value) in listOf(
+            "Bundle ID" to app.optString("bundleId"),
+            "Version / build" to "${app.optString("version")} / ${app.optString("build")}",
+            "Minimum iOS" to app.optString("minimumIOSVersion").ifBlank { "Not declared in Info.plist" },
+            "Architecture" to architectures(report),
+            "IPA size" to formatBytes(app.optLong("fileSize")),
+            "Executable" to app.optString("executable"),
+        )) {
+            text(name.uppercase(), 10f, muted, true, metadata); text(value, 15f, parent = metadata)
+        }
+        report.optJSONObject("apiMapping")?.let { mapping ->
+            val mapped = mapping.optInt("mappedNameCandidates", 0)
+            val total = mapping.optInt("distinctImportSymbols", 0)
+            val coverage = AndroidApiMapper.coveragePercent(mapped, total)
+            val mappingCard = card()
+            val semantic = mapping.optInt("semanticRewriteCandidates", 0)
+            val compilerRuntime = mapping.optInt("compilerRuntimeCandidateCount", 0)
+            val classified = mapping.optInt("classifiedImportSymbols", 0)
+            val triage = mapping.optInt("classificationCoveragePercent", 0)
+            val unmapped = mapping.optInt("unmappedSymbolCount", 0)
+            val verified = mapping.optInt("runtimeVerifiedNdkCandidates", 0)
+            val legacyDarwinProviderCatalogCount = mapping.optInt("concreteDarwinProviderCount", 0)
+            val providerCount = mapping.optInt("runtimeProviderCount", 0)
+            val providerPercent = AndroidApiMapper.coveragePercent(providerCount, total)
+            val providerSummary = " · catalogued import providers: $providerCount/$total ($providerPercent%)"
+            val totalVerifiedDevice = mapping.optJSONObject("evidence")
+                ?.optInt("exportsVerifiedOnThisDevice", verified)
+                ?: verified
+            val verifiedPercent = AndroidApiMapper.coveragePercent(totalVerifiedDevice, total)
+            val verifiedCandidateCount = mapping.optInt("runtimeVerifiedCandidateCount", mapped)
+            val verifiedCandidatePercent = AndroidApiMapper.coveragePercent(verified, verifiedCandidateCount)
+            val runtimeApi = mapping.optInt("runtimeVerifiedAndroidApiLevel", 0)
+            val runtimeStatus = mapping.optString("runtimeNdkResolverStatus", "NOT_RUN")
+            val runtimeSummary = if (runtimeStatus == "CURRENT_DEVICE_DLSYM")
+                " · Android API $runtimeApi exact exports: $verified/$verifiedCandidateCount NDK candidates ($verifiedCandidatePercent%); $totalVerifiedDevice/$total imports ($verifiedPercent%)"
+            else ""
+            val runtimeLinked = report.optJSONObject("apiImplementationGeneration")?.optBoolean("runtimeLibraryLinked", false) == true
+            val guestRuntimeProviders = mapping.optInt("guestRuntimeProviderCount", legacyDarwinProviderCatalogCount)
+            val guestRuntimeCatalogStatus = mapping.optString("guestRuntimeProviderCatalogStatus", "NOT_REPORTED")
+            val compilerRuntimeGuestProviders = mapping.optInt("compilerRuntimeGuestProviderCount", 0)
+            val compatSummary = when {
+                runtimeLinked -> " · libioscompat.so runtime linked; no individual IPA callsites rewritten"
+                guestRuntimeProviders > 0 -> " · $guestRuntimeProviders/$total guest-runtime adapter catalog name match(es); actual import-slot binding appears at game launch"
+                guestRuntimeCatalogStatus == "NO_MATCHES" -> " · no guest-runtime adapter catalog names matched this IPA"
+                else -> ""
+            }
+            val compilerSummary = if (compilerRuntime > 0) " · compiler-rt/libunwind candidates: $compilerRuntime ($compilerRuntimeGuestProviders have guest-runtime adapter entries; no static NDK link)" else ""
+            val stubs = mapping.optInt("compatStubHandlerCount", 0)
+            val verifiedHandlers = mapping.optInt("compatVerifiedHandlerCount", 0)
+            val stubSummary = buildString {
+                if (stubs > 0) append(" · compat stub handlers (unimplemented; not API bodies): $stubs")
+                if (verifiedHandlers > 0) append(" · compat verified handlers: $verifiedHandlers")
+            }
+            val summary = if (total == 0) "Android API candidates: N/A (no imports)$compatSummary$compilerSummary"
+                else "Symbol triage: $triage% ($classified/$total)$providerSummary · ${mappingCoverageSummary(mapping)}$runtimeSummary$compatSummary$compilerSummary$stubSummary · semantic rewrites: $semantic · unmapped: $unmapped"
+            text(summary, 16f, textColor, true, mappingCard)
+            strictNdkSubsetExplanation(mapping).takeIf { it.isNotBlank() }?.let {
+                text(it, 12f, muted, parent = mappingCard)
+            }
+            if (total > 0) {
+                button("List this IPA's unimplemented / unresolved NDK needs", parent = mappingCard) {
+                    val appInfo = report.optJSONObject("application") ?: JSONObject()
+                    val gameName = appInfo.optString("name")
+                    val bundleId = appInfo.optString("bundleId")
+                    val text = ndkNeedsHeader(gameName, bundleId, appInfo.optString("version")) + ApiNeedReport.format(mapping)
+                    val safeBundle = bundleId.ifBlank { "game" }.replace(Regex("[^A-Za-z0-9._-]"), "_")
+                    saveNeedsText(text, "$safeBundle-ndk-needs.txt")
+                }
+            }
+            val generated = report.optJSONObject("hostConversion")?.optInt("generatedApiReplacements", 0) ?: 0
+            val triageNote = if (mapping.optString("classificationStatus") == "COMPLETE" && total > 0)
+                "All $classified observed import symbols were categorized; categorization is not static recompilation."
+            else "Import categorization is incomplete or there were no imported symbols."
+            val mappingDisclosure = when {
+                generated > 0 -> "The on-device mapper generated no per-game code; an attached complete-game host conversion reports $generated generated API replacement(s). Runtime behavior is not device-tested. $triageNote"
+                runtimeLinked -> "$triageNote The packaged libioscompat.so runtime is linked through DT_NEEDED. The proven executable has no imports, so no individual IPA API callsite was rewritten or counted as a linked replacement. Other candidates are not implementations."
+                guestRuntimeProviders > 0 -> "$triageNote $guestRuntimeProviders imported symbol(s) match the compat-runtime guest-adapter catalog. This is not proof the game's slots were bound, calls were linked, or full API semantics are implemented; inspect runtimeLinking after launch."
+                legacyDarwinProviderCatalogCount > 0 -> "$triageNote A legacy report field records $legacyDarwinProviderCatalogCount compatibility catalog name match(es); it does not establish per-image slot binding, callsite rewriting, or a game link."
+                else -> "$triageNote The analyzer runtime contains compatibility exports, but no matching provider was verified for this IPA; no per-game replacement was linked. Other candidates do not predict gameplay compatibility or stability."
+            }
+            text(mapping.optString("measure") + " $mappingDisclosure", 13f, muted, parent = mappingCard)
+            mapping.optJSONObject("evidence")?.let { evidence ->
+                val verifiedDevice = evidence.optInt("exportsVerifiedOnThisDevice", 0)
+                val verifiedDevicePercent = AndroidApiMapper.coveragePercent(verifiedDevice, total)
+                val hostTested = evidence.optInt("hostTestedImplementations", 0)
+                val hostTestedPercent = AndroidApiMapper.coveragePercent(hostTested, total)
+                text(
+                    "Per-import evidence · $verifiedDevice/$total ($verifiedDevicePercent%) device exports verified · " +
+                        "$hostTested/$total ($hostTestedPercent%) host-tested implementations · " +
+                        "${evidence.optInt("stubOnlyCount", 0)} stub-only · ${evidence.optInt("noneCount", 0)} none · " +
+                        "0 game callsites linked",
+                    12f,
+                    muted,
+                    parent = mappingCard,
+                )
+            }
+        }
+        report.optJSONObject("portProgress")?.let { port ->
+            val portCard = card()
+            val rawPercent = port.optDouble("percent", port.optInt("percent", 0).toDouble())
+            val androidLink = report.optJSONObject("androidLink")
+            val linkStatus = androidLink?.optString("status", "NOT_REPORTED") ?: "NOT_REPORTED"
+            val linkVerified = isVerifiedAndroidCodeArtifact(androidLink)
+            val percent = if (linkVerified) {
+                androidLink?.optDouble("androidLinkedTextPercent", rawPercent) ?: rawPercent
+            } else 0.0
+            val heading = when {
+                linkVerified && linkStatus == "VERIFIED_ANDROID_APK_LIBRARY" ->
+                    "Verified Android APK code-byte coverage: ${formatPortPercent(percent)}% · gameplay not tested"
+                linkVerified && linkStatus == "VERIFIED_ANDROID_SHARED_LIBRARY" ->
+                    "Verified Android ELF code-byte coverage: ${formatPortPercent(percent)}% · standalone library, not a game APK"
+                else ->
+                    "Verified Android-linked code-byte progress: 0% · no Android ELF/APK link verified"
+            }
+            text(heading, 16f, statusColor(if (linkVerified) "SUPPORTED" else "BLOCKED"), true, portCard)
+            text(port.optString("basis"), 13f, muted, parent = portCard)
+            val plan = report.optJSONObject("staticRecompilationPlan")
+            if (plan != null) {
+                val planStatus = plan.optString("status", "UNAVAILABLE")
+                if (planStatus == "COMPUTED" || planStatus == "TRUNCATED") {
+                    val planPercent = plan.optDouble("percent", plan.optInt("percent", 0).toDouble())
+                    text(
+                        "Host static-recompilation plan: ${formatPortPercent(planPercent)}% of executable __text " +
+                            "(${plan.optInt("functionsStaticallyRecompiled", 0)}/${plan.optInt("functionsDiscovered", 0)} " +
+                            "discovered function(s), ${plan.optInt("staticallyRecompiledBytes", 0)}/" +
+                            "${plan.optInt("executableTextBytes", 0)} byte(s)) — host source bytes only, " +
+                            "not linked into an APK and not device code.",
+                        12f, muted, parent = portCard,
+                    )
+                } else {
+                    val reason = plan.optString("reason", "")
+                    val detail = if (reason.isBlank()) "" else ": $reason"
+                    text(
+                        "Host static-recompilation plan: not measured here ($planStatus$detail). " +
+                            "The device prover only recompiles an executable proven to be one closed-integer routine; " +
+                            "run the host CLI (python3 -m radek analyze …) to compute the wider plan for this IPA.",
+                        12f, muted, parent = portCard,
+                    )
+                }
+            } else if (port.optString("status") == "NO_RUNNABLE_ANDROID_CODE_BUILT") {
+                text(
+                    "The on-device prover statically recompiles an executable only when its whole code is one " +
+                        "proven closed-integer routine, so a full game reports 0% here. Run the host CLI " +
+                        "(python3 -m radek analyze …) for the wider static-recompilation plan of the same IPA.",
+                    12f, muted, parent = portCard,
+                )
+            }
+            report.optJSONObject("bytecodeTranslation")?.let { translation ->
+                val status = translation.optString("status", "NOT_REPORTED")
+                if (status == "GENERATED_PORTABLE_C") {
+                    val portablePercent = translation.optDouble("percent", 0.0)
+                    text(
+                        "Host portable-C translation coverage: ${formatPortPercent(portablePercent)}% of executable __text " +
+                            "(${translation.optInt("translatedTextBytes", 0)}/${translation.optInt("executableTextBytes", 0)} " +
+                            "unique instruction byte(s), ${translation.optInt("translatedFunctionCount", 0)} function(s)). " +
+                            "This is generated portable C, not Android-linked code or an APK.",
+                        12f, muted, parent = portCard,
+                    )
+                } else {
+                    text(
+                        "Host portable-C translation coverage: not generated ($status); this does not change Android-linked progress.",
+                        12f, muted, parent = portCard,
+                    )
+                }
+            }
+        }
+        report.optJSONObject("analysisProgress")?.let { analysis ->
+            val analysisCard = card()
+            val value = analysis.optInt("percent", 0)
+            text("IPA analysis · $value%", 16f, textColor, true, analysisCard)
+            progressIndicator(analysisCard, value, 10)
+            text("${analysis.optString("stage", "queued")} · ${analysis.optString("message")}", 12f, muted, parent = analysisCard)
+            text("Analysis completion is not APK-build completion or a playability score.", 12f, muted, parent = analysisCard)
+        }
+        report.optJSONObject("conversionProgress")?.let { conversion ->
+            val buildCard = card()
+            text("Host APK validation/attachment · ${conversion.optInt("percent", 0)}% · ${conversion.optString("status", "NOT_BUILT")}", 16f, statusColor(conversion.optString("status")), true, buildCard)
+            text(conversion.optString("message"), 12f, muted, parent = buildCard)
+            text("This is the complete-game APK path; it requires statically recompiled reachable code, API replacements, resources and lifecycle. Force convert packages the proven bounded subset into a real signed APK; anything else gets a game-runtime boot APK with unlimited device execution that leaves diagnostics open only at a real runtime boundary, and an installable preview shell that contains no statically recompiled game code remains available as a fallback.", 12f, muted, parent = buildCard)
+        }
+        report.optJSONObject("deviceRecompilation")?.takeIf { it.optString("status") == "PROVEN" && it.optInt("coveragePercent", 0) == 100 }?.let { proof ->
+            val proofCard = card()
+            text("Bounded conversion proof verified on-device", 16f, accent, true, proofCard)
+            text("${proof.optInt("sourceBytes", 0)} executable bytes form one proven closed-integer routine covering 100% of __text. Force convert turns this proof into a signed APK whose statically recompiled entry runs through JNI (returned value is displayed on launch).", 12f, muted, parent = proofCard)
+        }
+        text("Compatibility report", 22f, textColor, true)
+        report.optString("nextBlocker").takeIf { it.isNotBlank() }?.let { next ->
+            // One red line: the single thing standing between this IPA and a
+            // fully converted APK. Copy it back and it gets fixed next.
+            text("NEXT BLOCKER: $next", 16f, Color.rgb(255, 68, 68), true)
+        }
+        val blockers = report.optJSONArray("blockers")
+        if (blockers != null) for (i in 0 until blockers.length()) text(blockers.getString(i), 15f, statusColor(state))
+        if (report.has("error")) text(report.getString("error"), 15f, statusColor("FAILED"))
+        text("Icon: ${report.optJSONObject("icon")?.optString("reason") ?: "not extracted"}", 13f, muted)
+        val edges = report.optJSONObject("dependencies")?.optJSONArray("edges")
+        if (edges != null) for (i in 0 until edges.length()) {
+            val dep = edges.getJSONObject(i)
+            val grade = dep.optString("status", "no-execution-path-yet").uppercase()
+            text("$grade · ${dep.getString("installName")}", 13f, muted)
+            text(dep.optString("reason"), 11f, muted)
+            dep.optJSONObject("evidence")?.let { evidence ->
+                val observed = evidence.optInt("observedImportCount", 0)
+                val verifiedDev = evidence.optInt("exportsVerifiedOnThisDevice", 0)
+                val verifiedDevPct = AndroidApiMapper.coveragePercent(verifiedDev, observed)
+                val hostTest = evidence.optInt("hostTestedImplementations", 0)
+                val hostTestPct = AndroidApiMapper.coveragePercent(hostTest, observed)
+                val note = if (observed == 0) "no per-import evidence" else
+                    "$verifiedDev/$observed ($verifiedDevPct%) device exports verified, " +
+                        "$hostTest/$observed ($hostTestPct%) host-tested implementations, " +
+                        "${evidence.optInt("stubOnlyCount", 0)} stub-only, ${evidence.optInt("noneCount", 0)} none"
+                text(
+                    "Evidence: $note · ${evidence.optString("associationStatus", "UNKNOWN").lowercase()} import association · " +
+                        "0 callsites linked; 0 recompiled bytes linked",
+                    11f,
+                    muted,
+                )
+            }
+        }
+        button("View full machine-readable report") { showText("Conversion report", report.toString(2)) }
+        button("View real conversion logs") { showText("Logs", File(dir, "conversion.jsonl").takeIf { it.isFile }?.readText() ?: "No logs") }
+        text("APK conversion", 22f, textColor, true)
+        text("A general iOS-to-Android game static recompilation backend and framework/API replacements are not implemented. What is implemented is the complete static-conversion subset: when the executable is statically proven to be exactly one closed-integer routine, Force convert packages its statically recompiled machine code into a signed, installable APK that runs the entry through JNI and shows the message recovered from the IPA. Anything outside the subset gets a game-runtime boot-attempt APK: it packs the real 32-bit ARM executable and the bundle, runs without an artificial instruction/time cutoff, and stops only at a real runtime boundary while leaving diagnostics on screen instead of crashing. Framework/input coverage remains game-specific, so this is not a complete static game conversion. A branded preview shell with no executable remains available as an explicit fallback.", 14f, muted)
+        button("Copy host analysis command") {
+            val abi = preferences.getString("target_abi", "auto") ?: "auto"
+            val suffix = if (abi == "auto") "" else " --target-abi $abi"
+            val command = "python3 -m radek analyze input.ipa --authorized --output workspace/analysis-result$suffix"
+            (getSystemService(CLIPBOARD_SERVICE) as android.content.ClipboardManager).setPrimaryClip(android.content.ClipData.newPlainText("Host analysis command", command))
+            Toast.makeText(this, "Analysis command copied", Toast.LENGTH_SHORT).show()
+        }
+        if (app.has("sha256")) button("Attach complete host-converted APK") {
+            if (!Jobs.busy) startActivityForResult(Intent(Intent.ACTION_OPEN_DOCUMENT).apply { type = "application/vnd.android.package-archive"; addCategory(Intent.CATEGORY_OPENABLE) }, pickerApk)
+        }
+        val hostConversion = report.optJSONObject("hostConversion")
+        val hostAttached = hostConversion != null && hostConversion.optString("status") == "ATTACHED" &&
+            hostConversion.optBoolean("completeGameConversion", false) && hostConversion.optString("contract") == "complete-game-v1"
+        val expectedHostName = ArtifactNames.apkFileName(report)
+        val reportedHostName = hostConversion?.optString("artifact").orEmpty()
+        val hostOutputFile = if (hostAttached && reportedHostName == expectedHostName) {
+            File(dir, expectedHostName).takeIf { it.isFile }
+        } else null
+        if (hostAttached && hostOutputFile == null) {
+            text("The attached APK is missing or its IPA-basename record does not match; it cannot be installed or shared.", 13f, statusColor("FAILED"))
+        }
+        if (hostOutputFile != null) {
+            val hostAbi = hostConversion?.optString("targetAbi").orEmpty()
+            val hostOrigin = if (hostConversion?.optString("origin") == "ON_DEVICE")
+                "Complete-game conversion built on-device · ABI $hostAbi. The bounded conversion proof and package checks passed; on-device gameplay has not been tested."
+            else
+                "Complete-game host APK attached · ABI $hostAbi. The host conversion contract passed static checks; on-device execution and actual gameplay have not been tested."
+            text(hostOrigin, 13f, accent)
+            text("Statically recompiled reachable functions: ${hostConversion?.optInt("recompiledReachableFunctions", 0) ?: 0} · generated API replacements: ${hostConversion?.optInt("generatedApiReplacements", 0) ?: 0} · unresolved reachable functions: ${hostConversion?.optInt("notRecompiledReachableFunctions", -1) ?: -1}.", 12f, muted)
+            button("Install ${hostOutputFile.name}", true) { installArtifact(dir, hostOutputFile.name) }
+            button("Share ${hostOutputFile.name}") { shareResultApk(dir, hostOutputFile.name) }
+            if (app.has("sha256")) button("Open installed converted program") {
+                val pkg = report.optJSONObject("deviceConversion")?.optString("package").orEmpty()
+                    .ifBlank { hostConversion?.optString("package").orEmpty() }
+                    .ifBlank { "dev.radek.converted.p" + app.getString("sha256").take(20) }
+                val intent = packageManager.getLaunchIntentForPackage(pkg)
+                if (intent == null) Toast.makeText(this, "Converted program is not installed or not visible to Android", Toast.LENGTH_LONG).show() else startActivity(intent)
+            }
+        }
+        val placeholderConversion = report.optJSONObject("placeholderConversion")
+        val placeholderName = ArtifactNames.placeholderApkFileName(report)
+        val placeholderOutputFile = if (placeholderConversion?.optString("status") == "GENERATED") {
+            runCatching { PlaceholderArtifactContract.validate(report, dir, placeholderName) }.getOrNull()
+        } else null
+        if (placeholderConversion?.optString("status") == "GENERATED" && placeholderOutputFile == null) {
+            text("The preview APK is missing or its digest/metadata is invalid; it cannot be installed or shared.", 13f, statusColor("FAILED"))
+        }
+        report.optJSONObject("placeholderBuildProgress")?.takeIf { it.optString("status") == "FAILED" }?.let { build ->
+            text("Preview shell build failed: ${build.optString("message")}", 13f, statusColor("FAILED"))
+        }
+        report.optJSONObject("convertedBuildProgress")?.takeIf { it.optString("status") == "FAILED" }?.let { build ->
+            text("Conversion build failed: ${build.optString("message")}", 13f, statusColor("FAILED"))
+        }
+        if (placeholderOutputFile != null) {
+            val iconDescription = when (placeholderConversion?.optString("iconSource")) {
+                "RECOVERED_IPA_ICON" -> "Original IPA icon included"
+                "GENERATED_APP_NAME_ICON" -> "Generated name-based icon included; no original icon was recovered"
+                else -> "Fallback icon included; no original icon was recovered"
+            }
+            text("Installable preview APK · $iconDescription", 13f, accent, true)
+            text("This is a branded shell built from the IPA name and icon only. No iOS executable, statically recompiled game code, or playable gameplay is included.", 12f, muted)
+            button("Install ${placeholderOutputFile.name}", true) { installArtifact(dir, placeholderOutputFile.name) }
+            button("Share ${placeholderOutputFile.name}") { shareResultApk(dir, placeholderOutputFile.name) }
+        }
+        val gameRuntimeConversion = report.optJSONObject("gameRuntimeConversion")
+        val gameName = ArtifactNames.gameApkFileName(report)
+        val gameOutputFile = if (gameRuntimeConversion?.optString("status") == "GENERATED") {
+            runCatching { GameRuntimeArtifactContract.validate(report, dir, gameName) }.getOrNull()
+        } else null
+        if (gameRuntimeConversion?.optString("status") == "GENERATED" && gameOutputFile == null) {
+            text("The game-runtime APK is missing or its digest/metadata is invalid; it cannot be installed or shared.", 13f, statusColor("FAILED"))
+        }
+        report.optJSONObject("gameRuntimeBuildProgress")?.takeIf { it.optString("status") == "FAILED" }?.let { build ->
+            text("Game-runtime build failed: ${build.optString("message")}", 13f, statusColor("FAILED"))
+        }
+        if (gameOutputFile != null) {
+            val executableBytes = gameRuntimeConversion?.optLong("executableBytes", 0L) ?: 0L
+            val machoFormat = gameRuntimeConversion?.optString("machoFormat").orEmpty().ifBlank { "Mach-O" }
+            val translatedIncluded = gameRuntimeConversion?.optBoolean("translatedPortableCIncluded", false) == true
+            text("Game-runtime boot-attempt APK · $machoFormat executable, $executableBytes byte(s) packed", 13f, accent, true)
+            text(
+                if (translatedIncluded) {
+                    "A verified portable-C ARM32 translation and its memory payload are packaged and selected at boot. The current runner is not connected to Android EGL/GLES, so pixels and gameplay are not verified; execution has no frame-based timeout and stops only at a real runtime boundary."
+                } else {
+                    "Runs the real guest boot with no artificial instruction or time cutoff, so an implemented render loop can stay alive. It stops only at a real runtime boundary such as an unimplemented call, guest exception, memory/execution fault, or setup failure; the diagnostic screen stays open instead of crashing. This is not the complete-game static recompilation contract."
+                },
+                12f,
+                muted,
+            )
+            button("Install ${gameOutputFile.name}", true) { installArtifact(dir, gameOutputFile.name) }
+            button("Share ${gameOutputFile.name}") { shareResultApk(dir, gameOutputFile.name) }
+            if (app.has("sha256")) button("Open installed game boot") {
+                val gamePackage = gameRuntimeConversion?.optString("package").orEmpty()
+                val intent = gamePackage.takeIf { it.isNotBlank() }?.let { packageManager.getLaunchIntentForPackage(it) }
+                if (intent == null) Toast.makeText(this, "Game-runtime program is not installed or not visible to Android", Toast.LENGTH_LONG).show() else startActivity(intent)
+            }
+        }
+        if (File(dir, "source.bin").isFile && app.has("sha256") && hostOutputFile == null) {
+            val deviceConvertible = report.optJSONObject("deviceRecompilation")?.let {
+                it.optString("status") == "PROVEN" && it.optInt("coveragePercent", 0) == 100 && it.optInt("functionCount", 0) == 1
+            } == true
+            if (deviceConvertible) {
+                text("Force builds a real signed APK: the whole executable is one proven closed-integer routine, so its statically recompiled entry is packaged as libconverted.so and runs through JNI when opened.", 12f, muted)
+                val rebuilt = report.optJSONObject("deviceConversion")?.optString("status") == "GENERATED_ON_DEVICE"
+                dangerButton(if (rebuilt) "Rebuild converted APK" else "Force convert to .apk") {
+                    startForceConvert(dir, true)
+                }
+            } else {
+                val translatedInput = File(dir, "translated-game-runtime-input.zip")
+                text(
+                    if (translatedInput.isFile) {
+                        "A portable-C handoff ZIP is staged, but has not yet been accepted as linked code. The APK builder must verify its ARM64 ELF class/architecture, Android dependencies, translated exports and JNI entry, selected-executable binding, payload hashes, APK alignment, signature, and install structure before packaging it. Rendering and gameplay remain unverified."
+                    } else {
+                        "Force builds a game-runtime boot-attempt APK from the real 32-bit ARM executable, bundle, and guest runtime. An optional host-generated portable-C handoff can be imported below; it is accepted only after ELF architecture/class, dependency, export, JNI-entry, payload, and provenance checks. The translated runner has no EGL renderer, and neither path is a complete-game static conversion or gameplay claim."
+                    },
+                    12f,
+                    muted,
+                )
+                button(if (translatedInput.isFile) "Replace portable-C handoff ZIP" else "Import portable-C handoff ZIP") {
+                    chooseTranslatedRuntimeInput(dir)
+                }
+                dangerButton(
+                    when {
+                        translatedInput.isFile -> "Build game APK with translated code"
+                        gameOutputFile != null -> "Rebuild game APK"
+                        else -> "Force convert to game APK"
+                    },
+                ) {
+                    startGameRuntimeBuild(dir)
+                }
+                button(if (placeholderOutputFile != null) "Rebuild preview APK" else "Build preview shell instead") {
+                    startForceConvert(dir, false)
+                }
+            }
+        }
+        button("Delete shared entry") { confirmDelete(dir) }
+    }
+
+    private fun startForceConvert(dir: File, convertible: Boolean) {
+        if (Jobs.busy) {
+            Toast.makeText(this, "A job is already running", Toast.LENGTH_SHORT).show()
+            return
+        }
+        if (!File(dir, "source.bin").isFile) {
+            Toast.makeText(this, "Retained IPA not found; nothing can be built", Toast.LENGTH_LONG).show()
+            return
+        }
+        Jobs.begin(if (convertible) "Converting proven IPA" else "Building installable preview shell")
+        returnToDetailAfterJob = dir
+        wasBusy = true
+        val started = Jobs.tryRun {
+            if (convertible) {
+                ConvertedApkBuilder(applicationContext).build(dir) { percent, message ->
+                    Jobs.update(percent, message)
+                }
+            } else {
+                PlaceholderApkBuilder(applicationContext).build(dir) { percent, message ->
+                    Jobs.update(percent, message)
+                }
+            }
+        }
+        if (!started) {
+            wasBusy = false
+            returnToDetailAfterJob = null
+            Toast.makeText(this, "A job is already running", Toast.LENGTH_SHORT).show()
+            return
+        }
+        home()
+    }
+
+    private fun chooseTranslatedRuntimeInput(dir: File) {
+        if (Jobs.busy) {
+            Toast.makeText(this, "A job is already running", Toast.LENGTH_SHORT).show()
+            return
+        }
+        val picker = Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
+            type = "application/zip"
+            addCategory(Intent.CATEGORY_OPENABLE)
+        }
+        startActivityForResult(picker, pickerTranslatedRuntimeInput)
+    }
+
+    private fun importTranslatedRuntimeInput(uri: Uri, dir: File) {
+        if (Jobs.busy) return
+        Jobs.begin("Importing verified portable-C handoff")
+        returnToDetailAfterJob = dir
+        wasBusy = true
+        val started = Jobs.tryRun {
+            val destination = File(dir, "translated-game-runtime-input.zip")
+            val temporary = File(dir, ".translated-game-runtime-input.importing")
+            val backup = File(dir, ".translated-game-runtime-input.previous")
+            temporary.delete()
+            backup.delete()
+            try {
+                contentResolver.openInputStream(uri)?.use { input ->
+                    FileOutputStream(temporary).use { output ->
+                        val buffer = ByteArray(64 * 1024)
+                        var total = 0L
+                        while (true) {
+                            val count = input.read(buffer)
+                            if (count < 0) break
+                            total += count
+                            require(total <= maxTranslatedRuntimeInputBytes) {
+                                "translated runtime handoff exceeds the 1 GiB import limit"
+                            }
+                            output.write(buffer, 0, count)
+                        }
+                        output.fd.sync()
+                        require(total > 0) { "selected translated runtime handoff is empty" }
+                    }
+                } ?: error("selected translated runtime handoff could not be opened")
+                SafeZip.requireStorage(dir, temporary.length())
+                ZipFile(temporary).use { archive ->
+                    val names = archive.entries().asSequence().map { it.name }.toList()
+                    require(names.size == 5 && names.toSet() == setOf(
+                        "manifest.json", "libtranslated_game.so", "translated-game-payload.zip",
+                        "android-link-report.json", "rt_report.json",
+                    )) { "selected ZIP is not a translated game-runtime input bundle" }
+                    val manifestEntry = archive.getEntry("manifest.json")
+                        ?: error("translated handoff is missing manifest.json")
+                    require(manifestEntry.size in 1..(1024L * 1024)) { "translated handoff manifest is invalid" }
+                    val manifestText = archive.getInputStream(manifestEntry).bufferedReader(Charsets.UTF_8).use { reader ->
+                        val output = StringBuilder()
+                        val buffer = CharArray(8192)
+                        var total = 0
+                        while (true) {
+                            val count = reader.read(buffer)
+                            if (count < 0) break
+                            total += count
+                            require(total <= 1024 * 1024) { "translated handoff manifest exceeds its size limit" }
+                            output.append(buffer, 0, count)
+                        }
+                        output.toString()
+                    }
+                    val manifest = JSONObject(manifestText)
+                    require(manifest.optString("contract") == "translated-game-runtime-input-v1" &&
+                        manifest.optInt("schemaVersion", 0) == 1) {
+                        "selected ZIP does not use translated-game-runtime-input-v1"
+                    }
+                }
+                if (destination.exists()) require(destination.renameTo(backup)) {
+                    "existing translated handoff could not be preserved"
+                }
+                if (!temporary.renameTo(destination)) {
+                    if (backup.isFile) backup.renameTo(destination)
+                    error("translated handoff could not be saved")
+                }
+                backup.delete()
+                Jobs.update(100, "Hash-bound portable-C handoff imported; the APK builder will revalidate it")
+            } catch (error: Throwable) {
+                temporary.delete()
+                if (backup.isFile && !destination.exists()) backup.renameTo(destination)
+                throw error
+            }
+        }
+        if (!started) {
+            wasBusy = false
+            returnToDetailAfterJob = null
+            Toast.makeText(this, "A job is already running", Toast.LENGTH_SHORT).show()
+            return
+        }
+        home()
+    }
+
+    private fun startGameRuntimeBuild(dir: File) {
+        if (Jobs.busy) {
+            Toast.makeText(this, "A job is already running", Toast.LENGTH_SHORT).show()
+            return
+        }
+        if (!File(dir, "source.bin").isFile) {
+            Toast.makeText(this, "Retained IPA not found; nothing can be built", Toast.LENGTH_LONG).show()
+            return
+        }
+        Jobs.begin(
+            if (File(dir, "translated-game-runtime-input.zip").isFile)
+                "Building translated game-runtime APK"
+            else
+                "Building game-runtime boot APK",
+        )
+        returnToDetailAfterJob = dir
+        wasBusy = true
+        val started = Jobs.tryRun {
+            GameRuntimeApkBuilder(applicationContext).build(dir) { percent, message ->
+                Jobs.update(percent, message)
+            }
+        }
+        if (!started) {
+            wasBusy = false
+            returnToDetailAfterJob = null
+            Toast.makeText(this, "A job is already running", Toast.LENGTH_SHORT).show()
+            return
+        }
+        home()
+    }
+
+    private fun shareResultApk(dir: File, name: String) {
+        val file = File(dir, name)
+        if (!file.isFile) {
+            Toast.makeText(this, "APK result not found", Toast.LENGTH_LONG).show()
+            return
+        }
+        val uri = Uri.Builder().scheme("content").authority("${packageName}.converter.results")
+            .appendPath(dir.name).appendPath(file.name).build()
+        val share = Intent(Intent.ACTION_SEND).apply {
+            type = "application/vnd.android.package-archive"
+            putExtra(Intent.EXTRA_STREAM, uri)
+            clipData = android.content.ClipData.newUri(contentResolver, file.name, uri)
+            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        }
+        startActivity(Intent.createChooser(share, "Share APK result"))
+    }
+
+    private fun ndkNeedsHeader(name: String, bundleId: String, version: String): String {
+        val stamp = java.text.SimpleDateFormat("yyyy-MM-dd HH:mm:ss", java.util.Locale.US).format(java.util.Date())
+        return "Game: ${name.ifBlank { "unknown" }}\nBundle ID: ${bundleId.ifBlank { "unknown" }}\n" +
+            "Version: ${version.ifBlank { "unknown" }}\nExported: $stamp\n\n"
+    }
+
+    /** Saves the NDK needs list to Downloads straight away: no dialog, no file picker. */
+    private fun saveNeedsText(text: String, name: String) {
+        try {
+            Toast.makeText(this, "Saved NDK needs list to ${downloadNeedsText(text, name)}", Toast.LENGTH_LONG).show()
+        } catch (error: Exception) {
+            Toast.makeText(this, "Could not save the NDK needs list: ${error.message}", Toast.LENGTH_LONG).show()
+        }
+    }
+
+    /** Writes the NDK needs list to Downloads and returns the path it was written to. */
+    private fun downloadNeedsText(text: String, name: String): String {
+        val bytes = text.toByteArray(Charsets.UTF_8)
+        if (Build.VERSION.SDK_INT >= 29) {
+            val values = ContentValues().apply {
+                put(MediaStore.Downloads.DISPLAY_NAME, name)
+                put(MediaStore.Downloads.MIME_TYPE, "text/plain")
+                put(MediaStore.Downloads.RELATIVE_PATH, Environment.DIRECTORY_DOWNLOADS)
+                put(MediaStore.Downloads.IS_PENDING, 1)
+            }
+            val uri = contentResolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values)
+                ?: error("MediaStore refused to create the download")
+            contentResolver.openOutputStream(uri, "wt")?.use { it.write(bytes) }
+                ?: error("the download could not be opened for writing")
+            values.clear()
+            values.put(MediaStore.Downloads.IS_PENDING, 0)
+            contentResolver.update(uri, values, null, null)
+            return "Downloads/$name"
+        }
+        // Android 8-9: the public Downloads folder needs WRITE_EXTERNAL_STORAGE, which
+        // would mean a permission prompt. Fall back to the app's own Downloads folder
+        // (no permission needed) when the public write is refused.
+        return try {
+            val dir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS)
+            dir.mkdirs()
+            File(dir, name).also { it.writeBytes(bytes) }.absolutePath
+        } catch (error: SecurityException) {
+            val dir = getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS) ?: filesDir
+            File(dir, name).also { it.writeBytes(bytes) }.absolutePath
+        }
+    }
+
+    private fun showText(title: String, value: String) {
+        val view = TextView(this).apply { text = value; setTextIsSelectable(true); textSize = 12f; typeface = Typeface.MONOSPACE; setPadding(dp(16), dp(16), dp(16), dp(16)) }
+        AlertDialog.Builder(this).setTitle(title).setView(ScrollView(this).apply { addView(view) }).setPositiveButton("Close", null).show()
+    }
+    @Deprecated("Framework result API retained to avoid third-party dependencies")
+    override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
+        super.onActivityResult(requestCode, resultCode, data)
+        if (resultCode != RESULT_OK || data?.data == null) return
+        val uri = data.data!!
+        if (Jobs.busy) return
+        val context = applicationContext
+        if (requestCode == pickerIpa) {
+            if (Jobs.busy) {
+                Toast.makeText(this, "A job is already running; wait for it to finish first", Toast.LENGTH_LONG).show()
+                return
+            }
+            Jobs.begin("Analyzing · ${documentDisplayName(uri)}")
+            Jobs.update(0, "Starting IPA analysis; the bounded conversion proof runs automatically")
+            val started = Jobs.tryRun {
+                val library = Library(context)
+                val (dir, report) = library.import(uri) { percent, message -> Jobs.update(percent, message) }
+                returnToDetailAfterJob = dir
+                val state = report.optString("state", "FAILED")
+                Jobs.update(100, "$state · IPA analysis finished · APK ${report.optJSONObject("conversionProgress")?.optString("status", "NOT_BUILT") ?: "NOT_BUILT"}")
+            }
+            if (started) { wasBusy = true; home() }
+        } else if (requestCode == pickerApk) {
+            val dir = selected ?: return
+            if (Jobs.busy) {
+                Toast.makeText(this, "A job is already running; wait for it to finish first", Toast.LENGTH_LONG).show()
+                return
+            }
+            val started = Jobs.tryRun { attachApk(context, uri, dir); Jobs.update("Host APK attached") }
+            if (started) { wasBusy = true; home() }
+        } else if (requestCode == pickerTranslatedRuntimeInput) {
+            val dir = selected ?: return
+            importTranslatedRuntimeInput(uri, dir)
+        }
+    }
+    private fun installArtifact(dir: File, name: String) {
+        val file = File(dir, name)
+        if (!file.isFile) {
+            Toast.makeText(this, "APK result not found", Toast.LENGTH_LONG).show()
+            return
+        }
+        if (!packageManager.canRequestPackageInstalls()) {
+            pendingInstall = dir to name
+            startActivity(Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES, Uri.parse("package:$packageName")))
+            return
+        }
+        pendingInstall = null
+        // Check the artifact ourselves first: Android's installer reports every
+        // failure as "app not installed", which leaves nothing to act on.
+        val expectedPackage = runCatching {
+            val report = JSONObject(File(dir, "report.json").readText())
+            report.optJSONObject("deviceConversion")?.optString("package").orEmpty()
+                .ifBlank { report.optJSONObject("hostConversion")?.optString("package").orEmpty() }
+                .ifBlank { report.optJSONObject("gameRuntimeConversion")?.optString("package").orEmpty() }
+                .ifBlank { report.optJSONObject("placeholderConversion")?.optString("package").orEmpty() }
+        }.getOrDefault("")
+        if (expectedPackage.isNotBlank()) {
+            val audit = runCatching { InstallAudit.inspect(this, file, expectedPackage) }.getOrNull()
+            if (audit != null && (!audit.installable || audit.warnings.isNotEmpty())) {
+                showInstallAudit(audit) { launchInstall(dir, name) }
+                return
+            }
+        }
+        launchInstall(dir, name)
+    }
+
+    private fun showInstallAudit(audit: InstallAudit.Report, proceed: () -> Unit) {
+        val lines = ArrayList<String>()
+        lines += audit.blockers.map { "• $it" }
+        lines += audit.warnings.map { "• $it" }
+        val message = buildString {
+            if (audit.blockers.isNotEmpty()) {
+                append("This APK cannot be installed:\n\n").append(audit.blockers.joinToString("\n") { "• $it" })
+            } else {
+                append("Check before installing:\n\n").append(audit.warnings.joinToString("\n") { "• $it" })
+            }
+        }
+        AlertDialog.Builder(this)
+            .setTitle(if (audit.installable) "Before you install" else "This APK will not install")
+            .setMessage(message)
+            .setPositiveButton(if (audit.installable) "Install anyway" else "Close", null)
+            .setNegativeButton("Cancel") { _, _ -> }
+            .create()
+            .apply {
+                setOnShowListener {
+                    getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener {
+                        dismiss()
+                        if (audit.installable) proceed()
+                    }
+                }
+            }
+            .show()
+    }
+
+    private fun launchInstall(dir: File, name: String) {
+        val uri = Uri.Builder().scheme("content").authority("${packageName}.converter.results")
+            .appendPath(dir.name).appendPath(name).build()
+        runCatching {
+            startActivity(Intent(Intent.ACTION_VIEW)
+                .setDataAndType(uri, "application/vnd.android.package-archive")
+                .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION))
+        }.onFailure {
+            Toast.makeText(this, "No app on this device can install APKs", Toast.LENGTH_LONG).show()
+        }
+    }
+    companion object {
+        private fun sha256(input: java.io.InputStream): String {
+            val digest = java.security.MessageDigest.getInstance("SHA-256")
+            val buffer = ByteArray(65536)
+            while (true) {
+                val count = input.read(buffer)
+                if (count < 0) break
+                digest.update(buffer, 0, count)
+            }
+            return digest.digest().joinToString("") { "%02x".format(it.toInt() and 255) }
+        }
+
+        private fun exactInt(json: JSONObject, key: String): Int {
+            val value = json.opt(key)
+            require(value is Int || value is Long) { "$key must be an integer" }
+            val number = (value as Number).toLong()
+            require(number in Int.MIN_VALUE.toLong()..Int.MAX_VALUE.toLong()) { "$key is out of range" }
+            return number.toInt()
+        }
+
+        private fun attachApk(context: android.content.Context, uri: Uri, dir: File) {
+            val temporary = File(dir, "result.pending")
+            try {
+                context.contentResolver.openInputStream(uri).use { input ->
+                    requireNotNull(input) { "cannot read selected APK" }
+                    temporary.outputStream().use { output ->
+                        val buffer = ByteArray(65536)
+                        var total = 0L
+                        while (true) {
+                            val n = input.read(buffer)
+                            if (n < 0) break
+                            total += n
+                            SafeZip.requireStorage(dir, total)
+                            output.write(buffer, 0, n)
+                        }
+                    }
+                }
+                val report = JSONObject(File(dir, "report.json").readText())
+                val hash = report.getJSONObject("application").getString("sha256")
+                val expectedPackage = "dev.radek.converted.p" + hash.take(20)
+                val expectedName = ArtifactNames.apkFileName(report)
+                val selectedAbi = context.getSharedPreferences("radek_settings", android.content.Context.MODE_PRIVATE)
+                    .getString("target_abi", "auto") ?: "auto"
+                val sourceSlices = report.optJSONObject("machO")?.optJSONArray("slices") ?: error("source architecture report missing")
+                val sourceArchitectures = (0 until sourceSlices.length()).map { sourceSlices.getJSONObject(it).optString("architecture") }.toSet()
+                val expectedAbi = when (selectedAbi) {
+                    "arm64-v8a" -> {
+                        require("arm64" in sourceArchitectures) { "selected ARM64 ABI has no matching IPA slice" }
+                        "arm64-v8a"
+                    }
+                    "armeabi-v7a" -> {
+                        require(sourceArchitectures.any { it in setOf("armv7s", "armv7", "armv6") }) { "selected ARM32 ABI has no matching IPA slice" }
+                        "armeabi-v7a"
+                    }
+                    else -> when {
+                        "arm64" in sourceArchitectures -> "arm64-v8a"
+                        sourceArchitectures.any { it in setOf("armv7s", "armv7", "armv6") } -> "armeabi-v7a"
+                        else -> error("IPA has no supported ARM32 or ARM64 slice")
+                    }
+                }
+                var targetAbi = ""
+                var generatedBytes = 0
+                var conversionBackend = ""
+                var recompiledFunctions = 0
+                var generatedApiReplacements = 0
+                var notRecompiledFunctions = 0
+                var recoveredIconHash = ""
+                val sourceIcon = File(dir, "icon.png")
+                if (sourceIcon.isFile) {
+                    recoveredIconHash = java.security.MessageDigest.getInstance("SHA-256")
+                        .digest(sourceIcon.readBytes()).joinToString("") { "%02x".format(it.toInt() and 255) }
+                }
+                ZipFile(temporary).use { zip ->
+                    val zipEntries = zip.entries().asSequence().toList()
+                    // Re-importing one of our own results: the caps here have to admit
+                    // everything the packagers may legitimately emit, while still
+                    // refusing a bomb that claims more than the storage it came from.
+                    require(zipEntries.size <= ConvertedApkBuilder.MAX_RESOURCE_FILES + 4096) { "APK has too many entries" }
+                    require(zipEntries.all { it.size <= SafeZip.MAX_FILE }) { "APK contains an oversized entry" }
+                    require(
+                        zipEntries.sumOf { it.size.coerceAtLeast(0L) } <=
+                            zipEntries.sumOf { it.compressedSize.coerceAtLeast(1L) } * SafeZip.MAX_EXPANSION_RATIO
+                    ) { "APK expands beyond the allowed ratio" }
+                    val names = zipEntries.map { it.name }
+                    names.forEach { SafeZip.validateName(it) }
+                    require(names.size == names.toSet().size) { "APK contains duplicate paths" }
+                    require(names.none { it.lowercase(java.util.Locale.ROOT).endsWith(".ipa") }) { "APK must not contain the original IPA" }
+                    val entry = zip.getEntry("assets/conversion.json") ?: error("conversion provenance missing")
+                    require(entry.size in 1..4194304)
+                    val metadata = JSONObject(zip.getInputStream(entry).bufferedReader().use { it.readText() })
+                    require(metadata.getString("package") == expectedPackage && metadata.getJSONObject("source").getString("sha256") == hash) { "APK does not match this IPA" }
+                    require(metadata.optString("contract") == "complete-game-v1") { "APK is not a complete-game conversion; restricted native-entry packages are rejected" }
+                    require(metadata.optString("targetAbi") in setOf("arm64-v8a", "armeabi-v7a")) { "unsupported APK ABI" }
+                    val conversion = metadata.optJSONObject("conversion") ?: error("conversion details missing")
+                    targetAbi = conversion.optString("targetAbi")
+                    require(targetAbi in setOf("arm64-v8a", "armeabi-v7a") && metadata.optString("targetAbi") == targetAbi) { "unsupported or inconsistent converted APK ABI" }
+                    require(targetAbi == expectedAbi) { "APK ABI does not follow the selected/source architecture policy (automatic mode prefers ARM64 for FAT ARM32+ARM64 input)" }
+                    generatedBytes = exactInt(conversion, "outputBytes")
+                    require(generatedBytes in 1..(64 * 1024 * 1024)) { "invalid generated native-code size" }
+                    conversionBackend = conversion.opt("backend") as? String ?: error("conversion backend is not a string")
+                    require(conversionBackend.isNotBlank()) { "conversion backend missing" }
+                    val game = metadata.optJSONObject("gameConversion") ?: error("complete-game evidence missing")
+                    require(game.opt("status") == "COMPLETE" && game.opt("completeGameConversion") == true) { "host did not certify a complete game conversion" }
+                    val reachableFunctions = exactInt(game, "reachableSourceFunctions")
+                    recompiledFunctions = exactInt(game, "recompiledReachableFunctions")
+                    notRecompiledFunctions = exactInt(game, "notRecompiledReachableFunctions")
+                    require(reachableFunctions > 0 && recompiledFunctions == reachableFunctions && notRecompiledFunctions == 0) { "not all reachable game functions were statically recompiled" }
+                    val reachableApis = exactInt(game, "reachableApiCount")
+                    generatedApiReplacements = exactInt(game, "generatedApiReplacements")
+                    val nativeApiPassthroughs = exactInt(game, "nativeApiPassthroughs")
+                    require(game.opt("apiCoverageComplete") == true && exactInt(game, "unimplementedReachableApiCount") == 0) { "reachable iOS APIs are not fully implemented or replaced" }
+                    require(reachableApis >= 0 && generatedApiReplacements >= 0 && nativeApiPassthroughs >= 0 && reachableApis == generatedApiReplacements + nativeApiPassthroughs) { "API replacement accounting is incomplete" }
+                    val replacements = game.optJSONArray("apiReplacements") ?: error("API replacement evidence missing")
+                    require(replacements.length() == generatedApiReplacements) { "generated API replacement count mismatch" }
+                    for (index in 0 until replacements.length()) {
+                        val replacement = replacements.getJSONObject(index)
+                        require(replacement.opt("codeGenerated") == true && replacement.opt("linkedIntoApk") == true && replacement.opt("reachableFromEntry") == true) { "API mapping is only a candidate, not reachable generated code" }
+                        val sourceSymbol = replacement.opt("sourceSymbol") as? String ?: error("API source symbol must be a string")
+                        val targetAndroidApi = replacement.opt("targetAndroidApi") as? String ?: error("target Android API must be a string")
+                        require(sourceSymbol.isNotBlank() && targetAndroidApi.isNotBlank()) { "API replacement mapping incomplete" }
+                        val implementationHash = replacement.opt("implementationSha256") as? String ?: error("API implementation hash must be a string")
+                        require(implementationHash.matches(Regex("[0-9a-f]{64}"))) { "API replacement implementation hash missing" }
+                        val implementationArtifact = replacement.opt("implementationArtifact") as? String ?: error("API implementation artifact must be a string")
+                        require(implementationArtifact.isNotBlank()) { "generated API implementation path missing" }
+                        val safeImplementationArtifact = SafeZip.validateName(implementationArtifact)
+                        require(safeImplementationArtifact == implementationArtifact && names.contains(safeImplementationArtifact)) { "generated API implementation is not packaged" }
+                        val packagedImplementation = zip.getEntry(safeImplementationArtifact) ?: error("generated API implementation is missing")
+                        val packagedHash = zip.getInputStream(packagedImplementation).use { sha256(it) }
+                        require(packagedHash == implementationHash) { "generated API implementation hash mismatch" }
+                    }
+                    require(game.opt("resourcesComplete") == true) { "game resources were not completely packaged" }
+                    require(game.opt("lifecycleImplemented") == true) { "Android application lifecycle is not implemented" }
+                    val inventoryValue = metadata.opt("resourceInventory")
+                    require(inventoryValue == null || inventoryValue is JSONArray) { "game resource inventory is invalid" }
+                    val resourceInventory = inventoryValue as? JSONArray
+                    for (index in 0 until (resourceInventory?.length() ?: 0)) {
+                        val resource = resourceInventory!!.getJSONObject(index)
+                        val resourcePath = resource.opt("path") as? String ?: error("resource path must be a string")
+                        val safeResourcePath = SafeZip.validateName(resourcePath)
+                        require(safeResourcePath == resourcePath) { "resource path is not canonical" }
+                        val resourceHash = resource.opt("sha256") as? String ?: error("resource hash must be a string")
+                        require(resourceHash.matches(Regex("[0-9a-f]{64}"))) { "resource hash is invalid" }
+                        val packagedResourceName = "assets/bundle/$safeResourcePath"
+                        val packagedResource = zip.getEntry(packagedResourceName) ?: error("game resource is not packaged: $packagedResourceName")
+                        val packagedResourceHash = zip.getInputStream(packagedResource).use { sha256(it) }
+                        require(packagedResourceHash == resourceHash) { "game resource integrity failure: $packagedResourceName" }
+                    }
+                    if (recoveredIconHash.isNotBlank()) {
+                        require(game.optString("sourceIconSha256") == recoveredIconHash && game.optString("launcherIconSha256") == recoveredIconHash) { "recovered IPA launcher icon was not preserved" }
+                    }
+                    require(names.any { it == "lib/$targetAbi/libconverted.so" }) { "converted native library missing for $targetAbi" }
+                    require(names.filter { it.startsWith("lib/") && it.endsWith(".so") }.all { it.startsWith("lib/$targetAbi/") }) { "APK contains a native library for a different ABI" }
+                    val appleExecutableMagics = setOf("cffaedfe", "cefaedfe", "feedface", "feedfacf", "cafebabe", "cafebabf", "bebafeca", "bfbafeca")
+                    for (name in names) {
+                        val archiveEntry = zip.getEntry(name) ?: continue
+                        zip.getInputStream(archiveEntry).use { input ->
+                            val digest = java.security.MessageDigest.getInstance("SHA-256")
+                            val head = ByteArray(4)
+                            var count = 0
+                            while (count < head.size) {
+                                val read = input.read(head, count, head.size - count)
+                                if (read < 0) break
+                                if (read == 0) {
+                                    val next = input.read()
+                                    if (next < 0) break
+                                    head[count++] = next.toByte()
+                                } else {
+                                    count += read
+                                }
+                            }
+                            val magic = if (count == head.size) head.joinToString("") { "%02x".format(it.toInt() and 255) } else ""
+                            require(magic !in appleExecutableMagics) { "Apple executable leaked into APK" }
+                            digest.update(head, 0, count)
+                            val buffer = ByteArray(65536)
+                            while (true) {
+                                val read = input.read(buffer)
+                                if (read < 0) break
+                                if (read == 0) {
+                                    val next = input.read()
+                                    if (next < 0) break
+                                    digest.update(next.toByte())
+                                } else {
+                                    digest.update(buffer, 0, read)
+                                }
+                            }
+                            val contentHash = digest.digest().joinToString("") { "%02x".format(it.toInt() and 255) }
+                            require(contentHash != hash) { "APK embeds the original IPA content" }
+                        }
+                    }
+                }
+                @Suppress("DEPRECATION")
+                val pkg = context.packageManager.getPackageArchiveInfo(temporary.path, android.content.pm.PackageManager.GET_ACTIVITIES or android.content.pm.PackageManager.GET_SIGNATURES)
+                    ?: error("Android cannot parse APK")
+                require(pkg.packageName == expectedPackage && pkg.activities.orEmpty().any { it.name == "dev.radek.generated.MainActivity" }) { "Android package/entry mismatch" }
+                @Suppress("DEPRECATION")
+                require(!pkg.signatures.isNullOrEmpty()) { "APK signer missing" }
+                val result = File(dir, expectedName)
+                if (result.exists()) require(result.delete()) { "cannot replace existing host APK" }
+                require(temporary.renameTo(result))
+                report.put("hostConversion", JSONObject()
+                    .put("status", "ATTACHED")
+                    .put("completeGameConversion", true)
+                    .put("artifact", result.name)
+                    .put("package", expectedPackage)
+                    .put("targetAbi", targetAbi)
+                    .put("nativeCodeGenerated", true)
+                    .put("nativeCodeBytes", generatedBytes)
+                    .put("recompiledReachableFunctions", recompiledFunctions)
+                    .put("generatedApiReplacements", generatedApiReplacements)
+                    .put("notRecompiledReachableFunctions", notRecompiledFunctions)
+                    .put("sourceIconSha256", recoveredIconHash)
+                    .put("backend", conversionBackend)
+                    .put("contract", "complete-game-v1")
+                    .put("runtimeExecution", "NOT_TESTED")
+                    .put("gamePlayability", "NOT_TESTED")
+                    .put("installableAndroidPackage", true)
+                    .put("completedAt", java.time.Instant.now().toString()))
+                report.put("portProgress", JSONObject()
+                    .put("percent", 100)
+                    .put("status", "COMPLETE_CONVERSION_ATTACHED")
+                    .put("basis", "Host metadata reports all reachable code and required APIs statically recompiled; runtime execution and gameplay are not tested."))
+                report.put("conversionProgress", JSONObject()
+                    .put("percent", 100)
+                    .put("stage", "HOST_APK_VALIDATED")
+                    .put("status", "ATTACHED")
+                    .put("message", "A complete-game host APK passed static attachment checks; device execution is not tested."))
+                Library(context).save(dir, report)
+            } finally { temporary.delete() }
+        }
+    }
+}

@@ -32,7 +32,8 @@ import java.nio.charset.StandardCharsets;
 import java.util.List;
 
 public final class MainActivity extends Activity {
-    private static final int IMPORT_FILE = 10, EXPORT = 11, IMPORT_FOLDER = 12;
+    private static final int IMPORT_FILE = 10, EXPORT = 11, IMPORT_FOLDER = 12,
+                             IMPORT_APP_FOLDER = 13;
     private SharedPreferences prefs;
     private GameLibrary library;
     private PrototypeView prototype;
@@ -56,11 +57,8 @@ public final class MainActivity extends Activity {
     @Override
     public void onCreate(Bundle state) {
         prefs = getSharedPreferences("settings", MODE_PRIVATE);
-        int mode = prefs.getInt("theme", 0);
-        dark = mode == 2
-            || mode == 0
-                && (getResources().getConfiguration().uiMode & Configuration.UI_MODE_NIGHT_MASK)
-                    == Configuration.UI_MODE_NIGHT_YES;
+        dark =
+            !getSharedPreferences("radek_settings", MODE_PRIVATE).getBoolean("light_theme", false);
         setTheme(dark ? R.style.AppThemeDark : R.style.AppTheme);
         super.onCreate(state);
         library = GameLibrary.get(this);
@@ -69,12 +67,12 @@ public final class MainActivity extends Activity {
             tab = state.getString("tab", "Library");
             exportGame = state.getString("exportGame", "");
         }
-        background = color(dark ? "#091813" : "#F2F8F4");
-        surface = color(dark ? "#14271F" : "#FFFFFF");
-        ink = color(dark ? "#EDF1FC" : "#192238");
-        muted = color(dark ? "#A3ADC2" : "#6B758B");
-        line = color(dark ? "#2B3445" : "#E6EAF2");
-        accent = color(dark ? "#7AE8B5" : "#087F5B");
+        background = color(dark ? "#0B101D" : "#F5F7FA");
+        surface = color(dark ? "#141D2F" : "#FFFFFF");
+        ink = color(dark ? "#FFFFFF" : "#16202E");
+        muted = color(dark ? "#A0B2C7" : "#5C6877");
+        line = color(dark ? "#2D3B4F" : "#DCE2EA");
+        accent = color(dark ? "#5CE3B5" : "#007D70");
         soft = color(dark ? "#203E30" : "#DDF3E7");
         Diagnostics.record("APP", "library preview; game execution remains unavailable");
         home();
@@ -215,7 +213,7 @@ public final class MainActivity extends Activity {
         ImageView logo = new ImageView(this);
         logo.setImageResource(R.drawable.ic_brand);
         brand.addView(logo, new LinearLayout.LayoutParams(dp(32), dp(32)));
-        TextView wordmark = text("PodNative", 19, ink, true);
+        TextView wordmark = text("AnyiOS / Emulator", 19, ink, true);
         LinearLayout.LayoutParams wordmarkLp = new LinearLayout.LayoutParams(0, -2, 1);
         wordmarkLp.leftMargin = dp(10);
         brand.addView(wordmark, wordmarkLp);
@@ -312,7 +310,7 @@ public final class MainActivity extends Activity {
             empty.addView(intro);
             gap(empty, 12);
             TextView explanation = text(
-                "Import an IPA or an extracted game folder. We keep a private copy and read its app details. Unsupported or broken games stay visible with an explanation.",
+                "Import an IPA, a folder of separate IPAs, or an extracted app bundle. We keep a private copy and read its app details. Unsupported or broken games stay visible with an explanation.",
                 15, muted, false);
             explanation.setGravity(Gravity.CENTER);
             empty.addView(explanation);
@@ -453,7 +451,11 @@ public final class MainActivity extends Activity {
         });
         button(content, "Import game folder", false, () -> {
             sheet.dismiss();
-            selectFolder();
+            selectFolder(IMPORT_FOLDER);
+        });
+        button(content, "Import extracted app folder", false, () -> {
+            sheet.dismiss();
+            selectFolder(IMPORT_APP_FOLDER);
         });
         button(content, "Import executable only", false, () -> {
             sheet.dismiss();
@@ -476,11 +478,11 @@ public final class MainActivity extends Activity {
                                    .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION),
             IMPORT_FILE);
     }
-    private void selectFolder() {
+    private void selectFolder(int request) {
         startActivityForResult(new Intent(Intent.ACTION_OPEN_DOCUMENT_TREE)
                                    .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION
                                        | Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION),
-            IMPORT_FOLDER);
+            request);
     }
     private void gameDetails(GameLibrary.Game game) {
         Dialog sheet = new Dialog(this);
@@ -570,7 +572,7 @@ public final class MainActivity extends Activity {
             new AlertDialog.Builder(this)
                 .setTitle("Remove " + game.title + "?")
                 .setMessage(
-                    "This removes PodNative’s private copy only. Your original IPA or game folder is not changed.")
+                    "This removes the shared entry from BOTH Emulator and Converter, including local outputs. Your original IPA or folder is not changed.")
                 .setNegativeButton("Keep game", null)
                 .setPositiveButton("Remove",
                     (dialog, which) -> {
@@ -609,7 +611,7 @@ public final class MainActivity extends Activity {
                 .setType("text/plain")
                 .addCategory(Intent.CATEGORY_OPENABLE)
                 .putExtra(Intent.EXTRA_TITLE,
-                    game == null ? "PodNative-diagnostics.txt" : "PodNative-game-report.txt"),
+                    game == null ? "AnyiOS-diagnostics.txt" : "AnyiOS-game-report.txt"),
             EXPORT);
     }
     private void settingRow(
@@ -670,10 +672,10 @@ public final class MainActivity extends Activity {
             16, ink, true));
         gap(storage, 8);
         storage.addView(text(
-            "Imports include all IPA bytes or selected folder resources. Remove a game from its details to free its private copy. Limits: 2 GiB per import, 64 MiB per ARM32 slice, 64 games.",
+            "Imports include all IPA bytes or selected folder resources. Remove a game from its details to free its private copy. No fixed source-size or game-count quota; free-space and traversal/parser safety limits apply.",
             13, muted, false));
         LinearLayout about = card(parent);
-        about.addView(text("PodNative " + BuildConfig.VERSION_NAME, 16, ink, true));
+        about.addView(text("AnyiOS " + BuildConfig.VERSION_NAME, 16, ink, true));
         gap(about, 9);
         about.addView(text(
             "Game execution, guest frameworks, audio and touch overlays are not available in this preview. ARM32 CPU diagnostics are developed and tested separately.",
@@ -702,9 +704,18 @@ public final class MainActivity extends Activity {
                 (dialog, which) -> {
                     prefs.edit().putInt(key, values[which]).apply();
                     dialog.dismiss();
-                    if (key.equals("theme"))
+                    if (key.equals("theme")) {
+                        boolean light = values[which] == 1
+                            || values[which] == 0
+                                && (getResources().getConfiguration().uiMode
+                                       & Configuration.UI_MODE_NIGHT_MASK)
+                                    != Configuration.UI_MODE_NIGHT_YES;
+                        getSharedPreferences("radek_settings", MODE_PRIVATE)
+                            .edit()
+                            .putBoolean("light_theme", light)
+                            .apply();
                         recreate();
-                    else
+                    } else
                         home();
                 })
             .setNegativeButton("Cancel", null)
@@ -879,7 +890,7 @@ public final class MainActivity extends Activity {
         Uri uri = data.getData();
         if (request == IMPORT_FILE)
             library.importFile(uri);
-        else if (request == IMPORT_FOLDER) {
+        else if (request == IMPORT_FOLDER || request == IMPORT_APP_FOLDER) {
             if (library.busy) {
                 android.widget.Toast
                     .makeText(this, "Wait for the current library action to finish",
@@ -893,7 +904,10 @@ public final class MainActivity extends Activity {
             } catch (SecurityException e) {
                 Diagnostics.record("STORAGE", "Using temporary folder grant");
             }
-            library.importFolder(uri);
+            if (request == IMPORT_FOLDER)
+                library.importIpaFolder(uri);
+            else
+                library.importFolder(uri);
         } else if (request == EXPORT) {
             String report = Diagnostics.export();
             if (!exportGame.isEmpty()) {
@@ -909,7 +923,7 @@ public final class MainActivity extends Activity {
                         .show();
                     return;
                 }
-                report = "PodNative game import report\nApp=" + selected.title
+                report = "AnyiOS game import report\nApp=" + selected.title
                     + "\nVersion=" + selected.version + "\nBuild=" + BuildConfig.SOURCE_REVISION
                     + "\n\n" + selected.report
                     + (selected.launchReport.isEmpty()
@@ -939,7 +953,7 @@ public final class MainActivity extends Activity {
                                           android.widget.Toast.LENGTH_LONG)
                                       .show());
                 }
-            }, "PodNative-export").start();
+            }, "AnyiOS-export").start();
         }
     }
 }
