@@ -86,3 +86,16 @@ Android run 39492740897 stopped at depot_tools bootstrap (exit 128) before compi
 ANGLE. Its uncaptured clone output prevents an exact root-cause assertion. The next
 workflow captures that output and emits the failure tail through the API; no
 unverified download mirror or silent substitute has been added.
+
+
+Runtime run 39493714457 passed both host correctness (including the allocator
+permission regression) and the patched Android ARM64 cross-build. It published
+`PodNative-arm64-cpu-test` artifact ID 12296603610 (7,398,437 bytes), including the
+separate allocator diagnostic. This is still compilation evidence, not device output.
+
+The added diagnostics in Android run 39493714456 identified the next blocker:
+**HTTP 503 during depot_tools self-update**, after bootstrap clone succeeded.
+The official tool source is now pinned to Chromium DEPS revision
+`1eb46f8b23b4c6b3caa2be8e05999b6d1f4d0253`, and self-update is disabled so a
+reproducible checkout is not immediately replaced by an unversioned network fetch.
+No ANGLE substitute, alternate driver or unofficial tool mirror is introduced.

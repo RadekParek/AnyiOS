@@ -4,7 +4,13 @@ set -euo pipefail
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 REV=$(cat "$ROOT/third_party/angle/revision.txt")
 WORK=${ANGLE_WORK_DIR:-"$ROOT/.local/angle-build"}
+export DEPOT_TOOLS_UPDATE=0
 command -v gclient >/dev/null || { echo 'Install depot_tools first (see docs/ANGLE_INTEGRATION.md)' >&2; exit 1; }
+TOOL_REV=$(git -C "$(dirname "$(command -v gclient)")" rev-parse HEAD)
+[[ "$TOOL_REV" == "$(cat "$ROOT/third_party/angle/depot-tools-revision.txt")" ]] || {
+  echo 'Use the pinned tool checkout from scripts/bootstrap-angle-tools.sh' >&2
+  exit 1
+}
 mkdir -p "$WORK"
 cd "$WORK"
 if [[ ! -f .gclient ]]; then

@@ -46,7 +46,9 @@ hosts, sufficient free disk space (plan tens of GB) and RAM:
 
 1. Install Python3, git, JDK17, Gradle 8.11.1, Android SDK platform/build-tools 35,
    app NDK `27.2.12479018` and CMake 3.22.1. Set `ANDROID_HOME`.
-2. Follow upstream `doc/DevSetup.md` to install depot_tools and add it to PATH.
+2. Run `scripts/bootstrap-angle-tools.sh`; add `.local/depot_tools` to PATH.
+   This fetches official depot_tools at the recorded pin. `build-angle.sh` disables
+   depot_tools self-update so the checked-out source is actually the source used.
 3. Run `ANGLE_INSTALL_DEPS=1 scripts/build-angle.sh` on a disposable Ubuntu runner;
    omit the environment option if system build dependencies are already installed.
 4. The script creates a gclient workspace in `.local/angle-build`, adds
@@ -60,8 +62,12 @@ hosts, sufficient free disk space (plan tens of GB) and RAM:
 
 ANGLE has its own DEPS-pinned Android toolchain (the inspected DEPS currently
 specifies NDK `30.0.16248370`), independent of the app's NDK. Do not replace it
-speculatively with the app NDK. CI records depot_tools' revision because bootstrap
-is currently fetched at HEAD; full tool-bootstrap hermeticity is still unfinished.
+speculatively with the app NDK. depot_tools is now pinned at `1eb46f8b23b4c6b3caa2be8e05999b6d1f4d0253`,
+identified in Chromium `0f14e57ef0419795c73bf553e5c16c43259c07da` DEPS.
+Run 39493714456 diagnosed an HTTP 503 specifically during depot_tools' automatic
+self-update after a successful clone. The pinned bootstrap plus
+`DEPOT_TOOLS_UPDATE=0` removes that unversioned update fetch, not dependency checks.
+Full offline/CIPD toolchain hermeticity remains unfinished.
 ANGLE compilation succeeded in CI; full Android application compilation and
 packaging have not yet passed. Build outputs are cached by upstream revision and
 build/audit script hashes, then audited again on restore.
