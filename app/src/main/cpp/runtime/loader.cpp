@@ -188,7 +188,13 @@ LoadedImage loadMachO(const uint8_t* data, size_t size, size_t budget) {
     if (!result.memory->permits(pc, thumb ? 2 : 4, Execute))
         throw Error("LOAD_ENTRY_ACCESS", "entry is not executable", pc);
     constexpr uint32_t StackBase = 0x70000000, StackSize = 1024 * 1024;
-    // Guards remain unmapped. A segment overlapping the stack is rejected by Memory.
+    // Guard segments must also remain unmapped; a backed-only overlap check is insufficient.
+    for (const auto& segment : segments) {
+        if (uint64_t(StackBase) < uint64_t(segment.region.base) + segment.region.size &&
+            uint64_t(segment.region.base) < uint64_t(StackBase) + StackSize)
+            throw Error("LOAD_STACK_OVERLAP", "image or guard overlaps the reserved stack",
+                        StackBase);
+    }
     result.memory->map(
         {StackBase, StackSize, uint8_t(Read | Write), "PodNative stack (ABI not initialized)"});
     result.registers[13] = StackBase + StackSize - 16;

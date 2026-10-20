@@ -1,5 +1,9 @@
 # PodNative architecture
 
+Update: portable guest memory, mapping validation and the real Dynarmic CPU
+adapter are now implemented/tested on the host; see RUNTIME.md for current contracts.
+Guest frameworks and guest graphics remain unimplemented.
+
 ```text
 Android Activity / SAF importer / settings / diagnostics
               |                   |
@@ -63,8 +67,8 @@ Integrate reviewed Dynarmic A32/AArch64 behind execution/memory/host-call interf
 Use synthetic A32 and Thumb fixtures before game code. Add validated virtual memory,
 Mach-O segments, entry point, relocations and symbols. Enforce bounds, executable
 permissions and W^X; unsupported instructions/symbols carry guest PC and context.
-Guest ABI bridging and Objective-C messaging precede UIKit startup. No CPU engine
-has been integrated in this change.
+Guest ABI bridging and Objective-C messaging precede UIKit startup. The subsequent continuation integrates and host-tests Dynarmic in a separate CPU
+test target; Android linking and execution are not yet verified.
 
 Implement observed Foundation/CoreFoundation, ObjC classes/selectors, UIKit,
 EAGL/Core Animation, file access, timers, audio and input only after trace evidence.

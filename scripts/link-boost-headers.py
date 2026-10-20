@@ -1,0 +1,23 @@
+#!/usr/bin/env python3
+"""Expose unchanged, pinned Boost module headers to CMake's FindBoost."""
+
+from pathlib import Path
+import sys
+
+root, destination = (Path(value).resolve() for value in sys.argv[1:])
+count = 0
+for include in root.glob("libs/**/include/boost"):
+    for source in include.rglob("*"):
+        if not source.is_file():
+            continue
+        target = destination / source.relative_to(include)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        if target.is_symlink():
+            if target.resolve() != source.resolve():
+                raise SystemExit(f"Conflicting Boost header: {target}")
+        elif target.exists():
+            raise SystemExit(f"Refusing to replace existing file: {target}")
+        else:
+            target.symlink_to(source)
+        count += 1
+print(f"Exposed {count} pinned Boost headers (no source modifications)")

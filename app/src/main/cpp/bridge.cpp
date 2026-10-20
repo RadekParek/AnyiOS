@@ -7,6 +7,8 @@
 
 #include "graphics.h"
 #include "macho.h"
+#include "runtime/error.h"
+#include "runtime/loader.h"
 namespace {
 std::unique_ptr<podnative::GraphicsBackend> backend;
 void fail(JNIEnv* env, const std::exception& e) {
@@ -57,7 +59,19 @@ extern "C" JNIEXPORT jstring JNICALL Java_org_podnative_NativeBridge_inspect(JNI
         std::vector<uint8_t> b(n);
         env->GetByteArrayRegion(bytes, 0, n, reinterpret_cast<jbyte*>(b.data()));
         if (env->ExceptionCheck()) return nullptr;
-        return env->NewStringUTF(podnative::inspectMachO(b.data(), b.size()).c_str());
+        std::string report = podnative::inspectMachO(b.data(), b.size());
+        if (report.rfind("INSPECTED_ARM32:", 0) == 0) {
+            try {
+                // Validation is bounded and temporary; not game launch and not retained runtime
+                // state.
+                auto image = podnative::runtime::loadMachO(b.data(), b.size(), 64 * 1024 * 1024);
+                report +=
+                    "\n\n" + image.summary() + "\nValidation mappings released after inspection.";
+            } catch (const podnative::runtime::Error& e) {
+                report += "\n\nLOAD_BLOCKED: " + std::string(e.what());
+            }
+        }
+        return env->NewStringUTF(report.c_str());
     } catch (const std::exception& e) {
         fail(env, e);
         return nullptr;

@@ -1,4 +1,8 @@
-# Foundation implementation report
+# Initial foundation implementation report
+
+Historical first-slice report. See [continuation progress](PROGRESS.md) and
+[runtime status](RUNTIME.md) for subsequent commits, actual CI attempts, guest
+memory/loader implementation and successful Dynarmic host execution tests.
 
 Date: 2026-10-20
 

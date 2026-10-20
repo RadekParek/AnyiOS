@@ -20,12 +20,26 @@ renderer or framework code is incorporated. Research is not component reuse.
   dependency permission from ANGLE's top-level license alone.
 * App links to Android platform APIs/libraries; no vendor GPU driver is distributed.
 
+## Dynarmic — CPU correctness integration
+
+* Origin: https://github.com/lioncash/dynarmic
+* Exact revision: `a41c380246d3d9f9874f0f792d234dc0cc17c180` (6.7.0).
+* Root license: 0BSD, read and preserved in `third_party/dynarmic/LICENSE.txt`.
+* Original PodNative adapter; no inherited HyperHLE CPU wrapper or upstream modifications.
+* CPU and dependency licenses were read before build. All included components have
+  permissive terms allowing the intended use with retained notices. Exact dependency
+  tree hashes and host applicability: `third_party/dynarmic/DEPENDENCIES.md`.
+* fmt, mcl, oaknut, robin-map, Zycore and Zydis: MIT; xbyak: BSD-3-Clause;
+  Boost headers: BSL-1.0. Exact texts retained under `third_party/dynarmic/notices/`.
+* Boost 1.88.0 pin: `199ef13d6034c85232431130142159af3adfce22`, with modules
+  fixed by its gitlinks. These are build/test source checkouts, not vendored code.
+* Used for actual ARM/Thumb host correctness tests. Android compilation and device
+  execution are separate gates. Not yet linked into the application or used for games.
+
 ## Research only, not redistributed or linked
 
 HyperHLE-Fork `5b65054c55cc33c6095f8c4b771430da5e63fbf4` (MPL-2.0):
 README/manifest/license research; no code copied.
-Dynarmic `a41c380246d3d9f9874f0f792d234dc0cc17c180` (metadata: 0BSD):
-CPU candidate only. Dependency/license and technical integration review pending.
 Unicorn (metadata: GPL-2.0): alternative candidate, not selected or included.
 
 ## Build/test tooling, not app runtime code

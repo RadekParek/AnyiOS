@@ -33,6 +33,7 @@ void Memory::map(Region region, const uint8_t* initial, size_t initialSize) {
     const auto size = storage.region.size;
     storage_.emplace(storage.region.base, std::move(storage));
     allocated_ += size;
+    ++revision_;
 }
 const Memory::Storage& Memory::at(uint32_t address, uint8_t permission) const {
     auto it = storage_.upper_bound(address);
@@ -91,6 +92,7 @@ void Memory::write(uint32_t address, const void* source, size_t size) {
         std::memcpy(it->second.bytes.data() + offset, input + done, count);
         done += count;
     }
+    if (size) ++revision_;
 }
 uint32_t Memory::read32(uint32_t address) const {
     uint8_t b[4];

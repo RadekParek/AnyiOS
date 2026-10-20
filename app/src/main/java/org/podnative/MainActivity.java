@@ -177,7 +177,8 @@ public final class MainActivity extends Activity {
             14, muted));
         LinearLayout a = card(c);
         a.addView(text("Runtime status", 21, ink));
-        a.addView(text("Guest CPU: not integrated\nEAGL / Core Animation: not implemented\nTouch "
+        a.addView(text(
+            "Guest CPU: Dynarmic host-tested; Android integration pending\nEAGL / Core Animation: not implemented\nTouch "
                 + "overlay: unavailable until guest input exists\nDiagnostics: always "
                 + "enabled in foundation builds",
             15, muted));

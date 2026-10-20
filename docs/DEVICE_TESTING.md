@@ -1,7 +1,7 @@
 # S23 Ultra graphics acceptance
 
-No connected device, Android emulator, APK or captured image was available during
-implementation. This checklist is for an actual future build, not a test report.
+No connected device, Android emulator or captured image was available during
+implementation. Check current GitHub Actions artifact status before assuming an APK exists. This checklist is for an actual future build, not a test report.
 
 1. Download a **successfully built** `PodNative-debug.apk` CI artifact. Review
    `BUILD-INFO.txt` and SHA256SUMS. Install with `adb install -r PodNative-debug.apk`.
@@ -35,7 +35,8 @@ implementation. This checklist is for an actual future build, not a test report.
 
 | Test | Result |
 |---|---|
-| Host C++ parser regressions + deterministic malformed-input tests | Passed locally with ASan/UBSan |
+| Host parser/memory/loader + 35,000 malformed/mutated inputs | Passed locally with ASan/UBSan |
+| Real Dynarmic ARM/Thumb execution on x86-64 host | Passed |
 | Android compile / lint | Not run; SDK/JDK unavailable |
 | Source-pinned ANGLE build | Not run; Chromium download hosts unavailable |
 | APK produced/published | No |

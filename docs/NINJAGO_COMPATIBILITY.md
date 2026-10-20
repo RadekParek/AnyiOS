@@ -10,8 +10,8 @@ OS build, firmware and Vulkan driver: **not recorded**.
 
 | Stage | Acceptance | Evidence / current status |
 |---|---|---|
-| A | Recognize AND load executable | Not reached. Thin ARM32 structural inspector exists; no mapping/loader. |
-| B | Guest execution and framework initialization | Not reached; CPU and frameworks absent. |
+| A | Recognize AND load executable | Not reached. Thin ARM32 inspection and temporary mapping validation exist; no game tested. |
+| B | Guest execution and framework initialization | Not reached; CPU host fixtures pass; no game execution or frameworks. |
 | C | Valid guest EAGL graphics context | Not reached; synthetic host EGL is not guest EAGL. |
 | D | First visible game frame | Not reached; no captured game output. |
 | E | Menus and 3D scenes | Not reached. |
@@ -27,7 +27,8 @@ OS build, firmware and Vulkan driver: **not recorded**.
    Current import is **inspection only** (64 MiB executable / 1 GiB archive caps,
    at most 8 private imports). It validates MH_EXECUTE, ARM32, command ranges,
    segment file ranges and encryption metadata, not loadability or compatibility.
-4. Export diagnostic log. `INSPECTED_ARM32` is not Stage A. Fat, ARM64,
+4. Import diagnostics now also attempt temporary fixed-address mapping and report
+   `MAPPED_ARM32` or `LOAD_BLOCKED`; mappings are released, not executed. Export diagnostic log. `INSPECTED_ARM32` is not Stage A. Fat, ARM64,
    malformed or encrypted files are explicit limitations; no DRM bypass is supplied.
 5. After future loader/CPU integration, capture stage transition, guest PC,
    unresolved symbol/selector/API, first-frame/presentation result and crash log.
@@ -45,7 +46,7 @@ must not be called compatible.
 
 ## Remaining blockers
 
-Executable mapping, dyld/relocations/symbol handling, proven ARM32 execution,
+Game-validated loading, dyld/relocations/symbol handling, ARM32 execution on Android,
 Objective-C/Foundation/UIKit semantics, EAGL/Core Animation, game-specific GLES
 coverage/PVRTC, touch controls, audio, timer synchronization and saves. Prioritize
 from the user's traces once an executable runtime exists, not guessed API counts.

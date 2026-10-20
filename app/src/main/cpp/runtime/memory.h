@@ -29,6 +29,7 @@ class Memory final {
     bool permits(uint32_t address, size_t size, uint8_t permission) const;
     std::vector<Region> regions() const;
     size_t allocated() const { return allocated_; }
+    uint64_t revision() const { return revision_; }
 
    private:
     struct Storage {
@@ -38,6 +39,7 @@ class Memory final {
     std::map<uint32_t, Storage> storage_;
     size_t budget_;
     size_t allocated_ = 0;
+    uint64_t revision_ = 0;
     const Storage& at(uint32_t address, uint8_t permission) const;
     void validate(uint32_t address, size_t size, uint8_t permission) const;
     void copyOut(uint32_t address, void* destination, size_t size, uint8_t permission) const;

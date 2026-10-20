@@ -2,7 +2,7 @@
 
 An independent Android-native foundation for researching ARM32 iOS game compatibility.
 **Not yet an emulator capable of running games. No APK or verified rendered frame
-has been produced in the current sandbox.**
+has been verified on a device.**
 
 ## First slice
 
@@ -10,7 +10,8 @@ has been produced in the current sandbox.**
 * PodNative-owned graphics backend; source-pinned upstream ANGLE embedded Vulkan
   integration, with explicit failure and no disguised native-GLES fallback.
 * Shader-based animated textured cube with depth testing and reusable resources.
-* Bounded ARM32 Mach-O inspection with sanitizer-tested malformed-input handling.
+* Bounded ARM32 Mach-O inspection and temporary validated guest-memory mapping.
+* Actual Dynarmic CPU adapter with host-tested ARM/Thumb execution; Android CPU integration remains pending.
 * GitHub Actions debug/tagged-release build recipes with artifacts and provenance.
 
 No inherited TouchHLE/HyperHLE renderer. No proprietary game files. No universal
@@ -19,6 +20,8 @@ compatibility or performance claims. Ninjago stages A–G are all unverified.
 ## Build / test
 
 Host: `scripts/test-host.sh` (g++/Python required).
+Real CPU engine tests: `scripts/test-cpu.sh` (CMake/C++20/git required).
+See [runtime contracts and device test](docs/RUNTIME.md).
 
 Android: follow [ANGLE integration](docs/ANGLE_INTEGRATION.md), then use Gradle
 8.11.1/JDK17: `gradle lintDebug testDebugUnitTest assembleDebug`.
@@ -33,7 +36,7 @@ Public GitHub Release publication additionally requires the repository variable
 
 ## Engineering records
 
-[Plan](docs/PLAN.md) · [Research](docs/RESEARCH.md) ·
+[Current progress](docs/PROGRESS.md) · [Runtime](docs/RUNTIME.md) · [Plan](docs/PLAN.md) · [Research](docs/RESEARCH.md) ·
 [Architecture](docs/ARCHITECTURE.md) · [ANGLE](docs/ANGLE_INTEGRATION.md) ·
 [Ninjago status](docs/NINJAGO_COMPATIBILITY.md) ·
 [Third-party notices](THIRD_PARTY_NOTICES.md) · [Build report](docs/BUILD_REPORT.md)

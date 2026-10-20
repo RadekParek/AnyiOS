@@ -130,6 +130,15 @@ int main() {
     assert(image.registers[15] == 0x1100);
     put(b, 164, 0x13);
     fault("LOAD_CPSR", [&] { loadMachO(b.data(), b.size()); });
+    // A zero-backed guard is still reserved and must not be used for the stack.
+    b = executable();
+    put(b, 16, 3);
+    put(b, 20, 136);
+    put(b, 108, 1);
+    put(b, 112, 56);
+    put(b, 132, 0x70000000);
+    put(b, 136, 4096);
+    fault("LOAD_STACK_OVERLAP", [&] { loadMachO(b.data(), b.size()); });
     // Mutate valid headers and command bytes with a low allocation budget. Never execute fuzz data.
     std::mt19937 random(9032);
     for (int i = 0; i < 10000; i++) {
