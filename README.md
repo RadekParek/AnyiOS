@@ -73,3 +73,11 @@ CoreFoundation bit-vector/lifetime services, CoreGraphics affine math and an
 app-linked ARM/Thumb CPU self-test. These are **not playable-game compatibility**;
 [implementation boundaries and device checklist](docs/GRAPHICS_FRAMEWORK_INCREMENT.md).
 Local Android builds now also require `scripts/prepare-cpu.sh` before Gradle.
+
+### 0.4 linker/import preview
+
+ARM32 pointer rebase/bind and legacy indirect-symbol decoding, a tested transactional
+fixup applier, retained ARM64/broken imports with reasons, legacy CgBI artwork
+conversion, and a green pocket-player visual identity. Required exports and guest
+bootstrap remain unresolved: **this is not a playable Ninjago build**.
+[Scope, official Apple format references and tests](docs/DYLD_AND_IMPORT_INCREMENT.md).

@@ -28,7 +28,9 @@ original code implementing the format, not a drop-in port of Apple's dyld.
   and duplicate/conflicting stream bindings are checked. ARM stub counts are
   reported but stub execution is not initialized.
 - Loader now parses LC_DYLD_INFO streams and includes target symbol/ordinal/lazy
-  information in its report (up to 120 displayed binding entries).
+  information in its report (up to 120 displayed binding entries). Static import
+  display expands from 60 to 1024 names per category, allowing this game's 539
+  names to be reported within the existing overall report-size bound.
 - A tested fixup applier resolves through an explicit callback and validates all
   targets/values before writing. Required unresolved symbols leave memory unchanged;
   missing weak imports may become null. Weak-definition coalescing plans explicitly

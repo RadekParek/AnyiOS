@@ -114,18 +114,18 @@ std::string MachORequirements::summary() const {
     std::ostringstream out;
     out << "STATIC_IMPORT_EVIDENCE: " << imports.size() << " unique undefined symbols, "
         << libraries.size() << " libraries. Not a runtime trace.";
-    out << "\nAbsence of an import is not proof of API absence; dyld bind streams are not analyzed.";
+    out << "\nAbsence of an import is not proof of API absence. This is the static symbol table; see the separate dyld plan for binding streams.";
     out << "\nFixed-function GLES imports=" << fixedFunctionImports
         << " programmable GLES imports=" << programmableImports;
     out << "\nCompressed texture API imports=" << compressedTextureImports
         << "; actual formats (including PVRTC) unknown.";
-    constexpr size_t Limit = 60;
+    constexpr size_t Limit = 1024;
     for (size_t i = 0; i < std::min(libraries.size(), Limit); i++)
         out << "\nlibrary " << printable(libraries[i]);
     for (size_t i = 0; i < std::min(imports.size(), Limit); i++)
         out << "\n" << (imports[i].weak ? "weak " : "required ") << printable(imports[i].name);
     if (imports.size() > Limit || libraries.size() > Limit)
-        out << "\nDisplay limited to 60 names per category.";
+        out << "\nDisplay limited to 1024 names per category.";
     return out.str();
 }
 }  // namespace podnative
