@@ -51,6 +51,11 @@ corrupt IPAs retain their original private source. Clicking the entry shows the
 reason; reports include it. Unsafe/provider/copy/low-storage failures still abort
 rather than publishing an incomplete or unsafe tree.
 
+Existing entries can use **Refresh details & artwork** to update metadata/diagnostics
+and retry covers without recopying the IPA/folder or losing custom titles. Preparing
+a launch also retries its cover. This avoids reimporting a multi-GiB game merely to
+repair an old missing icon.
+
 Artwork discovery happens before executable validation, so a blocked binary no
 longer suppresses available loose launch images/icons. Legacy iOS CgBI PNG artwork
 gets original bounded raw-deflate/BGRA/unpremultiplication/filter conversion for

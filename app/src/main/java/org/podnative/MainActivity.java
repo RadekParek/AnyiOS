@@ -540,6 +540,10 @@ public final class MainActivity extends Activity {
         }
         button(content, "View import report", false, () -> showReport(game));
         button(content, "Export report", false, () -> exportReport(game));
+        button(content, "Refresh details & artwork", false, () -> {
+            sheet.dismiss();
+            library.refreshGame(game);
+        }).setEnabled(!library.busy);
         button(content, "Rename", false, () -> {
             if (library.busy)
                 return;

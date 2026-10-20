@@ -383,6 +383,46 @@ final class GameLibrary {
             revision++;
         }
     }
+    void refreshGame(Game game) {
+        if (!begin("Refreshing app details and artwork…"))
+            return;
+        worker.execute(() -> {
+            File scratch = new File(root, ".pending-refresh-" + UUID.randomUUID());
+            try {
+                mkdir(scratch);
+                File source =
+                    new File(game.directory, game.kind.equals("Folder") ? "bundle" : "source.bin");
+                GameInspector.Result result = GameInspector.analyze(source, game.title, scratch);
+                JSONObject data = readMetadata(game.directory);
+                // Keep the user's custom title, original import time and source copy.
+                data.put("version", result.version);
+                data.put("bundleId", result.bundleId);
+                data.put("architecture", result.architecture);
+                data.put("status", result.status);
+                data.put("blockReason", result.blockReason);
+                data.put("report", result.report);
+                data.put("executable", result.executable);
+                writeMetadata(game.directory, data);
+                saveCover(game.directory, result.icon);
+                refresh();
+                notice =
+                    "Details refreshed without recopying the game. Unsupported artwork may still use a placeholder.";
+            } catch (Exception | LinkageError e) {
+                error = true;
+                notice = "Could not refresh details: " + e.getMessage();
+            } finally {
+                try {
+                    if (scratch.exists())
+                        deleteTree(scratch);
+                } catch (IOException e) {
+                    Diagnostics.record("REFRESH_CLEANUP", e.toString());
+                }
+                busy = false;
+                progress = "";
+                changed();
+            }
+        });
+    }
     void runCpuProbe() {
         if (!begin("Running bounded ARM/Thumb CPU self-test…"))
             return;
@@ -414,6 +454,7 @@ final class GameLibrary {
                 File source =
                     new File(game.directory, game.kind.equals("Folder") ? "bundle" : "source.bin");
                 GameInspector.Result result = GameInspector.analyze(source, game.title, scratch);
+                saveCover(game.directory, result.icon);
                 for (int i = 0; i < result.splashImages.size(); i++) {
                     if (images.size() >= LaunchImages.MAX_IMAGES)
                         break;
