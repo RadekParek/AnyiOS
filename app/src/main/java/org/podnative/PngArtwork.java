@@ -44,11 +44,13 @@ final class PngArtwork {
             throw new IOException("CgBI PNG has no header");
         int w = integer(header, 0), h = integer(header, 4);
         if (w < 1 || h < 1 || w > 4096 || h > 4096 || (long) w * h * 4 > 16 * 1024 * 1024
-            || header[8] != 8 || header[9] != 6 || header[10] != 0 || header[11] != 0
-            || header[12] != 0)
+            || header[8] != 8 || (header[9] != 6 && header[9] != 2) || header[10] != 0
+            || header[11] != 0 || header[12] != 0)
             throw new IOException(
-                "Unsupported CgBI format/dimensions (requires noninterlaced RGBA8)");
-        int stride = w * 4;
+                "Unsupported CgBI format/dimensions (requires noninterlaced RGB/RGBA8)");
+        int channels = header[9] == 6 ? 4 : 3;
+        int stride = w * channels;
+        header[9] = 6; // Normalized output is always standard RGBA8.
         byte[] filtered = new byte[(stride + 1) * h];
         Inflater inflater = new Inflater(true);
         try {
@@ -75,8 +77,8 @@ final class PngArtwork {
                 if (filter > 4)
                     throw new IOException("Unsupported PNG row filter");
                 for (int x = 0; x < stride; x++) {
-                    int a = x < 4 ? 0 : row[x - 4] & 255, b = previous[x] & 255,
-                        c = x < 4 ? 0 : previous[x - 4] & 255;
+                    int a = x < channels ? 0 : row[x - channels] & 255, b = previous[x] & 255,
+                        c = x < channels ? 0 : previous[x - channels] & 255;
                     int prediction = filter == 0 ? 0
                         : filter == 1            ? a
                         : filter == 2            ? b
@@ -85,8 +87,8 @@ final class PngArtwork {
                     row[x] = (byte) ((filtered[y * (stride + 1) + 1 + x] & 255) + prediction);
                 }
                 raw.write(0);
-                for (int x = 0; x < stride; x += 4) {
-                    int alpha = row[x + 3] & 255;
+                for (int x = 0; x < stride; x += channels) {
+                    int alpha = channels == 4 ? row[x + 3] & 255 : 255;
                     raw.write(unmultiply(row[x + 2] & 255, alpha));
                     raw.write(unmultiply(row[x + 1] & 255, alpha));
                     raw.write(unmultiply(row[x] & 255, alpha));

@@ -312,7 +312,7 @@ public final class MainActivity extends Activity {
             empty.addView(intro);
             gap(empty, 12);
             TextView explanation = text(
-                "Import an IPA or an extracted game folder. We’ll keep a private copy, read its app details and select a supported ARM32 executable.",
+                "Import an IPA or an extracted game folder. We keep a private copy and read its app details. Unsupported or broken games stay visible with an explanation.",
                 15, muted, false);
             explanation.setGravity(Gravity.CENTER);
             empty.addView(explanation);
@@ -461,7 +461,7 @@ public final class MainActivity extends Activity {
         });
         gap(content, 14);
         content.addView(text(
-            "Folder import accepts an extracted .app bundle or a parent containing one app. ARM64-only games are not supported.",
+            "Select an extracted .app bundle or its parent. ARM64-only and broken imports can be kept in your library, but cannot execute.",
             12, muted, false));
         sheet.setContentView(content);
         sheet.show();

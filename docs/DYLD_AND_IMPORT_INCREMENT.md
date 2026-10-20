@@ -52,7 +52,9 @@ rather than publishing an incomplete or unsafe tree.
 Artwork discovery happens before executable validation, so a blocked binary no
 longer suppresses available loose launch images/icons. Legacy iOS CgBI PNG artwork
 gets original bounded raw-deflate/BGRA/unpremultiplication/filter conversion for
-noninterlaced RGBA8 images. Unsupported formats, compiled asset catalogs and images
+noninterlaced RGB8/RGBA8 images. Up to eight bounded candidates may be read,
+but only three successfully decoded images are presented; a corrupt candidate
+does not suppress later candidates. Unsupported formats, compiled asset catalogs and images
 not stored as loose launch PNGs remain unsupported; no splash content is invented.
 ARMv6 alone is not a reason to suppress artwork. Existing max-three / 900 ms
 ANGLE presentation remains. No on-device rendering success is claimed here.

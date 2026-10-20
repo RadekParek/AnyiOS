@@ -17,6 +17,9 @@ public class PngArtworkTest {
         out.writeInt(0);
     }
     private byte[] cgbi(int filter) throws Exception {
+        return cgbi(filter, false);
+    }
+    private byte[] cgbi(int filter, boolean rgb) throws Exception {
         ByteArrayOutputStream bytes = new ByteArrayOutputStream();
         DataOutputStream out = new DataOutputStream(bytes);
         out.writeLong(0x89504e470d0a1a0aL);
@@ -25,9 +28,10 @@ public class PngArtworkTest {
         DataOutputStream h = new DataOutputStream(header);
         h.writeInt(1);
         h.writeInt(1);
-        h.write(new byte[] {8, 6, 0, 0, 0});
+        h.write(new byte[] {8, (byte) (rgb ? 2 : 6), 0, 0, 0});
         chunk(out, "IHDR", header.toByteArray());
-        byte[] pixels = {(byte) filter, 0, 0, (byte) 128, (byte) 128};
+        byte[] pixels = rgb ? new byte[] {(byte) filter, 40, 80, 120}
+                            : new byte[] {(byte) filter, 0, 0, (byte) 128, (byte) 128};
         Deflater deflater = new Deflater(6, true);
         deflater.setInput(pixels);
         deflater.finish();
@@ -40,8 +44,10 @@ public class PngArtworkTest {
     }
     @Test
     public void convertsRawBgraAndUnpremultipliesForAllFilters() throws Exception {
-        for (int filter = 0; filter <= 4; filter++) {
-            byte[] png = PngArtwork.normalize(cgbi(filter));
+        for (int variant = 0; variant < 10; variant++) {
+            int filter = variant % 5;
+            boolean rgb = variant >= 5;
+            byte[] png = PngArtwork.normalize(cgbi(filter, rgb));
             var input = new java.io.DataInputStream(new ByteArrayInputStream(png));
             input.readLong();
             byte[] idat = null;

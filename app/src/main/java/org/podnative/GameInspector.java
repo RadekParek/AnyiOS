@@ -214,7 +214,7 @@ final class GameInspector {
                 if (name.startsWith(root))
                     artwork.add(name.substring(root.length()));
             for (String name : LaunchImages.candidates(info, artwork)) {
-                if (result.splashImages.size() == LaunchImages.MAX_IMAGES)
+                if (result.splashImages.size() == 8)
                     break;
                 ZipEntry image = zip.getEntry(root + name);
                 if (image == null || image.isDirectory())
@@ -322,7 +322,7 @@ final class GameInspector {
                 if (image.isFile())
                     artwork.add(image.getName());
         for (String name : LaunchImages.candidates(info, artwork)) {
-            if (result.splashImages.size() == LaunchImages.MAX_IMAGES)
+            if (result.splashImages.size() == 8)
                 break;
             try (InputStream in = new FileInputStream(new File(bundle, name))) {
                 result.splashImages.add(bounded(in, 4 * 1024 * 1024));
