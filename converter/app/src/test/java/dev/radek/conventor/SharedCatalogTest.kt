@@ -47,6 +47,26 @@ class SharedCatalogTest {
         } finally { SharedCatalog.end() }
     }
 
+    @Test fun recoveryCannotMutateAnEntryWhileAnotherModuleOwnsTheCatalog() {
+        val library = Library(RuntimeEnvironment.getApplication())
+        val entry = File(library.root, "game-${UUID.randomUUID()}").apply { mkdirs() }
+        try {
+            File(entry, "source.bin").writeText("original bytes")
+            File(entry, "convert-workspace").mkdirs()
+            library.save(entry, JSONObject().put("state", "ANALYZING"))
+            assertTrue(SharedCatalog.tryBegin())
+            library.recoverInterrupted()
+            assertEquals("ANALYZING", JSONObject(File(entry, "report.json").readText()).getString("state"))
+            assertTrue(File(entry, "convert-workspace").isDirectory)
+            assertTrue(SharedCatalog.isBusy())
+            SharedCatalog.end()
+            library.recoverInterrupted()
+            assertEquals("FAILED", JSONObject(File(entry, "report.json").readText()).getString("state"))
+            assertFalse(File(entry, "convert-workspace").exists())
+            assertEquals("original bytes", File(entry, "source.bin").readText())
+        } finally { SharedCatalog.end(); entry.deleteRecursively() }
+    }
+
     @Test fun interruptedConverterReportWithoutHashCannotDeleteCanonicalSource() {
         val library = Library(RuntimeEnvironment.getApplication())
         val entry = File(library.root, "game-${UUID.randomUUID()}").apply { mkdirs() }

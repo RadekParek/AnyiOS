@@ -96,43 +96,49 @@ class Library(private val context: Context) {
     }
 
     fun recoverInterrupted() {
-        // Never remove shared emulator sources just because they have no converter report.
-        entries().filter { File(it.first, "report.json").isFile }.forEach { (dir, report) ->
-            var changed = false
-            if (report.optString("state") in listOf("IMPORTED", "ANALYZING", "CONVERTING", "PACKAGING", "VALIDATING")) {
-                val interruptedMessage = "Process ended before work completed; inspect the last saved stage or retry"
-                report.put("state", "FAILED").put("error", interruptedMessage)
-                report.optJSONObject("analysisProgress")
-                    ?.put("status", "FAILED")
-                    ?.put("message", interruptedMessage)
-                report.optJSONObject("conversionProgress")
-                    ?.put("status", "FAILED")
-                    ?.put("message", interruptedMessage)
-                report.optJSONObject("workflowProgress")
-                    ?.put("status", "FAILED")
-                    ?.put("message", interruptedMessage)
-                File(dir, "extracted").deleteRecursively()
-                // Canonical source is immutable and owned by the shared catalog.
-                changed = true
+        // Recovery writes reports and removes scratch workspaces, so it is a job too.
+        if (!SharedCatalog.tryBegin()) return
+        try {
+            // Never remove shared emulator sources just because they have no converter report.
+            entries().filter { File(it.first, "report.json").isFile }.forEach { (dir, report) ->
+                var changed = false
+                if (report.optString("state") in listOf("IMPORTED", "ANALYZING", "CONVERTING", "PACKAGING", "VALIDATING")) {
+                    val interruptedMessage = "Process ended before work completed; inspect the last saved stage or retry"
+                    report.put("state", "FAILED").put("error", interruptedMessage)
+                    report.optJSONObject("analysisProgress")
+                        ?.put("status", "FAILED")
+                        ?.put("message", interruptedMessage)
+                    report.optJSONObject("conversionProgress")
+                        ?.put("status", "FAILED")
+                        ?.put("message", interruptedMessage)
+                    report.optJSONObject("workflowProgress")
+                        ?.put("status", "FAILED")
+                        ?.put("message", interruptedMessage)
+                    File(dir, "extracted").deleteRecursively()
+                    // Canonical source is immutable and owned by the shared catalog.
+                    changed = true
+                }
+                report.optJSONObject("placeholderBuildProgress")
+                    ?.takeIf { it.optString("status") == "BUILDING" || it.optString("status") == "SIGNING" || it.optString("status") == "VERIFYING" }
+                    ?.let { placeholder ->
+                        placeholder.put("status", "FAILED")
+                            .put("percent", 0)
+                            .put("message", "Preview shell build was interrupted before it finished; retry Force to rebuild it.")
+                        changed = true
+                    }
+                report.optJSONObject("convertedBuildProgress")
+                    ?.takeIf { it.optString("status") == "CONVERTING" || it.optString("status") == "PACKAGING" || it.optString("status") == "SIGNING" || it.optString("status") == "VERIFYING" }
+                    ?.let { converted ->
+                        converted.put("status", "FAILED")
+                            .put("percent", 0)
+                            .put("message", "Conversion was interrupted before it finished; retry Force convert to rebuild the APK.")
+                        changed = true
+                    }
+                File(dir, "convert-workspace").deleteRecursively()
+                if (changed) save(dir, report)
             }
-            report.optJSONObject("placeholderBuildProgress")
-                ?.takeIf { it.optString("status") == "BUILDING" || it.optString("status") == "SIGNING" || it.optString("status") == "VERIFYING" }
-                ?.let { placeholder ->
-                    placeholder.put("status", "FAILED")
-                        .put("percent", 0)
-                        .put("message", "Preview shell build was interrupted before it finished; retry Force to rebuild it.")
-                    changed = true
-                }
-            report.optJSONObject("convertedBuildProgress")
-                ?.takeIf { it.optString("status") == "CONVERTING" || it.optString("status") == "PACKAGING" || it.optString("status") == "SIGNING" || it.optString("status") == "VERIFYING" }
-                ?.let { converted ->
-                    converted.put("status", "FAILED")
-                        .put("percent", 0)
-                        .put("message", "Conversion was interrupted before it finished; retry Force convert to rebuild the APK.")
-                    changed = true
-                }
-            File(dir, "convert-workspace").deleteRecursively()
-            if (changed) save(dir, report)
+        } finally {
+            SharedCatalog.end()
         }
     }
 
