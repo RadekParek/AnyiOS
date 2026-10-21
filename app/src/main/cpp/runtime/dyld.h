@@ -23,12 +23,15 @@ struct DyldPlan {
     bool needsCoalescing = false;
     std::vector<std::string> strongDefinitions;
     std::string summary() const;
-    void applyWithGraph(Memory& memory, uint32_t slide, const ExportGraph& graph,
-                        size_t requester) const;
+    // Optional trap hook binds required imports with no implementation to a faulting
+    // gate, so execution can start and stop at the exact missing API. Weak imports
+    // still bind to null, matching C semantics.
+    void applyWithGraph(Memory& memory, uint32_t slide, const ExportGraph& graph, size_t requester,
+                        const std::function<uint32_t(const std::string&)>& trap = {}) const;
     // All resolutions/ranges are checked before writes. No unresolved required import is zeroed.
     void apply(
         Memory& memory, uint32_t slide,
-        const std::function<std::optional<uint32_t>(int, const std::string&)>& resolve) const;
+        const std::function<std::optional<uint32_t>(int, const std::string&, bool)>& resolve) const;
 };
 DyldPlan decodeDyld(const uint8_t* bytes, size_t size, const std::vector<DyldSegment>& segments,
                     bool rebase, bool lazy = false, bool weakStream = false);

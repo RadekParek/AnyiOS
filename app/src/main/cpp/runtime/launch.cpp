@@ -3,78 +3,104 @@
 #include <set>
 
 #include "error.h"
+#ifdef PODNATIVE_CPU_IN_APP
+#include "execution.h"
+#endif
 #include "exports.h"
 #include "loader.h"
 #include "services.h"
 
 namespace podnative::runtime {
 namespace {
-std::string audit(const LoadedImage& image) {
+constexpr uint64_t InstructionBudget = 2000000;
+constexpr double Seconds = 2.5;
+
+std::string audit(const LoadedImage& image, Services& services) {
     ExportGraph graph;
-    Services services(*image.memory);
     services.install(graph);
     auto main = graph.addImage("<executable>");
     graph.setMainExecutable(main);
     graph.dependencies(main, image.dependencies);
     for (const auto& [name, definition] : image.exports) graph.define(main, name, definition);
 
-    std::set<std::string> missingRequired, missingWeak, resolvedRequired, resolvedWeak;
+    std::set<std::string> missingRequired, missingWeak;
     for (const auto& fixup : image.dyld.fixups) {
         if (fixup.rebase) continue;
-        const bool found = graph.resolve(main, fixup.ordinal, fixup.symbol).has_value();
-        auto& bucket = found ? (fixup.weak ? resolvedWeak : resolvedRequired)
-                             : (fixup.weak ? missingWeak : missingRequired);
-        bucket.insert(fixup.symbol);
+        if (graph.resolve(main, fixup.ordinal, fixup.symbol)) continue;
+        (fixup.weak ? missingWeak : missingRequired).insert(fixup.symbol);
     }
-    size_t strongMissing = 0;
-    for (const auto& name : image.dyld.strongDefinitions)
-        if (!graph.strong(main, name)) strongMissing++;
-
-    std::string out =
-        "\nDYLD_EXPORT_AUDIT: " + std::to_string(resolvedRequired.size()) + " of " +
-        std::to_string(resolvedRequired.size() + missingRequired.size()) +
-        " unique required imports have host implementations; " +
-        std::to_string(missingRequired.size()) + " required, " +
-        std::to_string(missingWeak.size()) +
-        " weak imports lack one. This is an implementation audit, not a runtime trace.";
-    out +=
-        "\nHLE_SERVICES: " + std::to_string(services.count()) +
-        " checked ARM call gates (C memory/string plus CoreFoundation bit vectors). Missing APIs are hard failures.";
-    if (image.dyld.needsCoalescing)
-        out += "\nDYLD_COALESCING: " + std::to_string(image.dyld.strongDefinitions.size()) +
-               " strong declarations; " + std::to_string(strongMissing) +
-               " lack a registered strong definition, so coalescing cannot be applied.";
-    if (!missingRequired.empty()) {
-        out += "\nDYLD_BLOCKED_EXPORT: ";
-        size_t shown = 0;
-        for (const auto& name : missingRequired) {
-            if (shown++ == 8) break;
-            out += name + " ";
-        }
-        if (missingRequired.size() > 8) out += "(and more)";
-    }
-    return out;
+    return std::to_string(services.count()) + " implemented APIs; " +
+           std::to_string(missingRequired.size()) + " required and " +
+           std::to_string(missingWeak.size()) + " weak imported symbols still " +
+           "lack implementations.";
 }
+
+#ifdef PODNATIVE_CPU_IN_APP
+// Real guest stack: argc/argv/envp plus a null-terminated environment block.
+void prepareStack(LoadedImage& image, Memory& memory) {
+    constexpr uint32_t StackBase = 0x70000000;
+    constexpr uint32_t StackSize = 1024 * 1024;
+    const uint32_t top = StackBase + StackSize - 64;
+    const char argv0[] = "AnyiOS";
+    const char env0[] = "HOME=/var/mobile";
+    memory.write(top - 32, argv0, sizeof(argv0));
+    memory.write(top - 64, env0, sizeof(env0));
+    const uint32_t argv = top - 96;
+    memory.write32(argv, top - 32);
+    memory.write32(argv + 4, 0);
+    const uint32_t envp = argv - 8;
+    memory.write32(envp, top - 64);
+    memory.write32(envp + 4, 0);
+    image.registers[0] = 1;
+    image.registers[1] = argv;
+    image.registers[2] = envp;
+    image.registers[13] = envp - 8;
+    image.registers[14] = 0;
+}
+#endif
 }  // namespace
+
 std::string attemptLaunch(const uint8_t* data, size_t size) {
     try {
         auto image = loadMachO(data, size, 64 * 1024 * 1024);
-        const std::string blocker =
-            image.requiresDyld
-                ? "DYLD_RESOLUTION_BLOCKED: export resolution and coalescing are implemented as checked operations, but this launch remains blocked while required imports lack host implementations and Darwin process bootstrap is absent."
-#ifdef PODNATIVE_CPU_IN_APP
-                : "GUEST_ABI_UNIMPLEMENTED: CPU engine is linked; Darwin process bootstrap and service dispatch are not ready. Run Diagnostics CPU self-test separately.";
-#else
-                : "CPU_NOT_INTEGRATED: the tested CPU engine is not linked into this Android app.";
-#endif
-        std::string details;
-        try {
-            details = audit(image);
-        } catch (const Error& e) {
-            details = "\nDYLD_EXPORT_AUDIT: unavailable (" + std::string(e.what()) + ")";
+        Services services(*image.memory);
+        ExportGraph graph;
+        services.install(graph);
+        auto main = graph.addImage("<executable>");
+        graph.setMainExecutable(main);
+        graph.dependencies(main, image.dependencies);
+        for (const auto& [name, definition] : image.exports) graph.define(main, name, definition);
+
+        const std::string coverage = audit(image, services);
+        if (!image.requiresDyld || image.dyld.fixups.empty()) {
+            return "LAUNCH_BLOCKED: GUEST_ABI_UNIMPLEMENTED: the image needs no dyld work, but "
+                   "Darwin process bootstrap is not implemented.\nDYLD_EXPORT_AUDIT: " +
+                   coverage + "\n" + image.summary();
         }
-        return "LAUNCH_BLOCKED: " + blocker + details + "\n" + image.summary() +
-               "\nGuest code was not executed. Validation mappings released.";
+#ifdef PODNATIVE_CPU_IN_APP
+        prepareStack(image, *image.memory);
+        GuestRun run;
+        try {
+            run = runGuest(image, services, graph, main, InstructionBudget, Seconds);
+        } catch (const Error& e) {
+            return "LAUNCH_BLOCKED: GUEST_SETUP: " + std::string(e.what()) +
+                   "\nNo guest instruction retired.\nDYLD_EXPORT_AUDIT: " + coverage + "\n" +
+                   image.summary();
+        }
+        const std::string header =
+            run.stop == "UNIMPLEMENTED" || run.stop == "TRAPPED"
+                ? "LAUNCH_BLOCKED: HLE_GAP: the guest started and stopped at an API that is not "
+                  "implemented yet."
+                : "LAUNCH_ATTEMPT: the guest image actually executed.";
+        return header + "\n" + describeRun(run) + "\nDYLD_EXPORT_AUDIT: " + coverage + "\n" +
+               image.summary() +
+               "\nThis is bounded execution of a validated image, not evidence of gameplay, "
+               "rendering or a working app.";
+#else
+        return "LAUNCH_BLOCKED: CPU_NOT_INTEGRATED: the tested CPU engine is not linked into "
+               "this build.\nDYLD_EXPORT_AUDIT: " +
+               coverage + "\n" + image.summary();
+#endif
     } catch (const Error& e) {
         return "LAUNCH_BLOCKED: " + std::string(e.what()) +
                "\nGuest code was not executed. Original game files are unchanged.";

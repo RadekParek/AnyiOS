@@ -15,5 +15,5 @@ jobs:
   build:
     uses: ./.github/workflows/build.yml
     with:
-      variant: debug
-      artifact: AnyiOS-debug.apk
+      variant: release
+      artifact: AnyiOS.apk

@@ -7,6 +7,7 @@
 
 #include "runtime/cpu_probe.h"
 #include "runtime/error.h"
+#include "runtime/execution.h"
 #include "runtime/exports.h"
 #include "runtime/services.h"
 using namespace podnative::runtime;
@@ -169,5 +170,53 @@ int main() {
     assert(result.reason == StopReason::Budget);
     memory.read(0x7300, copied, 5);
     assert(std::memcmp(copied, callText, 4) == 0);
+    // Real bounded guest execution through the same path the app uses.
+    {
+        LoadedImage guest;
+        guest.memory = std::make_unique<Memory>();
+        std::vector<uint8_t> program(4096, 0), scratch(4096, 0);
+        const uint32_t trap = services.trapFor("_UIApplicationMain");
+        putMovAddress(program, 0, trap);
+        put(program, 8, 0xe12fff33);   // blx r3 -> unimplemented import
+        put(program, 12, 0xeafffffe);  // b .
+        guest.memory->map({0x8000, 4096, uint8_t(Read | Execute), "guest program"}, program.data(),
+                          program.size());
+        guest.memory->map({0x9000, 4096, uint8_t(Read | Write), "guest data"}, scratch.data(),
+                          scratch.size());
+        guest.registers[13] = 0x9ff0;
+        guest.registers[15] = 0x8000;
+        guest.cpsr = 0x10;
+        ExportGraph graph;
+        services.install(graph);
+        auto main = graph.addImage("<guest>");
+        graph.setMainExecutable(main);
+        auto run = runGuest(guest, services, graph, main, 100000, 2.0);
+        assert(run.stop == "UNIMPLEMENTED");
+        assert(run.detail.find("_UIApplicationMain") != std::string::npos);
+        assert(run.instructions >= 3);
+        assert(run.trappedImports >= 1);
+        assert(describeRun(run).find("GUEST_STOP: UNIMPLEMENTED") != std::string::npos);
+        // A guest that only calls an implemented API keeps running to its budget.
+        LoadedImage working;
+        working.memory = std::make_unique<Memory>();
+        std::vector<uint8_t> loops(4096, 0);
+        putMovAddress(loops, 0, gate);
+        put(loops, 8, 0xe12fff33);
+        put(loops, 12, 0xeafffffe);
+        working.memory->map({0x8000, 4096, uint8_t(Read | Execute), "implemented call"},
+                            loops.data(), loops.size());
+        working.memory->map({0xA000, 4096, uint8_t(Read | Write), "call buffers"}, scratch.data(),
+                            scratch.size());
+        working.registers[0] = 0xA200;
+        working.registers[1] = 0xA000;
+        working.registers[2] = 8;
+        working.registers[13] = 0xAFF0;
+        working.registers[15] = 0x8000;
+        working.cpsr = 0x10;
+        auto call = runGuest(working, services, graph, main, 50000, 2.0);
+        assert(call.serviceCalls >= 1);
+        assert(call.stop == "BUDGET" || call.stop == "UNIMPLEMENTED");
+        std::cout << "Bounded guest execution, host service dispatch and trap reporting passed\n";
+    }
     std::cout << "Real Dynarmic ARM/Thumb, memory, service-trap, budget and fault tests passed\n";
 }

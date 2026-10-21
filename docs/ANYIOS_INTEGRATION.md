@@ -42,6 +42,25 @@ Converter inclusion is explicitly requested by its owner. Upstream has no root l
 - Guest C runtime increment: owned guest heap, bounded string/number/math/atomic services and checked dispatch, raising implemented imports from 9 to 48 of the 438 unique names in the latest device report. Host sanitizer tests cover allocator invariants, parsing, VFP float/double returns and explicit non-implementation of `qsort`/`printf`/UIKit entry points.
 - Architecture research of HyperHLE-Reborn (MPL-2.0) covered its general host-dylib export/interface separation only. No source or renderer was copied; the independent ANGLE renderer is unchanged.
 
+### Execution, Objective-C and installer increment (2026-10-21)
+
+- `runGuest` applies resolved dyld fixups, seeds an argc/argv/envp stack, and executes the
+  real CPU in bounded slices (2M instructions / 2.5 s), dispatching host services and
+  reporting instructions retired, final PC, host calls and the exact stopping reason.
+- Required imports with no implementation bind to faulting gates instead of aborting launch,
+  so a blocked title now reports the first missing API instead of refusing to start. Weak
+  imports still bind to null.
+- Objective-C runtime core: guest class objects, selectors as interned guest strings,
+  `objc_msgSend`/`objc_getClass`/`sel_registerName`/retain/release/autorelease dispatch,
+  NSObject lifecycle and identity, NSString length/UTF8String/hash/isEqualToString:, and
+  NSAutoreleasePool push/drain. Unknown classes, selectors and receivers fail hard.
+- Installer warning mitigation: the published artifact is now a non-debuggable release
+  (`AnyiOS.apk`) signed with the cached preview certificate so it still upgrades an existing
+  install. The converter keeps `REQUEST_INSTALL_PACKAGES` because installing generated APKs
+  requires it; that permission is the remaining scanner-facing surface.
+
 ### Remaining runtime work
 
-This increment fixes the decoder rejection class and establishes export resolution, coalescing and checked call-gate dispatch, but does not implement all imported APIs. Production Emulator still blocks while required exports lack implementations, legacy/symbol stubs have no execution path, and Darwin/Objective-C/UIKit/EAGL process bootstrap is absent alongside dependency loading, re-exports/general export tries, variadic/hard-float ABI details and application lifecycle. **A successful APK build or linker test is not game execution or compatibility evidence.** Converter's independent experimental runtime and API implementations remain in its own pipeline; they are not silently presented as a complete implementation of the independent ANGLE emulator. Compiled asset catalogs, procedural launch scenes and complete game rendering remain unproven here. A separately installed converter's old private Android sandbox is not automatically readable; reimport its original IPAs into the new shared catalog.
+The decoder rejection, export resolution, coalescing, checked call-gate dispatch, guest heap,
+C runtime, bounded guest execution and Objective-C core are implemented, but not all imported
+APIs are. Production Emulator still blocks while required exports lack implementations, legacy/symbol stubs have no execution path, and Darwin/Objective-C/UIKit/EAGL process bootstrap is absent alongside dependency loading, re-exports/general export tries, variadic/hard-float ABI details and application lifecycle. **A successful APK build or linker test is not game execution or compatibility evidence.** Converter's independent experimental runtime and API implementations remain in its own pipeline; they are not silently presented as a complete implementation of the independent ANGLE emulator. Compiled asset catalogs, procedural launch scenes and complete game rendering remain unproven here. A separately installed converter's old private Android sandbox is not automatically readable; reimport its original IPAs into the new shared catalog.

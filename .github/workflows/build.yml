@@ -32,7 +32,6 @@ jobs:
       # Development keys only, never release signing material. Cache eviction can
       # change this certificate; durable distribution requires configured signing secrets.
       - name: Reuse development signing identity when cached
-        if: inputs.variant == 'debug'
         uses: actions/cache@v4
         with:
           path: ~/.android/debug.keystore
@@ -117,6 +116,20 @@ jobs:
             third_party/angle/include/
             app/src/main/assets/angle-notices/
             app/src/main/assets/angle-revision.txt
+      # A debuggable APK is what Play Protect and Samsung's installer warn about.
+      # Sign the release variant with the same cached certificate so it stays
+      # non-debuggable yet still upgrades an already-installed preview build.
+      - name: Ensure preview signing identity
+        if: inputs.variant == 'release'
+        run: |
+          mkdir -p "$HOME/.android"
+          KEYSTORE="$HOME/.android/debug.keystore"
+          if [ ! -f "$KEYSTORE" ]; then
+            keytool -genkeypair -v -keystore "$KEYSTORE" -storepass android \
+              -alias androiddebugkey -keypass android -keyalg RSA -keysize 2048 \
+              -validity 10000 -dname 'CN=Android Debug,O=Android,C=US'
+          fi
+          echo "PODNATIVE_PREVIEW_KEYSTORE=$KEYSTORE" >> "$GITHUB_ENV"
       - name: Configure optional release signing
         if: inputs.variant == 'release'
         env:

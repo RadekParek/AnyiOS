@@ -229,7 +229,7 @@ DyldPlan decodeDyld(const uint8_t* bytes, size_t size, const std::vector<DyldSeg
 }
 void DyldPlan::apply(
     Memory& memory, uint32_t slide,
-    const std::function<std::optional<uint32_t>(int, const std::string&)>& resolve) const {
+    const std::function<std::optional<uint32_t>(int, const std::string&, bool)>& resolve) const {
     if (needsCoalescing)
         throw Error("DYLD_COALESCING_UNIMPLEMENTED",
                     "weak-definition coalescing requires a dependency/export graph");
@@ -242,7 +242,7 @@ void DyldPlan::apply(
         if (f.rebase)
             value = int64_t(memory.read32(f.address)) + slide;
         else {
-            auto found = resolve ? resolve(f.ordinal, f.symbol) : std::optional<uint32_t>{};
+            auto found = resolve ? resolve(f.ordinal, f.symbol, f.weak) : std::optional<uint32_t>{};
             if (!found && !f.weak)
                 throw Error("DYLD_UNRESOLVED", "required symbol has no resolver result");
             if (found && f.addend > INT64_MAX - int64_t(*found))
@@ -255,7 +255,8 @@ void DyldPlan::apply(
     for (auto [address, value] : writes) memory.write32(address, value);
 }
 void DyldPlan::applyWithGraph(Memory& memory, uint32_t slide, const ExportGraph& graph,
-                              size_t requester) const {
+                              size_t requester,
+                              const std::function<uint32_t(const std::string&)>& trap) const {
     for (const auto& name : strongDefinitions)
         if (!graph.hasStrong(name))
             throw Error("DYLD_WEAK_DEFINITION",
@@ -280,8 +281,10 @@ void DyldPlan::applyWithGraph(Memory& memory, uint32_t slide, const ExportGraph&
     }
     // Coalescing already ran above. apply() must not reject the normalized plan
     // merely because its original stream was the weak-binding stream.
-    normalized.apply(memory, slide, [&](int ordinal, const std::string& name) {
-        return graph.resolve(requester, ordinal, name);
+    normalized.apply(memory, slide, [&](int ordinal, const std::string& name, bool weak) {
+        if (auto found = graph.resolve(requester, ordinal, name)) return found;
+        if (trap && !weak) return std::optional<uint32_t>(trap(name));
+        return std::optional<uint32_t>{};
     });
 }
 std::string DyldPlan::summary() const {

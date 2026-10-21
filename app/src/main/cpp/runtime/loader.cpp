@@ -386,9 +386,7 @@ std::string LoadedImage::summary() const {
     s << "MAPPED_ARM32: " << memory->regions().size() << " regions, " << memory->allocated()
       << " guest bytes; entry=0x" << std::hex << registers[15] << (cpsr & 0x20 ? " Thumb" : " ARM")
       << " SP=0x" << registers[13];
-    s << "\nExecution BLOCKED: "
-      << (requiresDyld ? "required dyld imports or coalescing unresolved; " : "")
-      << "guest CPU, application ABI and frameworks not initialized.";
+    s << "\nImage mapping is complete; this summary alone does not start the guest.";
     s << "\n" << dyld.summary();
     if (!exports.empty()) s << "\nDefined exports=" << exports.size();
     if (dyld.needsCoalescing)
