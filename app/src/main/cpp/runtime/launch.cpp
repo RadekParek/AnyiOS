@@ -15,24 +15,33 @@ namespace {
 constexpr uint64_t InstructionBudget = 2000000;
 constexpr double Seconds = 2.5;
 
-std::string audit(const LoadedImage& image, Services& services) {
-    ExportGraph graph;
-    services.install(graph);
-    auto main = graph.addImage("<executable>");
-    graph.setMainExecutable(main);
-    graph.dependencies(main, image.dependencies);
-    for (const auto& [name, definition] : image.exports) graph.define(main, name, definition);
-
+// Coverage audit over everything that must bind before guest code may run: pointer
+// fixups and classic symbol stubs. Stub symbols are reported too, because a stub that
+// forwards to an unimplemented API is exactly as fatal as an unresolvable pointer.
+struct Coverage {
+    size_t required = 0, weak = 0;
     std::set<std::string> missingRequired, missingWeak;
+    std::string describe(size_t implemented) const {
+        return std::to_string(implemented) + " implemented APIs; " + std::to_string(required) +
+               " required and " + std::to_string(weak) +
+               " weak imported symbols still lack implementations.";
+    }
+};
+
+Coverage audit(const LoadedImage& image, const ExportGraph& graph, size_t main) {
+    Coverage coverage;
+    auto check = [&](int ordinal, const std::string& symbol, bool weak) {
+        if (graph.resolve(main, ordinal, symbol)) return;
+        (weak ? coverage.missingWeak : coverage.missingRequired).insert(symbol);
+    };
     for (const auto& fixup : image.dyld.fixups) {
         if (fixup.rebase) continue;
-        if (graph.resolve(main, fixup.ordinal, fixup.symbol)) continue;
-        (fixup.weak ? missingWeak : missingRequired).insert(fixup.symbol);
+        check(fixup.ordinal, fixup.symbol, fixup.weak);
     }
-    return std::to_string(services.count()) + " implemented APIs; " +
-           std::to_string(missingRequired.size()) + " required and " +
-           std::to_string(missingWeak.size()) + " weak imported symbols still " +
-           "lack implementations.";
+    for (const auto& stub : image.stubs) check(stub.ordinal, stub.symbol, stub.weak);
+    coverage.required = coverage.missingRequired.size();
+    coverage.weak = coverage.missingWeak.size();
+    return coverage;
 }
 
 #ifdef PODNATIVE_CPU_IN_APP
@@ -71,27 +80,34 @@ std::string attemptLaunch(const uint8_t* data, size_t size, const std::string& b
         if (!bundleHost.empty() && !containerHost.empty())
             services.mountSandbox(bundleHost, containerHost);
         ExportGraph graph;
-        services.install(graph);
+        services.install(graph, image.dependencies);
         auto main = graph.addImage("<executable>");
         graph.setMainExecutable(main);
         graph.dependencies(main, image.dependencies);
         for (const auto& [name, definition] : image.exports) graph.define(main, name, definition);
 
-        const std::string coverage = audit(image, services);
-        if (!image.requiresDyld || image.dyld.fixups.empty()) {
+        const Coverage coverage = audit(image, graph, main);
+        const std::string report = coverage.describe(services.count());
+        if (!image.requiresDyld || (image.dyld.fixups.empty() && image.stubs.empty())) {
             return "LAUNCH_BLOCKED: GUEST_ABI_UNIMPLEMENTED: the image needs no dyld work, but "
                    "Darwin process bootstrap is not implemented.\nDYLD_EXPORT_AUDIT: " +
-                   coverage + "\n" + image.summary();
+                   report + "\n" + image.summary();
         }
+        // Redirect every classic symbol stub before the first instruction: to the real
+        // implementation when one exists, otherwise to a trap gate that names the symbol.
+        if (!image.stubs.empty())
+            bindLegacyStubs(image, graph, main,
+                            [&](const std::string& name) { return services.trapFor(name); });
 #ifdef PODNATIVE_CPU_IN_APP
         prepareStack(image, *image.memory);
         GuestRun run;
         try {
             run = runGuest(image, services, graph, main, InstructionBudget, Seconds);
             services.closeGuestFiles();
+            services.drainGuestPools();
         } catch (const Error& e) {
             return "LAUNCH_BLOCKED: GUEST_SETUP: " + std::string(e.what()) +
-                   "\nNo guest instruction retired.\nDYLD_EXPORT_AUDIT: " + coverage + "\n" +
+                   "\nNo guest instruction retired.\nDYLD_EXPORT_AUDIT: " + report + "\n" +
                    image.summary();
         }
         const std::string header =
@@ -99,14 +115,14 @@ std::string attemptLaunch(const uint8_t* data, size_t size, const std::string& b
                 ? "LAUNCH_BLOCKED: HLE_GAP: the guest started and stopped at an API that is not "
                   "implemented yet."
                 : "LAUNCH_ATTEMPT: the guest image actually executed.";
-        return header + "\n" + describeRun(run) + "\nDYLD_EXPORT_AUDIT: " + coverage +
+        return header + "\n" + describeRun(run) + "\nDYLD_EXPORT_AUDIT: " + report +
                "\nGUEST_STORAGE: " + services.storageSummary() + "\n" + image.summary() +
                "\nThis is bounded execution of a validated image, not evidence of gameplay, "
                "rendering or a working app.";
 #else
         return "LAUNCH_BLOCKED: CPU_NOT_INTEGRATED: the tested CPU engine is not linked into "
                "this build.\nDYLD_EXPORT_AUDIT: " +
-               coverage + "\n" + image.summary();
+               report + "\n" + image.summary();
 #endif
     } catch (const Error& e) {
         return "LAUNCH_BLOCKED: " + std::string(e.what()) +

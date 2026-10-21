@@ -262,6 +262,43 @@ int main() {
     assert(image.memory->read32(0x1300) == 0x4455);
     put(b, 144, 1);
     fault("DYLD_INDIRECT_SECTION", [&] { loadMachO(b.data(), b.size()); });
+    // Classic symbol stubs: each is rewritten to "ldr r12, [pc] / bx r12 / .word target" so
+    // no uninitialised lazy pointer is ever executed. Resolved symbols jump to the real
+    // gate, missing ones to the named trap, and unresolved weak ones to null.
+    {
+        LoadedImage stubImage;
+        stubImage.memory = std::make_unique<Memory>();
+        const uint32_t base = 0x5000;
+        stubImage.memory->map({base, 4096, uint8_t(Read | Execute), "stub section"});
+        stubImage.stubs = {{base, 16, "_resolved", 1, false},
+                           {base + 16, 16, "_missing", 1, false},
+                           {base + 32, 16, "_optional", 1, true}};
+        ExportGraph stubGraph;
+        size_t system = stubGraph.addImage("libSystem.B.dylib");
+        size_t exe = stubGraph.addImage("<exe>");
+        stubGraph.dependencies(exe, {"libSystem.B.dylib"});
+        stubGraph.define(system, "_resolved", {0x6f000008, false});
+        bindLegacyStubs(stubImage, stubGraph, exe, [](const std::string& name) {
+            return name == "_missing" ? 0x6f100000u : 0xdeadbeefu;
+        });
+        auto readWord = [&](uint32_t address) { return stubImage.memory->fetch32(address); };
+        assert(readWord(base) == 0xe59fc000);
+        assert(readWord(base + 4) == 0xe12fff1c);
+        assert(readWord(base + 8) == 0x6f000008);
+        assert(readWord(base + 12) == 0xe1a00000);
+        assert(readWord(base + 16 + 8) == 0x6f100000);
+        assert(readWord(base + 32 + 8) == 0);
+        // A stub section that is not executable code is refused instead of patched blindly.
+        stubImage.memory->map({0x6000, 4096, uint8_t(Read | Write), "data not code"});
+        stubImage.stubs = {{0x6000, 16, "_resolved", 1, false}};
+        fault("DYLD_STUB", [&] { bindLegacyStubs(stubImage, stubGraph, exe, {}); });
+        fault("DYLD_STUB", [&] {
+            LoadedImage unmapped;
+            unmapped.memory = std::make_unique<Memory>();
+            unmapped.stubs = {{0x9000, 16, "_resolved", 1, false}};
+            bindLegacyStubs(unmapped, stubGraph, exe, {});
+        });
+    }
     // Mutate valid headers and command bytes with a low allocation budget. Never execute fuzz data.
     std::mt19937 random(9032);
     for (int i = 0; i < 10000; i++) {

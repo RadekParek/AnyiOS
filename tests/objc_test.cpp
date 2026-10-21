@@ -57,16 +57,20 @@ int main() {
     auto& memory = harness.memory;
     ExportGraph graph;
     size_t foundation = graph.addImage("Foundation");
-    harness.objc.defineSymbols(graph, foundation);
+    size_t objcLibrary = graph.addImage("libobjc.A.dylib");
+    size_t quartzCore = graph.addImage("QuartzCore");
+    harness.objc.defineSymbols(graph, foundation, objcLibrary, quartzCore);
     assert(graph.resolve(0, -2, "_objc_msgSend") == ObjC::GateBase);
     assert(graph.resolve(0, -2, "_OBJC_CLASS_$_NSString").has_value());
 
     const uint32_t selString = harness.text("stringWithUTF8String:");
-    const uint32_t getClass = harness.gate(1);
-    const uint32_t registerName = harness.gate(2);
-    const uint32_t msgSend = harness.gate(0);
-    const uint32_t retain = harness.gate(3);
-    const uint32_t release = harness.gate(4);
+    // Gates are addressed by entry name, so the test does not depend on list order.
+    const uint32_t getClass = harness.objc.gateAddress("_objc_getClass");
+    const uint32_t registerName = harness.objc.gateAddress("_sel_registerName");
+    const uint32_t msgSend = harness.objc.gateAddress("_objc_msgSend");
+    const uint32_t retain = harness.objc.gateAddress("_objc_retain");
+    const uint32_t release = harness.objc.gateAddress("_objc_release");
+    assert(getClass && registerName && msgSend && retain && release);
 
     const uint32_t nsstring = harness.call(getClass, harness.text("NSString"), 0);
     const uint32_t nsobject = harness.call(getClass, harness.text("NSObject"), 0);
@@ -137,7 +141,7 @@ int main() {
         (void)aligned;
         memory.write32(0x3000, 7);
         memory.write32(0x3004, harness.text("ok"));
-        assert(harness.objc.dispatch(harness.gate(0), state));
+        assert(harness.objc.dispatch(harness.objc.gateAddress("_objc_msgSend"), state));
         return state.registers[0];
     }();
     assert(harness.call(msgSend, formatted, harness.text("length")) > 0);
@@ -151,7 +155,7 @@ int main() {
         state.registers[1] = harness.text("setObject:forKey:");
         state.registers[2] = hello;
         state.registers[3] = nsobject;
-        assert(harness.objc.dispatch(harness.gate(0), state));
+        assert(harness.objc.dispatch(harness.objc.gateAddress("_objc_msgSend"), state));
     }
     assert(harness.call(msgSend, dictionary, harness.text("count")) == 1);
     assert(harness.call(msgSend, dictionary, harness.text("objectForKey:"), nsobject) == hello);
@@ -167,7 +171,7 @@ int main() {
         state.registers[1] = harness.text("dataWithBytes:length:");
         state.registers[2] = harness.text("ABCD");
         state.registers[3] = 4;
-        assert(harness.objc.dispatch(harness.gate(0), state));
+        assert(harness.objc.dispatch(harness.objc.gateAddress("_objc_msgSend"), state));
         const uint32_t data = state.registers[0];
         assert(harness.call(msgSend, data, harness.text("length")) == 4);
         const uint32_t bytes = harness.call(msgSend, data, harness.text("bytes"));
@@ -183,10 +187,139 @@ int main() {
         CpuState state;
         state.registers[0] = number;
         state.registers[1] = harness.text("doubleValue");
-        assert(harness.objc.dispatch(harness.gate(0), state));
+        assert(harness.objc.dispatch(harness.objc.gateAddress("_objc_msgSend"), state));
         const double value =
             bitsDouble(uint64_t(state.registers[0]) | uint64_t(state.registers[1]) << 32);
         assert(value == 41.0);
+    }
+
+    // --- msgSend family, runtime helpers and Foundation path APIs ---
+    auto send = [&](uint32_t self, const std::string& method, uint32_t a1 = 0, uint32_t a2 = 0,
+                    uint32_t a3 = 0) {
+        CpuState state;
+        state.registers[0] = self;
+        state.registers[1] = harness.text(method);
+        state.registers[2] = a1;
+        state.registers[3] = a2;
+        state.registers[13] = 0x3000;
+        memory.write32(0x3000, a3);
+        assert(harness.objc.dispatch(harness.objc.gateAddress("_objc_msgSend"), state));
+        return state.registers[0];
+    };
+
+    // Messaging nil is legal and returns zero: it must not stop the guest.
+    assert(send(0, "length") == 0);
+    assert(send(0, "anyUnimplementedSelector") == 0);
+
+    // objc_msgSendSuper2 reads { receiver, superclass } from r0.
+    {
+        memory.write32(0x2000, hello);
+        memory.write32(0x2004, nsobject);
+        CpuState state;
+        state.registers[0] = 0x2000;
+        state.registers[1] = harness.text("length");
+        assert(harness.objc.dispatch(harness.objc.gateAddress("_objc_msgSendSuper2"), state));
+        assert(state.registers[0] == 6);  // "AnyiOS"
+        state.registers[0] = 0;
+        fault("OBJC_SUPER", [&] {
+            CpuState broken;
+            broken.registers[0] = 0;
+            broken.registers[1] = harness.text("length");
+            harness.objc.dispatch(harness.objc.gateAddress("_objc_msgSendSuper2"), broken);
+        });
+    }
+
+    // Property helpers act on the real ivar slot.
+    {
+        const uint32_t object = harness.call(msgSend, nsobject, harness.text("alloc"));
+        const uint32_t setProperty = harness.objc.gateAddress("_objc_setProperty");
+        CpuState state;
+        state.registers[0] = object;
+        state.registers[2] = 8;  // ivar offset
+        state.registers[3] = hello;
+        assert(harness.objc.dispatch(setProperty, state));
+        assert(memory.read32(object + 8) == hello);
+        CpuState get;
+        get.registers[0] = object;
+        get.registers[2] = 8;
+        assert(harness.objc.dispatch(harness.objc.gateAddress("_objc_getProperty"), get));
+        assert(get.registers[0] == hello);
+    }
+
+    // @synchronized bookkeeping is balanced and reports a mismatch.
+    {
+        CpuState state;
+        state.registers[0] = hello;
+        assert(harness.objc.dispatch(harness.objc.gateAddress("_objc_sync_enter"), state));
+        // The object is passed in r0 again for the matching exit (r0 holds the result now).
+        state.registers[0] = hello;
+        assert(harness.objc.dispatch(harness.objc.gateAddress("_objc_sync_exit"), state));
+        fault("OBJC_SYNC", [&] {
+            state.registers[0] = hello;
+            harness.objc.dispatch(harness.objc.gateAddress("_objc_sync_exit"), state);
+        });
+    }
+
+    // Fast-enumeration mutation is a real runtime error.
+    {
+        CpuState state;
+        state.registers[0] = hello;
+        fault("OBJC_ENUMERATION", [&] {
+            harness.objc.dispatch(harness.objc.gateAddress("_objc_enumerationMutation"), state);
+        });
+    }
+
+    // NSBundle answers with the sandbox paths and only reports resources that exist.
+    harness.objc.setGuestPaths("/var/mobile", "/var/mobile/Documents");
+    harness.objc.setFileProbe([](const std::string& path) { return path == "/var/mobile/a.png"; });
+    const uint32_t bundleClass = harness.call(getClass, harness.text("NSBundle"), 0);
+    const uint32_t bundle = send(bundleClass, "mainBundle");
+    assert(bundle != 0);
+    const uint32_t path = send(bundle, "bundlePath");
+    assert(path != 0 && send(path, "UTF8String") != 0);
+    {
+        char text[64] = {0};
+        memory.read(send(path, "UTF8String"), text, 12);
+        assert(std::string(text) == "/var/mobile");
+    }
+    const uint32_t resource =
+        send(bundle, "pathForResource:ofType:", harness.text("a"), harness.text("png"));
+    assert(resource != 0);
+    assert(send(bundle, "pathForResource:ofType:", harness.text("missing"), harness.text("png")) ==
+           0);
+
+    // NSSearchPathForDirectoriesInDomains returns a one-element array.
+    {
+        CpuState state;
+        state.registers[0] = 9;  // NSDocumentDirectory
+        state.registers[1] = 1;
+        state.registers[2] = 1;
+        assert(harness.objc.dispatch(
+            harness.objc.gateAddress("_NSSearchPathForDirectoriesInDomains"), state));
+        assert(send(state.registers[0], "count") == 1);
+    }
+
+    // NSLog formats %@ through the object describer and reaches the log sink.
+    {
+        std::vector<std::string> logged;
+        harness.objc.setLogSink([&](const std::string& line) { logged.push_back(line); });
+        CpuState state;
+        state.registers[0] = harness.text("loaded %@ (%d)");
+        state.registers[1] = hello;
+        state.registers[2] = 3;
+        assert(harness.objc.dispatch(harness.objc.gateAddress("_NSLog"), state));
+        assert(logged.size() == 1 && logged[0] == "loaded AnyiOS (3)");
+    }
+
+    // NSClassFromString resolves known classes and returns nil for unknown ones.
+    {
+        CpuState state;
+        state.registers[0] = harness.text("NSString");
+        assert(harness.objc.dispatch(harness.objc.gateAddress("_NSClassFromString"), state));
+        assert(state.registers[0] == nsstring);
+        state.registers[0] = harness.text("NoSuchClass");
+        assert(harness.objc.dispatch(harness.objc.gateAddress("_NSClassFromString"), state));
+        assert(state.registers[0] == 0);
     }
 
     // Unimplemented selectors and bogus receivers must fail, never return a fake success.

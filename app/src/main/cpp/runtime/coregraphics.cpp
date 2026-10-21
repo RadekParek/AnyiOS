@@ -78,6 +78,20 @@ bool CoreGraphics::invoke(const std::string& symbol, CpuState& cpu, Memory& memo
                         Rect{rect.x + dx, rect.y + dy, rect.width - 2 * dx, rect.height - 2 * dy});
         return true;
     }
+    if (symbol == "_CATransform3DMakeRotation") {
+        // CATransform3D is sixteen floats, so the caller passes a hidden result pointer in
+        // r0 and (angle, x, y, z) follow in r1-r3 and on the stack.
+        Arguments inputs(cpu, memory, 1);
+        const float radians = inputs.f32(), x = inputs.f32(), y = inputs.f32(), z = inputs.f32();
+        storeThroughPointer(memory, resultPointer(cpu), CATransform3D::rotation(radians, x, y, z));
+        return true;
+    }
+    if (symbol == "_CATransform3DScale") {
+        Arguments inputs(cpu, memory, 1);
+        const float x = inputs.f32(), y = inputs.f32(), z = inputs.f32();
+        storeThroughPointer(memory, resultPointer(cpu), CATransform3D::scale(x, y, z));
+        return true;
+    }
     if (symbol == "_CACurrentMediaTime") {
         resultF64(cpu, mediaTime());
         return true;

@@ -1,5 +1,6 @@
 #pragma once
 #include <cstdint>
+#include <functional>
 #include <map>
 #include <string>
 #include <vector>
@@ -16,9 +17,23 @@ class ObjC final {
    public:
     explicit ObjC(Memory& memory);
     void installGates();
-    void defineSymbols(ExportGraph& graph, size_t foundation) const;
+    // `foundation`, `objcLibrary` and `quartzCore` are export-graph image indices; runtime
+    // entries are registered under the library that really exports them on iOS.
+    void defineSymbols(ExportGraph& graph, size_t foundation, size_t objcLibrary,
+                       size_t quartzCore) const;
     bool dispatch(uint32_t pc, CpuState& state);
     size_t gateCount() const { return entries.size(); }
+    // Call-gate address for a runtime entry, or 0 when the runtime does not export it.
+    uint32_t gateAddress(const std::string& entry) const;
+    // Guest sandbox roots used by NSBundle/NSHomeDirectory/NSSearchPath. They are guest
+    // paths; the file probe decides whether a bundle resource actually exists.
+    void setGuestPaths(std::string bundle, std::string documents);
+    void setFileProbe(std::function<bool(const std::string&)> probe) {
+        fileExists = std::move(probe);
+    }
+    void setLogSink(std::function<void(const std::string&)> sink) { logSink = std::move(sink); }
+    // Guest log/exit lifecycle: releasing the pool stack at exit is real bookkeeping.
+    void drainPools();
     static constexpr uint32_t GateBase = 0x6f200000;
 
    private:
@@ -46,6 +61,16 @@ class ObjC final {
     uint32_t nextText = 0x6f480000;
     uint32_t nextBytes = 0x6f4c0000;
     uint32_t userDefaults = 0;
+    uint32_t mainBundle = 0;
+    std::map<uint32_t, uint32_t> syncDepth;  // @synchronized nesting per object
+    std::string bundlePath = "/var/mobile", documentsPath = "/var/mobile/Documents";
+    std::function<bool(const std::string&)> fileExists;
+    std::function<void(const std::string&)> logSink;
+    uint32_t makeString(const std::string& text);
+    uint32_t makeArray(const std::vector<uint32_t>& elements);
+    void emitLog(const std::string& text) const;
+    bool bundleMessage(const std::string& method, CpuState& state);
+    bool foundationEntry(const std::string& entry, CpuState& state);
 
     void mapRange(uint32_t base, uint32_t size, const char* label);
     uint32_t classNamePointer(const std::string& name);

@@ -4,6 +4,7 @@
 #include <cstring>
 #include <limits>
 #include <map>
+#include <optional>
 #include <sstream>
 
 #include "../macho.h"
@@ -302,7 +303,40 @@ LoadedImage loadMachO(const uint8_t* data, size_t size, size_t budget) {
         if (section.first > entries || section.count > entries - section.first)
             throw Error("DYLD_INDIRECT_SECTION", "section indexes exceed indirect table");
         if (section.stub) {
+            // Classic ARM symbol stubs. reserved2 is the stub size; anything smaller than
+            // the three-word sequence we patch in cannot be redirected safely.
+            if (section.stride < 12 || section.stride > 64 || section.stride % 4)
+                throw Error("DYLD_STUB", "symbol stub size is not patchable", section.address);
+            if (section.count > 100000 - result.stubs.size())
+                throw Error("DYLD_LIMIT", "symbol stub budget exceeded");
             result.legacyStubs += section.count;
+            for (uint32_t index = 0; index < section.count; index++) {
+                uint32_t symbol = r.u32(uint64_t(table) + uint64_t(section.first + index) * 4);
+                if (symbol & 0xc0000000u) continue;  // Local stub with no external symbol.
+                uint64_t record = uint64_t(symbolOffset) + uint64_t(symbol) * 12;
+                uint32_t nameIndex = r.u32(record);
+                if (nameIndex >= stringBytes || (data[record + 4] & 0xe0))
+                    throw Error("DYLD_SYMBOL", "invalid stub nlist symbol");
+                size_t start = size_t(stringOffset) + nameIndex, end = start;
+                while (end < size_t(stringOffset) + stringBytes && data[end] && end - start <= 4096)
+                    end++;
+                if (end == start || end == size_t(stringOffset) + stringBytes || end - start > 4096)
+                    throw Error("DYLD_SYMBOL", "invalid stub symbol name");
+                int ordinal = data[record + 7];
+                if (ordinal == 255)
+                    ordinal = -1;
+                else if (ordinal == 254)
+                    ordinal = -2;
+                if (ordinal > 0 && size_t(ordinal) > result.dependencies.size())
+                    throw Error("DYLD_ORDINAL", "stub references a missing dylib");
+                result.stubs.push_back(
+                    {section.address + index * section.stride, section.stride,
+                     std::string(reinterpret_cast<const char*>(data + start), end - start), ordinal,
+                     bool(data[record + 6] & 0x40)});
+                if (result.stubs.back().symbol.size() > 8 * 1024 * 1024 - dyldNames)
+                    throw Error("DYLD_LIMIT", "combined stub symbol budget exceeded");
+                dyldNames += result.stubs.back().symbol.size();
+            }
             continue;
         }
         if (section.count > 100000)
@@ -384,6 +418,24 @@ LoadedImage loadMachO(const uint8_t* data, size_t size, size_t budget) {
     result.cpsr = (result.cpsr & ~0x20u) | (thumb ? 0x20 : 0);
     return result;
 }
+void bindLegacyStubs(LoadedImage& image, const ExportGraph& graph, size_t requester,
+                     const std::function<uint32_t(const std::string&)>& trap) {
+    if (!image.memory) throw Error("DYLD_STUB", "stub binding requires mapped image storage");
+    Memory& memory = *image.memory;
+    for (const auto& stub : image.stubs) {
+        if (!memory.permits(stub.address, 12, Execute))
+            throw Error("DYLD_STUB", "symbol stub is not executable code", stub.address);
+        std::optional<uint32_t> target = graph.resolve(requester, stub.ordinal, stub.symbol);
+        if (!target && !stub.weak && trap) target = trap(stub.symbol);
+        // ldr r12, [pc, #0] / bx r12 / .word target. The guest reaches the implementation
+        // in two instructions instead of through a lazy pointer we do not maintain.
+        const uint32_t address = target.value_or(0);
+        const uint32_t body[3] = {0xe59fc000u, 0xe12fff1cu, address};
+        memory.patch(stub.address, body, sizeof(body));
+        for (uint32_t offset = 12; offset < stub.stride; offset += 4)
+            memory.patch32(stub.address + offset, 0xe1a00000u);  // mov r0, r0
+    }
+}
 std::string LoadedImage::summary() const {
     std::ostringstream s;
     s << "MAPPED_ARM32: " << memory->regions().size() << " regions, " << memory->allocated()
@@ -399,7 +451,8 @@ std::string LoadedImage::summary() const {
           << dyld.strongDefinitions.size();
     if (legacyStubs)
         s << "\nLegacy symbol stubs=" << std::dec << legacyStubs
-          << "; ARM stub execution/dispatch is not initialized.";
+          << (stubs.empty() ? "; none carried an external symbol."
+                            : "; each is redirected to its resolved import or to a named trap.");
     for (const auto& dependency : dependencies) s << "\nrequires " << dependency;
     return s.str();
 }

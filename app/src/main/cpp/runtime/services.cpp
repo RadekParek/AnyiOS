@@ -2,7 +2,9 @@
 
 #include <algorithm>
 #include <cstring>
+#include <filesystem>
 #include <limits>
+#include <system_error>
 
 #include "error.h"
 
@@ -12,6 +14,7 @@ Services::Services(Memory& m)
       libc(m),
       cxx(m, libc.guestHeap()),
       stdio(m, libc.guestHeap(), files),
+      audio(m),
       objc(m),
       symbols{
           // libSystem: C runtime.
@@ -45,6 +48,10 @@ Services::Services(Memory& m)
           "_sprintf",
           "_puts",
           "_getenv",
+          "_mach_absolute_time",
+          "_mach_timebase_info",
+          "_sysctlbyname",
+          "_strtok_r",
           "_atoi",
           "_atol",
           "_atof",
@@ -93,6 +100,12 @@ Services::Services(Memory& m)
           "_CGColorSpaceRetain",
           "_CGColorSpaceRelease",
           "_CACurrentMediaTime",
+          // CoreFoundation bundle and URL access, so a title can locate its own assets.
+          "_CFBundleGetMainBundle",
+          "_CFBundleCopyResourcesDirectoryURL",
+          "_CFBundleCopyBundleURL",
+          "_CFURLGetFileSystemRepresentation",
+          "_CFURLCopyFileSystemPath",
           // libstdc++.6.dylib and libgcc_s.1.dylib: the C++ ABI and the integer
           // helpers the ARM backend calls. Both are serviced by CxxRuntime.
           "_Znwm",
@@ -141,6 +154,15 @@ Services::Services(Memory& m)
           "___strcat_chk",
           "___strncpy_chk",
           "___sprintf_chk",
+          // AudioToolbox AudioSession configuration (state, not playback).
+          "_AudioSessionInitialize",
+          "_AudioSessionSetActive",
+          "_AudioSessionSetProperty",
+          "_AudioSessionGetProperty",
+          "_AudioSessionGetPropertySize",
+          // QuartzCore transforms and CoreGraphics' own CA bridge.
+          "_CATransform3DMakeRotation",
+          "_CATransform3DScale",
           // Guest stdio over the mounted sandbox.
           "_fopen",
           "_fclose",
@@ -196,42 +218,85 @@ uint32_t Services::address(const std::string& name) const {
     if (it == symbols.end()) throw Error("HLE_SYMBOL", "API has no implementation");
     return Base + uint32_t(it - symbols.begin()) * 8;
 }
-void Services::install(ExportGraph& graph) const {
-    auto system = graph.addImage("/usr/lib/libSystem.B.dylib");
+namespace {
+// Which iOS library exports a symbol. Two-level ordinals are checked, so a gate that is
+// registered under the wrong image would never bind; the mapping below is what the
+// platform actually does with these families.
+}  // namespace
+const std::string& Services::libraryOf(const std::string& symbol) const {
+    static const std::string system = "/usr/lib/libSystem.B.dylib";
+    static const std::string foundation =
+        "/System/Library/Frameworks/Foundation.framework/Foundation";
+    static const std::string coreFoundation =
+        "/System/Library/Frameworks/CoreFoundation.framework/CoreFoundation";
+    static const std::string coreGraphics =
+        "/System/Library/Frameworks/CoreGraphics.framework/CoreGraphics";
+    static const std::string quartzCore =
+        "/System/Library/Frameworks/QuartzCore.framework/QuartzCore";
+    static const std::string audioToolbox =
+        "/System/Library/Frameworks/AudioToolbox.framework/AudioToolbox";
+    static const std::string openGLES = "/System/Library/Frameworks/OpenGLES.framework/OpenGLES";
+    static const std::string standard = "/usr/lib/libstdc++.6.dylib";
+    static const std::string helpers = "/usr/lib/libgcc_s.1.dylib";
+    static const std::string objc = "/usr/lib/libobjc.A.dylib";
+    if (symbol.rfind("_CF", 0) == 0) return coreFoundation;
+    if (symbol.rfind("_CG", 0) == 0) return coreGraphics;
+    if (symbol.rfind("_CA", 0) == 0 || symbol.rfind("_kCA", 0) == 0) return quartzCore;
+    if (symbol.rfind("_AudioSession", 0) == 0) return audioToolbox;
+    if (symbol.rfind("_gl", 0) == 0) return openGLES;
+    if (symbol.rfind("_objc_", 0) == 0) return objc;
+    if (cxx.isCxxSymbol(symbol)) return standard;
+    if (cxx.isCompilerHelper(symbol)) return helpers;
+    if (symbol.rfind("_NS", 0) == 0) return foundation;
+    return system;
+}
+void Services::install(ExportGraph& graph, const std::vector<std::string>& dependencies) const {
+    auto imageFor = [&graph](const std::string& installName) {
+        if (auto existing = graph.index(installName)) return *existing;
+        return graph.addImage(installName);
+    };
+    auto system = imageFor("/usr/lib/libSystem.B.dylib");
     graph.alias(system, "/usr/lib/libSystem.dylib");
     graph.alias(system, "/usr/lib/libm.dylib");
     graph.alias(system, "/usr/lib/system/libsystem_c.dylib");
-    auto foundation =
-        graph.addImage("/System/Library/Frameworks/CoreFoundation.framework/CoreFoundation");
-    auto graphics =
-        graph.addImage("/System/Library/Frameworks/CoreGraphics.framework/CoreGraphics");
-    auto standard = graph.addImage("/usr/lib/libstdc++.6.dylib");
-    auto compilerHelpers = graph.addImage("/usr/lib/libgcc_s.1.dylib");
-    for (size_t n = 0; n < symbols.size(); n++) {
-        const std::string& symbol = symbols[n];
-        size_t image = system;
-        if (symbol.rfind("_CF", 0) == 0) image = foundation;
-        if (symbol.rfind("_CG", 0) == 0) image = graphics;
-        // Ordinals are checked strictly, so each gate is registered under the library
-        // that really exports it on iOS. A helper registered under the wrong image would
-        // still be refused at bind time, which is the honest outcome.
-        if (cxx.isCxxSymbol(symbol)) image = standard;
-        if (cxx.isCompilerHelper(symbol)) image = compilerHelpers;
-        graph.define(image, symbol, {Base + uint32_t(n) * 8});
-    }
-    objc.defineSymbols(graph, foundation);
-    // stdout/stderr/stdin are data imports: the guest loads the FILE* from these cells.
-    graph.define(system, "___stdinp", {stdio.standardCell(0)});
-    graph.define(system, "___stdoutp", {stdio.standardCell(1)});
-    graph.define(system, "___stderrp", {stdio.standardCell(2)});
-    graph.define(graphics, "_CGAffineTransformIdentity", {Base + Memory::PageSize});
-    graph.define(graphics, "_CGRectNull", {Base + Memory::PageSize + 24});
+    auto foundation = imageFor("/System/Library/Frameworks/Foundation.framework/Foundation");
+    auto coreFoundation =
+        imageFor("/System/Library/Frameworks/CoreFoundation.framework/CoreFoundation");
+    auto coreGraphics = imageFor("/System/Library/Frameworks/CoreGraphics.framework/CoreGraphics");
+    auto quartzCore = imageFor("/System/Library/Frameworks/QuartzCore.framework/QuartzCore");
+    auto audioToolbox = imageFor("/System/Library/Frameworks/AudioToolbox.framework/AudioToolbox");
+    auto objcLibrary = imageFor("/usr/lib/libobjc.A.dylib");
+    // Every framework the image links against must exist in the graph, or its two-level
+    // ordinals cannot resolve at all. Register them all, in the binary's own order.
+    for (const auto& dependency : dependencies) imageFor(dependency);
+    for (size_t n = 0; n < symbols.size(); n++)
+        graph.define(imageFor(libraryOf(symbols[n])), symbols[n], {Base + uint32_t(n) * 8});
+    objc.defineSymbols(graph, foundation, objcLibrary, quartzCore);
+    graph.define(coreGraphics, "_CGAffineTransformIdentity", {Base + Memory::PageSize});
+    graph.define(coreGraphics, "_CGRectNull", {Base + Memory::PageSize + 24});
+    // Keep the handles referenced: the images must exist even when nothing is defined in
+    // them yet, because the binary's ordinals index this table.
+    (void)system;
+    (void)foundation;
+    (void)coreFoundation;
+    (void)audioToolbox;
 }
 void Services::mountSandbox(const std::string& bundleHost, const std::string& containerHost) {
     if (bundleHost.empty() || containerHost.empty())
         throw Error("FS_MOUNT", "the bundle and container directories are both required");
     files.mount("/var/mobile/Documents", containerHost, true);
     files.mount("/var/mobile", bundleHost, false);
+    // NSBundle/NSHomeDirectory/NSSearchPath answer with the guest paths of those mounts,
+    // and only report a resource path when the file really exists inside the sandbox.
+    objc.setGuestPaths("/var/mobile", "/var/mobile/Documents");
+    cf.setPaths("/var/mobile", "/var/mobile/Documents");
+    objc.setFileProbe([this](const std::string& guestPath) {
+        std::string reason;
+        const std::string host = files.resolve(guestPath, false, reason);
+        if (host.empty()) return false;
+        std::error_code error;
+        return std::filesystem::is_regular_file(host, error);
+    });
 }
 void Services::setEnvironment(const std::map<std::string, std::string>& values) {
     libc.setEnvironment(values);
@@ -293,6 +358,7 @@ void Services::invoke(const std::string& name, CpuState& state) {
     // inventing a result, and anything unclaimed is a hard guest-visible failure.
     if (libc.invoke(name, state)) return;
     if (stdio.invoke(name, state)) return;
+    if (audio.invoke(name, state)) return;
     if (cxx.invoke(name, state)) return;
     if (cf.invoke(name, state, memory)) return;
     if (cg.invoke(name, state, memory)) return;

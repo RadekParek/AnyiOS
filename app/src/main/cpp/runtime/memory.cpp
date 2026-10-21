@@ -96,6 +96,26 @@ void Memory::write(uint32_t address, const void* source, size_t size) {
     }
     if (size) ++revision_;
 }
+void Memory::patch(uint32_t address, const void* source, size_t size) {
+    if (size && !source) throw Error("MEMORY_ARGUMENT", "null patch source", address);
+    validate(address, size, Read);
+    const auto* input = static_cast<const uint8_t*>(source);
+    size_t done = 0;
+    while (done < size) {
+        const uint32_t current = uint32_t(uint64_t(address) + done);
+        auto it = std::prev(storage_.upper_bound(current));
+        const size_t offset = current - it->first;
+        const size_t count = std::min(size - done, it->second.bytes.size() - offset);
+        std::memcpy(it->second.bytes.data() + offset, input + done, count);
+        done += count;
+    }
+    if (size) ++revision_;
+}
+void Memory::patch32(uint32_t address, uint32_t value) {
+    const uint8_t bytes[] = {uint8_t(value), uint8_t(value >> 8), uint8_t(value >> 16),
+                             uint8_t(value >> 24)};
+    patch(address, bytes, 4);
+}
 uint32_t Memory::read32(uint32_t address) const {
     uint8_t b[4];
     read(address, b, 4);

@@ -36,6 +36,7 @@ add_library(podnative_hle STATIC
     "${RUNTIME}/runtime/cxx.cpp"
     "${RUNTIME}/runtime/fs.cpp"
     "${RUNTIME}/runtime/stdio.cpp"
+    "${RUNTIME}/runtime/audio.cpp"
     "${RUNTIME}/runtime/format.cpp"
     "${RUNTIME}/runtime/heap.cpp"
     "${RUNTIME}/runtime/execution.cpp"
@@ -58,6 +59,11 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux" OR ANDROID)
     target_compile_options(oaknut_wx_test PRIVATE -Wall -Wextra -Werror -UNDEBUG)
     add_test(NAME allocator_wx_permissions COMMAND oaknut_wx_test)
 endif()
+add_executable(audio_test audio_test.cpp)
+target_link_libraries(audio_test PRIVATE podnative_hle)
+target_compile_options(audio_test PRIVATE -Wall -Wextra -Werror -UNDEBUG)
+add_test(NAME audio_session COMMAND audio_test)
+
 add_executable(cxx_test cxx_test.cpp)
 target_link_libraries(cxx_test PRIVATE podnative_hle)
 target_compile_options(cxx_test PRIVATE -Wall -Wextra -Werror -UNDEBUG)

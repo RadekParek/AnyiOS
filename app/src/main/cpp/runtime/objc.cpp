@@ -5,20 +5,49 @@
 #include "abi.h"
 #include "error.h"
 #include "format.h"
+#include "libc.h"
 
 namespace podnative::runtime {
 namespace {
+// Runtime entry points, in the order their call gates are mapped. The list covers the
+// whole objc_msgSend family a 32-bit iOS title links against plus the Foundation C
+// functions it calls directly.
 const std::vector<std::string>& entryNames() {
-    static const std::vector<std::string> names{"_objc_msgSend",
-                                                "_objc_getClass",
-                                                "_sel_registerName",
-                                                "_objc_retain",
-                                                "_objc_release",
-                                                "_objc_autoreleaseReturnValue",
-                                                "_objc_retainAutoreleasedReturnValue",
-                                                "_objc_alloc",
-                                                "_objc_alloc_init"};
+    static const std::vector<std::string> names{
+        "_objc_msgSend",
+        "_objc_msgSendSuper2",
+        "_objc_msgSend_stret",
+        "_objc_msgSendSuper2_stret",
+        "_objc_getClass",
+        "_objc_lookUpClass",
+        "_sel_registerName",
+        "_sel_getName",
+        "_objc_retain",
+        "_objc_release",
+        "_objc_autoreleaseReturnValue",
+        "_objc_retainAutoreleasedReturnValue",
+        "_objc_alloc",
+        "_objc_alloc_init",
+        "_objc_setProperty",
+        "_objc_getProperty",
+        "_objc_copyStruct",
+        "_objc_sync_enter",
+        "_objc_sync_exit",
+        "_objc_enumerationMutation",
+        "_objc_autoreleasePoolPush",
+        "_objc_autoreleasePoolPop",
+        "_objc_retainBlock",
+        "_NSClassFromString",
+        "_NSLog",
+        "_NSSearchPathForDirectoriesInDomains",
+        "_NSHomeDirectory",
+        "_NSSelectorFromString",
+    };
     return names;
+}
+// Which iOS library exports each entry, so two-level ordinals resolve correctly.
+bool isObjcLibraryEntry(const std::string& name) {
+    return name.rfind("_objc_", 0) == 0 || name.rfind("__objc_", 0) == 0;
 }
 }  // namespace
 ObjC::ObjC(Memory& m) : memory(m), entries(entryNames()) {}
@@ -49,10 +78,24 @@ void ObjC::installGates() {
     classObject("NSData");
     classObject("NSNull");
     classObject("NSUserDefaults");
+    classObject("NSBundle");
+    classObject("NSValue");
+    classObject("NSException");
+    classObject("NSNotificationCenter");
+    classObject("NSRunLoop");
+    classObject("NSURL");
 }
-void ObjC::defineSymbols(ExportGraph& graph, size_t foundation) const {
+uint32_t ObjC::gateAddress(const std::string& entry) const {
     for (size_t n = 0; n < entries.size(); n++)
-        graph.define(foundation, entries[n], {GateBase + uint32_t(n) * 8});
+        if (entries[n] == entry) return GateBase + uint32_t(n) * 8;
+    return 0;
+}
+void ObjC::defineSymbols(ExportGraph& graph, size_t foundation, size_t objcLibrary,
+                         size_t quartzCore) const {
+    (void)quartzCore;
+    for (size_t n = 0; n < entries.size(); n++)
+        graph.define(isObjcLibraryEntry(entries[n]) ? objcLibrary : foundation, entries[n],
+                     {GateBase + uint32_t(n) * 8});
     for (const auto& [name, address] : classes) {
         graph.define(foundation, "_OBJC_CLASS_$_" + name, {address});
         graph.define(foundation, "_OBJC_METACLASS_$_" + name, {address});
@@ -182,6 +225,70 @@ bool ObjC::dispatch(uint32_t pc, CpuState& state) {
         return false;
     invoke(entries[(pc - GateBase) / 8], state);
     return true;
+}
+uint32_t ObjC::makeString(const std::string& text) {
+    const uint32_t object = makeObject("NSString");
+    objects[object].text = internText(text);
+    return object;
+}
+uint32_t ObjC::makeArray(const std::vector<uint32_t>& elements) {
+    const uint32_t object = makeObject("NSArray");
+    objects[object].elements = elements;
+    return object;
+}
+void ObjC::setGuestPaths(std::string bundle, std::string documents) {
+    bundlePath = std::move(bundle);
+    documentsPath = std::move(documents);
+}
+void ObjC::drainPools() {
+    while (!pools.empty()) {
+        std::vector<uint32_t> owned = pools.back();
+        pools.pop_back();
+        for (uint32_t released : owned)
+            if (objects.count(released)) release(released);
+    }
+}
+void ObjC::emitLog(const std::string& text) const {
+    if (logSink) {
+        logSink(text);
+        return;
+    }
+    guestLog(text);
+}
+bool ObjC::bundleMessage(const std::string& method, CpuState& state) {
+    auto& r = state.registers;
+    if (method == "bundlePath" || method == "resourcePath" || method == "builtInPlugInsPath" ||
+        method == "privateFrameworksPath") {
+        r[0] = makeString(bundlePath);
+        return true;
+    }
+    if (method == "bundleIdentifier" || method == "executablePath" || method == "infoDictionary") {
+        // The bundle's own Info.plist is not parsed yet, so these stay honestly empty
+        // instead of inventing an identifier.
+        r[0] = method == "infoDictionary" ? 0 : makeString("");
+        return true;
+    }
+    if (method == "pathForResource:ofType:" || method == "pathForResource:ofType:inDirectory:") {
+        const uint32_t name = r[2], type = r[3];
+        if (!name) {
+            r[0] = 0;
+            return true;
+        }
+        std::string path = readText(name);
+        if (type) path += "." + readText(type);
+        const std::string candidate = bundlePath + "/" + path;
+        if (fileExists && !fileExists(candidate)) {
+            r[0] = 0;
+            return true;
+        }
+        r[0] = makeString(candidate);
+        return true;
+    }
+    if (method == "pathForResource:ofType:inDirectory:forLocalization:") {
+        r[0] = 0;
+        return true;
+    }
+    return false;
 }
 void ObjC::release(uint32_t object) {
     auto found = objects.find(object);
@@ -418,6 +525,14 @@ bool ObjC::collection(const std::string& className, const std::string& method, O
 }
 void ObjC::message(CpuState& state) {
     const uint32_t self = state.registers[0], name = state.registers[1];
+    // Messaging nil is well defined in Objective-C and returns zero — that is not an
+    // unimplemented API and must not stop the guest.
+    if (!self) {
+        state.registers[0] = 0;
+        state.registers[1] = 0;
+        return;
+    }
+    if (!name) throw Error("OBJC_SELECTOR", "message sent with a null selector", self);
     const std::string method = selector(name);
     bool classMethod = false;
     std::string className;
@@ -552,6 +667,11 @@ void ObjC::message(CpuState& state) {
             state.registers[0] = object;
             return;
         }
+        if (className == "NSBundle" && method == "mainBundle") {
+            if (!mainBundle) mainBundle = makeObject("NSBundle");
+            state.registers[0] = mainBundle;
+            return;
+        }
         if (className == "NSUserDefaults" && method == "standardUserDefaults") {
             if (!userDefaults) userDefaults = makeObject("NSUserDefaults");
             state.registers[0] = userDefaults;
@@ -614,6 +734,7 @@ void ObjC::message(CpuState& state) {
         state.registers[0] = 0;  // Conservatively false until a method table exists.
         return;
     }
+    if (className == "NSBundle" && bundleMessage(method, state)) return;
     if (collection(className, method, object, state)) return;
     if (className == "NSString") {
         const std::string text = readText(object.text);
@@ -677,13 +798,145 @@ void ObjC::invoke(const std::string& entry, CpuState& state) {
         message(state);
         return;
     }
-    if (entry == "_objc_getClass") {
+    if (entry == "_objc_msgSend_stret" || entry == "_objc_msgSendSuper2_stret") {
+        // A large struct result is returned through a hidden pointer in r0, so self and
+        // _cmd move to r1/r2. Only the scalar-returning classes are modelled, so a struct
+        // request from anywhere else is refused by name rather than half-written.
+        const uint32_t receiver = entry == "_objc_msgSend_stret" ? r[1] : memory.read32(r[0]);
+        const uint32_t name = entry == "_objc_msgSend_stret" ? r[2] : r[1];
+        if (!receiver) {
+            r[0] = 0;
+            return;
+        }
+        const std::string target = classNameOf(receiver);
+        const std::string selectorName = selector(name);
+        const bool scalarClass = target.rfind("class ", 0) == 0 || target == "NSString" ||
+                                 target == "NSNumber" || target == "NSArray" ||
+                                 target == "NSMutableArray" || target == "NSDictionary" ||
+                                 target == "NSMutableDictionary" || target == "NSData";
+        if (!scalarClass)
+            throw Error("OBJC_STRET_UNIMPLEMENTED",
+                        "[" + target + " " + selectorName +
+                            "] returns a struct through a hidden pointer, which is not modelled");
+        CpuState shifted = state;
+        shifted.registers[0] = receiver;
+        shifted.registers[1] = name;
+        shifted.registers[2] = r[3];
+        shifted.registers[3] = 0;
+        message(shifted);
+        r[0] = shifted.registers[0];
+        r[1] = shifted.registers[1];
+        return;
+    }
+    if (entry == "_objc_msgSendSuper2") {
+        // struct objc_super { id receiver; Class superClass; } arrives in r0; the selector
+        // follows in r1. Single-inheritance dispatch is the same method lookup for us.
+        const uint32_t super2 = r[0];
+        if (!super2) throw Error("OBJC_SUPER", "msgSendSuper2 called with a null objc_super");
+        CpuState shifted = state;
+        shifted.registers[0] = memory.read32(super2);
+        shifted.registers[1] = r[1];
+        message(shifted);
+        r[0] = shifted.registers[0];
+        r[1] = shifted.registers[1];
+        return;
+    }
+    if (entry == "_objc_getClass" || entry == "_objc_lookUpClass") {
         const std::string name = readText(r[0]);
         auto found = classes.find(name);
         r[0] = found == classes.end() ? 0 : found->second;
         return;
     }
     if (entry == "_sel_registerName") return;  // A selector is its guest string address.
+    if (entry == "_sel_getName" || entry == "_NSSelectorFromString") return;
+    if (entry == "_objc_setProperty" || entry == "_objc_setProperty_atomic") {
+        // setProperty(self, _cmd, offset, newValue, atomic, propertyInfo) stores the value
+        // into the ivar at self + offset, exactly like the runtime does.
+        const uint32_t object = r[0], offset = r[2], value = r[3];
+        if (!object) return;
+        if (!memory.permits(object + offset, 4, Write))
+            throw Error("OBJC_PROPERTY", "objc_setProperty ivar is not writable", object + offset);
+        memory.write32(object + offset, value);
+        return;
+    }
+    if (entry == "_objc_getProperty") {
+        const uint32_t object = r[0], offset = r[2];
+        r[0] = object ? memory.read32(object + offset) : 0;
+        return;
+    }
+    if (entry == "_objc_copyStruct") {
+        const uint32_t destination = r[0], source = r[1], size = r[2];
+        if (size > 16 * 1024 * 1024) throw Error("OBJC_LIMIT", "objc_copyStruct exceeds budget");
+        std::vector<uint8_t> bytes(size);
+        if (size) {
+            memory.read(source, bytes.data(), size);
+            memory.write(destination, bytes.data(), size);
+        }
+        return;
+    }
+    if (entry == "_objc_sync_enter" || entry == "_objc_sync_exit") {
+        // Single guest thread, so mutual exclusion is trivially satisfied; the balanced
+        // enter/exit pair is tracked so a mismatch is still reported.
+        const uint32_t object = r[0];
+        auto found = syncDepth.find(object);
+        if (entry == "_objc_sync_enter") {
+            syncDepth[object] = found == syncDepth.end() ? 1 : found->second + 1;
+            r[0] = 0;
+            return;
+        }
+        if (found == syncDepth.end() || !found->second)
+            throw Error("OBJC_SYNC", "@synchronized exit without a matching enter");
+        if (--found->second == 0) syncDepth.erase(found);
+        r[0] = 0;
+        return;
+    }
+    if (entry == "_objc_enumerationMutation") {
+        // The runtime calls this only when a collection is mutated during fast enumeration.
+        throw Error("OBJC_ENUMERATION", "a collection was mutated while being enumerated", r[0]);
+    }
+    if (entry == "_objc_autoreleasePoolPush") {
+        pools.emplace_back();
+        r[0] = uint32_t(pools.size());
+        return;
+    }
+    if (entry == "_objc_autoreleasePoolPop") {
+        if (!pools.empty()) {
+            std::vector<uint32_t> owned = pools.back();
+            pools.pop_back();
+            for (uint32_t released : owned)
+                if (objects.count(released)) release(released);
+        }
+        return;
+    }
+    if (entry == "_objc_retainBlock") return;  // Blocks are not modelled; the id is unchanged.
+    if (entry == "_NSClassFromString") {
+        const uint32_t name = r[0];
+        if (!name) {
+            r[0] = 0;
+            return;
+        }
+        const std::string text = readText(name);
+        auto found = classes.find(text);
+        r[0] = found == classes.end() ? 0 : found->second;
+        return;
+    }
+    if (entry == "_NSLog") {
+        Arguments args(state, memory, 1);
+        emitLog(
+            formatGuest(readText(r[0]), args, [this](uint32_t value) { return describe(value); }));
+        return;
+    }
+    if (entry == "_NSHomeDirectory") {
+        r[0] = makeString(bundlePath);
+        return;
+    }
+    if (entry == "_NSSearchPathForDirectoriesInDomains") {
+        // (directory, domain, expandTilde). Everything this sandbox offers lives under the
+        // container, so Documents/Library/Caches all resolve there rather than pretending
+        // to have a full iOS home directory layout.
+        r[0] = makeArray({makeString(documentsPath)});
+        return;
+    }
     if (entry == "_objc_retain" || entry == "_objc_retainAutoreleasedReturnValue") {
         auto found = objects.find(r[0]);
         if (found != objects.end() && found->second.references < UINT32_MAX)
