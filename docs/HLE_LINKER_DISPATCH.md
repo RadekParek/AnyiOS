@@ -8,7 +8,12 @@ HyperHLE-Reborn 5b65054c55cc33c6095f8c4b771430da5e63fbf4: MPL-2.0; reviewed src/
 
 Second increment (same day): guest heap and the C runtime subset described in
 `DYLD_AND_IMPORT_INCREMENT.md`. Coverage moved from 9 to 72 of 438 required imports.
-`qsort`, varargs formatting and the Objective-C/UIKit layers deliberately remain
-unimplemented.
+
+Third and fourth increments (same day): varargs formatting, the Objective-C collections
+and dispatch layer, then the C++ ABI and compiler-runtime layer in `runtime/cxx.cpp`
+(libstdc++.6 and libgcc_s.1, both bound under their real image names). Coverage is now
+**112 of 438** required imports: 103 of the report's service names plus 9 Objective-C
+class/metaclass entries. `qsort`, guest file I/O, UIKit lifecycle, EAGL rendering and
+exception unwinding deliberately remain unimplemented and are refused by name.
 
 This is not implementation of every UIKit, Objective-C, C++ exception, EAGL, audio or networking API. Guest dependency loading, export tries/re-exports, class bootstrap, callbacks, variadic/hard-float ABI and application lifecycle remain separate requirements. Never bind missing APIs to success-returning placeholders. No game compatibility claim without actual device evidence.

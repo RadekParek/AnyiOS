@@ -1,5 +1,6 @@
 #pragma once
 #include "coregraphics.h"
+#include "cxx.h"
 #include "exports.h"
 #include "frameworks.h"
 #include "libc.h"
@@ -25,6 +26,7 @@ class Services final {
     CoreFoundation cf;
     CoreGraphics cg;
     Libc libc;
+    CxxRuntime cxx;
     ObjC objc;
     std::vector<std::string> symbols;
     std::vector<std::string> traps;

@@ -52,8 +52,10 @@ int main() {
 
     ExportGraph graph;
     services.install(graph);
+    // libSystem, CoreFoundation, CoreGraphics, libstdc++.6 and libgcc_s.1 are installed
+    // by the service layer before the main executable.
     size_t executable = graph.addImage("<executable>");
-    assert(executable == 3);
+    assert(executable == 5);
     graph.setMainExecutable(executable);
     assert(!graph.resolve(executable, -1, "_memcpy"));
     graph.define(executable, "_local", {0x999, false});
@@ -66,6 +68,19 @@ int main() {
     assert(graph.strong(1, "_CFRelease"));
     assert(graph.resolve(executable, -2, "_malloc") == services.address("_malloc"));
     assert(graph.hasStrong("_CFRelease") && !graph.hasStrong("_missing"));
+    // Each gate is defined under the library that exports it on iOS, so strict
+    // ordinals from a real binary resolve instead of failing at bind time.
+    graph.dependencies(executable,
+                       {"/usr/lib/libSystem.B.dylib",
+                        "/System/Library/Frameworks/CoreFoundation.framework/CoreFoundation",
+                        "/System/Library/Frameworks/CoreGraphics.framework/CoreGraphics",
+                        "/usr/lib/libstdc++.6.dylib", "/usr/lib/libgcc_s.1.dylib"});
+    assert(graph.resolve(executable, 4, "_Znwm") == services.address("_Znwm"));
+    assert(graph.resolve(executable, 5, "___divsi3") == services.address("___divsi3"));
+    assert(!graph.resolve(executable, 4, "___divsi3"));
+    assert(graph.resolve(executable, 2, "_CFRelease") == services.address("_CFRelease"));
+    assert(graph.resolve(executable, 3, "_CGColorSpaceCreateDeviceRGB") ==
+           services.address("_CGColorSpaceCreateDeviceRGB"));
     fault("EXPORT_IMAGE", [&] { graph.addImage("<executable>"); });
 
     ExportGraph deps;

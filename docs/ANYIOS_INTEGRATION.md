@@ -81,8 +81,50 @@ Converter inclusion is explicitly requested by its owner. Upstream has no root l
   float bit patterns into `r0-r3`, calls the gate, and stores the result — including a
   hidden-pointer call, so the convention is exercised by executed instructions rather
   than asserted by a host helper.
-- Coverage is **72 of 438** required imports. This is API-surface progress; it is not
+- Coverage at the end of this increment was 72 of 438 required imports; the C++ ABI
+  increment below takes it to **112 of 438**. This is API-surface progress; it is not
   evidence that any title launches or renders.
+
+### C++ ABI and compiler-runtime increment (2026-10-21, fourth pass)
+
+The 472-import report links `libstdc++.6.dylib` (ordinal 16) and `libgcc_s.1.dylib`
+(ordinal 17) directly, so a C++ title stops on `__Znwm`/`___divsi3` long before any
+graphics work. `runtime/cxx.{h,cpp}` now implements that surface for real and reports
+the rest honestly:
+
+- **Allocator entry points**: `operator new`/`new[]` allocate from the guest heap with
+  8-byte alignment and fail with a named `CXX_ALLOC` error instead of returning null;
+  `operator delete`/`delete[]` release through the same heap and tolerate null.
+- **Itanium C++ ABI**: `__cxa_allocate_exception`/`__cxa_free_exception` use guest
+  memory, `__cxa_atexit`/`atexit` record handlers for the guest exit path,
+  `__cxa_guard_acquire`/`release`/`abort` drive the real 8-byte function-local-static
+  guard word (including the recursive-initialization fault), and
+  `__cxa_pure_virtual`/`__cxa_bad_typeid`/`__cxa_call_unexpected`/`__cxa_rethrow`/
+  `__cxa_begin_catch`/`__cxa_end_catch` raise `CXX_UNWIND`. Throwing
+  (`__cxa_throw`), `std::terminate`, `__assert_rtn` and `__stack_chk_fail` each become a
+  distinct guest failure. **Exception unwinding is deliberately not faked**: SjLj
+  registration/resume and the two personality routines refuse with `CXX_UNWIND` until a
+  real unwinder exists, because pretending to catch would corrupt the guest stack.
+- **Compiler helpers from libgcc**: `__divsi3`/`__udivsi3`/`__modsi3`/`__umodsi3`,
+  `__divdi3`/`__udivdi3`/`__moddi3`/`__umoddi3` (64-bit results back in `r0:r1`,
+  `INT64_MIN / -1` and `INT32_MIN / -1` saturate instead of trapping), and
+  `__floatundidf`/`__floatdidf`/`__fixdfdi`/`__fixunsdfdi` with NaN and range clamping.
+  Division by zero returns 0, matching `__aeabi_idiv0` on a device that has no host
+  trap, and is reported once through the log sink.
+- **Fortified libsystem_c entry points**: `__memcpy_chk`, `__memmove_chk`, `__memset_chk`,
+  `__strcpy_chk`, `__strcat_chk`, `__strncpy_chk` and `__sprintf_chk` check the
+  compiler-recorded object size and raise `LIBC_FORTIFY` when the request overflows it.
+  They are not thin aliases: that size check is the entire point of the `_chk` variant.
+- **Library attribution**: every gate is registered under the library that exports it on
+  iOS — `libSystem.B`, `CoreFoundation`, `CoreGraphics`, `libstdc++.6` or `libgcc_s.1` —
+  because `ExportGraph::resolve` checks two-level ordinals strictly. A helper registered
+  under the wrong image would still fail to bind, which is the honest outcome; the export
+  test now asserts both the positive and the negative case.
+- **Proof**: `tests/cxx_test.cpp` exercises the allocator, all twelve integer helpers,
+  both float helpers, guard acquisition/release/abort, exit-handler registration and its
+  budget, every fortified copy (success and `LIBC_FORTIFY`), `__sprintf_chk` with its fifth
+  argument taken from the guest stack, and each refusal path. The suite runs under
+  ASan/UBSan in `scripts/test-host.sh` and in CI.
 
 ### ARMv6, launch acceptance and rendering increment (2026-10-21, second pass)
 
