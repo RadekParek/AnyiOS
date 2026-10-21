@@ -67,7 +67,13 @@ std::string attemptLaunch(const uint8_t* data, size_t size) {
 #else
                 : "CPU_NOT_INTEGRATED: the tested CPU engine is not linked into this Android app.";
 #endif
-        return "LAUNCH_BLOCKED: " + blocker + "\n" + audit(image) + "\n" + image.summary() +
+        std::string details;
+        try {
+            details = audit(image);
+        } catch (const Error& e) {
+            details = "\nDYLD_EXPORT_AUDIT: unavailable (" + std::string(e.what()) + ")";
+        }
+        return "LAUNCH_BLOCKED: " + blocker + details + "\n" + image.summary() +
                "\nGuest code was not executed. Validation mappings released.";
     } catch (const Error& e) {
         return "LAUNCH_BLOCKED: " + std::string(e.what()) +

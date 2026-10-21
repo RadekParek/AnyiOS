@@ -108,6 +108,11 @@ int main() {
     conflict.fixups.push_back({0x2008, true, false, false, 0, 0, ""});
     conflict.fixups.push_back({0x2008, false, false, false, -2, 0, "_mostlyEqual"});
     fault("DYLD_TARGET", [&] { conflict.applyWithGraph(pages, 0, weakGraph, requester); });
+    DyldPlan addendConflict;
+    addendConflict.needsCoalescing = true;
+    addendConflict.fixups.push_back({0x2008, false, false, false, -3, 0, "_mostlyEqual"});
+    addendConflict.fixups.push_back({0x2008, false, false, false, -3, 4, "_mostlyEqual"});
+    fault("DYLD_TARGET", [&] { addendConflict.applyWithGraph(pages, 0, weakGraph, requester); });
     assert(pages.read32(0x2008) == 0xdeadbeef);
 
     DyldPlan missing;

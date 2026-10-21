@@ -270,6 +270,7 @@ void DyldPlan::applyWithGraph(Memory& memory, uint32_t slide, const ExportGraph&
         } else {
             auto& previous = normalized.fixups[old->second];
             if (!needsCoalescing || fixup.ordinal != -3 || previous.ordinal != -3 ||
+                previous.addend != fixup.addend ||
                 (!previous.rebase && previous.symbol != fixup.symbol))
                 throw Error("DYLD_TARGET", "conflicting duplicate fixup", fixup.address);
             // Coalescing runs after ordinary rebasing/binding, but commit only its
@@ -277,6 +278,8 @@ void DyldPlan::applyWithGraph(Memory& memory, uint32_t slide, const ExportGraph&
             previous = fixup;
         }
     }
+    // Coalescing already ran above. apply() must not reject the normalized plan
+    // merely because its original stream was the weak-binding stream.
     normalized.apply(memory, slide, [&](int ordinal, const std::string& name) {
         return graph.resolve(requester, ordinal, name);
     });
