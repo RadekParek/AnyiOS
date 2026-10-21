@@ -1,0 +1,414 @@
+#include "libc.h"
+
+#include <sys/time.h>
+
+#include <algorithm>
+#include <cctype>
+#include <climits>
+#include <cmath>
+#include <cstring>
+#include <ctime>
+
+#include "error.h"
+
+namespace podnative::runtime {
+namespace {
+constexpr size_t CopyLimit = 16 * 1024 * 1024;
+double bitsDouble(uint64_t bits) {
+    double value;
+    std::memcpy(&value, &bits, sizeof(value));
+    return value;
+}
+double getD(const CpuState& cpu, size_t index) {
+    return bitsDouble(uint64_t(cpu.extensionRegisters[index * 2]) |
+                      uint64_t(cpu.extensionRegisters[index * 2 + 1]) << 32);
+}
+void setD0(CpuState& cpu, double value) {
+    uint64_t bits;
+    std::memcpy(&bits, &value, sizeof(bits));
+    cpu.extensionRegisters[0] = uint32_t(bits);
+    cpu.extensionRegisters[1] = uint32_t(bits >> 32);
+}
+float getS(const CpuState& cpu, size_t index) {
+    const uint32_t bits = cpu.extensionRegisters[index];
+    float value;
+    std::memcpy(&value, &bits, sizeof(value));
+    return value;
+}
+void setS0(CpuState& cpu, float value) {
+    uint32_t bits;
+    std::memcpy(&bits, &value, sizeof(bits));
+    cpu.extensionRegisters[0] = bits;
+}
+}  // namespace
+std::string Libc::readString(uint32_t address, size_t limit) const {
+    std::string text;
+    for (size_t offset = 0; offset < limit; offset++) {
+        if (uint64_t(address) + offset > UINT32_MAX)
+            throw Error("LIBC_RANGE", "string address overflow");
+        char c;
+        memory.read(address + uint32_t(offset), &c, 1);
+        if (!c) return text;
+        text.push_back(c);
+    }
+    throw Error("LIBC_LIMIT", "unterminated guest string exceeds scan budget", address);
+}
+void Libc::zero(uint32_t address, size_t bytes) {
+    std::vector<uint8_t> zeros(std::min<size_t>(bytes, 64 * 1024));
+    size_t done = 0;
+    while (done < bytes) {
+        const size_t chunk = std::min(zeros.size(), bytes - done);
+        memory.write(address + uint32_t(done), zeros.data(), chunk);
+        done += chunk;
+    }
+}
+bool Libc::invoke(const std::string& name, CpuState& cpu) {
+    auto& r = cpu.registers;
+    if (name == "_malloc") {
+        r[0] = heap.allocate(r[0]);
+        return true;
+    }
+    if (name == "_calloc") {
+        const size_t count = r[0], size = r[1];
+        if (size && count > CopyLimit / size) {
+            r[0] = 0;
+            return true;
+        }
+        r[0] = heap.allocate(uint32_t(count * size));
+        if (r[0]) zero(r[0], count * size);
+        return true;
+    }
+    if (name == "_free") {
+        if (r[0]) heap.release(r[0]);
+        return true;
+    }
+    if (name == "_realloc") {
+        r[0] = r[0] ? heap.resize(r[0], r[1]) : heap.allocate(r[1]);
+        return true;
+    }
+    if (name == "_memchr") {
+        const size_t count = r[2];
+        if (count > CopyLimit) throw Error("LIBC_LIMIT", "memchr exceeds scan budget");
+        std::vector<uint8_t> bytes(count);
+        memory.read(r[0], bytes.data(), count);
+        auto found = std::find(bytes.begin(), bytes.end(), uint8_t(r[1]));
+        r[0] = found == bytes.end() ? 0 : r[0] + uint32_t(found - bytes.begin());
+        return true;
+    }
+    if (name == "_memcmp") {
+        const size_t count = r[2];
+        if (count > CopyLimit) throw Error("LIBC_LIMIT", "memcmp exceeds call budget");
+        std::vector<uint8_t> a(count), b(count);
+        memory.read(r[0], a.data(), count);
+        memory.read(r[1], b.data(), count);
+        int result = 0;
+        for (size_t n = 0; n < count; n++)
+            if (a[n] != b[n]) {
+                result = int(a[n]) - int(b[n]);
+                break;
+            }
+        r[0] = uint32_t(result);
+        return true;
+    }
+    if (name == "_memcpy" || name == "_memmove") {
+        const size_t count = r[2];
+        if (count > CopyLimit) throw Error("LIBC_LIMIT", "copy exceeds call budget");
+        if (name == "_memcpy" && count && uint64_t(r[0]) < uint64_t(r[1]) + count &&
+            uint64_t(r[1]) < uint64_t(r[0]) + count)
+            throw Error("LIBC_OVERLAP", "overlapping memcpy is undefined; use memmove");
+        std::vector<uint8_t> bytes(count);
+        memory.read(r[1], bytes.data(), count);
+        memory.write(r[0], bytes.data(), count);
+        return true;
+    }
+    if (name == "_memset") {
+        const size_t count = r[2];
+        if (count > CopyLimit) throw Error("LIBC_LIMIT", "memset exceeds call budget");
+        std::vector<uint8_t> bytes(count, uint8_t(r[1]));
+        memory.write(r[0], bytes.data(), count);
+        return true;
+    }
+    if (name == "_bzero") {
+        const size_t count = r[1];
+        if (count > CopyLimit) throw Error("LIBC_LIMIT", "bzero exceeds call budget");
+        zero(r[0], count);
+        return true;
+    }
+    if (name == "_strlen") {
+        r[0] = uint32_t(readString(r[0]).size());
+        return true;
+    }
+    if (name == "_strcmp" || name == "_strcasecmp") {
+        const bool folded = name == "_strcasecmp";
+        const std::string a = readString(r[0]), b = readString(r[1]);
+        int result = 0;
+        for (size_t n = 0; n <= std::min(a.size(), b.size()); n++) {
+            unsigned char x = n < a.size() ? uint8_t(a[n]) : 0;
+            unsigned char y = n < b.size() ? uint8_t(b[n]) : 0;
+            if (folded) {
+                x = uint8_t(std::tolower(x));
+                y = uint8_t(std::tolower(y));
+            }
+            if (x != y) {
+                result = int(x) - int(y);
+                break;
+            }
+        }
+        r[0] = uint32_t(result);
+        return true;
+    }
+    if (name == "_strncmp" || name == "_strncasecmp") {
+        const bool folded = name == "_strncasecmp";
+        const size_t count = r[2];
+        const std::string a = readString(r[0]), b = readString(r[1]);
+        int result = 0;
+        for (size_t n = 0; n < count; n++) {
+            unsigned char x = n < a.size() ? uint8_t(a[n]) : 0;
+            unsigned char y = n < b.size() ? uint8_t(b[n]) : 0;
+            if (folded) {
+                x = uint8_t(std::tolower(x));
+                y = uint8_t(std::tolower(y));
+            }
+            if (x != y) {
+                result = int(x) - int(y);
+                break;
+            }
+            if (!x) break;
+        }
+        r[0] = uint32_t(result);
+        return true;
+    }
+    if (name == "_strcpy") {
+        const std::string text = readString(r[1]);
+        memory.write(r[0], text.data(), text.size());
+        zero(r[0] + uint32_t(text.size()), 1);
+        return true;
+    }
+    if (name == "_strncpy") {
+        const std::string text = readString(r[1]);
+        const size_t count = r[2];
+        const size_t copied = std::min(text.size(), count);
+        memory.write(r[0], text.data(), copied);
+        if (copied < count) zero(r[0] + uint32_t(copied), count - copied);
+        return true;
+    }
+    if (name == "_strcat" || name == "_strlcat") {
+        const std::string base = readString(r[0]), tail = readString(r[1]);
+        const size_t wanted = base.size() + tail.size();
+        if (wanted > CopyLimit) throw Error("LIBC_LIMIT", "concatenation exceeds budget");
+        const size_t limit = name == "_strlcat" ? r[2] : SIZE_MAX;
+        if (base.size() >= limit) {
+            r[0] = uint32_t(wanted);
+            return true;
+        }
+        const size_t copied = std::min(tail.size(), limit - base.size() - 1);
+        memory.write(r[0] + uint32_t(base.size()), tail.data(), copied);
+        zero(r[0] + uint32_t(base.size() + copied), 1);
+        r[0] = name == "_strlcat" ? uint32_t(wanted) : r[0];
+        return true;
+    }
+    if (name == "_strchr" || name == "_strrchr") {
+        const std::string text = readString(r[0]);
+        const char needle = char(r[1] & 0xff);
+        const size_t found = name == "_strchr" ? text.find(needle) : text.rfind(needle);
+        r[0] = found == std::string::npos ? 0 : r[0] + uint32_t(found);
+        return true;
+    }
+    if (name == "_strstr") {
+        const std::string text = readString(r[0]), needle = readString(r[1]);
+        const size_t found = text.find(needle);
+        r[0] = found == std::string::npos ? 0 : r[0] + uint32_t(found);
+        return true;
+    }
+    if (name == "_strdup") {
+        const std::string text = readString(r[0]);
+        const uint32_t copy = heap.allocate(uint32_t(text.size() + 1));
+        if (!copy) {
+            r[0] = 0;
+            return true;
+        }
+        memory.write(copy, text.data(), text.size());
+        zero(copy + uint32_t(text.size()), 1);
+        r[0] = copy;
+        return true;
+    }
+    if (name == "_strerror_r") {
+        const std::string text = "guest runtime error";
+        const size_t capacity = r[2];
+        if (!capacity) return true;
+        const size_t copied = std::min(text.size(), capacity - 1);
+        memory.write(r[1], text.data(), copied);
+        zero(r[1] + uint32_t(copied), 1);
+        r[0] = 0;
+        return true;
+    }
+    if (name == "_atoi" || name == "_atol" || name == "_atof" || name == "_strtod" ||
+        name == "_strtol" || name == "_strtoul" || name == "_strtoll" || name == "_strtoull")
+        return numbers(name, cpu);
+    if (name == "_rand") {
+        randomState = randomState * 1103515245u + 12345u;
+        r[0] = (randomState >> 16) & 0x7fff;
+        return true;
+    }
+    if (name == "_srand") {
+        randomState = r[0];
+        return true;
+    }
+    if (name == "_time") {
+        const time_t now = std::time(nullptr);
+        if (r[0]) memory.write32(r[0], uint32_t(now));
+        r[0] = uint32_t(now);
+        return true;
+    }
+    if (name == "_gettimeofday") {
+        timeval tv{};
+        gettimeofday(&tv, nullptr);
+        if (r[0]) {
+            memory.write32(r[0], uint32_t(tv.tv_sec));
+            memory.write32(r[0] + 4, uint32_t(tv.tv_usec));
+        }
+        r[0] = 0;
+        return true;
+    }
+    if (name == "_OSAtomicCompareAndSwap32Barrier") {
+        const uint32_t old = memory.read32(r[2]);
+        if (old == r[0]) memory.write32(r[2], r[1]);
+        r[0] = old == r[0] ? 1 : 0;
+        return true;
+    }
+    if (name == "_OSAtomicAnd32OrigBarrier" || name == "_OSAtomicOr32OrigBarrier") {
+        const uint32_t old = memory.read32(r[1]);
+        memory.write32(r[1], name == "_OSAtomicAnd32OrigBarrier" ? old & r[0] : old | r[0]);
+        r[0] = old;
+        return true;
+    }
+    return math(cpu, name);
+}
+namespace {
+// Shared bounded integer parser: returns the number of bytes consumed.
+size_t parseInt(const std::string& text, int base, bool& negative, uint64_t& magnitude,
+                bool& overflow) {
+    size_t at = 0;
+    negative = false;
+    magnitude = 0;
+    overflow = false;
+    while (at < text.size() && std::isspace(uint8_t(text[at]))) at++;
+    if (at < text.size() && (text[at] == '+' || text[at] == '-')) {
+        negative = text[at] == '-';
+        at++;
+    }
+    if ((base == 0 || base == 16) && at + 1 < text.size() && text[at] == '0' &&
+        (text[at + 1] == 'x' || text[at + 1] == 'X')) {
+        base = 16;
+        at += 2;
+    } else if (base == 0) {
+        base = at < text.size() && text[at] == '0' ? 8 : 10;
+    }
+    const size_t digits = at;
+    for (; at < text.size(); at++) {
+        const unsigned char c = uint8_t(text[at]);
+        int value;
+        if (std::isdigit(c))
+            value = c - '0';
+        else if (std::isalpha(c))
+            value = std::tolower(c) - 'a' + 10;
+        else
+            break;
+        if (value >= base) break;
+        if (magnitude > (UINT64_MAX - uint64_t(value)) / uint64_t(base))
+            overflow = true;
+        else
+            magnitude = magnitude * uint64_t(base) + uint64_t(value);
+    }
+    return at == digits ? digits : at;
+}
+}  // namespace
+bool Libc::numbers(const std::string& name, CpuState& cpu) {
+    auto& r = cpu.registers;
+    const std::string text = readString(r[0]);
+    // strtod/atof use the host parser on a private copy, so no guest byte is over-read.
+    if (name == "_strtod" || name == "_atof") {
+        char* end = nullptr;
+        const double value = std::strtod(text.c_str(), &end);
+        if (name == "_strtod" && r[1]) memory.write32(r[1], r[0] + uint32_t(end - text.c_str()));
+        setD0(cpu, value);
+        return true;
+    }
+    const int base =
+        name == "_strtol" || name == "_strtoul" || name == "_strtoll" || name == "_strtoull"
+            ? int(r[2])
+            : 10;
+    if (base && (base < 2 || base > 36)) throw Error("LIBC_ARGUMENT", "invalid integer base");
+    bool negative = false, overflow = false;
+    uint64_t magnitude = 0;
+    const size_t consumed = parseInt(text, base, negative, magnitude, overflow);
+    const bool unsignedResult =
+        name == "_strtoul" || name == "_strtoull" || name == "_atoi" || name == "_atol";
+    if (r[1] &&
+        (name == "_strtol" || name == "_strtoul" || name == "_strtoll" || name == "_strtoull"))
+        memory.write32(r[1], r[0] + uint32_t(consumed));
+    if (name == "_strtoll" || name == "_strtoull") {
+        uint64_t value = negative ? 0 - magnitude : magnitude;
+        if (!unsignedResult &&
+            (negative ? magnitude > uint64_t(INT64_MAX) + 1 : magnitude > uint64_t(INT64_MAX)))
+            value = negative ? uint64_t(INT64_MIN) : uint64_t(INT64_MAX);
+        r[0] = uint32_t(value);
+        r[1] = uint32_t(value >> 32);
+        return true;
+    }
+    int64_t signedValue = negative ? -int64_t(magnitude) : int64_t(magnitude);
+    if (!unsignedResult) {
+        const int64_t limit = INT32_MAX;
+        if (magnitude > uint64_t(limit) || overflow) signedValue = negative ? INT32_MIN : INT32_MAX;
+    }
+    r[0] = uint32_t(signedValue);
+    return true;
+}
+bool Libc::math(CpuState& cpu, const std::string& name) {
+    if (name == "_sin") {
+        setD0(cpu, std::sin(getD(cpu, 0)));
+        return true;
+    }
+    if (name == "_cos") {
+        setD0(cpu, std::cos(getD(cpu, 0)));
+        return true;
+    }
+    if (name == "_pow") {
+        setD0(cpu, std::pow(getD(cpu, 0), getD(cpu, 1)));
+        return true;
+    }
+    if (name == "_fmod") {
+        setD0(cpu, std::fmod(getD(cpu, 0), getD(cpu, 1)));
+        return true;
+    }
+    if (name == "_powf") {
+        setS0(cpu, std::pow(getS(cpu, 0), getS(cpu, 1)));
+        return true;
+    }
+    if (name == "_sinf") {
+        setS0(cpu, std::sin(getS(cpu, 0)));
+        return true;
+    }
+    if (name == "_cosf") {
+        setS0(cpu, std::cos(getS(cpu, 0)));
+        return true;
+    }
+    if (name == "_tanf") {
+        setS0(cpu, std::tan(getS(cpu, 0)));
+        return true;
+    }
+    if (name == "_acosf") {
+        setS0(cpu, std::acos(getS(cpu, 0)));
+        return true;
+    }
+    if (name == "_atanf") {
+        setS0(cpu, std::atan(getS(cpu, 0)));
+        return true;
+    }
+    if (name == "_atan2f") {
+        setS0(cpu, std::atan2(getS(cpu, 0), getS(cpu, 1)));
+        return true;
+    }
+    return false;
+}
+}  // namespace podnative::runtime

@@ -37,6 +37,9 @@ The PC artifact is a Linux CPU diagnostic build, not a desktop emulator GUI.
 * HLE linker core: session-owned two-level export graph, deterministic strong/weak
   coalescing, transactional graph-aware fixups, and authenticated ARM `SVC` call
   gates; launch reports required-import coverage instead of claiming resolution.
+* Guest C runtime: owned heap plus bounded string/number/math/atomic implementations
+  (48 of the reported 438 unique imports); UIKit/Objective-C and the remaining
+  frameworks stay explicit blockers rather than fabricated successes.
 * GitHub Actions debug/tagged-release build recipes with artifacts and provenance.
 
 No inherited TouchHLE/HyperHLE renderer. No proprietary game files. No universal

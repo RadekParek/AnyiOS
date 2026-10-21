@@ -116,6 +116,46 @@ fixups; PIE; Darwin process/thread/task setup; callbacks into guest code; the
 ARM EABI details for variadic, VFP and aggregate arguments; application lifecycle.
 The renderer stays the independent ANGLE implementation. No playability claim.
 
+## C runtime and guest heap increment (2026-10-21, second report)
+
+The device report after the linker increment showed `9 of 439` required imports
+implemented. Most of the gap is the C runtime, not UIKit, so this increment adds a
+genuine libc/libm subset (56 gates; 48 of 438 unique required imports in the report):
+
+- `GuestHeap`: first-fit allocator over a lazily mapped 32 MiB guest region, with
+  host-side metadata, alignment, coalescing, splitting on shrink and zeroed
+  `calloc`. Exhaustion or an address-space collision returns null like a failing
+  guest `malloc`; an invalid `free`/`realloc` faults instead of silently ignoring.
+- Strings: `memchr/memcmp/memcpy/memmove/memset/bzero`, `strlen`, `strcmp/strncmp`,
+  `strcasecmp/strncasecmp`, `strcpy/strncpy`, `strcat/strlcat`, `strchr/strrchr`,
+  `strstr`, `strdup`, `strerror_r`.
+- Numbers: `atoi/atol/atof`, `strtol/strtoul/strtoll/strtoull/strtod` with end
+  pointers, base detection and saturation.
+- Math: `sin/cos/pow/fmod` (double, VFP `d0`) and
+  `sinf/cosf/tanf/acosf/atanf/atan2f/powf` (float, `s0`).
+- `rand/srand`, `time`, `gettimeofday`, `OSAtomicCompareAndSwap32Barrier`,
+  `OSAtomicAnd32OrigBarrier`, `OSAtomicOr32OrigBarrier` on real guest memory.
+- All buffer access goes through checked guest memory; unknown names still throw
+  `HLE_SYMBOL`. `qsort` (guest callback), `printf` families (guest varargs) and the
+  Objective-C runtime remain unimplemented rather than faked.
+
+### Evidence
+
+`tests/libc_test.cpp` covers allocation/alignment/reuse/grow/zeroing, invalid free,
+string semantics including `strlcat` limits, base-10/16/auto integer parsing and
+saturation, `strtod` end pointers, double/float VFP returns, atomics and the
+explicitly-unimplemented `_UIApplicationMain`/`_qsort` names. `_memcpy` remains
+covered by a real Dynarmic ARM/Thumb call test.
+
+### Still blocking real games
+
+Objective-C runtime and classes (`NSObject`, `NSString`, `NSAutoreleasePool`,
+`NSBundle`, `NSNotificationCenter`, `NSOperationQueue`), `UIApplicationMain`,
+UIView/UIViewController/UIKit widgets, `EAGLContext`/`CAEAGLLayer`, QuartzCore
+animations, AVFoundation/MediaPlayer/CoreAudio/OpenAL, CoreGraphics bitmap contexts,
+`libstdc++` exceptions and containers, `printf/scanf`, `qsort` callbacks, sockets and
+SQLite. Darwin process/thread bootstrap and application lifecycle remain absent.
+
 ## Evidence / remaining gate
 
 Native sanitizer tests exercise real synthetic binding/rebase application,

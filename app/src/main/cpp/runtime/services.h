@@ -1,6 +1,7 @@
 #pragma once
 #include "exports.h"
 #include "frameworks.h"
+#include "libc.h"
 
 namespace podnative::runtime {
 // ARM code gates contain SVC + BX LR. Guest Thumb callers use BLX interworking.
@@ -16,6 +17,7 @@ class Services final {
    private:
     Memory& memory;
     CoreFoundation cf;
+    Libc libc;
     std::vector<std::string> symbols;
     void invoke(const std::string& symbol, CpuState& state);
     static constexpr uint32_t Base = 0x6f000000;

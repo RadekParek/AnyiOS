@@ -31,6 +31,8 @@ target_compile_options(podnative_cpu PRIVATE -Wall -Wextra -Werror)
 add_library(podnative_hle STATIC
     "${RUNTIME}/runtime/exports.cpp"
     "${RUNTIME}/runtime/services.cpp"
+    "${RUNTIME}/runtime/libc.cpp"
+    "${RUNTIME}/runtime/heap.cpp"
     "${RUNTIME}/runtime/frameworks.cpp")
 target_include_directories(podnative_hle PUBLIC "${RUNTIME}")
 target_link_libraries(podnative_hle PUBLIC podnative_cpu)

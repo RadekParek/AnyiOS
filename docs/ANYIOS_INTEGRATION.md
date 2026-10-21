@@ -39,6 +39,7 @@ Converter inclusion is explicitly requested by its owner. Upstream has no root l
 
 - HLE linker increment: session-owned two-level export graph (image/alias/dependency ordinals plus flat/weak lookup), checked strong-definition coalescing, native-thumb export parsing, and transactional graph-aware fixup application. Production launch now reports required-implementation coverage and unresolved examples instead of a generic symbol-resolution message.
 - Twelve checked ARM SVC call gates implement bounded C memory/string operations plus the existing CoreFoundation bit-vector subset. Dispatch authenticates the gate PC, trap number, ARM mode and guest return address before invoking host code; unknown imports and forged traps remain hard failures. Real Dynarmic ARM and Thumb guest calls through these gates are included in the CPU correctness test; sanitizer service tests cover overlap, budgets, invalid returns and forged traps.
+- Guest C runtime increment: owned guest heap, bounded string/number/math/atomic services and checked dispatch, raising implemented imports from 9 to 48 of the 438 unique names in the latest device report. Host sanitizer tests cover allocator invariants, parsing, VFP float/double returns and explicit non-implementation of `qsort`/`printf`/UIKit entry points.
 - Architecture research of HyperHLE-Reborn (MPL-2.0) covered its general host-dylib export/interface separation only. No source or renderer was copied; the independent ANGLE renderer is unchanged.
 
 ### Remaining runtime work
