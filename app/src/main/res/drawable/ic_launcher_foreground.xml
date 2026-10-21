@@ -1,8 +1,114 @@
-<vector xmlns:android="http://schemas.android.com/apk/res/android" android:width="108dp" android:height="108dp" android:viewportWidth="108" android:viewportHeight="108">
-    <path android:fillColor="#F4FFF9" android:pathData="M37,23 L71,23 Q77,23 77,29 L77,79 Q77,85 71,85 L37,85 Q31,85 31,79 L31,29 Q31,23 37,23 Z" />
-    <path android:fillColor="#102A21" android:pathData="M36,29 L72,29 L72,56 L36,56 Z" />
-    <path android:fillColor="#73E8AF" android:pathData="M41,34 L67,34 L67,51 L41,51 Z" />
-    <path android:fillColor="#145B40" android:pathData="M50,37 L61,42.5 L50,48 Z" />
-    <path android:fillColor="#C0DCCE" android:fillType="evenOdd" android:pathData="M54,59 A11,11 0,1 1,54,81 A11,11 0,1 1,54,59 M54,66 A4,4 0,1 0,54,74 A4,4 0,1 0,54,66" />
-    <path android:fillColor="#37785A" android:pathData="M52,61 L56,61 L56,63 L52,63 Z M63,68 L65,70 L63,72 L61,70 Z M45,68 L47,70 L45,72 L43,70 Z M52,77 L56,77 L56,79 L52,79 Z" />
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:aapt="http://schemas.android.com/aapt"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <!-- Brushed green metal body: dark rim, lifted face, glossy top band. -->
+    <path android:pathData="M34,21 L74,21 Q81,21 81,28 L81,80 Q81,87 74,87 L34,87 Q27,87 27,80 L27,28 Q27,21 34,21 Z">
+        <aapt:attr name="android:fillColor">
+            <gradient
+                android:startX="27"
+                android:startY="21"
+                android:endX="81"
+                android:endY="87"
+                android:type="linear">
+                <item android:offset="0" android:color="#FF2F6B54" />
+                <item android:offset="0.45" android:color="#FF173D2E" />
+                <item android:offset="1" android:color="#FF0B241A" />
+            </gradient>
+        </aapt:attr>
+    </path>
+    <!-- Anodised face plate. -->
+    <path android:pathData="M35,25 L73,25 Q78,25 78,30 L78,78 Q78,83 73,83 L35,83 Q30,83 30,78 L30,30 Q30,25 35,25 Z">
+        <aapt:attr name="android:fillColor">
+            <gradient
+                android:startX="30"
+                android:startY="25"
+                android:endX="78"
+                android:endY="83"
+                android:type="linear">
+                <item android:offset="0" android:color="#FF9FF3C6" />
+                <item android:offset="0.28" android:color="#FF4DD694" />
+                <item android:offset="0.62" android:color="#FF1E9C68" />
+                <item android:offset="1" android:color="#FF0B5A3A" />
+            </gradient>
+        </aapt:attr>
+    </path>
+    <!-- Screen inset: dark glass with a cool metal reflection. -->
+    <path android:pathData="M39,31 L69,31 Q72,31 72,34 L72,58 Q72,61 69,61 L39,61 Q36,61 36,58 L36,34 Q36,31 39,31 Z">
+        <aapt:attr name="android:fillColor">
+            <gradient
+                android:startX="36"
+                android:startY="31"
+                android:endX="72"
+                android:endY="61"
+                android:type="linear">
+                <item android:offset="0" android:color="#FF0E2A21" />
+                <item android:offset="0.55" android:color="#FF123B2C" />
+                <item android:offset="1" android:color="#FF071A13" />
+            </gradient>
+        </aapt:attr>
+    </path>
+    <!-- Play glyph, polished metal. -->
+    <path android:pathData="M48,38 L62,46 L48,54 Z">
+        <aapt:attr name="android:fillColor">
+            <gradient
+                android:startX="48"
+                android:startY="38"
+                android:endX="62"
+                android:endY="54"
+                android:type="linear">
+                <item android:offset="0" android:color="#FFFFFFFF" />
+                <item android:offset="0.5" android:color="#FFB8F5D8" />
+                <item android:offset="1" android:color="#FF6FE0AE" />
+            </gradient>
+        </aapt:attr>
+    </path>
+    <!-- Click wheel: concentric metal rings with a specular sweep. -->
+    <path
+        android:fillType="evenOdd"
+        android:pathData="M54,63 A12.5,12.5 0,1 1,54,88 A12.5,12.5 0,1 1,54,63 M54,71 A4.5,4.5 0,1 0,54,80 A4.5,4.5 0,1 0,54,71">
+        <aapt:attr name="android:fillColor">
+            <gradient
+                android:startX="41"
+                android:startY="63"
+                android:endX="67"
+                android:endY="88"
+                android:type="linear">
+                <item android:offset="0" android:color="#FFE6FFF2" />
+                <item android:offset="0.35" android:color="#FF8AE9BC" />
+                <item android:offset="0.7" android:color="#FF2FBF85" />
+                <item android:offset="1" android:color="#FF12563C" />
+            </gradient>
+        </aapt:attr>
+    </path>
+    <!-- Wheel centre key. -->
+    <path android:pathData="M50,73 L58,73 L58,78 L50,78 Z">
+        <aapt:attr name="android:fillColor">
+            <gradient
+                android:startX="50"
+                android:startY="73"
+                android:endX="58"
+                android:endY="78"
+                android:type="linear">
+                <item android:offset="0" android:color="#FF2A9C6E" />
+                <item android:offset="1" android:color="#FF0C3B29" />
+            </gradient>
+        </aapt:attr>
+    </path>
+    <!-- Specular highlight across the upper face, kept subtle so it reads as metal. -->
+    <path android:pathData="M34,27 L74,27 Q77,27 77,30 L77,38 L31,46 L31,30 Q31,27 34,27 Z">
+        <aapt:attr name="android:fillColor">
+            <gradient
+                android:startX="54"
+                android:startY="27"
+                android:endX="54"
+                android:endY="46"
+                android:type="linear">
+                <item android:offset="0" android:color="#66FFFFFF" />
+                <item android:offset="1" android:color="#00FFFFFF" />
+            </gradient>
+        </aapt:attr>
+    </path>
 </vector>

@@ -2,6 +2,7 @@
 
 #include <cstring>
 #include <sstream>
+#include <string>
 namespace podnative {
 std::string inspectMachO(const uint8_t* b, size_t n) {
     auto u32 = [b](size_t p) {
@@ -13,6 +14,13 @@ std::string inspectMachO(const uint8_t* b, size_t n) {
         return "MACHO_FORMAT: only thin little-endian 32-bit Mach-O supported; unsupported fat, "
                "big-endian or non-Mach-O input";
     if (u32(4) != 12) return "MACHO_CPU: executable is not ARM32";
+    // CPU_SUBTYPE_MASK occupies the high byte; only the low 24 bits are the subtype.
+    const uint32_t subtype = u32(8) & 0xffffff;
+    // ARMv6 and ARMv7 are both accepted: the runtime selects instruction-set semantics
+    // from this subtype instead of running every image as ARMv7.
+    if (subtype != 6 && subtype != 9 && subtype != 11 && subtype != 0)
+        return "MACHO_CPU_SUBTYPE: unsupported ARM32 subtype " + std::to_string(subtype) +
+               "; ARMv6, ARMv7 and ARMv7s are supported";
     if (u32(12) != 2) return "MACHO_TYPE: expected MH_EXECUTE";
     uint32_t count = u32(16), total = u32(20);
     if (total > n - 28 || count > total / 8) return "MACHO_COMMANDS: invalid command bounds";
@@ -41,9 +49,13 @@ std::string inspectMachO(const uint8_t* b, size_t n) {
         return "MACHO_ENCRYPTED: protected executable cannot be executed; no DRM bypass is "
                "provided";
     std::ostringstream out;
-    out << "INSPECTED_ARM32: " << count << " load commands; CPU subtype " << (u32(8) & 0xffffff)
-        << ". Header inspection only. Separate mapping/dyld diagnostics follow; game execution NOT "
-           "implemented.";
+    out << "INSPECTED_ARM32: " << count << " load commands; CPU subtype " << subtype << " ("
+        << (subtype == 6    ? "ARMv6"
+            : subtype == 9  ? "ARMv7"
+            : subtype == 11 ? "ARMv7s"
+                            : "generic ARM")
+        << "). Header inspection only. Separate mapping/dyld diagnostics follow; guest "
+           "execution is reported separately and no launch claim is made here.";
     return out.str();
 }
 }  // namespace podnative

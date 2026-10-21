@@ -6,6 +6,10 @@
 
 #include "memory.h"
 namespace podnative::runtime {
+// Instruction-set generation the guest was built for. iOS ARMv6 titles (iPod touch 2,
+// iPhone 3G/3GS era) must not see ARMv7-only encodings, and ARMv7 titles must not be
+// silently downgraded.
+enum class IsaArch { ArmV6, ArmV7 };
 struct CpuState {
     std::array<uint32_t, 16> registers{};
     std::array<uint32_t, 64> extensionRegisters{};
@@ -26,7 +30,7 @@ struct CpuStop {
 // Strict single-step slices are an initial correctness path, not a performance claim.
 class Cpu final {
    public:
-    explicit Cpu(Memory& memory);
+    explicit Cpu(Memory& memory, IsaArch arch = IsaArch::ArmV7);
     ~Cpu();
     Cpu(const Cpu&) = delete;
     Cpu& operator=(const Cpu&) = delete;

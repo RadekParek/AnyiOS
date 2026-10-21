@@ -126,36 +126,66 @@ class AngleBackend final : public GraphicsBackend {
         return s;
     }
 
-   public:
-    ~AngleBackend() override {
-        if (display != EGL_NO_DISPLAY) {
-            if (context != EGL_NO_CONTEXT && eglGetCurrentContext() == context) {
-                glDeleteProgram(program);
-                glDeleteTextures(1, &texture);
-                glDeleteBuffers(1, &vertices);
-                glDeleteBuffers(1, &indices);
-            }
-            eglMakeCurrent(display, EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT);
-            if (surface != EGL_NO_SURFACE) eglDestroySurface(display, surface);
-            if (context != EGL_NO_CONTEXT) eglDestroyContext(display, context);
-            eglTerminate(display);
-            eglReleaseThread();
+    void teardown() {
+        if (display == EGL_NO_DISPLAY) return;
+        if (context != EGL_NO_CONTEXT && eglGetCurrentContext() == context) {
+            glDeleteProgram(program);
+            glDeleteTextures(1, &texture);
+            glDeleteBuffers(1, &vertices);
+            glDeleteBuffers(1, &indices);
         }
+        eglMakeCurrent(display, EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT);
+        if (surface != EGL_NO_SURFACE) eglDestroySurface(display, surface);
+        if (context != EGL_NO_CONTEXT) eglDestroyContext(display, context);
+        eglTerminate(display);
+        eglReleaseThread();
+        display = EGL_NO_DISPLAY;
+        surface = EGL_NO_SURFACE;
+        context = EGL_NO_CONTEXT;
+        program = 0;
+        vertices = indices = texture = 0;
     }
+
+   public:
+    ~AngleBackend() override { teardown(); }
     void attach(ANativeWindow* window, int w, int h) override {
         if (w < 1 || h < 1) error("SURFACE_SIZE_INVALID");
         width = w;
         height = h;
-        report = "embedded ANGLE / Vulkan\n" + preflight();
+        // ANGLE is used either way; the Vulkan backend is preferred because it is the
+        // configuration this project validates, but a device whose driver cannot give us
+        // a Vulkan 1.1 instance is reported and falls back to ANGLE's own OpenGL ES
+        // backend. The substitution is always named in diagnostics; nothing silent.
+        report = "embedded ANGLE\n";
+        std::string vulkanFailure;
+        try {
+            report += "backend request: Vulkan\n" + preflight();
+            open(window, true);
+            report += "\nbackend in use: Vulkan";
+            return;
+        } catch (const std::exception& e) {
+            vulkanFailure = e.what();
+            report += std::string("\nVulkan backend unavailable: ") + vulkanFailure;
+            teardown();
+            eglReleaseThread();
+        }
+        report += "\nbackend request: OpenGL ES (fallback after Vulkan refusal)";
+        open(window, false);
+        report += "\nbackend in use: OpenGL ES via ANGLE\nVulkan refusal was: " + vulkanFailure;
+    }
+    void open(ANativeWindow* window, bool vulkan) {
         const char* extensions = eglQueryString(EGL_NO_DISPLAY, EGL_EXTENSIONS);
         if (!extensions || !strstr(extensions, "EGL_ANGLE_platform_angle") ||
-            !strstr(extensions, "EGL_ANGLE_platform_angle_vulkan"))
-            error("ANGLE_VULKAN_PLATFORM_EXTENSION_MISSING");
+            (vulkan && !strstr(extensions, "EGL_ANGLE_platform_angle_vulkan")))
+            error(vulkan ? "ANGLE_VULKAN_PLATFORM_EXTENSION_MISSING"
+                         : "ANGLE_PLATFORM_EXTENSION_MISSING");
         auto getDisplay = reinterpret_cast<PFNEGLGETPLATFORMDISPLAYEXTPROC>(
             eglGetProcAddress("eglGetPlatformDisplayEXT"));
         if (!getDisplay) error("ANGLE_PLATFORM_ENTRYPOINT_MISSING");
-        const EGLint attrs[] = {EGL_PLATFORM_ANGLE_TYPE_ANGLE, EGL_PLATFORM_ANGLE_TYPE_VULKAN_ANGLE,
-                                EGL_NONE};
+        const EGLint attrs[] = {
+            EGL_PLATFORM_ANGLE_TYPE_ANGLE,
+            vulkan ? EGL_PLATFORM_ANGLE_TYPE_VULKAN_ANGLE : EGL_PLATFORM_ANGLE_TYPE_OPENGL_ANGLE,
+            EGL_NONE};
         display = getDisplay(EGL_PLATFORM_ANGLE_ANGLE, EGL_DEFAULT_DISPLAY, attrs);
         eglCheck(display != EGL_NO_DISPLAY, "DISPLAY");
         EGLint major = 0, minor = 0;

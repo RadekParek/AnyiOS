@@ -291,5 +291,25 @@ int main() {
         assert(draw.memory->read32(0x9f14) == floatBits(4));
         std::cout << "Real-engine iOS ARMv7 core-register ABI for CoreGraphics passed\n";
     }
+    // An image that declares ARMv6 runs on the v6K selector without losing execution:
+    // the same guest program must reach its supervisor call either way. (Dynarmic takes
+    // the architecture version as a translator hint rather than a decode gate, so the
+    // load-time selection itself is asserted in the loader tests.)
+    {
+        Memory isa;
+        std::vector<uint8_t> code(4096, 0);
+        put(code, 0, 0xe3a00007);  // mov r0, #7
+        put(code, 4, 0xef000000);  // svc #0
+        isa.map({0x1000, 4096, uint8_t(Read | Execute), "isa probe"}, code.data(), code.size());
+        for (IsaArch arch : {IsaArch::ArmV6, IsaArch::ArmV7}) {
+            CpuState state;
+            state.registers[15] = 0x1000;
+            Cpu cpu(isa, arch);
+            cpu.setState(state);
+            const auto stop = cpu.run(4);
+            assert(stop.reason == StopReason::SupervisorCall && cpu.state().registers[0] == 7);
+        }
+        std::cout << "ARMv6 and ARMv7 selectors both execute guest code passed\n";
+    }
     std::cout << "Real Dynarmic ARM/Thumb, memory, service-trap, budget and fault tests passed\n";
 }

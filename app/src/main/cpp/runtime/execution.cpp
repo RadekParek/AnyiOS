@@ -33,7 +33,7 @@ GuestRun runGuest(LoadedImage& image, Services& services, const ExportGraph& gra
                               [&](const std::string& name) { return services.trapFor(name); });
     run.trappedImports = services.trapCount();
 
-    Cpu cpu(*image.memory);
+    Cpu cpu(*image.memory, image.arch);
     CpuState state;
     state.registers = image.registers;
     state.cpsr = image.cpsr;
