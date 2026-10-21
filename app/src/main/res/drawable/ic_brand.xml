@@ -1,9 +1,39 @@
-<vector xmlns:android="http://schemas.android.com/apk/res/android" android:width="64dp" android:height="64dp" android:viewportWidth="108" android:viewportHeight="108">
-    <path android:fillColor="#087F5B" android:pathData="M24,0 L84,0 Q108,0 108,24 L108,84 Q108,108 84,108 L24,108 Q0,108 0,84 L0,24 Q0,0 24,0 Z" />
-    <path android:fillColor="#F4FFF9" android:pathData="M37,23 L71,23 Q77,23 77,29 L77,79 Q77,85 71,85 L37,85 Q31,85 31,79 L31,29 Q31,23 37,23 Z" />
-    <path android:fillColor="#102A21" android:pathData="M36,29 L72,29 L72,56 L36,56 Z" />
-    <path android:fillColor="#73E8AF" android:pathData="M41,34 L67,34 L67,51 L41,51 Z" />
-    <path android:fillColor="#145B40" android:pathData="M50,37 L61,42.5 L50,48 Z" />
-    <path android:fillColor="#C0DCCE" android:fillType="evenOdd" android:pathData="M54,59 A11,11 0,1 1,54,81 A11,11 0,1 1,54,59 M54,66 A4,4 0,1 0,54,74 A4,4 0,1 0,54,66" />
-    <path android:fillColor="#37785A" android:pathData="M52,61 L56,61 L56,63 L52,63 Z M63,68 L65,70 L63,72 L61,70 Z M45,68 L47,70 L45,72 L43,70 Z M52,77 L56,77 L56,79 L52,79 Z" />
+<?xml version="1.0" encoding="utf-8"?>
+<!-- In-app mark: the same black-plate green metal die as the launcher icon. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:aapt="http://schemas.android.com/aapt"
+    android:width="64dp"
+    android:height="64dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <path android:fillColor="#05070A" android:pathData="M24,0 L84,0 Q108,0 108,24 L108,84 Q108,108 84,108 L24,108 Q0,108 0,84 L0,24 Q0,0 24,0 Z" />
+    <path android:pathData="M54,18 L81,33.5 L81,64.5 L54,80 L27,64.5 L27,33.5 Z">
+        <aapt:attr name="android:fillColor">
+            <gradient
+                android:startX="27"
+                android:startY="18"
+                android:endX="81"
+                android:endY="80"
+                android:type="linear">
+                <item android:offset="0" android:color="#FF6BF0B2" />
+                <item android:offset="0.4" android:color="#FF1F8F62" />
+                <item android:offset="1" android:color="#FF06281C" />
+            </gradient>
+        </aapt:attr>
+    </path>
+    <path android:pathData="M54,25 L74,36.5 L74,61.5 L54,73 L34,61.5 L34,36.5 Z">
+        <aapt:attr name="android:fillColor">
+            <gradient
+                android:startX="34"
+                android:startY="25"
+                android:endX="74"
+                android:endY="73"
+                android:type="linear">
+                <item android:offset="0" android:color="#FFB6FFD9" />
+                <item android:offset="0.5" android:color="#FF1DA46F" />
+                <item android:offset="1" android:color="#FF0A3F2C" />
+            </gradient>
+        </aapt:attr>
+    </path>
+    <path android:fillColor="#FF0A2A1E" android:pathData="M50,41 L63,48.5 L50,56 Z" />
 </vector>

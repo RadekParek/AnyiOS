@@ -58,8 +58,24 @@ int main() {
     Memory memory;
     std::vector<uint8_t> page(16384, 0);
     memory.map({0x1000, 16384, uint8_t(Read | Write), "guest data"}, page.data(), page.size());
+    memory.map({0x5000, 16384, uint8_t(Read | Write), "format and stack data"}, page.data(),
+               page.size());
     Libc libc(memory);
     Call call(memory, libc);
+
+    // getenv exposes the launcher's environment as real guest strings, cached once.
+    libc.setEnvironment({{"HOME", "/var/mobile"}});
+    const char* home = "HOME";
+    memory.write(0x1500, home, std::strlen(home) + 1);
+    const uint32_t homeValue = call("_getenv", 0x1500);
+    assert(homeValue != 0 && homeValue >= 0x40000000);
+    std::vector<char> homeText(16, 0);
+    memory.read(homeValue, homeText.data(), 11);
+    assert(std::string(homeText.data()) == "/var/mobile");
+    assert(call("_getenv", 0x1500) == homeValue);
+    const char* missing = "ANYIOS_MISSING";
+    memory.write(0x1520, missing, std::strlen(missing) + 1);
+    assert(call("_getenv", 0x1520) == 0);
 
     // Guest heap: real allocation, alignment, zeroing and reuse.
     const uint32_t block = call("_malloc", 100);
@@ -145,6 +161,55 @@ int main() {
     assert(memory.read32(0x3000) == 9);
     assert(call("_rand") != call("_rand"));
 
+    // Formatted output through the iOS ARMv7 vararg layout: r0-r3, then the stack.
+    {
+        std::string captured;
+        libc.setLogSink([&captured](const std::string& text) { captured += text; });
+        memory.write(0x3100, "value=%d/%u/%x/%s/%c/%.2f", 26);
+        memory.write(0x3200, "text", 5);
+        call.state = {};
+        call.state.registers[0] = 0x3100;        // format
+        call.state.registers[1] = uint32_t(-7);  // %d
+        call.state.registers[2] = 42u;           // %u
+        call.state.registers[3] = 0xbeefu;       // %x
+        // %s and %c and %.2f live on the stack argument area.
+        call.state.registers[13] = 0x8000;
+        memory.write32(0x8000, 0x3200);
+        memory.write32(0x8004, uint32_t('Z'));
+        // %f promotes to double, which AAPCS passes as an even-aligned word pair.
+        const uint64_t quarter = doubleBits(1.25);
+        memory.write32(0x8008, uint32_t(quarter));
+        memory.write32(0x800c, uint32_t(quarter >> 32));
+        assert(libc.invoke("_printf", call.state));
+        assert(captured == "value=-7/42/beef/text/Z/1.25");
+        assert(call.state.registers[0] == uint32_t(captured.size()));
+
+        // snprintf truncates and always terminates; the return value is the full length.
+        memory.write(0x3300, "%s-%05d", 7);
+        memory.write(0x3400, "abcdef", 7);
+        call.state = {};
+        call.state.registers[0] = 0x3500;  // destination
+        call.state.registers[1] = 8;       // capacity
+        call.state.registers[2] = 0x3300;  // format
+        call.state.registers[3] = 0x3400;  // %s
+        call.state.registers[13] = 0x8000;
+        memory.write32(0x8000, 41);
+        assert(libc.invoke("_snprintf", call.state));
+        char buffer[16]{};
+        memory.read(0x3500, buffer, 8);
+        assert(std::string(buffer) == "abcdef-");
+        assert(call.state.registers[0] == 12);  // full "abcdef-00041" length
+        // A NULL destination with a zero capacity is legal and only measures.
+        call.state.registers[0] = 0;
+        call.state.registers[1] = 0;
+        assert(libc.invoke("_snprintf", call.state) && call.state.registers[0] == 12);
+        // Wide-string and unknown conversions fail instead of printing garbage.
+        memory.write(0x3600, "%ls", 3);
+        call.state = {};
+        call.state.registers[0] = 0x3600;
+        fault("FORMAT_CONVERSION", [&] { libc.invoke("_printf", call.state); });
+        libc.setLogSink(nullptr);
+    }
     // Unimplemented APIs stay unimplemented instead of returning invented success.
     CpuState unknown;
     assert(!libc.invoke("_UIApplicationMain", unknown));

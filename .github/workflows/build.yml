@@ -179,6 +179,16 @@ jobs:
             if [ "$VARIANT" = debug ] || [ -n "${PODNATIVE_KEYSTORE:-}" ] || [ -n "${PODNATIVE_PREVIEW_KEYSTORE:-}" ]; then exit 1; fi
             echo 'UNSIGNED release: not installable until signed; not a published signed release.' >> BUILD-INFO.txt
           }
+          # Installers only accept modern signature schemes; v2/v3 also stop the
+          # "invalid or unknown signer" family of installer warnings.
+          if [ -n "${PODNATIVE_KEYSTORE:-}${PODNATIVE_PREVIEW_KEYSTORE:-}" ]; then
+            verify=$("$ANDROID_HOME/build-tools/35.0.0/apksigner" verify --verbose "$ARTIFACT")
+            echo "$verify" >> BUILD-INFO.txt
+            echo "$verify" | grep -Eq 'Verified using v2 scheme .*: true' || {
+              echo 'Refusing to publish an APK without APK Signature Scheme v2.' >&2
+              exit 1
+            }
+          fi
           printf 'converter=%s\nconverter_cpu=%s\n' "$(cat ../../converter/UPSTREAM_REVISION)" "$(cat ../../third_party/converter-runtime/dynarmic-revision.txt)" >> BUILD-INFO.txt
           unzip -l "$ARTIFACT" | grep 'lib/arm64-v8a/libEGL_podnative.so'
           unzip -l "$ARTIFACT" | grep 'lib/arm64-v8a/libGLESv2_podnative.so'
@@ -210,8 +220,9 @@ jobs:
                           message = (str(path) + ': ' + case.get('name', '') + ': ' + (failure.text or failure.get('message', '')))[:5000]
                           print('::warning::' + message.replace('%', '%25').replace('\r', '%0D').replace('\n', '%0A'))
           PYCODE
+      # Only published on failure: a successful run produces exactly the APK artifact.
       - name: Preserve build logs and test reports
-        if: always()
+        if: failure()
         uses: actions/upload-artifact@v4
         with:
           name: build-diagnostics-${{ inputs.variant }}

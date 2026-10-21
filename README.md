@@ -14,12 +14,12 @@ experimental APK is not proof that Ninjago (or another game) runs.**
 
 [Integration, tests and boundaries](docs/ANYIOS_INTEGRATION.md) ·
 [Converter fork review](docs/CONVERTER_FORK_REVIEW.md).
-The remote GitHub repository rename was denied by the integration's admin permissions;
-its URL remains `RadekParek/PodNative` until the owner renames it in repository settings.
-Technical JNI namespaces, signing/cache names and historical engineering records intentionally retain their original names.
+The GitHub repository is now **`RadekParek/AnyiOS`**; old `PodNative` links redirect. Technical JNI
+namespaces, signing/cache names and historical engineering records intentionally keep their
+original names.
 
-[Download current Android and PC diagnostic artifacts](https://github.com/RadekParek/PodNative/actions/workflows/android.yml)
-(choose a successful run; extract GitHub's archive, then install `AnyiOS-debug.apk`).
+[Download the Android APK and the Linux PC build](https://github.com/RadekParek/AnyiOS/actions/workflows/android.yml)
+(one successful run publishes exactly two artifacts: `AnyiOS.apk` and `AnyiOS-PC-linux-x86_64`).
 The PC artifact is a Linux CPU diagnostic build, not a desktop emulator GUI.
 [Current implementation boundaries](docs/GRAPHICS_FRAMEWORK_INCREMENT.md) ·
 [Linker/dispatch increment](docs/DYLD_AND_IMPORT_INCREMENT.md).
@@ -41,12 +41,16 @@ The PC artifact is a Linux CPU diagnostic build, not a desktop emulator GUI.
   gates; launch reports required-import coverage instead of claiming resolution.
 * Guest C runtime: owned heap plus bounded string/number/math/atomic implementations on
   the documented iOS ARMv7 base-ABI call boundary, CoreGraphics geometry, media time and
-  colour-space lifetime (60 of the reported 438 unique imports); UIKit and the remaining
-  frameworks stay explicit blockers rather than fabricated successes.
+  colour-space lifetime, plus real `printf`/`snprintf` formatting and the core Foundation
+  collections, plus the C++ ABI and compiler-runtime entry points that `libstdc++.6` and
+  `libgcc_s.1` export, plus real guest stdio over explicitly mounted directories
+  (130 of the reported 438 unique imports); UIKit, EAGL rendering and exception unwinding
+  stay explicit blockers rather than fabricated successes.
 * Objective-C runtime core: guest class objects, selectors, `objc_msgSend` dispatch,
   NSObject/NSString/NSAutoreleasePool semantics, and real message dispatch tests.
 * Launches now run guest code: dyld fixups are applied, unimplemented imports bind to
-  faulting gates, and a launch reports instructions retired plus the first missing API.
+  faulting gates, and a launch reports instructions retired plus the first missing API — shown in
+  an Android-style crash screen that names the blocker and the guest PC.
 * GitHub Actions debug/tagged-release build recipes with artifacts and provenance.
 
 No inherited TouchHLE/HyperHLE renderer. No proprietary game files. No universal

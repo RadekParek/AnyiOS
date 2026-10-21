@@ -81,8 +81,90 @@ Converter inclusion is explicitly requested by its owner. Upstream has no root l
   float bit patterns into `r0-r3`, calls the gate, and stores the result — including a
   hidden-pointer call, so the convention is exercised by executed instructions rather
   than asserted by a host helper.
-- Coverage is **60 of 438** required imports. This is API-surface progress; it is not
+- Coverage at the end of this increment was 72 of 438 required imports; the later
+  increments below take it to **130 of 438**. This is API-surface progress; it is not
   evidence that any title launches or renders.
+
+### Guest sandbox and stdio increment (2026-10-21, fifth pass)
+
+A game that cannot open its own assets never reaches anything. The runtime previously had
+**no file system at all** — `fopen` was an unimplemented import, so asset loading could only
+ever be a trap. `runtime/fs.{h,cpp}` and `runtime/stdio.{h,cpp}` add a real, mounted guest
+file system:
+
+- **Explicit mounts only.** The launcher mounts the extracted `.app` at `/var/mobile`
+  (read-only) and a per-game `container/` at `/var/mobile/Documents` (read-write). Nothing
+  else in the host file system is reachable: unmounted paths are refused with the reason.
+- **Path validation before any host call.** Guest paths must be absolute, UTF-8-safe,
+  shorter than 4 KiB, and free of `.`/`..` components; mounts match on whole path
+  components with longest-prefix wins, so the writable Documents mount beats the read-only
+  bundle above it. A component-wise `symlink_status` walk refuses paths that resolve through
+  a symbolic link, instead of letting an extractor or the user escape the sandbox.
+- **Guest `FILE*` values are checked handles.** Each `fopen` allocates an 8-byte object in
+  the guest address space holding a magic word and a token; the host `FILE*` stays in a
+  host-side table. A forged, stale or closed `FILE*` raises `STDIO_BAD_FILE` rather than
+  reaching a host pointer. `stdin`/`stdout`/`stderr` are real streams and are exported as
+  the data symbols `___stdinp`, `___stdoutp`, `___stderrp`; writes to them go to the same
+  log sink as `printf`.
+- **Implemented stdio**: `fopen`, `fclose`, `fflush`, `fprintf`, `fread`, `fwrite`, `fseek`,
+  `ftell`, `rewind`, `feof`, `ferror`, `clearerr`, `fileno`, `fgetc`/`getc`, `fputc`/`putc`,
+  `fgets`, `fputs`, `setvbuf`, `remove`, `rename`, plus `getenv` over the launcher's
+  environment (`HOME=/var/mobile`, `TMPDIR=/var/mobile/Documents`). `fopen` reports the
+  exact refusal ("mount /var/mobile is read-only") instead of failing silently, and returns
+  null exactly as the C library would.
+- **Launch report** now carries a `GUEST_STORAGE:` line describing the mounts and the open
+  file count, so the crash screen can distinguish "no bundle mounted" from "asset missing".
+- **Boundary, stated plainly**: `.app` imports get a persistent bundle and therefore real
+  file access. An `.ipa` is inspected from its archive and is **not** persistently extracted,
+  so its launch has no mount and every file call is refused by name. Extracting IPAs into the
+  sandbox is the next vertical slice, together with `CFBundle`/`NSBundle` path APIs so a title
+  can ask where its bundle *is*.
+- **Proof**: `tests/fs_test.cpp` builds a temporary bundle/container pair, then asserts:
+  read-only resolution, write refusal with reason, longest-prefix container write, traversal
+  and symlink refusal, `fread`/`fgets`/`fseek`/`feof` semantics against real bytes, a guest
+  write that is verified on the host afterwards, formatted `fprintf` to stdout, `remove`, and
+  rejection of stale `FILE*` handles. A leaked temporary tree is removed at the end.
+
+### C++ ABI and compiler-runtime increment (2026-10-21, fourth pass)
+
+The 472-import report links `libstdc++.6.dylib` (ordinal 16) and `libgcc_s.1.dylib`
+(ordinal 17) directly, so a C++ title stops on `__Znwm`/`___divsi3` long before any
+graphics work. `runtime/cxx.{h,cpp}` now implements that surface for real and reports
+the rest honestly:
+
+- **Allocator entry points**: `operator new`/`new[]` allocate from the guest heap with
+  8-byte alignment and fail with a named `CXX_ALLOC` error instead of returning null;
+  `operator delete`/`delete[]` release through the same heap and tolerate null.
+- **Itanium C++ ABI**: `__cxa_allocate_exception`/`__cxa_free_exception` use guest
+  memory, `__cxa_atexit`/`atexit` record handlers for the guest exit path,
+  `__cxa_guard_acquire`/`release`/`abort` drive the real 8-byte function-local-static
+  guard word (including the recursive-initialization fault), and
+  `__cxa_pure_virtual`/`__cxa_bad_typeid`/`__cxa_call_unexpected`/`__cxa_rethrow`/
+  `__cxa_begin_catch`/`__cxa_end_catch` raise `CXX_UNWIND`. Throwing
+  (`__cxa_throw`), `std::terminate`, `__assert_rtn` and `__stack_chk_fail` each become a
+  distinct guest failure. **Exception unwinding is deliberately not faked**: SjLj
+  registration/resume and the two personality routines refuse with `CXX_UNWIND` until a
+  real unwinder exists, because pretending to catch would corrupt the guest stack.
+- **Compiler helpers from libgcc**: `__divsi3`/`__udivsi3`/`__modsi3`/`__umodsi3`,
+  `__divdi3`/`__udivdi3`/`__moddi3`/`__umoddi3` (64-bit results back in `r0:r1`,
+  `INT64_MIN / -1` and `INT32_MIN / -1` saturate instead of trapping), and
+  `__floatundidf`/`__floatdidf`/`__fixdfdi`/`__fixunsdfdi` with NaN and range clamping.
+  Division by zero returns 0, matching `__aeabi_idiv0` on a device that has no host
+  trap, and is reported once through the log sink.
+- **Fortified libsystem_c entry points**: `__memcpy_chk`, `__memmove_chk`, `__memset_chk`,
+  `__strcpy_chk`, `__strcat_chk`, `__strncpy_chk` and `__sprintf_chk` check the
+  compiler-recorded object size and raise `LIBC_FORTIFY` when the request overflows it.
+  They are not thin aliases: that size check is the entire point of the `_chk` variant.
+- **Library attribution**: every gate is registered under the library that exports it on
+  iOS — `libSystem.B`, `CoreFoundation`, `CoreGraphics`, `libstdc++.6` or `libgcc_s.1` —
+  because `ExportGraph::resolve` checks two-level ordinals strictly. A helper registered
+  under the wrong image would still fail to bind, which is the honest outcome; the export
+  test now asserts both the positive and the negative case.
+- **Proof**: `tests/cxx_test.cpp` exercises the allocator, all twelve integer helpers,
+  both float helpers, guard acquisition/release/abort, exit-handler registration and its
+  budget, every fortified copy (success and `LIBC_FORTIFY`), `__sprintf_chk` with its fifth
+  argument taken from the guest stack, and each refusal path. The suite runs under
+  ASan/UBSan in `scripts/test-host.sh` and in CI.
 
 ### ARMv6, launch acceptance and rendering increment (2026-10-21, second pass)
 
@@ -110,18 +192,25 @@ Converter inclusion is explicitly requested by its owner. Upstream has no root l
 
 ### Repository rename is still blocked, and the "harmful app" prompt is not an app bug
 
-`gh repo rename AnyiOS --yes` still returns **HTTP 403: Resource not accessible by integration**.
-The integration token cannot rename a repository; only the owner can do it in
-**Settings → General → Repository name**, and GitHub redirects the old URL afterwards.
+The repository is now **`RadekParek/AnyiOS`** (the old `PodNative` URL redirects). The integration
+token itself cannot rename repositories — `gh repo rename` returned `HTTP 403: Resource not
+accessible by integration` — so this was completed from the owner's account.
 
-The Play Protect / Samsung scanner "harmful app" dialog is what Android shows for a sideloaded APK
-that is not distributed through Play, and it is weighted further by this package's declared
-`android.permission.REQUEST_INSTALL_PACKAGES`. That permission is merged in from the converter
-module and is required for the converter to install the APKs it generates, so it is not removed.
-No app-side change can whitelist a self-built APK: the honest paths are (a) dismiss with
-"install anyway" after verifying the SHA-256 published with the artifact, (b) install over `adb`
-from a trusted host, or (c) distribute through Play. The build already refuses to publish a
-debuggable APK, which removes the one property that made earlier artifacts look like test builds.
+The installer's "may be harmful" dialog is Play Protect / the OEM scanner judging a **sideloaded,
+self-signed APK that is not distributed through Play**. It is a server-side reputation verdict, so
+no app-side change can switch it off. What the project can and does control:
+
+- the published artifact is **non-debuggable** and the CI job fails if a debuggable APK would ship;
+- the published artifact **must verify with APK Signature Scheme v2**, which removes the
+  "invalid or unknown signer" family of installer warnings;
+- the signing certificate SHA-256 is shown in **Settings**, so the installed app can be compared
+  with the fingerprint recorded at build time;
+- `SHA256SUMS` is published with every artifact.
+
+`REQUEST_INSTALL_PACKAGES` stays declared because the converter installs the APKs it generates;
+removing it would break that flow. The honest installation paths are: verify the checksum and
+fingerprint, then dismiss the dialog with "install anyway"; or install over `adb` from a trusted
+host; or distribute through Google Play.
 
 ### Remaining runtime work
 

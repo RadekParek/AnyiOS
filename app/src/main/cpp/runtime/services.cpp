@@ -10,6 +10,8 @@ namespace podnative::runtime {
 Services::Services(Memory& m)
     : memory(m),
       libc(m),
+      cxx(m, libc.guestHeap()),
+      stdio(m, libc.guestHeap(), files),
       objc(m),
       symbols{
           // libSystem: C runtime.
@@ -37,6 +39,12 @@ Services::Services(Memory& m)
           "_strstr",
           "_strdup",
           "_strerror_r",
+          // Formatted output. Varargs arrive in r0-r3 and then on the stack.
+          "_printf",
+          "_snprintf",
+          "_sprintf",
+          "_puts",
+          "_getenv",
           "_atoi",
           "_atol",
           "_atof",
@@ -85,6 +93,77 @@ Services::Services(Memory& m)
           "_CGColorSpaceRetain",
           "_CGColorSpaceRelease",
           "_CACurrentMediaTime",
+          // libstdc++.6.dylib and libgcc_s.1.dylib: the C++ ABI and the integer
+          // helpers the ARM backend calls. Both are serviced by CxxRuntime.
+          "_Znwm",
+          "_Znam",
+          "_ZdlPv",
+          "_ZdaPv",
+          "_ZSt9terminatev",
+          "___cxa_allocate_exception",
+          "___cxa_free_exception",
+          "___cxa_throw",
+          "___cxa_begin_catch",
+          "___cxa_end_catch",
+          "___cxa_rethrow",
+          "___cxa_call_unexpected",
+          "___cxa_bad_typeid",
+          "___cxa_pure_virtual",
+          "___cxa_atexit",
+          "___cxa_guard_acquire",
+          "___cxa_guard_release",
+          "___cxa_guard_abort",
+          "___objc_personality_v0",
+          "___divsi3",
+          "___udivsi3",
+          "___modsi3",
+          "___umodsi3",
+          "___divdi3",
+          "___udivdi3",
+          "___moddi3",
+          "___umoddi3",
+          "___floatundidf",
+          "___floatdidf",
+          "___fixdfdi",
+          "___fixunsdfdi",
+          "___gxx_personality_sj0",
+          "__Unwind_SjLj_Register",
+          "__Unwind_SjLj_Unregister",
+          "__Unwind_SjLj_Resume",
+          // libsystem_c: fortified (object-size aware) entry points.
+          "_atexit",
+          "___assert_rtn",
+          "___stack_chk_fail",
+          "___memcpy_chk",
+          "___memmove_chk",
+          "___memset_chk",
+          "___strcpy_chk",
+          "___strcat_chk",
+          "___strncpy_chk",
+          "___sprintf_chk",
+          // Guest stdio over the mounted sandbox.
+          "_fopen",
+          "_fclose",
+          "_fflush",
+          "_fprintf",
+          "_fread",
+          "_fwrite",
+          "_fseek",
+          "_ftell",
+          "_rewind",
+          "_feof",
+          "_ferror",
+          "_clearerr",
+          "_fileno",
+          "_fgetc",
+          "_getc",
+          "_fputc",
+          "_putc",
+          "_fgets",
+          "_fputs",
+          "_setvbuf",
+          "_remove",
+          "_rename",
       } {
     std::vector<uint8_t> code(Memory::PageSize);
     auto put = [&](size_t offset, uint32_t word) {
@@ -126,13 +205,36 @@ void Services::install(ExportGraph& graph) const {
         graph.addImage("/System/Library/Frameworks/CoreFoundation.framework/CoreFoundation");
     auto graphics =
         graph.addImage("/System/Library/Frameworks/CoreGraphics.framework/CoreGraphics");
+    auto standard = graph.addImage("/usr/lib/libstdc++.6.dylib");
+    auto compilerHelpers = graph.addImage("/usr/lib/libgcc_s.1.dylib");
     for (size_t n = 0; n < symbols.size(); n++) {
-        const bool coreFoundation = symbols[n].rfind("_CF", 0) == 0;
-        graph.define(coreFoundation ? foundation : system, symbols[n], {Base + uint32_t(n) * 8});
+        const std::string& symbol = symbols[n];
+        size_t image = system;
+        if (symbol.rfind("_CF", 0) == 0) image = foundation;
+        if (symbol.rfind("_CG", 0) == 0) image = graphics;
+        // Ordinals are checked strictly, so each gate is registered under the library
+        // that really exports it on iOS. A helper registered under the wrong image would
+        // still be refused at bind time, which is the honest outcome.
+        if (cxx.isCxxSymbol(symbol)) image = standard;
+        if (cxx.isCompilerHelper(symbol)) image = compilerHelpers;
+        graph.define(image, symbol, {Base + uint32_t(n) * 8});
     }
     objc.defineSymbols(graph, foundation);
+    // stdout/stderr/stdin are data imports: the guest loads the FILE* from these cells.
+    graph.define(system, "___stdinp", {stdio.standardCell(0)});
+    graph.define(system, "___stdoutp", {stdio.standardCell(1)});
+    graph.define(system, "___stderrp", {stdio.standardCell(2)});
     graph.define(graphics, "_CGAffineTransformIdentity", {Base + Memory::PageSize});
     graph.define(graphics, "_CGRectNull", {Base + Memory::PageSize + 24});
+}
+void Services::mountSandbox(const std::string& bundleHost, const std::string& containerHost) {
+    if (bundleHost.empty() || containerHost.empty())
+        throw Error("FS_MOUNT", "the bundle and container directories are both required");
+    files.mount("/var/mobile/Documents", containerHost, true);
+    files.mount("/var/mobile", bundleHost, false);
+}
+void Services::setEnvironment(const std::map<std::string, std::string>& values) {
+    libc.setEnvironment(values);
 }
 void Services::mapTrapPage(size_t index) const {
     if (index >= 32) throw Error("HLE_TRAP_LIMIT", "too many unimplemented imports");
@@ -190,6 +292,8 @@ void Services::invoke(const std::string& name, CpuState& state) {
     // Order matters only for diagnostics: every module reports "not mine" without
     // inventing a result, and anything unclaimed is a hard guest-visible failure.
     if (libc.invoke(name, state)) return;
+    if (stdio.invoke(name, state)) return;
+    if (cxx.invoke(name, state)) return;
     if (cf.invoke(name, state, memory)) return;
     if (cg.invoke(name, state, memory)) return;
     throw Error("HLE_SYMBOL", "service has no implementation: " + name);

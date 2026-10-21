@@ -650,7 +650,11 @@ final class GameLibrary {
         });
     }
     void attemptLaunch(Game game) {
-        if (!begin("Checking game startup…"))
+        attemptLaunch(game, null);
+    }
+    /** Runs a bounded launch attempt; {@code onOutcome} receives the report on the UI thread. */
+    void attemptLaunch(Game game, java.util.function.Consumer<String> onOutcome) {
+        if (!begin("Opening the game with the native loader…"))
             return;
         worker.execute(() -> {
             File scratch = new File(root, ".pending-launch-" + UUID.randomUUID());
@@ -662,8 +666,15 @@ final class GameLibrary {
                 mkdir(scratch);
                 File source =
                     new File(game.directory, game.kind.equals("Folder") ? "bundle" : "source.bin");
-                GameInspector.Result result =
-                    GameInspector.analyze(source, game.title, scratch, true);
+                // Only an extracted .app is a persistent tree we can hand to the guest as a
+                // read-only bundle; an IPA is inspected from its archive, so its launcher
+                // mount stays empty and file calls are refused by name.
+                File bundleRoot = game.kind.equals("Folder") ? source : null;
+                File containerRoot = new File(game.directory, "container");
+                if (bundleRoot != null && !containerRoot.isDirectory() && !containerRoot.mkdirs())
+                    throw new IOException("Could not create the writable guest container");
+                GameInspector.Result result = GameInspector.analyze(
+                    source, game.title, scratch, true, bundleRoot, containerRoot);
                 outcome = result.launchOutcome;
                 if (outcome.isEmpty())
                     throw new IOException("No native launch result was returned");
@@ -681,8 +692,11 @@ final class GameLibrary {
                 writeMetadata(game.directory, data);
                 refresh();
                 error = true;
-                notice =
-                    "Startup stopped safely. Open the game’s latest launch report for the blocker.";
+                notice = "Startup stopped safely. The crash screen names the exact blocker.";
+                if (onOutcome != null) {
+                    final String delivered = outcome;
+                    main.post(() -> onOutcome.accept(delivered));
+                }
             } catch (Exception e) {
                 error = true;
                 notice = "Could not save launch report: " + e.getMessage() + ". See Diagnostics.";

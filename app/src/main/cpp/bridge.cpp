@@ -109,8 +109,21 @@ Java_org_podnative_NativeBridge_arm32Slice(JNIEnv* env, jclass, jbyteArray heade
     }
 }
 
-extern "C" JNIEXPORT jstring JNICALL
-Java_org_podnative_NativeBridge_attemptLaunch(JNIEnv* env, jclass, jbyteArray bytes) {
+namespace {
+// JNI strings are modified UTF-8; a sandbox path needs the plain bytes and no NULs.
+std::string pathFrom(JNIEnv* env, jstring value) {
+    if (!value) return {};
+    const char* text = env->GetStringUTFChars(value, nullptr);
+    if (!text) return {};
+    std::string path(text);
+    env->ReleaseStringUTFChars(value, text);
+    if (path.size() > 4096) return {};
+    return path;
+}
+}  // namespace
+
+extern "C" JNIEXPORT jstring JNICALL Java_org_podnative_NativeBridge_attemptLaunch(
+    JNIEnv* env, jclass, jbyteArray bytes, jstring bundlePath, jstring containerPath) {
     try {
         const auto n = env->GetArrayLength(bytes);
         if (n > 64 * 1024 * 1024)
@@ -118,7 +131,10 @@ Java_org_podnative_NativeBridge_attemptLaunch(JNIEnv* env, jclass, jbyteArray by
         std::vector<uint8_t> data(n);
         env->GetByteArrayRegion(bytes, 0, n, reinterpret_cast<jbyte*>(data.data()));
         if (env->ExceptionCheck()) return nullptr;
-        const auto report = podnative::runtime::attemptLaunch(data.data(), data.size());
+        const std::string bundle = pathFrom(env, bundlePath);
+        const std::string container = pathFrom(env, containerPath);
+        const auto report =
+            podnative::runtime::attemptLaunch(data.data(), data.size(), bundle, container);
         return env->NewStringUTF(report.c_str());
     } catch (const std::exception& e) {
         fail(env, e);

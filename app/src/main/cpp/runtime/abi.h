@@ -47,6 +47,7 @@ class Arguments final {
     Arguments(const CpuState& cpu, Memory& memory, size_t firstWord = 0)
         : cpu(cpu), memory(memory), next(firstWord), stackBase(cpu.registers[13]) {}
     size_t consumed() const { return next; }
+    Memory& memoryRef() const { return memory; }
     uint32_t word() {
         const size_t index = next++;
         return index < 4 ? cpu.registers[index]

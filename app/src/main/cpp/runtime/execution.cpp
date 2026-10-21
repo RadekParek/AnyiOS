@@ -86,13 +86,50 @@ GuestRun runGuest(LoadedImage& image, Services& services, const ExportGraph& gra
     run.detail = "instruction budget reached";
     return run;
 }
-std::string describeRun(const GuestRun& run) {
+namespace {
+// Classifies a stopped run into the three things a crash screen must state: what kind
+// of stop it was, what exactly is missing or wrong, and the guest PC.
+void classify(GuestRun& run) {
+    const std::string& detail = run.detail;
+    if (run.stop == "UNIMPLEMENTED") {
+        run.blockerKind = "Unimplemented API";
+        const std::string marker = "guest called unimplemented import ";
+        auto at = detail.find(marker);
+        run.blockerSubject = at == std::string::npos ? detail : detail.substr(at + marker.size());
+        return;
+    }
+    if (run.stop == "TRAPPED") {
+        run.blockerKind = "Runtime trap";
+        auto at = detail.find("HLE_");
+        run.blockerSubject = at == std::string::npos ? detail : detail.substr(at);
+        return;
+    }
+    if (run.stop == "FAULT") {
+        run.blockerKind = "Guest fault";
+        auto colon = detail.find(':');
+        run.blockerSubject = colon == std::string::npos ? detail : detail.substr(0, colon);
+        return;
+    }
+    if (run.stop == "EXITED") {
+        run.blockerKind = "Guest exited";
+        run.blockerSubject = detail.empty() ? "the guest returned from its entry point" : detail;
+        return;
+    }
+    run.blockerKind = "Time slice";
+    run.blockerSubject =
+        detail.empty() ? "the bounded slice ended before the app finished starting" : detail;
+}
+}  // namespace
+std::string describeRun(GuestRun& run) {
+    if (run.blockerKind.empty()) classify(run);
     std::ostringstream out;
     out << "GUEST_EXECUTION: " << run.instructions << " instructions, final PC=" << pointer(run.pc)
         << ", " << run.serviceCalls << " host service calls, " << run.trappedImports
         << " unimplemented imports trapped.";
     out << "\nGUEST_STOP: " << run.stop;
     if (!run.detail.empty()) out << " — " << run.detail;
+    out << "\nGUEST_BLOCKER: kind=" << run.blockerKind << " subject=" << run.blockerSubject
+        << " pc=" << pointer(run.pc) << " instructions=" << run.instructions;
     if (!run.called.empty()) {
         out << "\nHOST_CALLS: ";
         for (size_t n = 0; n < run.called.size(); n++) out << (n ? " " : "") << run.called[n];

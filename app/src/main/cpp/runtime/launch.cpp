@@ -60,10 +60,16 @@ void prepareStack(LoadedImage& image, Memory& memory) {
 #endif
 }  // namespace
 
-std::string attemptLaunch(const uint8_t* data, size_t size) {
+std::string attemptLaunch(const uint8_t* data, size_t size, const std::string& bundleHost,
+                          const std::string& containerHost) {
     try {
         auto image = loadMachO(data, size, 64 * 1024 * 1024);
         Services services(*image.memory);
+        services.setEnvironment({{"HOME", "/var/mobile"},
+                                 {"TMPDIR", "/var/mobile/Documents"},
+                                 {"PATH", "/usr/bin:/bin:/usr/sbin:/sbin"}});
+        if (!bundleHost.empty() && !containerHost.empty())
+            services.mountSandbox(bundleHost, containerHost);
         ExportGraph graph;
         services.install(graph);
         auto main = graph.addImage("<executable>");
@@ -82,6 +88,7 @@ std::string attemptLaunch(const uint8_t* data, size_t size) {
         GuestRun run;
         try {
             run = runGuest(image, services, graph, main, InstructionBudget, Seconds);
+            services.closeGuestFiles();
         } catch (const Error& e) {
             return "LAUNCH_BLOCKED: GUEST_SETUP: " + std::string(e.what()) +
                    "\nNo guest instruction retired.\nDYLD_EXPORT_AUDIT: " + coverage + "\n" +
@@ -92,8 +99,8 @@ std::string attemptLaunch(const uint8_t* data, size_t size) {
                 ? "LAUNCH_BLOCKED: HLE_GAP: the guest started and stopped at an API that is not "
                   "implemented yet."
                 : "LAUNCH_ATTEMPT: the guest image actually executed.";
-        return header + "\n" + describeRun(run) + "\nDYLD_EXPORT_AUDIT: " + coverage + "\n" +
-               image.summary() +
+        return header + "\n" + describeRun(run) + "\nDYLD_EXPORT_AUDIT: " + coverage +
+               "\nGUEST_STORAGE: " + services.storageSummary() + "\n" + image.summary() +
                "\nThis is bounded execution of a validated image, not evidence of gameplay, "
                "rendering or a working app.";
 #else

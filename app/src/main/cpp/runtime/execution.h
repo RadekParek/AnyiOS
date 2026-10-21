@@ -16,10 +16,13 @@ struct GuestRun {
     size_t serviceCalls = 0;
     size_t trappedImports = 0;
     std::vector<std::string> called;
+    // Human-readable blocker for the crash screen: kind, subject and next action.
+    std::string blockerKind;     // Startup, Unimplemented API, Guest fault, Trap, Exit
+    std::string blockerSubject;  // the exact symbol or fault code
 };
 // Bounded real execution: guest instructions run until the budget, wall clock,
 // a fault, or the first import that has no implementation.
 GuestRun runGuest(LoadedImage& image, Services& services, const ExportGraph& graph,
                   size_t requester, uint64_t instructionBudget, double seconds);
-std::string describeRun(const GuestRun& run);
+std::string describeRun(GuestRun& run);
 }  // namespace podnative::runtime

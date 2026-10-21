@@ -199,7 +199,11 @@ int main() {
         assert(run.detail.find("_UIApplicationMain") != std::string::npos);
         assert(run.instructions >= 3);
         assert(run.trappedImports >= 1);
-        assert(describeRun(run).find("GUEST_STOP: UNIMPLEMENTED") != std::string::npos);
+        const std::string described = describeRun(run);
+        assert(described.find("GUEST_STOP: UNIMPLEMENTED") != std::string::npos);
+        // The crash screen consumes this line; it must name the API, not a generic stop.
+        assert(described.find("GUEST_BLOCKER: kind=Unimplemented API") != std::string::npos);
+        assert(described.find("_UIApplicationMain") != std::string::npos);
         // A guest that only calls an implemented API keeps running to its budget.
         LoadedImage working;
         working.memory = std::make_unique<Memory>();

@@ -33,6 +33,10 @@ add_library(podnative_hle STATIC
     "${RUNTIME}/runtime/dyld.cpp"
     "${RUNTIME}/runtime/services.cpp"
     "${RUNTIME}/runtime/libc.cpp"
+    "${RUNTIME}/runtime/cxx.cpp"
+    "${RUNTIME}/runtime/fs.cpp"
+    "${RUNTIME}/runtime/stdio.cpp"
+    "${RUNTIME}/runtime/format.cpp"
     "${RUNTIME}/runtime/heap.cpp"
     "${RUNTIME}/runtime/execution.cpp"
     "${RUNTIME}/runtime/objc.cpp"
@@ -54,3 +58,7 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux" OR ANDROID)
     target_compile_options(oaknut_wx_test PRIVATE -Wall -Wextra -Werror -UNDEBUG)
     add_test(NAME allocator_wx_permissions COMMAND oaknut_wx_test)
 endif()
+add_executable(cxx_test cxx_test.cpp)
+target_link_libraries(cxx_test PRIVATE podnative_hle)
+target_compile_options(cxx_test PRIVATE -Wall -Wextra -Werror -UNDEBUG)
+add_test(NAME cxx_runtime COMMAND cxx_test)

@@ -1,22 +1,43 @@
-name: Runtime correctness
+name: PC build
+# The PC job is the second of the two published artifacts: a Linux x86-64 build of the
+# CPU/HLE test executables, packaged with notices and a checksum manifest. All host
+# suites (including converter regressions) run here first, so the artifact only exists
+# when the runtime is actually green.
 on:
   workflow_call:
 permissions:
   contents: read
 jobs:
-  host:
-    name: ARM32 on x86-64 correctness (not desktop product support)
+  pc:
+    name: Linux x86-64 build and host suites
     runs-on: ubuntu-24.04
-    timeout-minutes: 35
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v5
-      - name: Sanitizer and real-engine tests
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+      - name: Install host test tools
+        run: python3 -m pip install 'capstone==5.0.7' 'unicorn==2.1.4' pyyaml
+      - name: Host runtime suites (sanitizers, strict warnings)
         run: |
           mkdir -p .local/logs
           set -o pipefail
           scripts/test-host.sh 2>&1 | tee .local/logs/runtime-sanitizers.log
+      - name: Real-engine CPU suites
+        run: |
+          set -o pipefail
           scripts/test-cpu.sh 2>&1 | tee .local/logs/cpu-host.log
-      - name: Package Linux PC diagnostic build
+      - name: Converter regressions
+        run: |
+          set -o pipefail
+          scripts/test-converter.sh 2>&1 | tee .local/logs/converter-tests.log
+      - name: Formatting and script lint
+        run: |
+          set -o pipefail
+          python3 -m pip install 'clang-format==19.1.7' 'ruff==0.8.4'
+          scripts/check-format.sh 2>&1 | tee .local/logs/format.log
+      - name: Package PC build
         run: |
           mkdir -p .local/pc-artifact
           cp .local/cpu-tests/cpu_test .local/pc-artifact/AnyiOS-linux-x86_64-cpu-test
@@ -25,103 +46,23 @@ jobs:
           cp third_party/dynarmic/LICENSE.txt .local/pc-artifact/third-party-notices/dynarmic.txt
           cp THIRD_PARTY_NOTICES.md .local/pc-artifact/
           cp third_party/dynarmic/revision.txt .local/pc-artifact/CPU-REVISION.txt
-          printf 'source=%s\nLinux x86-64 CPU diagnostics, not a desktop game emulator.\n' "$GITHUB_SHA" > .local/pc-artifact/BUILD-INFO.txt
+          printf 'source=%s\nLinux x86-64 CPU/HLE test build. Not a desktop game emulator.\n' \
+            "$GITHUB_SHA" > .local/pc-artifact/BUILD-INFO.txt
           cd .local/pc-artifact
           sha256sum AnyiOS-* > SHA256SUMS
       - uses: actions/upload-artifact@v4
         with:
-          name: AnyiOS-PC-linux-x86_64-diagnostics
+          name: AnyiOS-PC-linux-x86_64
           include-hidden-files: true
           path: .local/pc-artifact/
           if-no-files-found: error
-      - uses: actions/upload-artifact@v4
-        if: always()
-        with:
-          name: runtime-host-reports
-          include-hidden-files: true
-          path: |
-            .local/logs/
-            .local/cpu-tests/Testing/Temporary/
-  android-arm64:
-    name: Compile real-engine A32 on Android ARM64 (execution pending)
-    runs-on: ubuntu-24.04
-    timeout-minutes: 35
-    steps:
-      - uses: actions/checkout@v5
-      - uses: actions/setup-java@v5
-        with:
-          distribution: temurin
-          java-version: '17'
-      - name: Prepare NDK and pinned CPU sources
-        run: |
-          mkdir -p .local/logs
-          set -o pipefail
-          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" 'ndk;27.2.12479018' 2>&1 | tee .local/logs/cpu-sdk.log
-          scripts/prepare-cpu.sh 2>&1 | tee .local/logs/cpu-deps.log
-      - name: Cross-compile Android instruction test executable
-        run: |
-          set -o pipefail
-          cmake -S tests -B .local/cpu-arm64 \
-            -DDYNARMIC_ROOT="$PWD/.local/deps/dynarmic" \
-            -DBOOST_ROOT="$PWD/.local/boost-headers" -DBoost_NO_BOOST_CMAKE=ON \
-            -DCMAKE_POLICY_DEFAULT_CMP0167=OLD -DCMAKE_POLICY_DEFAULT_CMP0144=NEW \
-            -DCMAKE_TOOLCHAIN_FILE="$ANDROID_HOME/ndk/27.2.12479018/build/cmake/android.toolchain.cmake" \
-            -DANDROID_ABI=arm64-v8a -DANDROID_PLATFORM=android-29 -DANDROID_STL=c++_static \
-            -DANDROID_SUPPORT_FLEXIBLE_PAGE_SIZES=ON -DCMAKE_BUILD_TYPE=Release \
-            2>&1 | tee .local/logs/cpu-configure.log
-          cmake --build .local/cpu-arm64 --parallel 2 2>&1 | tee .local/logs/cpu-android-build.log
-          mkdir -p .local/cpu-artifact
-          cp .local/cpu-arm64/cpu_test .local/cpu-artifact/PodNative-arm64-cpu-test
-          cp .local/cpu-arm64/oaknut_wx_test .local/cpu-artifact/PodNative-arm64-wx-test
-          cp -r third_party/dynarmic/notices .local/cpu-artifact/third-party-notices
-          cp third_party/dynarmic/LICENSE.txt .local/cpu-artifact/third-party-notices/dynarmic.txt
-          cp THIRD_PARTY_NOTICES.md .local/cpu-artifact/
-          readelf -h .local/cpu-artifact/PodNative-arm64-cpu-test | grep AArch64
-          cd .local/cpu-artifact
-          sha256sum PodNative-arm64-cpu-test PodNative-arm64-wx-test > SHA256SUMS
-          printf 'source=%s\ndynarmic=%s\nAndroid compilation only; no device execution occurred.\n' \
-            "$GITHUB_SHA" "$(cat ../../third_party/dynarmic/revision.txt)" > BUILD-INFO.txt
-      - uses: actions/upload-artifact@v4
-        with:
-          name: AnyiOS-arm64-cpu-test
-          include-hidden-files: true
-          path: .local/cpu-artifact/
-          if-no-files-found: error
-      - name: API-visible failure diagnostics
+      - name: Failure diagnostics
         if: failure()
         run: |
           python3 - <<'PYCODE'
           from pathlib import Path
-          for path in Path('.local/logs').glob('*.log'):
-              message = (path.name + ': ' + '\n'.join(path.read_text(errors='replace').splitlines()[-12:])).replace('%', '%25').replace('\r', '%0D').replace('\n', '%0A')
+          for path in sorted(Path('.local/logs').glob('*.log')):
+              tail = '\n'.join(path.read_text(errors='replace').splitlines()[-15:])
+              message = (path.name + ': ' + tail).replace('%', '%25').replace('\r', '%0D').replace('\n', '%0A')
               print('::warning::' + message)
           PYCODE
-      - uses: actions/upload-artifact@v4
-        if: always()
-        with:
-          name: runtime-android-build-logs
-          include-hidden-files: true
-          path: .local/logs/
-
-  converter-host:
-    name: Converter synthetic native and Python regressions
-    runs-on: ubuntu-24.04
-    timeout-minutes: 30
-    steps:
-      - uses: actions/checkout@v5
-      - uses: actions/setup-python@v6
-        with:
-          python-version: '3.12'
-      - name: Install test-only differential tools
-        run: python3 -m pip install 'capstone==5.0.7' 'unicorn==2.1.4'
-      - name: Test converter without proprietary fixtures
-        run: |
-          mkdir -p .local/logs
-          set -o pipefail
-          scripts/test-converter.sh 2>&1 | tee .local/logs/converter-tests.log
-      - uses: actions/upload-artifact@v4
-        if: always()
-        with:
-          name: converter-host-reports
-          include-hidden-files: true
-          path: .local/logs/
