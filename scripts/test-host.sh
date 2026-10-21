@@ -15,6 +15,12 @@ build tests/dyld_test.cpp app/src/main/cpp/runtime/{memory,dyld,exports}.cpp -o 
 build tests/exports_test.cpp \
   app/src/main/cpp/runtime/{memory,exports,services,frameworks,dyld,libc,heap,objc}.cpp \
   -o .local/tests/exports-test
+# Host-visible units must also survive the Xcode/NDK warning set used for the app.
+for unit in app/src/main/cpp/runtime/*.cpp; do
+  case "$unit" in *cpu.cpp) continue ;; esac  # needs the pinned Dynarmic headers.
+  c++ -std=c++20 -Wall -Wextra -Werror -DPODNATIVE_CPU_IN_APP=1 -Iapp/src/main/cpp \
+    -fsyntax-only "$unit"
+done
 build tests/objc_test.cpp app/src/main/cpp/runtime/{memory,objc,exports}.cpp -o .local/tests/objc-test
 build tests/libc_test.cpp app/src/main/cpp/runtime/{memory,libc,heap}.cpp -o .local/tests/libc-test
 for test in macho runtime imports fat frameworks dyld exports libc objc; do .local/tests/$test-test; done
