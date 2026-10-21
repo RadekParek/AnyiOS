@@ -2,7 +2,9 @@
 
 #include <algorithm>
 
+#include "abi.h"
 #include "error.h"
+#include "format.h"
 
 namespace podnative::runtime {
 namespace {
@@ -35,10 +37,18 @@ void ObjC::installGates() {
     mapRange(0x6f300000, Memory::PageSize * 4, "Objective-C class objects");
     mapRange(0x6f400000, Memory::PageSize * 4, "Objective-C instances");
     mapRange(0x6f480000, Memory::PageSize * 4, "Objective-C string payloads");
+    mapRange(0x6f4c0000, Memory::PageSize * 4, "Objective-C data payloads");
     classObject("NSObject");
     classObject("NSString");
     classObject("NSAutoreleasePool");
     classObject("NSNumber");
+    classObject("NSArray");
+    classObject("NSMutableArray");
+    classObject("NSDictionary");
+    classObject("NSMutableDictionary");
+    classObject("NSData");
+    classObject("NSNull");
+    classObject("NSUserDefaults");
 }
 void ObjC::defineSymbols(ExportGraph& graph, size_t foundation) const {
     for (size_t n = 0; n < entries.size(); n++)
@@ -87,6 +97,21 @@ uint32_t ObjC::internText(const std::string& text) {
     nextText += uint32_t(text.size()) + 1;
     return address;
 }
+uint32_t ObjC::internBytes(const std::vector<uint8_t>& bytes) {
+    if (bytes.size() > Memory::PageSize * 4 ||
+        nextBytes + bytes.size() > 0x6f4c0000 + Memory::PageSize * 4)
+        throw Error("OBJC_LIMIT", "guest data pool exhausted");
+    const uint32_t address = nextBytes;
+    if (!bytes.empty()) memory.write(address, bytes.data(), bytes.size());
+    nextBytes += uint32_t(bytes.size());
+    // Keep the pool word aligned so a following buffer can be read as words.
+    nextBytes = (nextBytes + 3) & ~3u;
+    return address;
+}
+uint32_t ObjC::textOf(uint32_t object) const {
+    auto found = objects.find(object);
+    return found == objects.end() ? 0 : found->second.text;
+}
 uint32_t ObjC::makeObject(const std::string& className) {
     if (objects.size() >= 4096 || nextObject + 32 > 0x6f400000 + Memory::PageSize * 4)
         throw Error("OBJC_LIMIT", "guest object pool exhausted");
@@ -94,8 +119,55 @@ uint32_t ObjC::makeObject(const std::string& className) {
     nextObject += 32;
     memory.write32(address, classNamePointer(className));
     memory.write32(address + 4, 0);
-    objects.emplace(address, Object{className});
+    Object object;
+    object.className = className;
+    objects.emplace(address, std::move(object));
     return address;
+}
+std::string ObjC::describe(uint32_t object) const {
+    if (!object) return "(null)";
+    auto found = objects.find(object);
+    if (found == objects.end()) {
+        for (const auto& [name, address] : classes)
+            if (address == object) return name;
+        return "(invalid object)";
+    }
+    const Object& value = found->second;
+    if (value.className == "NSString" || value.className == "NSMutableString")
+        return readText(value.text);
+    if (value.className == "NSNumber") {
+        if (value.real == double(value.integer)) return std::to_string(value.integer);
+        return std::to_string(value.real);
+    }
+    if (value.className == "NSNull") return "<null>";
+    if (value.className == "NSData") {
+        std::string out = "<";
+        for (size_t index = 0; index < value.bytes.size() && index < 32; index++) {
+            static const char* digits = "0123456789abcdef";
+            if (index) out += ' ';
+            out += digits[value.bytes[index] >> 4];
+            out += digits[value.bytes[index] & 15];
+        }
+        if (value.bytes.size() > 32) out += "...";
+        return out + ">";
+    }
+    if (value.className == "NSArray" || value.className == "NSMutableArray") {
+        std::string out = "(";
+        for (size_t index = 0; index < value.elements.size(); index++) {
+            if (index) out += ", ";
+            out += describe(value.elements[index]);
+        }
+        return out + ")";
+    }
+    if (value.className == "NSDictionary" || value.className == "NSMutableDictionary") {
+        std::string out = "{";
+        for (size_t index = 0; index < value.pairs.size(); index++) {
+            if (index) out += ", ";
+            out += describe(value.pairs[index].first) + " = " + describe(value.pairs[index].second);
+        }
+        return out + "}";
+    }
+    return "<" + value.className + ">";
 }
 std::string ObjC::classNameOf(uint32_t object) const {
     auto found = objects.find(object);
@@ -119,6 +191,230 @@ void ObjC::release(uint32_t object) {
         return;
     }
     objects.erase(found);
+}
+bool ObjC::collection(const std::string& className, const std::string& method, Object& object,
+                      CpuState& state) {
+    const bool array = className == "NSArray" || className == "NSMutableArray";
+    const bool dictionary = className == "NSDictionary" || className == "NSMutableDictionary";
+    const bool mutableCollection = className.rfind("NSMutable", 0) == 0;
+    if (array) {
+        if (method == "count") {
+            state.registers[0] = uint32_t(object.elements.size());
+            return true;
+        }
+        if (method == "objectAtIndex:" || method == "objectAtIndexedSubscript:") {
+            const uint32_t index = state.registers[2];
+            if (index >= object.elements.size())
+                throw Error("OBJC_RANGE", "array index out of bounds", index);
+            state.registers[0] = object.elements[index];
+            return true;
+        }
+        if (method == "firstObject") {
+            state.registers[0] = object.elements.empty() ? 0 : object.elements.front();
+            return true;
+        }
+        if (method == "lastObject") {
+            state.registers[0] = object.elements.empty() ? 0 : object.elements.back();
+            return true;
+        }
+        if (method == "containsObject:") {
+            const uint32_t value = state.registers[2];
+            state.registers[0] = std::find(object.elements.begin(), object.elements.end(), value) !=
+                                 object.elements.end();
+            return true;
+        }
+        if (method == "indexOfObject:") {
+            const uint32_t value = state.registers[2];
+            auto found = std::find(object.elements.begin(), object.elements.end(), value);
+            state.registers[0] = found == object.elements.end()
+                                     ? 0x7fffffffu
+                                     : uint32_t(found - object.elements.begin());
+            return true;
+        }
+        if (mutableCollection && method == "addObject:") {
+            if (object.elements.size() >= 65536) throw Error("OBJC_LIMIT", "array is full");
+            object.elements.push_back(state.registers[2]);
+            state.registers[0] = 0;
+            return true;
+        }
+        if (mutableCollection && method == "insertObject:atIndex:") {
+            const uint32_t index = state.registers[3];
+            if (index > object.elements.size())
+                throw Error("OBJC_RANGE", "array insert index out of bounds", index);
+            object.elements.insert(object.elements.begin() + index, state.registers[2]);
+            state.registers[0] = 0;
+            return true;
+        }
+        if (mutableCollection && method == "removeObjectAtIndex:") {
+            const uint32_t index = state.registers[2];
+            if (index >= object.elements.size())
+                throw Error("OBJC_RANGE", "array remove index out of bounds", index);
+            object.elements.erase(object.elements.begin() + index);
+            state.registers[0] = 0;
+            return true;
+        }
+        if (mutableCollection && method == "removeLastObject") {
+            if (object.elements.empty())
+                throw Error("OBJC_RANGE", "removeLastObject on an empty array");
+            object.elements.pop_back();
+            state.registers[0] = 0;
+            return true;
+        }
+        if (mutableCollection && method == "removeAllObjects") {
+            object.elements.clear();
+            state.registers[0] = 0;
+            return true;
+        }
+        if (method == "componentsJoinedByString:") {
+            const uint32_t separatorAddress = state.registers[2];
+            const std::string separator = readText(separatorAddress);
+            std::string joined;
+            for (size_t index = 0; index < object.elements.size(); index++) {
+                if (index) joined += separator;
+                joined += readText(textOf(object.elements[index]));
+            }
+            const uint32_t text = makeObject("NSString");
+            objects[text].text = internText(joined);
+            state.registers[0] = text;
+            return true;
+        }
+    }
+    if (dictionary) {
+        if (method == "count") {
+            state.registers[0] = uint32_t(object.pairs.size());
+            return true;
+        }
+        if (method == "objectForKey:" || method == "valueForKey:") {
+            const uint32_t key = state.registers[2];
+            for (const auto& [stored, value] : object.pairs)
+                if (stored == key) {
+                    state.registers[0] = value;
+                    return true;
+                }
+            state.registers[0] = 0;
+            return true;
+        }
+        if (mutableCollection && method == "setObject:forKey:") {
+            const uint32_t value = state.registers[2], key = state.registers[3];
+            for (auto& [stored, existing] : object.pairs)
+                if (stored == key) {
+                    existing = value;
+                    state.registers[0] = 0;
+                    return true;
+                }
+            if (object.pairs.size() >= 65536) throw Error("OBJC_LIMIT", "dictionary is full");
+            object.pairs.emplace_back(key, value);
+            state.registers[0] = 0;
+            return true;
+        }
+        if (mutableCollection && method == "removeObjectForKey:") {
+            const uint32_t key = state.registers[2];
+            object.pairs.erase(
+                std::remove_if(object.pairs.begin(), object.pairs.end(),
+                               [key](const auto& entry) { return entry.first == key; }),
+                object.pairs.end());
+            state.registers[0] = 0;
+            return true;
+        }
+        if (mutableCollection && method == "removeAllObjects") {
+            object.pairs.clear();
+            state.registers[0] = 0;
+            return true;
+        }
+        if (method == "allKeys" || method == "allValues") {
+            const uint32_t result = makeObject("NSArray");
+            auto& elements = objects[result].elements;
+            for (const auto& [key, value] : object.pairs)
+                elements.push_back(method == "allKeys" ? key : value);
+            state.registers[0] = result;
+            return true;
+        }
+    }
+    if (className == "NSData") {
+        if (method == "length") {
+            state.registers[0] = uint32_t(object.bytes.size());
+            return true;
+        }
+        if (method == "bytes") {
+            state.registers[0] = object.text;
+            return true;
+        }
+        if (method == "getBytes:length:") {
+            const uint32_t destination = state.registers[2];
+            const uint32_t length =
+                std::min<uint32_t>(state.registers[3], uint32_t(object.bytes.size()));
+            if (length) {
+                if (!destination) throw Error("OBJC_ARGUMENT", "getBytes:length: needs a buffer");
+                memory.write(destination, object.bytes.data(), length);
+            }
+            state.registers[0] = 0;
+            return true;
+        }
+    }
+    if (className == "NSUserDefaults" || className == "NSUserDefaults") {
+        if (method == "objectForKey:" || method == "stringForKey:" || method == "valueForKey:") {
+            const uint32_t key = state.registers[2];
+            for (const auto& [stored, value] : defaults)
+                if (stored == key) {
+                    state.registers[0] = value;
+                    return true;
+                }
+            state.registers[0] = 0;
+            return true;
+        }
+        if (method == "setObject:forKey:") {
+            const uint32_t value = state.registers[2], key = state.registers[3];
+            for (auto& [stored, existing] : defaults)
+                if (stored == key) {
+                    existing = value;
+                    state.registers[0] = 0;
+                    return true;
+                }
+            if (defaults.size() >= 4096) throw Error("OBJC_LIMIT", "defaults are full");
+            defaults.emplace_back(key, value);
+            state.registers[0] = 0;
+            return true;
+        }
+        if (method == "removeObjectForKey:") {
+            const uint32_t key = state.registers[2];
+            defaults.erase(std::remove_if(defaults.begin(), defaults.end(),
+                                          [key](const auto& entry) { return entry.first == key; }),
+                           defaults.end());
+            state.registers[0] = 0;
+            return true;
+        }
+        if (method == "integerForKey:" || method == "boolForKey:") {
+            const uint32_t key = state.registers[2];
+            for (const auto& [stored, value] : defaults)
+                if (stored == key) {
+                    auto found = objects.find(value);
+                    if (found == objects.end())
+                        throw Error("OBJC_RECEIVER", "default value is not an object", value);
+                    state.registers[0] =
+                        uint32_t(method == "boolForKey:" ? (found->second.integer ? 1 : 0)
+                                                         : found->second.integer);
+                    return true;
+                }
+            state.registers[0] = 0;
+            return true;
+        }
+        if (method == "setInteger:forKey:" || method == "setBool:forKey:") {
+            const uint32_t object = makeObject("NSNumber");
+            objects[object].integer = int32_t(state.registers[2]);
+            objects[object].real = double(objects[object].integer);
+            const uint32_t key = state.registers[3];
+            for (auto& [stored, existing] : defaults)
+                if (stored == key) {
+                    existing = object;
+                    state.registers[0] = 0;
+                    return true;
+                }
+            defaults.emplace_back(key, object);
+            state.registers[0] = 0;
+            return true;
+        }
+    }
+    return false;
 }
 void ObjC::message(CpuState& state) {
     const uint32_t self = state.registers[0], name = state.registers[1];
@@ -154,6 +450,111 @@ void ObjC::message(CpuState& state) {
         }
         if (method == "description") {
             state.registers[0] = internText(className);
+            return;
+        }
+        if (method == "stringWithFormat:") {
+            Arguments args(state, memory, 3);
+            const uint32_t object = makeObject("NSString");
+            objects[object].text =
+                internText(formatGuest(readText(state.registers[2]), args,
+                                       [this](uint32_t value) { return describe(value); }));
+            state.registers[0] = object;
+            return;
+        }
+        if (className == "NSArray" && method == "array") {
+            state.registers[0] = makeObject("NSArray");
+            return;
+        }
+        if (className == "NSMutableArray" &&
+            (method == "array" || method == "arrayWithCapacity:")) {
+            state.registers[0] = makeObject("NSMutableArray");
+            return;
+        }
+        if (className == "NSDictionary" && method == "dictionary") {
+            state.registers[0] = makeObject("NSDictionary");
+            return;
+        }
+        if (className == "NSMutableDictionary" &&
+            (method == "dictionary" || method == "dictionaryWithCapacity:")) {
+            state.registers[0] = makeObject("NSMutableDictionary");
+            return;
+        }
+        if (className == "NSNull" && method == "null") {
+            state.registers[0] = makeObject("NSNull");
+            return;
+        }
+        if (className == "NSData" && method == "data") {
+            const uint32_t object = makeObject("NSData");
+            objects[object].text = internBytes({});
+            state.registers[0] = object;
+            return;
+        }
+        if (className == "NSData" && method == "dataWithBytes:length:") {
+            const uint32_t address = state.registers[2], length = state.registers[3];
+            if (length > 16 * 1024 * 1024) throw Error("OBJC_LIMIT", "NSData length exceeds limit");
+            std::vector<uint8_t> copy(length);
+            if (length) {
+                if (!address) throw Error("OBJC_ARGUMENT", "dataWithBytes:length: needs a buffer");
+                memory.read(address, copy.data(), length);
+            }
+            const uint32_t object = makeObject("NSData");
+            objects[object].bytes = copy;
+            objects[object].text = internBytes(copy);
+            state.registers[0] = object;
+            return;
+        }
+        if (className == "NSArray" && method == "arrayWithObjects:count:") {
+            const uint32_t list = state.registers[2], count = state.registers[3];
+            if (count > 65536) throw Error("OBJC_LIMIT", "array element count exceeds limit");
+            const uint32_t object = makeObject("NSArray");
+            auto& elements = objects[object].elements;
+            for (uint32_t index = 0; index < count; index++)
+                elements.push_back(memory.read32(list + index * 4));
+            state.registers[0] = object;
+            return;
+        }
+        if (className == "NSDictionary" && method == "dictionaryWithObjects:forKeys:count:") {
+            Arguments args(state, memory, 4);
+            const uint32_t objectsAt = state.registers[2], keysAt = state.registers[3];
+            const uint32_t count = args.word();
+            if (count > 65536) throw Error("OBJC_LIMIT", "dictionary entry count exceeds limit");
+            const uint32_t object = makeObject("NSDictionary");
+            auto& pairs = objects[object].pairs;
+            for (uint32_t index = 0; index < count; index++)
+                pairs.emplace_back(memory.read32(keysAt + index * 4),
+                                   memory.read32(objectsAt + index * 4));
+            state.registers[0] = object;
+            return;
+        }
+        if (className == "NSNumber" &&
+            (method == "numberWithInt:" || method == "numberWithInteger:" ||
+             method == "numberWithUnsignedInt:" || method == "numberWithLong:")) {
+            const uint32_t object = makeObject("NSNumber");
+            objects[object].integer = int32_t(state.registers[2]);
+            objects[object].real = double(int32_t(state.registers[2]));
+            state.registers[0] = object;
+            return;
+        }
+        if (className == "NSNumber" &&
+            (method == "numberWithFloat:" || method == "numberWithDouble:")) {
+            const uint32_t object = makeObject("NSNumber");
+            Arguments args(state, memory, 2);
+            const double value = method == "numberWithFloat:" ? double(args.f32()) : args.f64();
+            objects[object].real = value;
+            objects[object].integer = int64_t(value);
+            state.registers[0] = object;
+            return;
+        }
+        if (className == "NSNumber" && method == "numberWithBool:") {
+            const uint32_t object = makeObject("NSNumber");
+            objects[object].integer = state.registers[2] ? 1 : 0;
+            objects[object].real = objects[object].integer;
+            state.registers[0] = object;
+            return;
+        }
+        if (className == "NSUserDefaults" && method == "standardUserDefaults") {
+            if (!userDefaults) userDefaults = makeObject("NSUserDefaults");
+            state.registers[0] = userDefaults;
             return;
         }
         if (className == "NSString" && method == "stringWithUTF8String:") {
@@ -213,6 +614,7 @@ void ObjC::message(CpuState& state) {
         state.registers[0] = 0;  // Conservatively false until a method table exists.
         return;
     }
+    if (collection(className, method, object, state)) return;
     if (className == "NSString") {
         const std::string text = readText(object.text);
         if (method == "length") {
@@ -238,9 +640,24 @@ void ObjC::message(CpuState& state) {
             return;
         }
     }
-    if (className == "NSNumber" && method == "intValue") {
-        state.registers[0] = object.text;
-        return;
+    if (className == "NSNumber") {
+        if (method == "intValue" || method == "integerValue" || method == "unsignedIntValue" ||
+            method == "longValue") {
+            state.registers[0] = uint32_t(object.integer);
+            return;
+        }
+        if (method == "boolValue") {
+            state.registers[0] = object.integer ? 1 : 0;
+            return;
+        }
+        if (method == "floatValue") {
+            resultF32(state, float(object.real));
+            return;
+        }
+        if (method == "doubleValue") {
+            resultF64(state, object.real);
+            return;
+        }
     }
     unsupported();
 }

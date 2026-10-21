@@ -6,15 +6,32 @@
 #include <cctype>
 #include <climits>
 #include <cmath>
+#include <cstdio>
 #include <cstring>
 #include <ctime>
+#include <functional>
+
+#if defined(__ANDROID__)
+#include <android/log.h>
+#endif
 
 #include "abi.h"
 #include "error.h"
+#include "format.h"
 
 namespace podnative::runtime {
 namespace {
 constexpr size_t CopyLimit = 16 * 1024 * 1024;
+std::function<void(const std::string&)> defaultLogSink() {
+    return [](const std::string& text) {
+#if defined(__ANDROID__)
+        __android_log_write(ANDROID_LOG_INFO, "AnyiOS-guest", text.c_str());
+#else
+        std::fwrite(text.data(), 1, text.size(), stdout);
+        std::fflush(stdout);
+#endif
+    };
+}
 }  // namespace
 std::string Libc::readString(uint32_t address, size_t limit) const {
     std::string text;
@@ -39,6 +56,11 @@ void Libc::zero(uint32_t address, size_t bytes) {
 }
 bool Libc::invoke(const std::string& name, CpuState& cpu) {
     auto& r = cpu.registers;
+    if (name == "_printf" || name == "_puts" || name == "_snprintf" || name == "_sprintf" ||
+        name == "_vsnprintf") {
+        formatted(name, cpu);
+        return true;
+    }
     if (name == "_malloc") {
         r[0] = heap.allocate(r[0]);
         return true;
@@ -338,6 +360,57 @@ bool Libc::numbers(const std::string& name, CpuState& cpu) {
     }
     r[0] = uint32_t(signedValue);
     return true;
+}
+void Libc::formatted(const std::string& name, CpuState& cpu) {
+    auto& r = cpu.registers;
+    // Argument layout follows the iOS ARMv7 base ABI: every vararg is a word in
+    // r0-r3 and then on the stack, so a single cursor walks the format arguments.
+    if (name == "_puts") {
+        const std::string text = readString(r[0]);
+        emit(text + "\n");
+        r[0] = uint32_t(text.size() + 1);
+        return;
+    }
+    uint32_t formatAddress = r[0], buffer = 0, capacity = 0;
+    size_t firstWord = 1;
+    if (name == "_snprintf" || name == "_vsnprintf") {
+        buffer = r[0];
+        capacity = r[1];
+        formatAddress = r[2];
+        firstWord = 3;
+    } else if (name == "_sprintf") {
+        buffer = r[0];
+        formatAddress = r[1];
+        firstWord = 2;
+    }
+    if (name == "_vsnprintf")
+        throw Error("LIBC_VARIADIC",
+                    "va_list forwarding is not implemented; call snprintf directly");
+    Arguments args(cpu, memory, firstWord);
+    const std::string text = formatGuest(readString(formatAddress), args);
+    if (buffer) {
+        if (capacity == 0) {
+            r[0] = uint32_t(text.size());
+            return;
+        }
+        if (!memory.permits(buffer, capacity, Write))
+            throw Error("LIBC_BUFFER", "format destination is not a writable guest range", buffer);
+        const size_t written = std::min<size_t>(text.size(), capacity - 1);
+        if (written) memory.write(buffer, text.data(), written);
+        const char terminator = 0;
+        memory.write(buffer + uint32_t(written), &terminator, 1);
+    } else {
+        emit(text);
+    }
+    r[0] = uint32_t(text.size());
+}
+void Libc::setLogSink(std::function<void(const std::string&)> sink) { logSink = std::move(sink); }
+void Libc::emit(const std::string& text) const {
+    if (logSink) {
+        logSink(text);
+        return;
+    }
+    defaultLogSink()(text);
 }
 bool Libc::math(CpuState& cpu, Memory& memory, const std::string& name) {
     // iOS ARMv7 marshals floating-point arguments in the core registers, so these

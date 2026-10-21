@@ -1,4 +1,4 @@
 <resources>
-    <!-- Adaptive-icon plate: dark anodised green so the metal device reads as raised. -->
-    <color name="launcher_background">#0B241A</color>
+    <!-- Near-black plate so the green metal engine die reads as backlit hardware. -->
+    <color name="launcher_background">#05070A</color>
 </resources>

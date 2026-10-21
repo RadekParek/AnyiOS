@@ -75,10 +75,29 @@ public final class MainActivity extends Activity {
         line = color(dark ? "#2D3B4F" : "#DCE2EA");
         accent = dev.radek.conventor.SharedTheme.accent(this);
         soft = color(dark ? "#203E30" : "#DDF3E7");
-        Diagnostics.record("APP", "library preview; game execution remains unavailable");
+        Diagnostics.record(
+            "APP", "library ready; boot attempts run bounded ARM32 guest code and report blockers");
         home();
         if (state == null && getIntent().getBooleanExtra("importIpaFolder", false))
             selectFolder(IMPORT_FOLDER);
+    }
+    /** SHA-256 of the signing certificate, so a sideloaded APK can be verified by hand. */
+    private String signatureFingerprint() {
+        try {
+            android.content.pm.Signature[] signatures =
+                getPackageManager()
+                    .getPackageInfo(getPackageName(),
+                        android.content.pm.PackageManager.GET_SIGNING_CERTIFICATES)
+                    .signingInfo.getApkContentsSigners();
+            java.security.MessageDigest digest = java.security.MessageDigest.getInstance("SHA-256");
+            byte[] hash = digest.digest(signatures[0].toByteArray());
+            StringBuilder out = new StringBuilder();
+            for (byte value : hash)
+                out.append(String.format(java.util.Locale.ROOT, "%02X:", value));
+            return out.substring(0, out.length() - 1);
+        } catch (Exception e) {
+            return "Unavailable: " + e.getMessage();
+        }
     }
     private static int color(String value) {
         return Color.parseColor(value);
@@ -326,12 +345,12 @@ public final class MainActivity extends Activity {
             empty.addView(button, new LinearLayout.LayoutParams(-1, -2));
         } else {
             gap(parent, 18);
-            // Two comfortable columns; large text/narrow windows switch to a readable list.
-            int columns = getResources().getConfiguration().screenWidthDp < 340
-                    || getResources().getConfiguration().fontScale > 1.35f
-                ? 1
-                : getResources().getConfiguration().screenWidthDp >= 700 ? 3
-                                                                         : 2;
+            // Emulator-style grid: three tiles per row on phones, four on tablets, and a
+            // readable single column only when the window or text scale demands it.
+            int width = getResources().getConfiguration().screenWidthDp;
+            int columns = width < 320 || getResources().getConfiguration().fontScale > 1.45f ? 1
+                : width >= 840                                                               ? 4
+                                                                                             : 3;
             for (int index = 0; index < games.size(); index += columns) {
                 LinearLayout grid = row();
                 grid.setGravity(Gravity.TOP);
@@ -339,7 +358,7 @@ public final class MainActivity extends Activity {
                     int position = index + column;
                     LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(0, -2, 1);
                     lp.setMargins(
-                        column == 0 ? 0 : dp(6), 0, column == columns - 1 ? 0 : dp(6), dp(14));
+                        column == 0 ? 0 : dp(4), 0, column == columns - 1 ? 0 : dp(4), dp(10));
                     if (position < games.size())
                         grid.addView(gameCard(games.get(position)), lp);
                     else
@@ -349,10 +368,10 @@ public final class MainActivity extends Activity {
             }
         }
         LinearLayout status = card(parent);
-        status.addView(text("Import is ready. Game execution is next.", 14, ink, true));
+        status.addView(text("Boot attempts run real ARM32 guest code", 14, ink, true));
         gap(status, 7);
         status.addView(text(
-            "This preview can organize and inspect your games. It cannot launch iOS games yet. Imported does not mean compatible.",
+            "A boot applies dyld fixups, runs the guest on the Dynarmic engine and stops at the first iOS API that has no implementation, with a crash screen naming it. Rendering, UIKit and audio are still incomplete, so a title that needs them will stop there rather than pretend to work.",
             13, muted, false));
         File[] legacy = new File(getFilesDir(), "imports").listFiles();
         if (legacy != null && legacy.length > 0) {
@@ -395,8 +414,8 @@ public final class MainActivity extends Activity {
     }
     private View gameCard(GameLibrary.Game game) {
         LinearLayout card = column();
-        card.setPadding(dp(12), dp(12), dp(12), dp(14));
-        clickable(card, surface, 20, () -> gameDetails(game));
+        card.setPadding(dp(9), dp(9), dp(9), dp(11));
+        clickable(card, surface, 18, () -> gameDetails(game));
         card.setContentDescription(game.title + ", " + game.architecture + ", " + game.status
             + ", game launch unavailable");
         FrameLayout artwork = new FrameLayout(this);
@@ -407,7 +426,7 @@ public final class MainActivity extends Activity {
         artwork.setClipToOutline(true);
         TextView letter = text(game.title.substring(0, game.title.offsetByCodePoints(0, 1))
                                    .toUpperCase(java.util.Locale.ROOT),
-            42, accent, true);
+            30, accent, true);
         letter.setGravity(Gravity.CENTER);
         artwork.addView(letter, new FrameLayout.LayoutParams(-1, -1));
         if (game.cover().isFile()) {
@@ -416,25 +435,28 @@ public final class MainActivity extends Activity {
             image.setScaleType(ImageView.ScaleType.CENTER_CROP);
             artwork.addView(image, new FrameLayout.LayoutParams(-1, -1));
         }
-        card.addView(artwork, new LinearLayout.LayoutParams(-1, dp(126)));
-        gap(card, 12);
-        TextView title = text(game.title, 16, ink, true);
+        card.addView(artwork, new LinearLayout.LayoutParams(-1, dp(92)));
+        gap(card, 8);
+        TextView title = text(game.title, 13, ink, true);
         title.setMaxLines(2);
         title.setEllipsize(TextUtils.TruncateAt.END);
-        title.setMinHeight(dp(40));
+        title.setMinHeight(dp(32));
         card.addView(title);
-        gap(card, 7);
-        TextView subtitle = text(game.kind + " · " + game.architecture, 11, muted, false);
+        gap(card, 5);
+        TextView subtitle = text(game.architecture + " · " + game.kind, 9, muted, false);
         subtitle.setMaxLines(1);
         subtitle.setEllipsize(TextUtils.TruncateAt.END);
         card.addView(subtitle);
-        gap(card, 9);
-        TextView status = text(!game.blockReason.isEmpty() ? game.status
-                : game.status.equals("Encrypted")          ? "Encrypted executable"
-                                                           : "Runtime not ready",
-            10, muted, true);
-        status.setPadding(dp(8), dp(5), dp(8), dp(5));
-        status.setBackground(shape(soft, 7, false));
+        gap(card, 6);
+        // The chip states what the runtime knows, never a compatibility score.
+        String chip = !game.blockReason.isEmpty() ? game.status
+            : game.status.equals("Encrypted")     ? "Encrypted"
+                                                  : "Ready to boot";
+        TextView status = text(chip, 9, accent, true);
+        status.setPadding(dp(7), dp(4), dp(7), dp(4));
+        status.setBackground(shape(soft, 6, false));
+        status.setMaxLines(1);
+        status.setEllipsize(TextUtils.TruncateAt.END);
         card.addView(status);
         return card;
     }
@@ -516,7 +538,7 @@ public final class MainActivity extends Activity {
                 ? "The game was added, but its executable is protected. This build does not bypass DRM."
                 : "Attempt launch reopens the saved executable and checks it with the native loader. It reports the first startup blocker. Guest execution and iOS frameworks are not integrated yet; no game code runs in this build.",
             14, muted, false));
-        Button launch = action("Attempt launch · experimental", true, () -> {
+        Button launch = action("Boot game · experimental", true, () -> {
             sheet.dismiss();
             java.lang.ref.WeakReference<MainActivity> owner =
                 new java.lang.ref.WeakReference<>(this);
@@ -664,9 +686,9 @@ public final class MainActivity extends Activity {
         graphics.addView(text("Embedded ANGLE · Vulkan", 17, ink, true));
         gap(graphics, 7);
         graphics.addView(text(
-            "Real upstream ANGLE is included in the app. No system driver switch, root access or untested fallback is used.",
+            "Real upstream ANGLE is included. AnyiOS asks for the Vulkan backend first and only uses ANGLE's OpenGL ES backend when the driver refuses Vulkan; the backend in use is always named, never swapped silently. No root access, developer options or system driver changes are involved.",
             13, muted, false));
-        button(graphics, "Run 3D graphics test", true, this::launch);
+        button(graphics, "Run ANGLE surface test", true, this::launch);
         LinearLayout storage = card(parent);
         storage.addView(text("ON THIS DEVICE", 11, muted, true));
         gap(storage, 12);
@@ -683,8 +705,19 @@ public final class MainActivity extends Activity {
         about.addView(text("AnyiOS " + BuildConfig.VERSION_NAME, 16, ink, true));
         gap(about, 9);
         about.addView(text(
-            "Game execution, guest frameworks, audio and touch overlays are not available in this preview. ARM32 CPU diagnostics are developed and tested separately.",
+            "Boot attempts run real ARM32 guest code on Dynarmic and stop at the first iOS API without an implementation, with a crash screen naming it. UIKit, EAGL rendering, audio and touch overlays are still incomplete.",
             13, muted, false));
+        gap(about, 10);
+        about.addView(text("SIGNING CERTIFICATE SHA-256", 10, muted, true));
+        gap(about, 4);
+        TextView fingerprint = text(signatureFingerprint(), 10, muted, false);
+        fingerprint.setTypeface(Typeface.MONOSPACE);
+        fingerprint.setTextIsSelectable(true);
+        about.addView(fingerprint);
+        gap(about, 8);
+        about.addView(text(
+            "Android's installer may warn that a self-built APK is unsafe. That dialog comes from Play Protect for any app installed outside Play, not from this app. Compare this fingerprint and the artifact's SHA-256 before installing, then choose \"install anyway\".",
+            12, muted, false));
         button(about, "Reset display & appearance", false,
             ()
                 -> new AlertDialog.Builder(this)
@@ -764,7 +797,7 @@ public final class MainActivity extends Activity {
     }
     private void presentGameArtwork(GameLibrary.Game game, List<File> files) {
         if (files.isEmpty()) {
-            library.attemptLaunch(game);
+            attempt(game);
             return;
         }
         showingSplashes = true;
@@ -776,13 +809,25 @@ public final class MainActivity extends Activity {
                 insets.getSystemWindowInsetRight(), insets.getSystemWindowInsetBottom());
             return insets;
         });
-        root.addView(
-            action("‹  Cancel startup", false, this::stop), new LinearLayout.LayoutParams(-1, -2));
+        // Console-style chrome: a slim title bar with the running title, then the bare
+        // display area, then a translucent status strip the backend reports into.
+        LinearLayout bar = row();
+        bar.setPadding(dp(16), dp(10), dp(8), dp(10));
+        TextView running = text(game.title, 14, Color.WHITE, true);
+        running.setMaxLines(1);
+        running.setEllipsize(TextUtils.TruncateAt.END);
+        bar.addView(running, new LinearLayout.LayoutParams(0, -2, 1));
+        TextView live = text("● BOOT", 10, accent, true);
+        live.setLetterSpacing(0.12f);
+        bar.addView(live);
+        Button cancel = action("Stop", false, this::stop);
+        cancel.setTextColor(Color.WHITE);
+        bar.addView(cancel);
+        root.addView(bar);
         liveStatus =
-            text("Game launch artwork · embedded ANGLE/Vulkan\nNot frames rendered by guest code",
-                12, Color.WHITE, false);
-        liveStatus.setPadding(dp(16), dp(12), dp(16), dp(12));
-        root.addView(liveStatus);
+            text("Preparing display · anyiOS engine", 11, Color.parseColor("#B9C7D8"), false);
+        liveStatus.setPadding(dp(16), dp(8), dp(16), dp(10));
+        liveStatus.setBackgroundColor(Color.parseColor("#0D1524"));
         prototype = new PrototypeView(this, files,
             info
             -> {
@@ -792,12 +837,21 @@ public final class MainActivity extends Activity {
             () -> {
                 if (showingSplashes && generation == presentationGeneration && resumed) {
                     stop();
-                    library.attemptLaunch(game);
+                    attempt(game);
                 }
             });
         root.addView(prototype, new LinearLayout.LayoutParams(-1, 0, 1));
+        root.addView(liveStatus);
         setContentView(root);
         root.requestApplyInsets();
+    }
+    /** Boot attempt plus the crash screen that names the blocker when it stops. */
+    private void attempt(GameLibrary.Game game) {
+        library.attemptLaunch(game, report -> {
+            if (isFinishing() || isDestroyed())
+                return;
+            RuntimeCrash.show(this, game.title, report);
+        });
     }
     private void launch() {
         LinearLayout root = column();

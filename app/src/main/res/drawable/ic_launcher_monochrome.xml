@@ -1,8 +1,16 @@
-<vector xmlns:android="http://schemas.android.com/apk/res/android" android:width="108dp" android:height="108dp" android:viewportWidth="108" android:viewportHeight="108">
-    <!-- Single-colour silhouette for themed icons: device outline, play glyph, click wheel. -->
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Themed-icon silhouette: hexagonal engine die with the play core. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
     <path
         android:fillColor="#FFFFFF"
         android:fillType="evenOdd"
-        android:pathData="M34,21 L74,21 Q81,21 81,28 L81,80 Q81,87 74,87 L34,87 Q27,87 27,80 L27,28 Q27,21 34,21 Z M39,31 L69,31 Q72,31 72,34 L72,58 Q72,61 69,61 L39,61 Q36,61 36,58 L36,34 Q36,31 39,31 Z M54,63 A12.5,12.5 0,1 1,54,88 A12.5,12.5 0,1 1,54,63 Z M54,71 A4.5,4.5 0,1 0,54,80 A4.5,4.5 0,1 0,54,71 Z" />
-    <path android:fillColor="#FFFFFF" android:pathData="M48,38 L62,46 L48,54 Z" />
+        android:pathData="M54,14 L83,31 L83,65 L54,82 L25,65 L25,31 Z M54,24 L74,35.4 L74,60.6 L54,72 L34,60.6 L34,35.4 Z" />
+    <path android:fillColor="#FFFFFF" android:pathData="M50.5,42.5 L62,48.5 L50.5,54.5 Z" />
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M51,10 L57,10 L57,15 L51,15 Z M51,81 L57,81 L57,86 L51,86 Z M18,40 L23,37 L25.5,41.5 L20.5,44.5 Z M18,56 L23,59 L25.5,54.5 L20.5,51.5 Z M85,40 L90,43.5 L87.5,48 L82.5,45 Z M85,56 L90,52.5 L87.5,48 L82.5,51 Z" />
 </vector>

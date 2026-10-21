@@ -81,7 +81,7 @@ Converter inclusion is explicitly requested by its owner. Upstream has no root l
   float bit patterns into `r0-r3`, calls the gate, and stores the result — including a
   hidden-pointer call, so the convention is exercised by executed instructions rather
   than asserted by a host helper.
-- Coverage is **60 of 438** required imports. This is API-surface progress; it is not
+- Coverage is **72 of 438** required imports. This is API-surface progress; it is not
   evidence that any title launches or renders.
 
 ### ARMv6, launch acceptance and rendering increment (2026-10-21, second pass)
@@ -114,14 +114,21 @@ Converter inclusion is explicitly requested by its owner. Upstream has no root l
 The integration token cannot rename a repository; only the owner can do it in
 **Settings → General → Repository name**, and GitHub redirects the old URL afterwards.
 
-The Play Protect / Samsung scanner "harmful app" dialog is what Android shows for a sideloaded APK
-that is not distributed through Play, and it is weighted further by this package's declared
-`android.permission.REQUEST_INSTALL_PACKAGES`. That permission is merged in from the converter
-module and is required for the converter to install the APKs it generates, so it is not removed.
-No app-side change can whitelist a self-built APK: the honest paths are (a) dismiss with
-"install anyway" after verifying the SHA-256 published with the artifact, (b) install over `adb`
-from a trusted host, or (c) distribute through Play. The build already refuses to publish a
-debuggable APK, which removes the one property that made earlier artifacts look like test builds.
+The installer's "may be harmful" dialog is Play Protect / the OEM scanner judging a **sideloaded,
+self-signed APK that is not distributed through Play**. It is a server-side reputation verdict, so
+no app-side change can switch it off. What the project can and does control:
+
+- the published artifact is **non-debuggable** and the CI job fails if a debuggable APK would ship;
+- the published artifact **must verify with APK Signature Scheme v2**, which removes the
+  "invalid or unknown signer" family of installer warnings;
+- the signing certificate SHA-256 is shown in **Settings**, so the installed app can be compared
+  with the fingerprint recorded at build time;
+- `SHA256SUMS` is published with every artifact.
+
+`REQUEST_INSTALL_PACKAGES` stays declared because the converter installs the APKs it generates;
+removing it would break that flow. The honest installation paths are: verify the checksum and
+fingerprint, then dismiss the dialog with "install anyway"; or install over `adb` from a trusted
+host; or distribute through Google Play.
 
 ### Remaining runtime work
 

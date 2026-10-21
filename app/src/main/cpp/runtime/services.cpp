@@ -37,6 +37,11 @@ Services::Services(Memory& m)
           "_strstr",
           "_strdup",
           "_strerror_r",
+          // Formatted output. Varargs arrive in r0-r3 and then on the stack.
+          "_printf",
+          "_snprintf",
+          "_sprintf",
+          "_puts",
           "_atoi",
           "_atol",
           "_atof",

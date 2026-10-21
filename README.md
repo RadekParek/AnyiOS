@@ -41,12 +41,14 @@ The PC artifact is a Linux CPU diagnostic build, not a desktop emulator GUI.
   gates; launch reports required-import coverage instead of claiming resolution.
 * Guest C runtime: owned heap plus bounded string/number/math/atomic implementations on
   the documented iOS ARMv7 base-ABI call boundary, CoreGraphics geometry, media time and
-  colour-space lifetime (60 of the reported 438 unique imports); UIKit and the remaining
-  frameworks stay explicit blockers rather than fabricated successes.
+  colour-space lifetime, plus real `printf`/`snprintf` formatting and the core Foundation
+  collections (72 of the reported 438 unique imports); UIKit and the remaining frameworks stay
+  explicit blockers rather than fabricated successes.
 * Objective-C runtime core: guest class objects, selectors, `objc_msgSend` dispatch,
   NSObject/NSString/NSAutoreleasePool semantics, and real message dispatch tests.
 * Launches now run guest code: dyld fixups are applied, unimplemented imports bind to
-  faulting gates, and a launch reports instructions retired plus the first missing API.
+  faulting gates, and a launch reports instructions retired plus the first missing API — shown in
+  an Android-style crash screen that names the blocker and the guest PC.
 * GitHub Actions debug/tagged-release build recipes with artifacts and provenance.
 
 No inherited TouchHLE/HyperHLE renderer. No proprietary game files. No universal

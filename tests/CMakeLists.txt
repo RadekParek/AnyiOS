@@ -33,6 +33,7 @@ add_library(podnative_hle STATIC
     "${RUNTIME}/runtime/dyld.cpp"
     "${RUNTIME}/runtime/services.cpp"
     "${RUNTIME}/runtime/libc.cpp"
+    "${RUNTIME}/runtime/format.cpp"
     "${RUNTIME}/runtime/heap.cpp"
     "${RUNTIME}/runtime/execution.cpp"
     "${RUNTIME}/runtime/objc.cpp"

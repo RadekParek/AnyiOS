@@ -45,7 +45,7 @@ std::string preflight() {
     }
     VkApplicationInfo app{};
     app.sType = VK_STRUCTURE_TYPE_APPLICATION_INFO;
-    app.pApplicationName = "PodNative preflight";
+    app.pApplicationName = "AnyiOS preflight";
     app.apiVersion = VK_API_VERSION_1_1;
     VkInstanceCreateInfo ci{};
     ci.sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO;
@@ -95,8 +95,8 @@ std::string preflight() {
     vkDestroyInstance(instance, nullptr);
     if (selected.empty())
         error(
-            "VULKAN_UNSUPPORTED: need Vulkan >=1.1, graphics queue and VK_KHR_swapchain; no "
-            "validated fallback");
+            "VULKAN_UNSUPPORTED: need Vulkan >=1.1, a graphics queue and VK_KHR_swapchain; "
+            "ANGLE's OpenGL ES backend will be requested instead");
     return selected;
 }
 class AngleBackend final : public GraphicsBackend {
