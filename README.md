@@ -14,12 +14,12 @@ experimental APK is not proof that Ninjago (or another game) runs.**
 
 [Integration, tests and boundaries](docs/ANYIOS_INTEGRATION.md) ·
 [Converter fork review](docs/CONVERTER_FORK_REVIEW.md).
-The remote GitHub repository rename was denied by the integration's admin permissions;
-its URL remains `RadekParek/PodNative` until the owner renames it in repository settings.
-Technical JNI namespaces, signing/cache names and historical engineering records intentionally retain their original names.
+The GitHub repository is now **`RadekParek/AnyiOS`**; old `PodNative` links redirect. Technical JNI
+namespaces, signing/cache names and historical engineering records intentionally keep their
+original names.
 
-[Download current Android and PC diagnostic artifacts](https://github.com/RadekParek/PodNative/actions/workflows/android.yml)
-(choose a successful run; extract GitHub's archive, then install `AnyiOS-debug.apk`).
+[Download the Android APK and the Linux PC build](https://github.com/RadekParek/AnyiOS/actions/workflows/android.yml)
+(one successful run publishes exactly two artifacts: `AnyiOS.apk` and `AnyiOS-PC-linux-x86_64`).
 The PC artifact is a Linux CPU diagnostic build, not a desktop emulator GUI.
 [Current implementation boundaries](docs/GRAPHICS_FRAMEWORK_INCREMENT.md) ·
 [Linker/dispatch increment](docs/DYLD_AND_IMPORT_INCREMENT.md).

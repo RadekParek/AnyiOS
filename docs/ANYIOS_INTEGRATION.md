@@ -110,9 +110,9 @@ Converter inclusion is explicitly requested by its owner. Upstream has no root l
 
 ### Repository rename is still blocked, and the "harmful app" prompt is not an app bug
 
-`gh repo rename AnyiOS --yes` still returns **HTTP 403: Resource not accessible by integration**.
-The integration token cannot rename a repository; only the owner can do it in
-**Settings → General → Repository name**, and GitHub redirects the old URL afterwards.
+The repository is now **`RadekParek/AnyiOS`** (the old `PodNative` URL redirects). The integration
+token itself cannot rename repositories — `gh repo rename` returned `HTTP 403: Resource not
+accessible by integration` — so this was completed from the owner's account.
 
 The installer's "may be harmful" dialog is Play Protect / the OEM scanner judging a **sideloaded,
 self-signed APK that is not distributed through Play**. It is a server-side reputation verdict, so
