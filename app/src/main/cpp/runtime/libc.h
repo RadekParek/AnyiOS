@@ -1,6 +1,7 @@
 #pragma once
 #include <cstdint>
 #include <functional>
+#include <map>
 #include <string>
 
 #include "cpu.h"
@@ -17,6 +18,9 @@ class Libc final {
     bool invoke(const std::string& symbol, CpuState& cpu);
     // Guest printf/puts output: logcat on device, a host sink in tests.
     void setLogSink(std::function<void(const std::string&)> sink);
+    // Variables visible to guest getenv. Values are copied into the guest heap on first
+    // use, so the returned pointer stays valid for the life of the process.
+    void setEnvironment(const std::map<std::string, std::string>& values);
     GuestHeap& guestHeap() { return heap; }
 
    private:
@@ -24,6 +28,8 @@ class Libc final {
     GuestHeap heap;
     std::function<void(const std::string&)> logSink;
     uint32_t randomState = 1;
+    std::map<std::string, std::string> environmentValues;
+    std::map<std::string, uint32_t> environmentCells;
     std::string readString(uint32_t address, size_t limit = 1024 * 1024) const;
     void writeString(uint32_t address, const std::string& text, size_t capacity);
     bool math(CpuState& cpu, Memory& memory, const std::string& name);

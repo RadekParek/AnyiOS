@@ -43,8 +43,9 @@ The PC artifact is a Linux CPU diagnostic build, not a desktop emulator GUI.
   the documented iOS ARMv7 base-ABI call boundary, CoreGraphics geometry, media time and
   colour-space lifetime, plus real `printf`/`snprintf` formatting and the core Foundation
   collections, plus the C++ ABI and compiler-runtime entry points that `libstdc++.6` and
-  `libgcc_s.1` export (112 of the reported 438 unique imports); UIKit, guest file I/O and
-  exception unwinding stay explicit blockers rather than fabricated successes.
+  `libgcc_s.1` export, plus real guest stdio over explicitly mounted directories
+  (130 of the reported 438 unique imports); UIKit, EAGL rendering and exception unwinding
+  stay explicit blockers rather than fabricated successes.
 * Objective-C runtime core: guest class objects, selectors, `objc_msgSend` dispatch,
   NSObject/NSString/NSAutoreleasePool semantics, and real message dispatch tests.
 * Launches now run guest code: dyld fixups are applied, unimplemented imports bind to

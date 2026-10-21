@@ -11,6 +11,7 @@ Services::Services(Memory& m)
     : memory(m),
       libc(m),
       cxx(m, libc.guestHeap()),
+      stdio(m, libc.guestHeap(), files),
       objc(m),
       symbols{
           // libSystem: C runtime.
@@ -43,6 +44,7 @@ Services::Services(Memory& m)
           "_snprintf",
           "_sprintf",
           "_puts",
+          "_getenv",
           "_atoi",
           "_atol",
           "_atof",
@@ -139,6 +141,29 @@ Services::Services(Memory& m)
           "___strcat_chk",
           "___strncpy_chk",
           "___sprintf_chk",
+          // Guest stdio over the mounted sandbox.
+          "_fopen",
+          "_fclose",
+          "_fflush",
+          "_fprintf",
+          "_fread",
+          "_fwrite",
+          "_fseek",
+          "_ftell",
+          "_rewind",
+          "_feof",
+          "_ferror",
+          "_clearerr",
+          "_fileno",
+          "_fgetc",
+          "_getc",
+          "_fputc",
+          "_putc",
+          "_fgets",
+          "_fputs",
+          "_setvbuf",
+          "_remove",
+          "_rename",
       } {
     std::vector<uint8_t> code(Memory::PageSize);
     auto put = [&](size_t offset, uint32_t word) {
@@ -195,8 +220,21 @@ void Services::install(ExportGraph& graph) const {
         graph.define(image, symbol, {Base + uint32_t(n) * 8});
     }
     objc.defineSymbols(graph, foundation);
+    // stdout/stderr/stdin are data imports: the guest loads the FILE* from these cells.
+    graph.define(system, "___stdinp", {stdio.standardCell(0)});
+    graph.define(system, "___stdoutp", {stdio.standardCell(1)});
+    graph.define(system, "___stderrp", {stdio.standardCell(2)});
     graph.define(graphics, "_CGAffineTransformIdentity", {Base + Memory::PageSize});
     graph.define(graphics, "_CGRectNull", {Base + Memory::PageSize + 24});
+}
+void Services::mountSandbox(const std::string& bundleHost, const std::string& containerHost) {
+    if (bundleHost.empty() || containerHost.empty())
+        throw Error("FS_MOUNT", "the bundle and container directories are both required");
+    files.mount("/var/mobile/Documents", containerHost, true);
+    files.mount("/var/mobile", bundleHost, false);
+}
+void Services::setEnvironment(const std::map<std::string, std::string>& values) {
+    libc.setEnvironment(values);
 }
 void Services::mapTrapPage(size_t index) const {
     if (index >= 32) throw Error("HLE_TRAP_LIMIT", "too many unimplemented imports");
@@ -254,6 +292,7 @@ void Services::invoke(const std::string& name, CpuState& state) {
     // Order matters only for diagnostics: every module reports "not mine" without
     // inventing a result, and anything unclaimed is a hard guest-visible failure.
     if (libc.invoke(name, state)) return;
+    if (stdio.invoke(name, state)) return;
     if (cxx.invoke(name, state)) return;
     if (cf.invoke(name, state, memory)) return;
     if (cg.invoke(name, state, memory)) return;

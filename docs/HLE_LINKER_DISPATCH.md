@@ -12,8 +12,9 @@ Second increment (same day): guest heap and the C runtime subset described in
 Third and fourth increments (same day): varargs formatting, the Objective-C collections
 and dispatch layer, then the C++ ABI and compiler-runtime layer in `runtime/cxx.cpp`
 (libstdc++.6 and libgcc_s.1, both bound under their real image names). Coverage is now
-**112 of 438** required imports: 103 of the report's service names plus 9 Objective-C
-class/metaclass entries. `qsort`, guest file I/O, UIKit lifecycle, EAGL rendering and
-exception unwinding deliberately remain unimplemented and are refused by name.
+**130 of 438** required imports: 121 of the report's service names plus 9 Objective-C
+class/metaclass entries. Guest file I/O and stdio are now implemented over explicit sandbox
+mounts (`runtime/fs.cpp`, `runtime/stdio.cpp`). `qsort`, UIKit lifecycle, EAGL rendering,
+audio and exception unwinding deliberately remain unimplemented and are refused by name.
 
 This is not implementation of every UIKit, Objective-C, C++ exception, EAGL, audio or networking API. Guest dependency loading, export tries/re-exports, class bootstrap, callbacks, variadic/hard-float ABI and application lifecycle remain separate requirements. Never bind missing APIs to success-returning placeholders. No game compatibility claim without actual device evidence.

@@ -242,6 +242,27 @@ bool Libc::invoke(const std::string& name, CpuState& cpu) {
     if (name == "_atoi" || name == "_atol" || name == "_atof" || name == "_strtod" ||
         name == "_strtol" || name == "_strtoul" || name == "_strtoll" || name == "_strtoull")
         return numbers(name, cpu);
+    if (name == "_getenv") {
+        const std::string key = readString(r[0]);
+        auto known = environmentCells.find(key);
+        if (known != environmentCells.end()) {
+            r[0] = known->second;
+            return true;
+        }
+        auto value = environmentValues.find(key);
+        if (value == environmentValues.end()) {
+            r[0] = 0;
+            return true;
+        }
+        // An empty variable is still present in the environment; report it as the empty
+        // string rather than null, which is what a device does.
+        const uint32_t bytes = uint32_t(value->second.size() + 1);
+        r[0] = heap.allocate(bytes, 4);
+        if (!r[0]) throw Error("LIBC_ALLOC", "could not copy a guest environment variable");
+        memory.write(r[0], value->second.c_str(), bytes);
+        environmentCells.emplace(key, r[0]);
+        return true;
+    }
     if (name == "_rand") {
         randomState = randomState * 1103515245u + 12345u;
         r[0] = (randomState >> 16) & 0x7fff;
@@ -405,6 +426,10 @@ void Libc::formatted(const std::string& name, CpuState& cpu) {
     r[0] = uint32_t(text.size());
 }
 void Libc::setLogSink(std::function<void(const std::string&)> sink) { logSink = std::move(sink); }
+void Libc::setEnvironment(const std::map<std::string, std::string>& values) {
+    environmentValues = values;
+    environmentCells.clear();
+}
 void Libc::emit(const std::string& text) const {
     if (logSink) {
         logSink(text);

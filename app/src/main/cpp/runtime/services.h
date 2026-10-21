@@ -3,8 +3,10 @@
 #include "cxx.h"
 #include "exports.h"
 #include "frameworks.h"
+#include "fs.h"
 #include "libc.h"
 #include "objc.h"
+#include "stdio.h"
 
 namespace podnative::runtime {
 // ARM code gates contain SVC + BX LR. Guest Thumb callers use BLX interworking.
@@ -12,6 +14,15 @@ namespace podnative::runtime {
 class Services final {
    public:
     explicit Services(Memory& memory);
+    // Guest file access is refused until the launcher mounts the directories that back
+    // the game. `/var/mobile` is the read-only extracted bundle, the container below it
+    // is writable.
+    void mountSandbox(const std::string& bundleHost, const std::string& containerHost);
+    void setEnvironment(const std::map<std::string, std::string>& values);
+    // Guest-visible description of the sandbox for the launch report.
+    std::string storageSummary() const { return stdio.describe(); }
+    // Flushes and closes every guest-owned file once a run stops.
+    void closeGuestFiles() { stdio.closeAll(); }
     void install(ExportGraph& graph) const;
     void dispatch(const CpuStop& stop, CpuState& state);
     uint32_t address(const std::string& symbol) const;
@@ -27,6 +38,8 @@ class Services final {
     CoreGraphics cg;
     Libc libc;
     CxxRuntime cxx;
+    FileSystem files;
+    Stdio stdio;
     ObjC objc;
     std::vector<std::string> symbols;
     std::vector<std::string> traps;

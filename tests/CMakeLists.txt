@@ -34,6 +34,8 @@ add_library(podnative_hle STATIC
     "${RUNTIME}/runtime/services.cpp"
     "${RUNTIME}/runtime/libc.cpp"
     "${RUNTIME}/runtime/cxx.cpp"
+    "${RUNTIME}/runtime/fs.cpp"
+    "${RUNTIME}/runtime/stdio.cpp"
     "${RUNTIME}/runtime/format.cpp"
     "${RUNTIME}/runtime/heap.cpp"
     "${RUNTIME}/runtime/execution.cpp"

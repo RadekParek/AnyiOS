@@ -31,6 +31,7 @@ final class GameInspector {
         final List<byte[]> splashImages = new ArrayList<>();
         boolean launchAttempt;
         String launchOutcome = "";
+        File bundleRoot, containerRoot;
     }
     private GameInspector() {}
     static byte[] bounded(InputStream in, int limit) throws IOException {
@@ -52,8 +53,19 @@ final class GameInspector {
     }
     static Result analyze(File source, String displayName, File scratch, boolean launchAttempt)
         throws IOException {
+        return analyze(source, displayName, scratch, launchAttempt, null, null);
+    }
+    /**
+     * @param bundleRoot extracted .app directory that becomes the guest's read-only /var/mobile,
+     *     or null when the import has no persistent bundle on disk.
+     * @param containerRoot writable directory that becomes the guest's /var/mobile/Documents.
+     */
+    static Result analyze(File source, String displayName, File scratch, boolean launchAttempt,
+        File bundleRoot, File containerRoot) throws IOException {
         Result result = new Result();
         result.launchAttempt = launchAttempt;
+        result.bundleRoot = bundleRoot;
+        result.containerRoot = containerRoot;
         result.title = LibraryRules.title(displayName);
         if (displayName.toLowerCase(java.util.Locale.ROOT).endsWith(".ipa"))
             result.kind = "IPA";
@@ -173,7 +185,9 @@ final class GameInspector {
             if (report.startsWith("MACHO_ENCRYPTED:"))
                 result.status = "Encrypted";
             if (result.launchAttempt) {
-                result.launchOutcome = NativeBridge.attemptLaunch(bytes);
+                result.launchOutcome = NativeBridge.attemptLaunch(bytes,
+                    result.bundleRoot == null ? "" : result.bundleRoot.getAbsolutePath(),
+                    result.containerRoot == null ? "" : result.containerRoot.getAbsolutePath());
                 report += "\n\n" + result.launchOutcome;
             }
             result.report =

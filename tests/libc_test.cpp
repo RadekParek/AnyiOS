@@ -63,6 +63,20 @@ int main() {
     Libc libc(memory);
     Call call(memory, libc);
 
+    // getenv exposes the launcher's environment as real guest strings, cached once.
+    libc.setEnvironment({{"HOME", "/var/mobile"}});
+    const char* home = "HOME";
+    memory.write(0x1500, home, std::strlen(home) + 1);
+    const uint32_t homeValue = call("_getenv", 0x1500);
+    assert(homeValue != 0 && homeValue >= 0x40000000);
+    std::vector<char> homeText(16, 0);
+    memory.read(homeValue, homeText.data(), 11);
+    assert(std::string(homeText.data()) == "/var/mobile");
+    assert(call("_getenv", 0x1500) == homeValue);
+    const char* missing = "ANYIOS_MISSING";
+    memory.write(0x1520, missing, std::strlen(missing) + 1);
+    assert(call("_getenv", 0x1520) == 0);
+
     // Guest heap: real allocation, alignment, zeroing and reuse.
     const uint32_t block = call("_malloc", 100);
     assert(block >= 0x40000000 && block % 8 == 0);

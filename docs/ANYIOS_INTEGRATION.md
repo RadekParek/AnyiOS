@@ -81,9 +81,49 @@ Converter inclusion is explicitly requested by its owner. Upstream has no root l
   float bit patterns into `r0-r3`, calls the gate, and stores the result — including a
   hidden-pointer call, so the convention is exercised by executed instructions rather
   than asserted by a host helper.
-- Coverage at the end of this increment was 72 of 438 required imports; the C++ ABI
-  increment below takes it to **112 of 438**. This is API-surface progress; it is not
+- Coverage at the end of this increment was 72 of 438 required imports; the later
+  increments below take it to **130 of 438**. This is API-surface progress; it is not
   evidence that any title launches or renders.
+
+### Guest sandbox and stdio increment (2026-10-21, fifth pass)
+
+A game that cannot open its own assets never reaches anything. The runtime previously had
+**no file system at all** — `fopen` was an unimplemented import, so asset loading could only
+ever be a trap. `runtime/fs.{h,cpp}` and `runtime/stdio.{h,cpp}` add a real, mounted guest
+file system:
+
+- **Explicit mounts only.** The launcher mounts the extracted `.app` at `/var/mobile`
+  (read-only) and a per-game `container/` at `/var/mobile/Documents` (read-write). Nothing
+  else in the host file system is reachable: unmounted paths are refused with the reason.
+- **Path validation before any host call.** Guest paths must be absolute, UTF-8-safe,
+  shorter than 4 KiB, and free of `.`/`..` components; mounts match on whole path
+  components with longest-prefix wins, so the writable Documents mount beats the read-only
+  bundle above it. A component-wise `symlink_status` walk refuses paths that resolve through
+  a symbolic link, instead of letting an extractor or the user escape the sandbox.
+- **Guest `FILE*` values are checked handles.** Each `fopen` allocates an 8-byte object in
+  the guest address space holding a magic word and a token; the host `FILE*` stays in a
+  host-side table. A forged, stale or closed `FILE*` raises `STDIO_BAD_FILE` rather than
+  reaching a host pointer. `stdin`/`stdout`/`stderr` are real streams and are exported as
+  the data symbols `___stdinp`, `___stdoutp`, `___stderrp`; writes to them go to the same
+  log sink as `printf`.
+- **Implemented stdio**: `fopen`, `fclose`, `fflush`, `fprintf`, `fread`, `fwrite`, `fseek`,
+  `ftell`, `rewind`, `feof`, `ferror`, `clearerr`, `fileno`, `fgetc`/`getc`, `fputc`/`putc`,
+  `fgets`, `fputs`, `setvbuf`, `remove`, `rename`, plus `getenv` over the launcher's
+  environment (`HOME=/var/mobile`, `TMPDIR=/var/mobile/Documents`). `fopen` reports the
+  exact refusal ("mount /var/mobile is read-only") instead of failing silently, and returns
+  null exactly as the C library would.
+- **Launch report** now carries a `GUEST_STORAGE:` line describing the mounts and the open
+  file count, so the crash screen can distinguish "no bundle mounted" from "asset missing".
+- **Boundary, stated plainly**: `.app` imports get a persistent bundle and therefore real
+  file access. An `.ipa` is inspected from its archive and is **not** persistently extracted,
+  so its launch has no mount and every file call is refused by name. Extracting IPAs into the
+  sandbox is the next vertical slice, together with `CFBundle`/`NSBundle` path APIs so a title
+  can ask where its bundle *is*.
+- **Proof**: `tests/fs_test.cpp` builds a temporary bundle/container pair, then asserts:
+  read-only resolution, write refusal with reason, longest-prefix container write, traversal
+  and symlink refusal, `fread`/`fgets`/`fseek`/`feof` semantics against real bytes, a guest
+  write that is verified on the host afterwards, formatted `fprintf` to stdout, `remove`, and
+  rejection of stale `FILE*` handles. A leaked temporary tree is removed at the end.
 
 ### C++ ABI and compiler-runtime increment (2026-10-21, fourth pass)
 
