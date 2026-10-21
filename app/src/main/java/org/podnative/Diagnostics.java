@@ -18,7 +18,7 @@ final class Diagnostics {
             LOG.delete(0, LOG.length() - 150000);
     }
     static synchronized String export() {
-        return "Framework foundations: CF bit vectors/retain/release, CG affine math. Not yet bound to guest imports.\nGraphics: embedded ANGLE/Vulkan; launch artwork presentation is not guest rendering.\nAnyiOS "
+        return "Runtime: guest heap, C runtime, checked dyld export resolution and Objective-C message dispatch are bound to guest imports. UIKit/EAGL/audio remain unimplemented and fail explicitly.\nGraphics: embedded ANGLE/Vulkan; launch artwork presentation is not guest rendering.\nAnyiOS "
             + BuildConfig.VERSION_NAME + " revision=" + BuildConfig.SOURCE_REVISION
             + "\nDevice=" + android.os.Build.MANUFACTURER + " " + android.os.Build.MODEL
             + " Android=" + android.os.Build.VERSION.RELEASE + "\n" + LOG;

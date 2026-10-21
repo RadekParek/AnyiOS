@@ -38,8 +38,12 @@ The PC artifact is a Linux CPU diagnostic build, not a desktop emulator GUI.
   coalescing, transactional graph-aware fixups, and authenticated ARM `SVC` call
   gates; launch reports required-import coverage instead of claiming resolution.
 * Guest C runtime: owned heap plus bounded string/number/math/atomic implementations
-  (48 of the reported 438 unique imports); UIKit/Objective-C and the remaining
-  frameworks stay explicit blockers rather than fabricated successes.
+  (48 of the reported 438 unique imports); UIKit and the remaining frameworks stay
+  explicit blockers rather than fabricated successes.
+* Objective-C runtime core: guest class objects, selectors, `objc_msgSend` dispatch,
+  NSObject/NSString/NSAutoreleasePool semantics, and real message dispatch tests.
+* Launches now run guest code: dyld fixups are applied, unimplemented imports bind to
+  faulting gates, and a launch reports instructions retired plus the first missing API.
 * GitHub Actions debug/tagged-release build recipes with artifacts and provenance.
 
 No inherited TouchHLE/HyperHLE renderer. No proprietary game files. No universal
@@ -59,7 +63,10 @@ Proprietary game-dependent upstream tests are explicitly skipped unless a locall
 Real upstream ANGLE libraries are mandatory build inputs; no stub mode exists.
 See [device tests](docs/DEVICE_TESTING.md) before claiming rendering success.
 
-CI debug artifacts are published only after a successful workflow and are named `AnyiOS-debug.apk`.
+CI artifacts are published only after a successful workflow. The recommended download is
+`AnyiOS.apk`: a non-debuggable release signed with the cached preview certificate, so it
+upgrades an existing install without changing the signing identity. `AnyiOS-debug.apk` is
+kept for diagnostics; being debuggable, it is the build Play Protect is most likely to warn about.
 Tagged builds produce `AnyiOS.apk`, SHA256SUMS and BUILD-INFO.txt. Without
 signing secrets the release output is explicitly unsigned and not installable.
 Public GitHub Release publication additionally requires the repository variable

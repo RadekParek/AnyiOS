@@ -169,9 +169,13 @@ int main() {
     b = dynamic();
     image = loadMachO(b.data(), b.size());
     assert(image.requiresDyld);
-    assert(attemptLaunch(b.data(), b.size()).find("DYLD_RESOLUTION_BLOCKED") != std::string::npos);
+    // Without an integrated CPU the report must still name the audit, never claim execution.
+    // A dynamic image with no bind fixups still reports the missing bootstrap, and the
+    // plain executable reports the un-integrated CPU; neither may claim execution.
+    assert(attemptLaunch(b.data(), b.size()).find("GUEST_ABI_UNIMPLEMENTED") != std::string::npos);
+    assert(attemptLaunch(b.data(), b.size()).find("DYLD_EXPORT_AUDIT") != std::string::npos);
     b = executable();
-    assert(attemptLaunch(b.data(), b.size()).find("CPU_NOT_INTEGRATED") != std::string::npos);
+    assert(attemptLaunch(b.data(), b.size()).find("GUEST_ABI_UNIMPLEMENTED") != std::string::npos);
     b = dynamic();
     put(b, 120, 4);
     fault("LOAD_DYSYMTAB", [&] { loadMachO(b.data(), b.size()); });
@@ -233,8 +237,9 @@ int main() {
     image = loadMachO(b.data(), b.size());
     assert(image.dyld.fixups.size() == 1 && image.dyld.fixups[0].symbol == "_test" &&
            image.dyld.fixups[0].ordinal == 1);
-    image.dyld.apply(*image.memory, 0,
-                     [](int, const std::string&) -> std::optional<uint32_t> { return 0x4455; });
+    image.dyld.apply(
+        *image.memory, 0,
+        [](int, const std::string&, bool) -> std::optional<uint32_t> { return 0x4455; });
     assert(image.memory->read32(0x1300) == 0x4455);
     put(b, 144, 1);
     fault("DYLD_INDIRECT_SECTION", [&] { loadMachO(b.data(), b.size()); });

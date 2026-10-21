@@ -17,13 +17,13 @@ int main() {
     memory.write32(0x1000, 0x1234);
     try {
         plan.apply(memory, 0,
-                   [](int, const std::string&) -> std::optional<uint32_t> { return {}; });
+                   [](int, const std::string&, bool) -> std::optional<uint32_t> { return {}; });
         assert(false);
     } catch (const Error& e) {
         assert(e.code == "DYLD_UNRESOLVED");
     }
     assert(memory.read32(0x1000) == 0x1234);
-    plan.apply(memory, 0, [](int n, const std::string&) -> std::optional<uint32_t> {
+    plan.apply(memory, 0, [](int n, const std::string&, bool) -> std::optional<uint32_t> {
         assert(n == 1);
         return 0x2000;
     });
@@ -34,13 +34,14 @@ int main() {
     assert(memory.read32(0x1000) == 0x2100);
     auto weak = plan;
     weak.fixups[0].weak = true;
-    weak.apply(memory, 0, [](int, const std::string&) -> std::optional<uint32_t> { return {}; });
+    weak.apply(memory, 0,
+               [](int, const std::string&, bool) -> std::optional<uint32_t> { return {}; });
     assert(memory.read32(0x1000) == 0);
     auto atomic = plan;
     atomic.fixups.push_back({0x1004, false, false, false, 1, 0, "_missing"});
     memory.write32(0x1000, 77);
     try {
-        atomic.apply(memory, 0, [](int, const std::string& name) -> std::optional<uint32_t> {
+        atomic.apply(memory, 0, [](int, const std::string& name, bool) -> std::optional<uint32_t> {
             if (name == "_test") return 999;
             return {};
         });
@@ -54,7 +55,7 @@ int main() {
     overflow.fixups[0].addend = INT64_MAX;
     try {
         overflow.apply(memory, 0,
-                       [](int, const std::string&) -> std::optional<uint32_t> { return 2; });
+                       [](int, const std::string&, bool) -> std::optional<uint32_t> { return 2; });
         assert(false);
     } catch (const Error& e) {
         assert(e.code == "DYLD_VALUE");
@@ -84,7 +85,8 @@ int main() {
     uint8_t signedBinding[] = {0x11, 0x40, 'x', 0, 0x60, 0x7f, 0x70, 0, 0x90, 0};
     auto negative = decodeDyld(signedBinding, sizeof(signedBinding), segments, false);
     assert(negative.fixups[0].addend == -1);
-    negative.apply(memory, 0, [](int, const std::string&) -> std::optional<uint32_t> { return 2; });
+    negative.apply(memory, 0,
+                   [](int, const std::string&, bool) -> std::optional<uint32_t> { return 2; });
     assert(memory.read32(0x1000) == 1);
     // Final stride/skip is not a fixup: old validation rejected valid streams.
     std::vector<DyldSegment> tiny = {{0x1000, 8, uint8_t(Read | Write)}};
