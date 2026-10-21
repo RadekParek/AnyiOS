@@ -6,4 +6,9 @@ Implement an original, session-owned export graph (two-level ordinals, explicit 
 
 HyperHLE-Reborn 5b65054c55cc33c6095f8c4b771430da5e63fbf4: MPL-2.0; reviewed src/dyld.rs module documentation and HostDylib interface as architectural research only. Its general separation of library names/aliases and function/data/class exports is useful. No implementation or renderer copied, linked or vendored. Keep independent ANGLE renderer unchanged. Official Apple format references from the earlier dyld increment still apply.
 
+Second increment (same day): guest heap and the C runtime subset described in
+`DYLD_AND_IMPORT_INCREMENT.md`. Coverage moved from 9 to 48 of 438 required imports.
+`qsort`, varargs formatting and the Objective-C/UIKit layers deliberately remain
+unimplemented.
+
 This is not implementation of every UIKit, Objective-C, C++ exception, EAGL, audio or networking API. Guest dependency loading, export tries/re-exports, class bootstrap, callbacks, variadic/hard-float ABI and application lifecycle remain separate requirements. Never bind missing APIs to success-returning placeholders. No game compatibility claim without actual device evidence.

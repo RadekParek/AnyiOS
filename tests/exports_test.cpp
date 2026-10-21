@@ -41,8 +41,7 @@ int main() {
     Memory memory;
     Services services(memory);
     const uint32_t memcpyGate = services.address("_memcpy");
-    assert(memcpyGate == 0x6f000000);
-    assert(memory.fetch32(memcpyGate) == 0xef000001);
+    assert(memory.fetch32(memcpyGate) == (0xef000000 | ((memcpyGate - 0x6f000000U) / 8 + 1)));
     assert(memory.fetch32(memcpyGate + 4) == 0xe12fff1e);
     assert(services.count() > 7);
 
@@ -65,6 +64,7 @@ int main() {
     assert(graph.resolve(executable, -2, "_memcpy") == memcpyGate);
     assert(!graph.resolve(executable, -2, "_missing"));
     assert(graph.strong(1, "_CFRelease"));
+    assert(graph.resolve(executable, -2, "_malloc") == services.address("_malloc"));
     assert(graph.hasStrong("_CFRelease") && !graph.hasStrong("_missing"));
     fault("EXPORT_IMAGE", [&] { graph.addImage("<executable>"); });
 
@@ -158,8 +158,8 @@ int main() {
     state = call(services, "_bzero", 0x3400, 8);
     memory.read(0x3400, copied.data(), 8);
     for (int i = 0; i < 8; i++) assert(copied[i] == 0);
-    fault("HLE_OVERLAP", [&] { call(services, "_memcpy", 0x3100, 0x3102, 8); });
-    fault("HLE_LIMIT", [&] { call(services, "_memset", 0x3100, 1, 32 * 1024 * 1024); });
+    fault("LIBC_OVERLAP", [&] { call(services, "_memcpy", 0x3100, 0x3102, 8); });
+    fault("LIBC_LIMIT", [&] { call(services, "_memset", 0x3100, 1, 32 * 1024 * 1024); });
 
     state = call(services, "_memcpy", 0x3500, 0x3100, 4, 0x1001);
     assert(state.registers[15] == 0x1000 && (state.cpsr & 0x20));
