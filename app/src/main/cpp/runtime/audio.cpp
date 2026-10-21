@@ -14,14 +14,12 @@ constexpr uint32_t kAudioSessionProperty_AudioCategory = 0x61746367;  // 'atcg'
 constexpr uint32_t kAudioSessionProperty_AudioRoute = 0x726F7574;     // 'rout'
 constexpr uint32_t kAudioSessionProperty_OtherAudioIsPlaying = 0x6F746872;
 constexpr uint32_t kAudioSessionProperty_PreferredHardwareSampleRate = 0x68777274;
-constexpr uint32_t kAudioSessionProperty_AudioRouteChange = 0x726F6368;
 constexpr uint32_t kAudioSessionProperty_OverrideCategoryMixWithOthers = 0x6D69786F;
 constexpr uint32_t kAudioSessionProperty_InputIsAvailable = 0x696E7074;
 // OSStatus values. 0 is noErr; these are the documented failures we can honestly produce.
 constexpr uint32_t kAudioSessionNotInitialized = 0x21696E69;  // '!ini'
 constexpr uint32_t kAudioSessionUnsupportedPropertyError = 0x70747970;
 constexpr uint32_t kAudioSessionBadPropertySizeError = 0x21737A65;
-constexpr uint32_t kAudioSessionIncompatibleCategory = 0x21636174;
 }  // namespace
 std::string AudioSession::readString(uint32_t address) const {
     return readGuestString(memory, address);
