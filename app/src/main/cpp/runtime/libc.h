@@ -21,7 +21,7 @@ class Libc final {
     uint32_t randomState = 1;
     std::string readString(uint32_t address, size_t limit = 1024 * 1024) const;
     void writeString(uint32_t address, const std::string& text, size_t capacity);
-    bool math(CpuState& cpu, const std::string& name);
+    bool math(CpuState& cpu, Memory& memory, const std::string& name);
     bool numbers(const std::string& name, CpuState& cpu);
     void zero(uint32_t address, size_t bytes);
 };

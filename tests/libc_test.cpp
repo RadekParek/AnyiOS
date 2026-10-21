@@ -6,6 +6,7 @@
 #include <iostream>
 #include <vector>
 
+#include "runtime/abi.h"
 #include "runtime/error.h"
 #include "runtime/heap.h"
 using namespace podnative::runtime;
@@ -36,25 +37,21 @@ struct Call {
             throw Error("TEST_SYMBOL", std::string("unimplemented ") + name);
         return state.registers[0];
     }
-    void doubles(double d0) {
-        uint64_t bits;
-        std::memcpy(&bits, &d0, sizeof(bits));
-        state.extensionRegisters[0] = uint32_t(bits);
-        state.extensionRegisters[1] = uint32_t(bits >> 32);
+    // iOS ARMv7 passes floating-point arguments in the core registers, so the tests
+    // place and read them there exactly as guest code does.
+    void doubles(double value) {
+        const uint64_t bits = doubleBits(value);
+        state.registers[0] = uint32_t(bits);
+        state.registers[1] = uint32_t(bits >> 32);
+    }
+    void floats(float first, float second = 0) {
+        state.registers[0] = floatBits(first);
+        state.registers[1] = floatBits(second);
     }
     double d0() const {
-        uint64_t bits =
-            uint64_t(state.extensionRegisters[0]) | uint64_t(state.extensionRegisters[1]) << 32;
-        double value;
-        std::memcpy(&value, &bits, sizeof(value));
-        return value;
+        return bitsDouble(uint64_t(state.registers[0]) | uint64_t(state.registers[1]) << 32);
     }
-    float s(size_t index) const {
-        uint32_t bits = state.extensionRegisters[index];
-        float value;
-        std::memcpy(&value, &bits, sizeof(value));
-        return value;
-    }
+    float s(size_t index) const { return bitsFloat(state.registers[index]); }
 };
 }  // namespace
 int main() {
@@ -129,16 +126,13 @@ int main() {
     call("_strtod", 0x2400, 0x2908);
     assert(call.d0() == 250.0 && memory.read32(0x2908) == 0x2405);
 
-    // Math through the VFP return registers.
+    // Math through the iOS ARMv7 core-register call boundary.
     call.state = {};
     call.doubles(0.5);
     libc.invoke("_sin", call.state);
     assert(std::abs(call.d0() - std::sin(0.5)) < 1e-12);
     call.state = {};
-    uint32_t bits;
-    const float quarter = 0.25f;
-    std::memcpy(&bits, &quarter, sizeof(bits));
-    call.state.extensionRegisters[0] = bits;
+    call.floats(0.25f);
     libc.invoke("_sinf", call.state);
     assert(std::abs(call.s(0) - std::sin(0.25f)) < 1e-6f);
 

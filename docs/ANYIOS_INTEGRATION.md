@@ -39,7 +39,7 @@ Converter inclusion is explicitly requested by its owner. Upstream has no root l
 
 - HLE linker increment: session-owned two-level export graph (image/alias/dependency ordinals plus flat/weak lookup), checked strong-definition coalescing, native-thumb export parsing, and transactional graph-aware fixup application. Production launch now reports required-implementation coverage and unresolved examples instead of a generic symbol-resolution message.
 - Twelve checked ARM SVC call gates implement bounded C memory/string operations plus the existing CoreFoundation bit-vector subset. Dispatch authenticates the gate PC, trap number, ARM mode and guest return address before invoking host code; unknown imports and forged traps remain hard failures. Real Dynarmic ARM and Thumb guest calls through these gates are included in the CPU correctness test; sanitizer service tests cover overlap, budgets, invalid returns and forged traps.
-- Guest C runtime increment: owned guest heap, bounded string/number/math/atomic services and checked dispatch, raising implemented imports from 9 to 48 of the 438 unique names in the latest device report. Host sanitizer tests cover allocator invariants, parsing, VFP float/double returns and explicit non-implementation of `qsort`/`printf`/UIKit entry points.
+- Guest C runtime increment: owned guest heap, bounded string/number/math/atomic services and checked dispatch, raising implemented imports from 9 to 48 of the 438 unique names in the latest device report. Host sanitizer tests cover allocator invariants, parsing, the float/double call boundary and explicit non-implementation of `qsort`/`printf`/UIKit entry points.
 - Architecture research of HyperHLE-Reborn (MPL-2.0) covered its general host-dylib export/interface separation only. No source or renderer was copied; the independent ANGLE renderer is unchanged.
 
 ### Execution, Objective-C and installer increment (2026-10-21)
@@ -59,8 +59,34 @@ Converter inclusion is explicitly requested by its owner. Upstream has no root l
   install. The converter keeps `REQUEST_INSTALL_PACKAGES` because installing generated APKs
   requires it; that permission is the remaining scanner-facing surface.
 
+### ABI and CoreGraphics increment (2026-10-21)
+
+- Call-boundary correction: iOS ARMv7 uses the **base** AAPCS variant. Floating-point
+  and aggregate arguments travel in the core registers `r0-r3` and then the stack, and
+  results come back in `r0-r3`; the VFP file is for arithmetic only. Apple's ARMv7 ABI
+  reference lists only VFP register preservation and prologue shape as deviations from
+  the ARMv6 rules, so the earlier implementation that read `s0`/`d0` for arguments was
+  wrong. `runtime/abi.h` now owns that marshal: a word cursor over `r0-r3` then `sp`,
+  even-register alignment for `double`, by-value aggregates of up to four words, and
+  hidden-result pointers plus stack arguments for larger aggregates such as the
+  six-float `CGAffineTransform`. `sin`/`cos`/`pow`/`fmod`/`strtod` and the `…f` variants
+  were moved onto it.
+- CoreGraphics subset: `CGAffineTransformMakeTranslation`, `CGAffineTransformTranslate`,
+  `CGAffineTransformScale`, `CGRectApplyAffineTransform`, `CGRectEqualToRect`,
+  `CGRectGetMidX`/`MidY`, `CGRectInset`, real colour-space handles with reference counts,
+  and `CACurrentMediaTime` from a monotonic clock. `_CGAffineTransformIdentity` and
+  `_CGRectNull` were already emitted as guest data and stay byte-identical.
+- Proof: `tests/coregraphics_test.cpp` covers the marshalling directly, and the CPU
+  correctness test now drives the real Dynarmic engine through an ARM guest that loads
+  float bit patterns into `r0-r3`, calls the gate, and stores the result — including a
+  hidden-pointer call, so the convention is exercised by executed instructions rather
+  than asserted by a host helper.
+- Coverage is **60 of 438** required imports. This is API-surface progress; it is not
+  evidence that any title launches or renders.
+
 ### Remaining runtime work
 
 The decoder rejection, export resolution, coalescing, checked call-gate dispatch, guest heap,
-C runtime, bounded guest execution and Objective-C core are implemented, but not all imported
-APIs are. Production Emulator still blocks while required exports lack implementations, legacy/symbol stubs have no execution path, and Darwin/Objective-C/UIKit/EAGL process bootstrap is absent alongside dependency loading, re-exports/general export tries, variadic/hard-float ABI details and application lifecycle. **A successful APK build or linker test is not game execution or compatibility evidence.** Converter's independent experimental runtime and API implementations remain in its own pipeline; they are not silently presented as a complete implementation of the independent ANGLE emulator. Compiled asset catalogs, procedural launch scenes and complete game rendering remain unproven here. A separately installed converter's old private Android sandbox is not automatically readable; reimport its original IPAs into the new shared catalog.
+C runtime, base-ABI call boundary, CoreGraphics geometry, bounded guest execution and
+Objective-C core are implemented, but not all imported
+APIs are. Production Emulator still blocks while required exports lack implementations, legacy/symbol stubs have no execution path, and Darwin/Objective-C/UIKit/EAGL process bootstrap is absent alongside dependency loading, re-exports/general export tries, variadic arguments and application lifecycle. **A successful APK build or linker test is not game execution or compatibility evidence.** Converter's independent experimental runtime and API implementations remain in its own pipeline; they are not silently presented as a complete implementation of the independent ANGLE emulator. Compiled asset catalogs, procedural launch scenes and complete game rendering remain unproven here. A separately installed converter's old private Android sandbox is not automatically readable; reimport its original IPAs into the new shared catalog.

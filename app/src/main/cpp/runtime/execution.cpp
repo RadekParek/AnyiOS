@@ -43,6 +43,11 @@ GuestRun runGuest(LoadedImage& image, Services& services, const ExportGraph& gra
         std::chrono::steady_clock::now() + std::chrono::milliseconds(uint64_t(seconds * 1000));
     constexpr uint64_t Slice = 200000;
     while (run.instructions < instructionBudget) {
+        if (std::chrono::steady_clock::now() >= deadline) {
+            run.stop = "BUDGET";
+            run.detail = "wall-clock slice reached";
+            return run;
+        }
         const uint64_t slice = std::min(Slice, instructionBudget - run.instructions);
         CpuStop stop = cpu.run(slice);
         run.instructions += stop.attemptedInstructions;

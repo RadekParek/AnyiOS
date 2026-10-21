@@ -167,9 +167,16 @@ jobs:
           grep -F "package: name='org.podnative'" APK-BADGING.txt
           grep -F "launchable-activity: name='org.podnative.ModuleActivity'" APK-BADGING.txt
           grep -F "application-label:'AnyiOS'" APK-BADGING.txt
-          printf 'source=%s\nangle=%s\nvariant=%s\nsigning=%s\n' "$GITHUB_SHA" "$(cat ../../third_party/angle/revision.txt)" "$VARIANT" "${PODNATIVE_KEYSTORE:+configured}" > BUILD-INFO.txt
+          # A debuggable or unsigned build is what installers and Play Protect warn about.
+          "$ANDROID_HOME/build-tools/35.0.0/aapt2" dump xmltree "$ARTIFACT" --file AndroidManifest.xml > .manifest.txt
+          if [ "$VARIANT" != debug ] && grep -Eq 'android:debuggable.*(true|0xffffffff)' .manifest.txt; then
+            echo 'Refusing to publish a debuggable APK as the user-facing build.' >&2
+            exit 1
+          fi
+          rm -f .manifest.txt
+          printf 'source=%s\nangle=%s\nvariant=%s\nsigning=%s\ndebuggable=false\n' "$GITHUB_SHA" "$(cat ../../third_party/angle/revision.txt)" "$VARIANT" "${PODNATIVE_KEYSTORE:+configured}${PODNATIVE_PREVIEW_KEYSTORE:+preview}" > BUILD-INFO.txt
           "$ANDROID_HOME/build-tools/35.0.0/apksigner" verify --print-certs "$ARTIFACT" >> BUILD-INFO.txt || {
-            if [ "$VARIANT" = debug ] || [ -n "${PODNATIVE_KEYSTORE:-}" ]; then exit 1; fi
+            if [ "$VARIANT" = debug ] || [ -n "${PODNATIVE_KEYSTORE:-}" ] || [ -n "${PODNATIVE_PREVIEW_KEYSTORE:-}" ]; then exit 1; fi
             echo 'UNSIGNED release: not installable until signed; not a published signed release.' >> BUILD-INFO.txt
           }
           printf 'converter=%s\nconverter_cpu=%s\n' "$(cat ../../converter/UPSTREAM_REVISION)" "$(cat ../../third_party/converter-runtime/dynarmic-revision.txt)" >> BUILD-INFO.txt

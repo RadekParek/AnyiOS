@@ -30,12 +30,14 @@ target_link_libraries(podnative_cpu PRIVATE dynarmic)
 target_compile_options(podnative_cpu PRIVATE -Wall -Wextra -Werror)
 add_library(podnative_hle STATIC
     "${RUNTIME}/runtime/exports.cpp"
+    "${RUNTIME}/runtime/dyld.cpp"
     "${RUNTIME}/runtime/services.cpp"
     "${RUNTIME}/runtime/libc.cpp"
     "${RUNTIME}/runtime/heap.cpp"
     "${RUNTIME}/runtime/execution.cpp"
     "${RUNTIME}/runtime/objc.cpp"
-    "${RUNTIME}/runtime/frameworks.cpp")
+    "${RUNTIME}/runtime/frameworks.cpp"
+    "${RUNTIME}/runtime/coregraphics.cpp")
 target_include_directories(podnative_hle PUBLIC "${RUNTIME}")
 target_link_libraries(podnative_hle PUBLIC podnative_cpu)
 target_compile_options(podnative_hle PRIVATE -Wall -Wextra -Werror)
