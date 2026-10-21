@@ -71,6 +71,20 @@ Services::Services(Memory& m)
           "_CFBitVectorSetBitAtIndex",
           "_CFRetain",
           "_CFRelease",
+          // CoreGraphics geometry and colour spaces, plus QuartzCore media time.
+          "_CGAffineTransformMakeTranslation",
+          "_CGAffineTransformTranslate",
+          "_CGAffineTransformScale",
+          "_CGRectApplyAffineTransform",
+          "_CGRectEqualToRect",
+          "_CGRectGetMidX",
+          "_CGRectGetMidY",
+          "_CGRectInset",
+          "_CGColorSpaceCreateDeviceRGB",
+          "_CGColorSpaceCreateDeviceGray",
+          "_CGColorSpaceRetain",
+          "_CGColorSpaceRelease",
+          "_CACurrentMediaTime",
       } {
     std::vector<uint8_t> code(Memory::PageSize);
     auto put = [&](size_t offset, uint32_t word) {
@@ -177,6 +191,7 @@ void Services::invoke(const std::string& name, CpuState& state) {
     // inventing a result, and anything unclaimed is a hard guest-visible failure.
     if (libc.invoke(name, state)) return;
     if (cf.invoke(name, state, memory)) return;
+    if (cg.invoke(name, state, memory)) return;
     throw Error("HLE_SYMBOL", "service has no implementation: " + name);
 }
 }  // namespace podnative::runtime

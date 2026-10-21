@@ -9,37 +9,12 @@
 #include <cstring>
 #include <ctime>
 
+#include "abi.h"
 #include "error.h"
 
 namespace podnative::runtime {
 namespace {
 constexpr size_t CopyLimit = 16 * 1024 * 1024;
-double bitsDouble(uint64_t bits) {
-    double value;
-    std::memcpy(&value, &bits, sizeof(value));
-    return value;
-}
-double getD(const CpuState& cpu, size_t index) {
-    return bitsDouble(uint64_t(cpu.extensionRegisters[index * 2]) |
-                      uint64_t(cpu.extensionRegisters[index * 2 + 1]) << 32);
-}
-void setD0(CpuState& cpu, double value) {
-    uint64_t bits;
-    std::memcpy(&bits, &value, sizeof(bits));
-    cpu.extensionRegisters[0] = uint32_t(bits);
-    cpu.extensionRegisters[1] = uint32_t(bits >> 32);
-}
-float getS(const CpuState& cpu, size_t index) {
-    const uint32_t bits = cpu.extensionRegisters[index];
-    float value;
-    std::memcpy(&value, &bits, sizeof(value));
-    return value;
-}
-void setS0(CpuState& cpu, float value) {
-    uint32_t bits;
-    std::memcpy(&bits, &value, sizeof(bits));
-    cpu.extensionRegisters[0] = bits;
-}
 }  // namespace
 std::string Libc::readString(uint32_t address, size_t limit) const {
     std::string text;
@@ -282,7 +257,7 @@ bool Libc::invoke(const std::string& name, CpuState& cpu) {
         r[0] = old;
         return true;
     }
-    return math(cpu, name);
+    return math(cpu, memory, name);
 }
 namespace {
 // Shared bounded integer parser: returns the number of bytes consumed.
@@ -331,7 +306,7 @@ bool Libc::numbers(const std::string& name, CpuState& cpu) {
         char* end = nullptr;
         const double value = std::strtod(text.c_str(), &end);
         if (name == "_strtod" && r[1]) memory.write32(r[1], r[0] + uint32_t(end - text.c_str()));
-        setD0(cpu, value);
+        resultF64(cpu, value);
         return true;
     }
     const int base =
@@ -364,49 +339,40 @@ bool Libc::numbers(const std::string& name, CpuState& cpu) {
     r[0] = uint32_t(signedValue);
     return true;
 }
-bool Libc::math(CpuState& cpu, const std::string& name) {
-    if (name == "_sin") {
-        setD0(cpu, std::sin(getD(cpu, 0)));
+bool Libc::math(CpuState& cpu, Memory& memory, const std::string& name) {
+    // iOS ARMv7 marshals floating-point arguments in the core registers, so these
+    // entry points read r0-r3 and return in r0/r0-r1 rather than the VFP file.
+    Arguments args(cpu, memory);
+    if (name == "_sin" || name == "_cos") {
+        const double value = args.f64();
+        resultF64(cpu, name == "_sin" ? std::sin(value) : std::cos(value));
         return true;
     }
-    if (name == "_cos") {
-        setD0(cpu, std::cos(getD(cpu, 0)));
-        return true;
-    }
-    if (name == "_pow") {
-        setD0(cpu, std::pow(getD(cpu, 0), getD(cpu, 1)));
-        return true;
-    }
-    if (name == "_fmod") {
-        setD0(cpu, std::fmod(getD(cpu, 0), getD(cpu, 1)));
+    if (name == "_pow" || name == "_fmod") {
+        const double first = args.f64(), second = args.f64();
+        resultF64(cpu, name == "_pow" ? std::pow(first, second) : std::fmod(first, second));
         return true;
     }
     if (name == "_powf") {
-        setS0(cpu, std::pow(getS(cpu, 0), getS(cpu, 1)));
+        const float first = args.f32(), second = args.f32();
+        resultF32(cpu, std::pow(first, second));
         return true;
     }
-    if (name == "_sinf") {
-        setS0(cpu, std::sin(getS(cpu, 0)));
-        return true;
-    }
-    if (name == "_cosf") {
-        setS0(cpu, std::cos(getS(cpu, 0)));
-        return true;
-    }
-    if (name == "_tanf") {
-        setS0(cpu, std::tan(getS(cpu, 0)));
-        return true;
-    }
-    if (name == "_acosf") {
-        setS0(cpu, std::acos(getS(cpu, 0)));
-        return true;
-    }
-    if (name == "_atanf") {
-        setS0(cpu, std::atan(getS(cpu, 0)));
+    if (name == "_sinf" || name == "_cosf" || name == "_tanf" || name == "_acosf" ||
+        name == "_atanf") {
+        const float value = args.f32();
+        float result = 0;
+        if (name == "_sinf") result = std::sin(value);
+        if (name == "_cosf") result = std::cos(value);
+        if (name == "_tanf") result = std::tan(value);
+        if (name == "_acosf") result = std::acos(value);
+        if (name == "_atanf") result = std::atan(value);
+        resultF32(cpu, result);
         return true;
     }
     if (name == "_atan2f") {
-        setS0(cpu, std::atan2(getS(cpu, 0), getS(cpu, 1)));
+        const float first = args.f32(), second = args.f32();
+        resultF32(cpu, std::atan2(first, second));
         return true;
     }
     return false;

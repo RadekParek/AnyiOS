@@ -37,9 +37,10 @@ The PC artifact is a Linux CPU diagnostic build, not a desktop emulator GUI.
 * HLE linker core: session-owned two-level export graph, deterministic strong/weak
   coalescing, transactional graph-aware fixups, and authenticated ARM `SVC` call
   gates; launch reports required-import coverage instead of claiming resolution.
-* Guest C runtime: owned heap plus bounded string/number/math/atomic implementations
-  (48 of the reported 438 unique imports); UIKit and the remaining frameworks stay
-  explicit blockers rather than fabricated successes.
+* Guest C runtime: owned heap plus bounded string/number/math/atomic implementations on
+  the documented iOS ARMv7 base-ABI call boundary, CoreGraphics geometry, media time and
+  colour-space lifetime (60 of the reported 438 unique imports); UIKit and the remaining
+  frameworks stay explicit blockers rather than fabricated successes.
 * Objective-C runtime core: guest class objects, selectors, `objc_msgSend` dispatch,
   NSObject/NSString/NSAutoreleasePool semantics, and real message dispatch tests.
 * Launches now run guest code: dyld fixups are applied, unimplemented imports bind to

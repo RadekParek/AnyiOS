@@ -1,4 +1,5 @@
 #pragma once
+#include "coregraphics.h"
 #include "exports.h"
 #include "frameworks.h"
 #include "libc.h"
@@ -22,6 +23,7 @@ class Services final {
    private:
     Memory& memory;
     CoreFoundation cf;
+    CoreGraphics cg;
     Libc libc;
     ObjC objc;
     std::vector<std::string> symbols;
