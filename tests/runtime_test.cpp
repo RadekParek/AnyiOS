@@ -169,7 +169,7 @@ int main() {
     b = dynamic();
     image = loadMachO(b.data(), b.size());
     assert(image.requiresDyld);
-    assert(attemptLaunch(b.data(), b.size()).find("DYLD_NOT_IMPLEMENTED") != std::string::npos);
+    assert(attemptLaunch(b.data(), b.size()).find("DYLD_RESOLUTION_BLOCKED") != std::string::npos);
     b = executable();
     assert(attemptLaunch(b.data(), b.size()).find("CPU_NOT_INTEGRATED") != std::string::npos);
     b = dynamic();
@@ -195,6 +195,49 @@ int main() {
     put(b, 184, 0);
     put(b, 188, 0);  // malformed command chain
     assert(attemptLaunch(b.data(), b.size()).find("LAUNCH_BLOCKED:") == 0);
+    // Legacy indirect pointers (LC_DYSYMTAB), without any LC_DYLD_INFO stream.
+    b = executable();
+    put(b, 16, 5);
+    put(b, 20, 284);
+    put(b, 32, 124);
+    put(b, 68, 7);
+    put(b, 72, 7);
+    put(b, 76, 1);
+    std::fill(b.begin() + 84, b.begin() + 312, 0);
+    put(b, 116, 0x1300);
+    put(b, 120, 4);
+    put(b, 124, 0x300);
+    put(b, 140, 6);
+    put(b, 152, 0x80000028);
+    put(b, 156, 24);
+    put(b, 160, 0x200);
+    put(b, 176, 2);
+    put(b, 180, 24);
+    put(b, 184, 0x400);
+    put(b, 188, 1);
+    put(b, 192, 0x420);
+    put(b, 196, 7);
+    put(b, 200, 0xb);
+    put(b, 204, 80);
+    put(b, 228, 1);
+    put(b, 256, 0x430);
+    put(b, 260, 1);
+    put(b, 280, 0xc);
+    put(b, 284, 32);
+    put(b, 288, 24);
+    std::memcpy(b.data() + 304, "libX", 5);
+    put(b, 0x400, 1);
+    b[0x404] = 1;
+    b[0x407] = 1;
+    std::memcpy(b.data() + 0x421, "_test", 6);
+    image = loadMachO(b.data(), b.size());
+    assert(image.dyld.fixups.size() == 1 && image.dyld.fixups[0].symbol == "_test" &&
+           image.dyld.fixups[0].ordinal == 1);
+    image.dyld.apply(*image.memory, 0,
+                     [](int, const std::string&) -> std::optional<uint32_t> { return 0x4455; });
+    assert(image.memory->read32(0x1300) == 0x4455);
+    put(b, 144, 1);
+    fault("DYLD_INDIRECT_SECTION", [&] { loadMachO(b.data(), b.size()); });
     // Mutate valid headers and command bytes with a low allocation budget. Never execute fuzz data.
     std::mt19937 random(9032);
     for (int i = 0; i < 10000; i++) {

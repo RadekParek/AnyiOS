@@ -1,0 +1,436 @@
+import json
+import struct
+import tempfile
+import unittest
+from pathlib import Path
+from unittest.mock import patch
+from radek.pipeline import Pipeline
+from radek.analysis import _macho_import_ordinal
+from radek import pipeline as pipeline_module
+from .fixtures import ipa, macho, fat
+
+
+class PipelineTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.root = Path(self.tmp.name)
+
+    def run_fixture(self, exe=None, **kwargs):
+        source = ipa(self.root / "input.ipa", exe)
+        return Pipeline(self.root / "job").run(source, True, **kwargs)
+
+    def test_api_generation_source_architecture_matches_requested_abi(self):
+        mach_report = {"slices": [
+            {"architecture": "arm64"},
+            {"architecture": "armv7s"},
+            {"architecture": "armv6"},
+        ]}
+        self.assertEqual("arm64", pipeline_module._source_architecture_for_target(mach_report, "auto"))
+        self.assertEqual("armv7s", pipeline_module._source_architecture_for_target(mach_report, "armeabi-v7a"))
+        self.assertIsNone(pipeline_module._source_architecture_for_target(mach_report, "x86_64"))
+
+    def test_synthetic_arm64_analysis_is_partial_not_ready(self):
+        report = self.run_fixture(analyze_only=True)
+        self.assertEqual(report["state"], "PARTIAL")
+        self.assertEqual(report["staticRecompilationAssessment"]["backend"], "preserved-arm64")
+        self.assertEqual(report["llvmLift"]["status"], "ENTRY_SUBSET_ONLY")
+        self.assertEqual(report["llvmLift"]["completeGameConversion"], False)
+        self.assertTrue((self.root / "job/leaf-experiment.ll").is_file())
+        self.assertTrue((self.root / "job/recompiled-entry.c").is_file())
+        self.assertTrue((self.root / "job/recompiled-entry.bin").is_file())
+        self.assertTrue((self.root / "job/librecompiled-entry.so").is_file())
+        self.assertEqual(report["nativeCodeArtifact"]["status"], "STANDALONE_ENTRY_FUNCTION_ONLY")
+        self.assertFalse(report["nativeCodeArtifact"]["linkedIntoGame"])
+        self.assertFalse(report["nativeCodeArtifact"]["apkProduced"])
+        self.assertGreater(report["portProgress"]["percent"], 0)
+        self.assertEqual(report["androidLink"]["status"], "VERIFIED_ANDROID_SHARED_LIBRARY")
+        self.assertTrue(report["androidLink"]["architectureVerified"])
+        self.assertTrue(report["androidLink"]["dependenciesVerified"])
+        self.assertTrue(report["androidLink"]["exportsVerified"])
+        self.assertTrue(report["androidLink"]["allVerificationsPassed"])
+        self.assertEqual(report["androidLink"]["dynamicDependencies"], [])
+        self.assertTrue(report["portProgress"]["androidLinkVerified"])
+        self.assertTrue(report["portProgress"]["architectureVerified"])
+        self.assertTrue(report["portProgress"]["dependenciesVerified"])
+        self.assertTrue(report["portProgress"]["exportsVerified"])
+        self.assertEqual(report["portProgress"]["percent"], report["androidLink"]["androidLinkedTextPercent"])
+        self.assertEqual(report["portProgress"]["recompiledFunctions"], 1)
+        self.assertEqual(report["portProgress"]["recompiledTextBytes"], 8)
+        self.assertEqual(
+            report["portProgress"]["percent"],
+            round(100 * report["portProgress"]["recompiledTextBytes"] / report["portProgress"]["totalTextBytes"], 6),
+        )
+        self.assertEqual(report["apiImplementationGeneration"]["generatedApiReplacements"], 0)
+        self.assertEqual(report["conversionProgress"]["status"], "NOT_BUILT")
+        self.assertEqual(report["conversionProgress"]["percent"], 0)
+        self.assertFalse(report["staticRecompilationAssessment"]["completeGameConversion"])
+        self.assertEqual(report["icon"]["status"], "SUPPORTED")
+        self.assertFalse(list((self.root / "job").glob("job-*")))
+        self.assertFalse((self.root / "job/input.apk").exists())
+        self.assertEqual(json.loads((self.root / "job/report.json").read_text())["state"], "PARTIAL")
+
+    def test_reachable_time_api_emits_real_source_but_is_not_linked(self):
+        original = pipeline_module.reconstruct
+
+        def mark_time_api_reachable(*args, **kwargs):
+            result = original(*args, **kwargs)
+            for image in result.get("images", []):
+                for slice_data in image.get("slices", []):
+                    apis = slice_data.get("apis") or {}
+                    entry_callers = [
+                        function.get("name")
+                        for function in slice_data.get("functions", [])
+                        if function.get("address") == slice_data.get("entryPoint")
+                    ]
+                    apis.setdefault("used", []).append(
+                        {
+                            "name": "_CFAbsoluteTimeGetCurrent",
+                            "framework": "CoreFoundation",
+                            "area": "foundation",
+                            "feasibility": "compatibility",
+                            "callers": entry_callers,
+                        }
+                    )
+                    apis["entryReachability"] = {
+                        **(apis.get("entryReachability") or {}),
+                        "imports": [{"name": "_CFAbsoluteTimeGetCurrent"}],
+                    }
+                    apis["usedImportCount"] = apis.get("usedImportCount", 0) + 1
+                    apis.setdefault("summary", {})["compatibility"] = apis.get("summary", {}).get("compatibility", 0) + 1
+                    apis.setdefault("byFeasibility", {}).setdefault("compatibility", []).append(
+                        "_CFAbsoluteTimeGetCurrent"
+                    )
+            return result
+
+        with patch.object(pipeline_module, "reconstruct", side_effect=mark_time_api_reachable):
+            report = self.run_fixture(
+                macho(imports=["_CFAbsoluteTimeGetCurrent"]),
+                analyze_only=True,
+            )
+
+        api_generation = report["apiImplementationGeneration"]
+        self.assertEqual(api_generation["status"], "IMPLEMENTATIONS_GENERATED_NOT_LINKED")
+        self.assertEqual(api_generation["generatedApiReplacements"], 1)
+        self.assertEqual(api_generation["linkedApiReplacements"], 0)
+        self.assertTrue(api_generation["codeGenerated"])
+        self.assertFalse(api_generation["replacements"][0]["linkedIntoGame"])
+        self.assertTrue((self.root / "job/api-replacements/api-replacements.cpp").is_file())
+        generated = (self.root / "job/api-replacements/api-replacements.cpp").read_text()
+        self.assertIn("#define RADEK_API_CFAbsoluteTimeGetCurrent 1", generated)
+
+    def test_unused_framework_dependency_needs_no_stub(self):
+        result = self.run_fixture(
+            macho(
+                imports=["_UIApplicationMain"],
+                dependencies=["/System/Library/Frameworks/UIKit.framework/UIKit"],
+            ),
+            analyze_only=True,
+        )
+        self.assertEqual(result["state"], "PARTIAL")
+        edge = result["dependencies"]["edges"][0]
+        self.assertEqual(edge["classification"], "candidate")
+        self.assertEqual(edge["status"], "candidate")
+        self.assertEqual(edge["standaloneEntryRequirement"], "not-required-by-standalone-entry")
+        self.assertIn("does not implement the linked framework", edge["standaloneEntryReason"])
+        self.assertIn("not adapted", edge["reason"])
+        self.assertEqual(result["staticRecompilationAssessment"]["backend"], "preserved-arm64")
+
+    def test_reachable_framework_call_remains_blocked(self):
+        result = self.run_fixture(
+            macho(
+                code=struct.pack("<II", 0x94000000, 0xD65F03C0),
+                imports=["_UIApplicationMain"],
+                dependencies=["/System/Library/Frameworks/UIKit.framework/UIKit"],
+            ),
+            analyze_only=True,
+        )
+        self.assertEqual(result["state"], "BLOCKED")
+
+    def test_encryption_is_never_bypassed(self):
+        result = self.run_fixture(macho(encrypted=True), analyze_only=True)
+        self.assertEqual(result["state"], "BLOCKED")
+        self.assertIn("prohibited", result["blockers"][0])
+
+    def test_arm64e_always_blocked(self):
+        self.assertEqual(self.run_fixture(macho(subtype=2), analyze_only=True)["state"], "BLOCKED")
+
+    def test_unsafe_instruction_blocked(self):
+        result = self.run_fixture(macho(code=struct.pack("<II", 0xD4000001, 0xD65F03C0)), analyze_only=True)
+        self.assertEqual(result["state"], "BLOCKED")
+        self.assertIn("not in the proven subset", result["blockers"][0])
+
+    def test_relocation_blocked(self):
+        self.assertEqual(self.run_fixture(macho(reloc=True), analyze_only=True)["state"], "BLOCKED")
+
+    def test_reconstruction_report_is_written(self):
+        result = self.run_fixture(
+            macho(
+                imports=["_UIApplicationMain"],
+                dependencies=["/System/Library/Frameworks/UIKit.framework/UIKit"],
+            ),
+            analyze_only=True,
+        )
+        job = self.root / "job"
+        self.assertTrue((job / "reconstruction.json").is_file())
+        self.assertTrue((job / "reconstruction.md").is_file())
+        self.assertEqual(result["reconstruction"]["status"], "ok")
+        summary = result["reconstruction"]["summary"]
+        self.assertEqual(summary["architectures"], ["arm64"])
+        self.assertGreaterEqual(summary["functionCount"], 1)
+        self.assertGreater(summary["coverage"], 0)
+        markdown_text = (job / "reconstruction.md").read_text()
+        self.assertIn("IPA reconstruction report", markdown_text)
+        self.assertIn("Reconstructed coverage", markdown_text)
+
+    def test_linked_but_unused_framework_is_not_reported_blocked(self):
+        result = self.run_fixture(
+            macho(
+                imports=["_UIApplicationMain"],
+                dependencies=["/System/Library/Frameworks/UIKit.framework/UIKit"],
+            ),
+            analyze_only=True,
+        )
+        states = {c["component"]: c["status"] for c in result["capabilities"]}
+        # The import is linked but nothing in the reconstructed code reaches it.
+        self.assertEqual(states["UIKit/CoreGraphics"], "SUPPORTED")
+        self.assertEqual(states["Metal"], "SUPPORTED")
+        self.assertIn("no reachable API use", " ".join(c["detail"] for c in result["capabilities"]))
+        self.assertIn("No complete iOS-to-Android game converter", " ".join(result["blockers"]))
+        edge = result["dependencies"]["edges"][0]
+        self.assertEqual(edge["classification"], "candidate")
+        self.assertEqual(edge["standaloneEntryRequirement"], "not-required-by-standalone-entry")
+
+    def test_icon_is_recovered_from_assets_car(self):
+        from .test_icons import catalog_bytes
+
+        source = ipa(
+            self.root / "input.ipa",
+            icon=False,
+            extra={"Payload/Fixture.app/Assets.car": catalog_bytes()},
+        )
+        result = Pipeline(self.root / "job").run(source, True, analyze_only=True)
+        self.assertEqual(result["icon"]["status"], "SUPPORTED")
+        self.assertEqual(result["icon"]["kind"], "assets.car")
+        self.assertEqual(result["icon"]["decoder"], "assetcatalog+pngcodec")
+        self.assertTrue((self.root / "job/icon.png").is_file())
+
+    def test_authorization_required(self):
+        result = Pipeline(self.root / "job").run(ipa(self.root / "input.ipa"), False)
+        self.assertEqual(result["state"], "FAILED")
+        self.assertIn("authorization", result["error"]["message"])
+
+    def test_convert_refuses_restricted_leaf_apk(self):
+        result = self.run_fixture()
+        self.assertEqual(result["state"], "BLOCKED")
+        self.assertEqual(result["conversionProgress"]["status"], "NOT_BUILT")
+        self.assertEqual(result["llvmLift"]["status"], "ENTRY_SUBSET_ONLY")
+        self.assertGreater(result["portProgress"]["percent"], 0)
+        self.assertEqual(result["androidLink"]["status"], "VERIFIED_ANDROID_SHARED_LIBRARY")
+        self.assertTrue(result["androidLink"]["architectureVerified"])
+        self.assertTrue(result["androidLink"]["dependenciesVerified"])
+        self.assertTrue(result["androidLink"]["exportsVerified"])
+        self.assertTrue(result["portProgress"]["androidLinkVerified"])
+        self.assertTrue(result["staticRecompilationAssessment"]["nativeCodeWritten"])
+        self.assertFalse(result["staticRecompilationAssessment"]["nativeCodeLinkedIntoGame"])
+        self.assertFalse(result["staticRecompilationAssessment"]["apkProduced"])
+        self.assertEqual(result["apiImplementationGeneration"]["generatedApiReplacements"], 0)
+        self.assertFalse(result["apiImplementationGeneration"]["codeGenerated"])
+        # Convert never emits a game APK. The only package that may exist is the
+        # labelled experimental shell, and only if it passes its own contract.
+        from radek.apk import validate_experimental_shell
+
+        for apk in (self.root / "job").glob("*.apk"):
+            self.assertEqual(apk.name, "experimental-shell.apk")
+            self.assertEqual(validate_experimental_shell(apk)["status"], "VALID")
+            self.assertEqual(result["experimentalShell"]["status"], "BUILT_NOT_A_GAME")
+
+    def test_embedded_framework_graph(self):
+        main = macho(dependencies=["@executable_path/Frameworks/Embedded.framework/Embedded"])
+        source = ipa(
+            self.root / "input.ipa",
+            main,
+            extra={"Payload/Fixture.app/Frameworks/Embedded.framework/Embedded": macho()},
+        )
+        result = Pipeline(self.root / "job").run(source, True, True)
+        self.assertEqual(result["state"], "BLOCKED")
+        edge = result["dependencies"]["edges"][0]
+        self.assertEqual(edge["resolvedBundlePath"], "Frameworks/Embedded.framework/Embedded")
+        self.assertEqual("no-execution-path-yet", edge["status"])
+        self.assertEqual("no-execution-path-yet", edge["classification"])
+        self.assertEqual(0, edge["evidence"]["recompiledBytesLinked"])
+        self.assertFalse(edge["evidence"]["runtimeBackingClaimed"])
+
+    def test_nlist_import_ordinal_is_decoded_from_n_desc(self):
+        self.assertEqual(2, _macho_import_ordinal({"description": 0x0200}))
+        self.assertEqual(3, _macho_import_ordinal({"ordinal": "3"}))
+        self.assertIsNone(_macho_import_ordinal({"name": "_CFRelease"}))
+
+    def test_dependency_edges_include_ordinal_scoped_import_evidence(self):
+        dependency = "/System/Library/Frameworks/CoreFoundation.framework/CoreFoundation"
+        bind = b"\x11\x40_CFRelease\x00\x70\x00\x90\x00"
+        bind_command = struct.pack(
+            "<12I", 0x80000022, 48, 0, 0, 0x2000, len(bind), 0, 0, 0, 0, 0, 0
+        )
+        bound = self.run_fixture(
+            macho(dependencies=[dependency], extras=[bind_command], blobs={0x2000: bind}),
+            analyze_only=True,
+        )
+        edge = bound["dependencies"]["edges"][0]
+        self.assertEqual("compatibility", edge["status"])
+        self.assertEqual(1, edge["dylibOrdinal"])
+        self.assertEqual("COMPLETE", edge["evidence"]["associationStatus"])
+        self.assertEqual(1, edge["evidence"]["observedImportCount"])
+        self.assertEqual(1, edge["evidence"]["hostTestedImplementations"])
+        self.assertFalse(edge["evidence"]["runtimeBackingClaimed"])
+        self.assertEqual(0, edge["evidence"]["linkedGameCallCount"])
+        self.assertFalse(edge["evidence"]["runtimeCallsObserved"])
+        self.assertEqual(0, edge["evidence"]["recompiledBytesLinked"])
+
+        nlist_source = ipa(
+            self.root / "nlist-import.ipa",
+            macho(dependencies=[dependency], imports=("_CFRelease",)),
+        )
+        nlist_report = Pipeline(self.root / "job-nlist-import").run(nlist_source, True, analyze_only=True)
+        nlist_edge = nlist_report["dependencies"]["edges"][0]
+        self.assertEqual("COMPLETE", nlist_edge["evidence"]["associationStatus"])
+        self.assertEqual(1, nlist_edge["evidence"]["observedImportCount"])
+        self.assertEqual(1, nlist_edge["evidence"]["hostTestedImplementations"])
+        self.assertEqual(0, nlist_edge["evidence"]["recompiledBytesLinked"])
+
+    def test_damaged_bind_stream_is_analyzed_but_remains_blocked(self):
+        bind = b"\x40_symbol\x00\x70" + b"\xff" * 9 + b"\x01\x80\x01\x00"
+        command = struct.pack("<12I", 0x80000022, 48, 0, 0, 0x2000, len(bind), 0, 0, 0, 0, 0, 0)
+        result = self.run_fixture(macho(extras=[command], blobs={0x2000: bind}), analyze_only=True)
+        self.assertEqual(result["state"], "BLOCKED")
+        slice_data = result["machO"]["slices"][0]
+        self.assertFalse(slice_data["bindDecodingComplete"])
+        self.assertTrue(any("bind table is incomplete" in item for item in result["blockers"]))
+
+    def test_unknown_loader_command_blocked(self):
+        result = self.run_fixture(macho(extras=[struct.pack("<II", 0x777, 8)]), analyze_only=True)
+        self.assertEqual(result["state"], "BLOCKED")
+
+    def test_fat_selects_safe_arm64(self):
+        result = self.run_fixture(fat([macho(cpu=12, subtype=9), macho()]), analyze_only=True)
+        self.assertEqual(result["selectedArchitecture"], "arm64")
+        self.assertEqual(result["targetAbi"], "arm64-v8a")
+
+    def test_armv6_and_thumb_plans_target_32bit_armv7(self):
+        arm_mode = self.run_fixture(macho(cpu=12, subtype=6), analyze_only=True)
+        self.assertEqual(arm_mode["state"], "PARTIAL")
+        self.assertEqual(arm_mode["selectedArchitecture"], "armv6")
+        self.assertEqual(arm_mode["staticRecompilationAssessment"]["backend"], "offline-armv6-to-armv7")
+        self.assertEqual(arm_mode["staticRecompilationAssessment"]["targetAbi"], "armeabi-v7a")
+        self.assertIn(
+            'target triple = "armv7-unknown-linux-androideabi"',
+            (self.root / "job/leaf-experiment.ll").read_text(),
+        )
+
+        thumb_source = ipa(
+            self.root / "thumb.ipa",
+            macho(struct.pack("<HH", 0x202A, 0x4770), cpu=12, subtype=6, thumb=True),
+        )
+        thumb_mode = Pipeline(self.root / "job-thumb").run(thumb_source, True, analyze_only=True)
+        self.assertEqual(thumb_mode["state"], "PARTIAL")
+        self.assertEqual(thumb_mode["selectedArchitecture"], "armv6")
+        self.assertEqual(thumb_mode["staticRecompilationAssessment"]["loweredBytesInMemory"], 8)
+        self.assertEqual(thumb_mode["staticRecompilationAssessment"]["targetAbi"], "armeabi-v7a")
+
+    def test_thumb_plan_targets_32bit_armv7(self):
+        result = self.run_fixture(
+            macho(struct.pack("<HH", 0x202A, 0x4770), cpu=12, subtype=9, thumb=True), analyze_only=True
+        )
+        self.assertEqual(result["staticRecompilationAssessment"]["backend"], "offline-armv7-to-armv7")
+        self.assertEqual(result["staticRecompilationAssessment"]["targetAbi"], "armeabi-v7a")
+        self.assertEqual(result["staticRecompilationAssessment"]["loweredBytesInMemory"], 8)
+
+    def test_explicit_target_abi_requires_a_matching_source_slice(self):
+        arm32 = ipa(self.root / "arm32.ipa", macho(cpu=12, subtype=6))
+        blocked = Pipeline(self.root / "arm64-target").run(
+            arm32, True, analyze_only=True, target_abi="arm64-v8a"
+        )
+        self.assertEqual(blocked["state"], "BLOCKED")
+        self.assertIn("requires an ARM64 IPA slice", " ".join(blocked["blockers"]))
+
+        dual_arch = ipa(self.root / "dual.ipa", fat([macho(cpu=12, subtype=11), macho()]))
+        selected = Pipeline(self.root / "arm32-target").run(
+            dual_arch, True, analyze_only=True, target_abi="armeabi-v7a"
+        )
+        self.assertEqual(selected["state"], "PARTIAL")
+        self.assertEqual(selected["selectedArchitecture"], "armv7s")
+        self.assertEqual(selected["targetAbi"], "armeabi-v7a")
+
+    def test_invalid_state_transition(self):
+        p = Pipeline(self.root / "job")
+        with self.assertRaises(RuntimeError):
+            p.transition("READY", "not validated")
+
+    def test_no_graphics_audio_swift_support_claims(self):
+        p = Pipeline(self.root / "job")
+        caps = {c["component"]: c["status"] for c in p.report["capabilities"]}
+        for name in (
+            "EAGL/OpenGL ES",
+            "AudioToolbox/AVFoundation/OpenAL",
+            "Swift",
+            "Metal",
+            "Foundation/CoreFoundation",
+            "UIKit/CoreGraphics",
+            "iOS lifecycle/input/sensors",
+        ):
+            self.assertEqual(caps[name], "BLOCKED")
+
+
+class ExperimentalShellPipelineTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.root = Path(self.tmp.name)
+
+    def run_fixture(self, **kwargs):
+        source = ipa(self.root / "input.ipa", macho(imports=["_CFAbsoluteTimeGetCurrent", "_UnknownPrivateGameSymbol"]))
+        return Pipeline(self.root / "job").run(source, True, **kwargs)
+
+    def test_analyze_never_attempts_shell(self):
+        report = self.run_fixture(analyze_only=True)
+        self.assertEqual(report["experimentalShell"]["status"], "NOT_ATTEMPTED")
+        self.assertEqual(report["state"], "PARTIAL")
+
+    def test_convert_generates_registry_and_skips_shell_without_toolchain(self):
+        with patch.object(
+            pipeline_module.Toolchain, "discover", side_effect=RuntimeError("no sdk")
+        ):
+            report = self.run_fixture(analyze_only=False)
+        self.assertEqual(report["state"], "BLOCKED")
+        registry = report["compatRegistry"]
+        self.assertEqual(registry["verifiedImplementations"], 1)
+        self.assertEqual(registry["stubbedHandlers"], 1)
+        self.assertEqual(registry["handlerResolutionCoveragePercent"], 100.0)
+        self.assertTrue((self.root / "job" / "ioscompat" / "libioscompat.cpp").is_file())
+        self.assertEqual(report["experimentalShell"]["status"], "SKIPPED_NO_ANDROID_TOOLCHAIN")
+        self.assertEqual(report["conversionProgress"]["status"], "NOT_BUILT")
+
+    def test_convert_reports_built_shell_honestly(self):
+        built = {
+            "status": "BUILT_NOT_A_GAME",
+            "contract": "experimental-shell-v1",
+            "path": "experimental-shell.apk",
+            "completeGameConversion": False,
+        }
+        with patch.object(pipeline_module.Toolchain, "discover", return_value=object()):
+            with patch.object(pipeline_module, "build_experimental_shell", return_value=built):
+                report = self.run_fixture(analyze_only=False)
+        self.assertEqual(report["state"], "BLOCKED")
+        self.assertEqual(report["experimentalShell"]["status"], "BUILT_NOT_A_GAME")
+        self.assertIn("experimental shell", report["conversionProgress"]["message"])
+        self.assertNotIn("No APK was produced", report["conversionProgress"]["message"])
+
+    def test_convert_records_failed_shell_build_without_claiming_success(self):
+        with patch.object(pipeline_module.Toolchain, "discover", return_value=object()):
+            with patch.object(
+                pipeline_module, "build_experimental_shell", side_effect=RuntimeError("aapt2 failed")
+            ):
+                report = self.run_fixture(analyze_only=False)
+        self.assertEqual(report["experimentalShell"]["status"], "FAILED_TO_BUILD")
+        self.assertIn("aapt2 failed", report["experimentalShell"]["message"])
+        self.assertEqual(report["conversionProgress"]["status"], "NOT_BUILT")

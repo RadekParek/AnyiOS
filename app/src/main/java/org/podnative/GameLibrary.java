@@ -10,6 +10,7 @@ import android.os.Looper;
 import android.provider.DocumentsContract;
 import android.provider.OpenableColumns;
 import android.util.AtomicFile;
+import dev.radek.conventor.SharedCatalog;
 import java.io.File;
 import java.io.FileInputStream;
 import java.io.FileOutputStream;
@@ -39,7 +40,7 @@ final class GameLibrary {
         final File directory;
         final String id, title, version, bundleId, kind, architecture, status, report, executable;
         final long bytes, importedAt;
-        final String launchReport;
+        final String launchReport, blockReason;
         Game(File directory, JSONObject data) throws Exception {
             this.directory = directory;
             id = directory.getName();
@@ -54,6 +55,7 @@ final class GameLibrary {
             report = data.optString("report");
             executable = data.optString("executable");
             launchReport = data.optString("lastLaunchReport");
+            blockReason = data.optString("blockReason");
             bytes = data.optLong("bytes");
             importedAt = data.optLong("importedAt");
         }
@@ -77,6 +79,7 @@ final class GameLibrary {
         this.context = context;
         root = new File(context.getFilesDir(), "games");
         busy = true;
+        SharedCatalog.tryBegin();
         worker.execute(() -> {
             try {
                 mkdir(root);
@@ -100,6 +103,7 @@ final class GameLibrary {
                 error = true;
                 notice = e.getMessage();
             } finally {
+                SharedCatalog.end();
                 busy = false;
                 changed();
             }
@@ -115,12 +119,44 @@ final class GameLibrary {
         observers.remove(callback);
     }
     private void changed() {
+        SharedCatalog.notifyViews();
         main.post(() -> {
             List<Runnable> copy;
             synchronized (this) {
                 copy = new ArrayList<>(observers);
             }
             for (Runnable observer : copy) observer.run();
+        });
+    }
+    /** Converter publishes a completed source copy; no second IPA copy is made. */
+    void publishSharedSource(File directory, String originalName) throws Exception {
+        if (!directory.getCanonicalFile().getParentFile().equals(root.getCanonicalFile())
+            || !directory.getName().matches("game-[0-9a-f-]{36}"))
+            throw new IOException("Invalid shared source directory");
+        File source = new File(directory, "source.bin");
+        GameInspector.Result result = GameInspector.analyze(source, originalName, directory);
+        JSONObject metadata = new JSONObject();
+        metadata.put("title", result.title);
+        metadata.put("version", result.version);
+        metadata.put("bundleId", result.bundleId);
+        metadata.put("architecture", result.architecture);
+        metadata.put("executable", result.executable);
+        metadata.put("status", result.status);
+        metadata.put("blockReason", result.blockReason);
+        metadata.put("report", result.report);
+        metadata.put("kind", "IPA");
+        metadata.put("bytes", source.length());
+        metadata.put("importedAt", System.currentTimeMillis());
+        metadata.put("originalName", originalName);
+        writeMetadata(directory, metadata);
+        saveCover(directory, result.icon);
+        refresh();
+        changed();
+    }
+    void reloadSharedEntries() {
+        worker.execute(() -> {
+            refresh();
+            changed();
         });
     }
     void dismissNotice() {
@@ -139,8 +175,11 @@ final class GameLibrary {
                 "Import cancelled. Your original files were not changed.");
     }
     private synchronized boolean begin(String message) {
-        if (busy)
+        if (busy || !SharedCatalog.tryBegin()) {
+            notice = "Wait for the current Emulator or Converter job to finish.";
+            changed();
             return false;
+        }
         busy = true;
         cancelled = false;
         progress = message;
@@ -204,6 +243,89 @@ final class GameLibrary {
     void importFolder(Uri uri) {
         importSource(uri, null, true);
     }
+    void importIpaFolder(Uri tree) {
+        if (!begin("Finding IPA files in the selected folder…"))
+            return;
+        cancellable = true;
+        worker.execute(() -> {
+            int imported = 0, failed = 0;
+            StringBuilder failures = new StringBuilder();
+            try {
+                List<Uri> sources = new ArrayList<>();
+                scanIpas(
+                    tree, DocumentsContract.getTreeDocumentId(tree), 0, new HashSet<>(), sources);
+                for (Uri source : sources) {
+                    checkCancelled();
+                    try {
+                        importOne(source, null, false);
+                        imported++;
+                    } catch (CancellationException e) {
+                        throw e;
+                    } catch (Exception | LinkageError e) {
+                        failed++;
+                        if (failed <= 20)
+                            failures.append("\n")
+                                .append(displayName(source))
+                                .append(": ")
+                                .append(e.getMessage());
+                        Diagnostics.record("BATCH_IMPORT", source + ": " + e);
+                    }
+                }
+                notice = sources.isEmpty()
+                    ? "No IPA files found. For an extracted .app bundle, use Import extracted app folder."
+                    : imported + " separate entries imported; " + failed + " failed." + failures;
+                error = failed > 0;
+            } catch (CancellationException e) {
+                notice = "Batch cancelled. " + imported + " completed entries were kept.";
+            } catch (Exception e) {
+                error = true;
+                notice = "Folder search failed: " + e.getMessage() + ". " + imported
+                    + " completed entries were kept.";
+            } finally {
+                try {
+                    context.getContentResolver().releasePersistableUriPermission(
+                        tree, android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION);
+                } catch (SecurityException ignored) { /* Temporary grant. */
+                }
+                SharedCatalog.end();
+                busy = false;
+                cancellable = false;
+                progress = "";
+                changed();
+            }
+        });
+    }
+    private void scanIpas(Uri tree, String id, int depth, Set<String> visited, List<Uri> found)
+        throws IOException {
+        checkCancelled();
+        if (depth > 32 || !visited.add(id) || visited.size() > 30000)
+            throw new IOException(
+                "Folder exceeds safe traversal depth/document count or contains a cycle");
+        Uri children = DocumentsContract.buildChildDocumentsUriUsingTree(tree, id);
+        try (Cursor cursor = context.getContentResolver().query(children,
+                 new String[] {DocumentsContract.Document.COLUMN_DOCUMENT_ID,
+                     DocumentsContract.Document.COLUMN_DISPLAY_NAME,
+                     DocumentsContract.Document.COLUMN_MIME_TYPE},
+                 null, null, null)) {
+            if (cursor == null)
+                throw new IOException("Provider could not list folder");
+            while (cursor.moveToNext()) {
+                checkCancelled();
+                String child = cursor.getString(0), name = cursor.getString(1),
+                       mime = cursor.getString(2);
+                if (child == null || name == null)
+                    throw new IOException("Provider returned an invalid document");
+                if (DocumentsContract.Document.MIME_TYPE_DIR.equals(mime)) {
+                    scanIpas(tree, child, depth + 1, visited, found);
+                } else {
+                    if (!visited.add(child) || visited.size() > 30000)
+                        throw new IOException("Duplicate/oversized document tree");
+                    if (name.toLowerCase(java.util.Locale.ROOT).endsWith(".ipa"))
+                        found.add(DocumentsContract.buildDocumentUriUsingTree(tree, child));
+                }
+            }
+        }
+    }
     void importLegacy(File file) {
         importSource(null, file, false);
     }
@@ -212,59 +334,8 @@ final class GameLibrary {
             return;
         cancellable = true;
         worker.execute(() -> {
-            File pending = null;
             try {
-                pending = new File(root, ".pending-" + UUID.randomUUID());
-                mkdir(pending);
-                String name;
-                File source;
-                if (tree) {
-                    String document = DocumentsContract.getTreeDocumentId(uri);
-                    Uri rootUri = DocumentsContract.buildDocumentUriUsingTree(uri, document);
-                    name = documentName(rootUri);
-                    source = new File(pending, "bundle");
-                    mkdir(source);
-                    copyTree(uri, document, source, 0, new HashSet<>());
-                } else {
-                    name = local != null ? local.getName() : displayName(uri);
-                    source = new File(pending, "source.bin");
-                    try (InputStream in = local != null
-                            ? new FileInputStream(local)
-                            : context.getContentResolver().openInputStream(uri)) {
-                        copy(in, source);
-                    }
-                }
-                checkCancelled();
-                progress = "Reading app details and validating ARM32…";
-                changed();
-                GameInspector.Result result = GameInspector.analyze(source, name, pending);
-                checkCancelled();
-                JSONObject metadata = new JSONObject();
-                metadata.put("title", result.title);
-                metadata.put("version", result.version);
-                metadata.put("bundleId", result.bundleId);
-                metadata.put("architecture", result.architecture);
-                metadata.put("executable", result.executable);
-                metadata.put("status", result.status);
-                metadata.put("report", result.report);
-                metadata.put("kind", tree ? "Folder" : result.kind);
-                metadata.put("bytes", copied);
-                metadata.put("importedAt", System.currentTimeMillis());
-                writeMetadata(pending, metadata);
-                saveCover(pending, result.icon);
-                checkCancelled();
-                File published = new File(root, "game-" + UUID.randomUUID());
-                if (!pending.renameTo(published))
-                    throw new IOException(
-                        "Could not finish the private import. Try again after freeing storage");
-                pending = null;
-                refresh();
-                notice = result.title + " added to your library.";
-                if (result.status.equals("Encrypted"))
-                    notice +=
-                        " Its executable is encrypted and cannot run; no DRM bypass is provided.";
-                Diagnostics.record("LIBRARY_IMPORT",
-                    result.kind + " / " + result.architecture + " / " + result.status);
+                importOne(uri, local, tree);
             } catch (CancellationException e) {
                 notice = e.getMessage();
             } catch (Exception | LinkageError e) {
@@ -272,24 +343,88 @@ final class GameLibrary {
                 notice = "Import could not finish: " + e.getMessage();
                 Diagnostics.record("LIBRARY_ERROR", e.toString());
             } finally {
-                if (pending != null)
-                    try {
-                        deleteTree(pending);
-                    } catch (IOException e) {
-                        Diagnostics.record("STORAGE_CLEANUP", e.toString());
-                    }
                 if (tree && uri != null)
                     try {
                         context.getContentResolver().releasePersistableUriPermission(
                             uri, android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION);
                     } catch (SecurityException ignored) { /* Transient grants need no release. */
                     }
+                SharedCatalog.end();
                 busy = false;
                 cancellable = false;
                 progress = "";
                 changed();
             }
         });
+    }
+    private File importOne(Uri uri, File local, boolean tree) throws Exception {
+        File pending = null;
+        long before = copied;
+        try {
+            pending = new File(root, ".pending-" + UUID.randomUUID());
+            mkdir(pending);
+            String name;
+            File source;
+            if (tree) {
+                String document = DocumentsContract.getTreeDocumentId(uri);
+                Uri rootUri = DocumentsContract.buildDocumentUriUsingTree(uri, document);
+                name = documentName(rootUri);
+                source = new File(pending, "bundle");
+                mkdir(source);
+                copyTree(uri, document, source, 0, new HashSet<>());
+            } else {
+                name = local != null ? local.getName() : displayName(uri);
+                source = new File(pending, "source.bin");
+                try (InputStream in = local != null
+                        ? new FileInputStream(local)
+                        : context.getContentResolver().openInputStream(uri)) {
+                    copy(in, source);
+                }
+            }
+            checkCancelled();
+            progress = "Reading app details and validating ARM32…";
+            changed();
+            GameInspector.Result result = GameInspector.analyze(source, name, pending);
+            checkCancelled();
+            JSONObject metadata = new JSONObject();
+            metadata.put("title", result.title);
+            metadata.put("originalName", name);
+            metadata.put("version", result.version);
+            metadata.put("bundleId", result.bundleId);
+            metadata.put("architecture", result.architecture);
+            metadata.put("executable", result.executable);
+            metadata.put("status", result.status);
+            metadata.put("blockReason", result.blockReason);
+            metadata.put("report", result.report);
+            metadata.put("kind", tree ? "Folder" : result.kind);
+            metadata.put("bytes", copied - before);
+            metadata.put("importedAt", System.currentTimeMillis());
+            writeMetadata(pending, metadata);
+            saveCover(pending, result.icon);
+            checkCancelled();
+            File published = new File(root, "game-" + UUID.randomUUID());
+            if (!pending.renameTo(published))
+                throw new IOException(
+                    "Could not finish the private import. Try again after freeing storage");
+            pending = null;
+            refresh();
+            notice = result.title + " added to your library.";
+            if (!result.blockReason.isEmpty())
+                notice += " Cannot launch: " + result.blockReason;
+            if (result.status.equals("Encrypted"))
+                notice += " Its executable is encrypted and cannot run; no DRM bypass is provided.";
+            Diagnostics.record("LIBRARY_IMPORT",
+                result.kind + " / " + result.architecture + " / " + result.status);
+
+            return published;
+        } finally {
+            if (pending != null)
+                try {
+                    deleteTree(pending);
+                } catch (IOException e) {
+                    Diagnostics.record("STORAGE_CLEANUP", e.toString());
+                }
+        }
     }
     private String documentName(Uri document) throws IOException {
         try (Cursor cursor = context.getContentResolver().query(document,
@@ -367,6 +502,15 @@ final class GameLibrary {
                 if (!directory.isDirectory() || !directory.getName().matches("game-[0-9a-f-]{36}"))
                     continue;
                 try {
+                    if (!new File(directory, "cover.png").isFile()
+                        && new File(directory, "icon.png").isFile()) {
+                        try (InputStream icon =
+                                 new FileInputStream(new File(directory, "icon.png"))) {
+                            saveCover(directory, GameInspector.bounded(icon, 8 * 1024 * 1024));
+                        } catch (Exception e) {
+                            Diagnostics.record("SHARED_ICON", e.toString());
+                        }
+                    }
                     loaded.add(new Game(directory, readMetadata(directory)));
                 } catch (Exception e) {
                     Diagnostics.record(
@@ -378,6 +522,47 @@ final class GameLibrary {
             games = loaded;
             revision++;
         }
+    }
+    void refreshGame(Game game) {
+        if (!begin("Refreshing app details and artwork…"))
+            return;
+        worker.execute(() -> {
+            File scratch = new File(root, ".pending-refresh-" + UUID.randomUUID());
+            try {
+                mkdir(scratch);
+                File source =
+                    new File(game.directory, game.kind.equals("Folder") ? "bundle" : "source.bin");
+                GameInspector.Result result = GameInspector.analyze(source, game.title, scratch);
+                JSONObject data = readMetadata(game.directory);
+                // Keep the user's custom title, original import time and source copy.
+                data.put("version", result.version);
+                data.put("bundleId", result.bundleId);
+                data.put("architecture", result.architecture);
+                data.put("status", result.status);
+                data.put("blockReason", result.blockReason);
+                data.put("report", result.report);
+                data.put("executable", result.executable);
+                writeMetadata(game.directory, data);
+                saveCover(game.directory, result.icon);
+                refresh();
+                notice =
+                    "Details refreshed without recopying the game. Unsupported artwork may still use a placeholder.";
+            } catch (Exception | LinkageError e) {
+                error = true;
+                notice = "Could not refresh details: " + e.getMessage();
+            } finally {
+                try {
+                    if (scratch.exists())
+                        deleteTree(scratch);
+                } catch (IOException e) {
+                    Diagnostics.record("REFRESH_CLEANUP", e.toString());
+                }
+                SharedCatalog.end();
+                busy = false;
+                progress = "";
+                changed();
+            }
+        });
     }
     void runCpuProbe() {
         if (!begin("Running bounded ARM/Thumb CPU self-test…"))
@@ -393,6 +578,7 @@ final class GameLibrary {
                 Diagnostics.record("APP_UID_CPU_PROBE", notice);
                 error = true;
             } finally {
+                SharedCatalog.end();
                 busy = false;
                 progress = "";
                 changed();
@@ -410,32 +596,40 @@ final class GameLibrary {
                 File source =
                     new File(game.directory, game.kind.equals("Folder") ? "bundle" : "source.bin");
                 GameInspector.Result result = GameInspector.analyze(source, game.title, scratch);
+                saveCover(game.directory, result.icon);
                 for (int i = 0; i < result.splashImages.size(); i++) {
-                    byte[] encoded = result.splashImages.get(i);
-                    BitmapFactory.Options options = new BitmapFactory.Options();
-                    options.inJustDecodeBounds = true;
-                    BitmapFactory.decodeByteArray(encoded, 0, encoded.length, options);
-                    if (options.outWidth <= 0 || options.outHeight <= 0 || options.outWidth > 8192
-                        || options.outHeight > 8192)
-                        continue;
-                    options.inSampleSize = 1;
-                    while (
-                        Math.max(options.outWidth, options.outHeight) / options.inSampleSize > 1024)
-                        options.inSampleSize *= 2;
-                    options.inJustDecodeBounds = false;
-                    Bitmap bitmap =
-                        BitmapFactory.decodeByteArray(encoded, 0, encoded.length, options);
-                    if (bitmap == null)
-                        continue;
-                    File image = new File(game.directory, "launch-" + i + ".png");
+                    if (images.size() >= LaunchImages.MAX_IMAGES)
+                        break;
                     try {
-                        try (FileOutputStream out = new FileOutputStream(image)) {
-                            if (!bitmap.compress(Bitmap.CompressFormat.PNG, 100, out))
-                                throw new IOException("Could not normalize launch artwork");
+                        byte[] encoded = result.splashImages.get(i);
+                        BitmapFactory.Options options = new BitmapFactory.Options();
+                        options.inJustDecodeBounds = true;
+                        encoded = PngArtwork.normalize(encoded);
+                        BitmapFactory.decodeByteArray(encoded, 0, encoded.length, options);
+                        if (options.outWidth <= 0 || options.outHeight <= 0
+                            || options.outWidth > 8192 || options.outHeight > 8192)
+                            continue;
+                        options.inSampleSize = 1;
+                        while (Math.max(options.outWidth, options.outHeight) / options.inSampleSize
+                            > 1024)
+                            options.inSampleSize *= 2;
+                        options.inJustDecodeBounds = false;
+                        Bitmap bitmap =
+                            BitmapFactory.decodeByteArray(encoded, 0, encoded.length, options);
+                        if (bitmap == null)
+                            continue;
+                        File image = new File(game.directory, "launch-" + i + ".png");
+                        try {
+                            try (FileOutputStream out = new FileOutputStream(image)) {
+                                if (!bitmap.compress(Bitmap.CompressFormat.PNG, 100, out))
+                                    throw new IOException("Could not normalize launch artwork");
+                            }
+                            images.add(image);
+                        } finally {
+                            bitmap.recycle();
                         }
-                        images.add(image);
-                    } finally {
-                        bitmap.recycle();
+                    } catch (IOException | RuntimeException e) {
+                        Diagnostics.record("LAUNCH_ARTWORK_IMAGE", e.toString());
                     }
                 }
             } catch (Exception | LinkageError e) {
@@ -447,6 +641,7 @@ final class GameLibrary {
                 } catch (IOException e) {
                     Diagnostics.record("LAUNCH_CLEANUP", e.toString());
                 }
+                SharedCatalog.end();
                 busy = false;
                 progress = "";
                 changed();
@@ -498,6 +693,7 @@ final class GameLibrary {
                 } catch (IOException e) {
                     Diagnostics.record("LAUNCH_CLEANUP", e.toString());
                 }
+                SharedCatalog.end();
                 busy = false;
                 progress = "";
                 changed();
@@ -517,6 +713,7 @@ final class GameLibrary {
                 error = true;
                 notice = "Could not rename game: " + e.getMessage();
             } finally {
+                SharedCatalog.end();
                 busy = false;
                 cancellable = false;
                 progress = "";
@@ -540,6 +737,7 @@ final class GameLibrary {
                 notice = "Could not remove game: " + e.getMessage();
                 refresh();
             } finally {
+                SharedCatalog.end();
                 busy = false;
                 cancellable = false;
                 progress = "";
@@ -558,6 +756,7 @@ final class GameLibrary {
         if (encoded == null)
             return;
         try {
+            encoded = PngArtwork.normalize(encoded);
             BitmapFactory.Options options = new BitmapFactory.Options();
             options.inJustDecodeBounds = true;
             BitmapFactory.decodeByteArray(encoded, 0, encoded.length, options);

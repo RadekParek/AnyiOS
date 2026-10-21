@@ -42,7 +42,7 @@ std::string inspectMachO(const uint8_t* b, size_t n) {
                "provided";
     std::ostringstream out;
     out << "INSPECTED_ARM32: " << count << " load commands; CPU subtype " << (u32(8) & 0xffffff)
-        << ". Structural inspection only. Mapping, relocations, symbols and guest execution NOT "
+        << ". Header inspection only. Separate mapping/dyld diagnostics follow; game execution NOT "
            "implemented.";
     return out.str();
 }

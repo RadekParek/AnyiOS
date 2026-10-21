@@ -7,8 +7,8 @@ android {
         applicationId 'org.podnative'
         minSdk 29
         targetSdk 35
-        versionCode 4
-        versionName '0.3.0-graphics-foundation'
+        versionCode 6
+        versionName '0.5.0-anyios-preview'
         ndk { abiFilters 'arm64-v8a' }
         externalNativeBuild { cmake { cppFlags '-std=c++20' } }
         buildConfigField 'String', 'SOURCE_REVISION', '"' + (System.getenv('GITHUB_SHA') ?: 'local-uncommitted') + '"'
@@ -18,6 +18,7 @@ android {
         targetCompatibility JavaVersion.VERSION_17
     }
     buildFeatures { buildConfig true }
+    testOptions { unitTests.includeAndroidResources = true }
     externalNativeBuild { cmake { path 'src/main/cpp/CMakeLists.txt'; version '3.22.1' } }
     signingConfigs {
         if (System.getenv('PODNATIVE_KEYSTORE')) {
@@ -38,4 +39,8 @@ android {
     lint { abortOnError true }
 }
 
-dependencies { testImplementation 'junit:junit:4.13.2' }
+dependencies {
+    implementation project(':converter')
+    testImplementation 'junit:junit:4.13.2'
+    testImplementation 'org.robolectric:robolectric:4.14.1'
+}

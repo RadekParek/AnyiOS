@@ -75,6 +75,8 @@ jobs:
           cmp third_party/dynarmic/revision.txt app/src/main/assets/cpu-notices/revision.txt
           cmp third_party/dynarmic/LICENSE.txt app/src/main/assets/cpu-notices/dynarmic.txt
           for text in third_party/dynarmic/notices/*.txt; do cmp "$text" "app/src/main/assets/cpu-notices/$(basename "$text")"; done
+      - name: Prepare pinned converter runtime and notices
+        run: scripts/prepare-converter.sh
       - name: Restore verified upstream ANGLE build outputs
         id: angle-cache
         uses: actions/cache/restore@v4
@@ -133,9 +135,9 @@ jobs:
         run: |
           set -o pipefail
           if [ "$VARIANT" = debug ]; then
-            gradle --no-daemon lintDebug testDebugUnitTest assembleDebug 2>&1 | tee .local/logs/android-build.log
+            gradle --no-daemon :app:lintDebug :app:testDebugUnitTest :converter:lintDebug :converter:testDebugUnitTest :gameruntime-template:testDebugUnitTest :app:assembleDebug 2>&1 | tee .local/logs/android-build.log
           else
-            gradle --no-daemon lintRelease testReleaseUnitTest assembleRelease 2>&1 | tee .local/logs/android-build.log
+            gradle --no-daemon :app:lintRelease :app:testReleaseUnitTest :converter:lintRelease :converter:testReleaseUnitTest :app:assembleRelease 2>&1 | tee .local/logs/android-build.log
           fi
       - name: Prepare APK and provenance
         env:
@@ -148,13 +150,21 @@ jobs:
           cp "$APK" ".local/artifacts/$ARTIFACT"
           cd .local/artifacts
           sha256sum "$ARTIFACT" > SHA256SUMS
+          "$ANDROID_HOME/build-tools/35.0.0/aapt2" dump badging "$ARTIFACT" > APK-BADGING.txt
+          grep -F "package: name='org.podnative'" APK-BADGING.txt
+          grep -F "launchable-activity: name='org.podnative.ModuleActivity'" APK-BADGING.txt
+          grep -F "application-label:'AnyiOS'" APK-BADGING.txt
           printf 'source=%s\nangle=%s\nvariant=%s\nsigning=%s\n' "$GITHUB_SHA" "$(cat ../../third_party/angle/revision.txt)" "$VARIANT" "${PODNATIVE_KEYSTORE:+configured}" > BUILD-INFO.txt
           "$ANDROID_HOME/build-tools/35.0.0/apksigner" verify --print-certs "$ARTIFACT" >> BUILD-INFO.txt || {
             if [ "$VARIANT" = debug ] || [ -n "${PODNATIVE_KEYSTORE:-}" ]; then exit 1; fi
             echo 'UNSIGNED release: not installable until signed; not a published signed release.' >> BUILD-INFO.txt
           }
+          printf 'converter=%s\nconverter_cpu=%s\n' "$(cat ../../converter/UPSTREAM_REVISION)" "$(cat ../../third_party/converter-runtime/dynarmic-revision.txt)" >> BUILD-INFO.txt
           unzip -l "$ARTIFACT" | grep 'lib/arm64-v8a/libEGL_podnative.so'
           unzip -l "$ARTIFACT" | grep 'lib/arm64-v8a/libGLESv2_podnative.so'
+          unzip -l "$ARTIFACT" | grep 'lib/arm64-v8a/libcompat_runtime_v1.so'
+          unzip -l "$ARTIFACT" | grep 'lib/arm64-v8a/libradek.so'
+          unzip -l "$ARTIFACT" | grep 'assets/gameruntime-template/classes.dex'
       - uses: actions/upload-artifact@v4
         with:
           name: ${{ inputs.artifact }}
@@ -166,10 +176,19 @@ jobs:
         run: |
           python3 - <<'PYCODE'
           from pathlib import Path
+          import xml.etree.ElementTree as ET
           for path in Path('.local/logs').glob('*.log'):
-              lines = path.read_text(errors='replace').splitlines()[-12:]
+              all_lines = path.read_text(errors='replace').splitlines()
+              errors = [line for line in all_lines if any(token in line for token in ('e: file:', 'error:', ' FAILED', ' > ', 'Duplicate class', 'FAILURES!!!'))][:30]
+              lines = errors + all_lines[-12:]
               message = (path.name + ': ' + '\n'.join(lines)).replace('%', '%25').replace('\r', '%0D').replace('\n', '%0A')
               print('::warning::' + message)
+          for root in ('app/build/test-results', 'converter/app/build/test-results'):
+              for path in Path(root).rglob('TEST-*.xml'):
+                  for case in ET.parse(path).getroot().iter('testcase'):
+                      for failure in case.findall('failure') + case.findall('error'):
+                          message = (str(path) + ': ' + case.get('name', '') + ': ' + (failure.text or failure.get('message', '')))[:5000]
+                          print('::warning::' + message.replace('%', '%25').replace('\r', '%0D').replace('\n', '%0A'))
           PYCODE
       - name: Preserve build logs and test reports
         if: always()
@@ -181,6 +200,8 @@ jobs:
             .local/logs/
             app/build/reports/
             app/build/test-results/
+            converter/app/build/reports/
+            converter/app/build/test-results/
             .local/angle-build/angle/out/PodNative/args.gn
       - name: Remove temporary signing material
         if: always()

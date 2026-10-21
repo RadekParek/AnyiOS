@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cstring>
 #include <limits>
+#include <map>
 #include <sstream>
 
 #include "../macho.h"
@@ -58,8 +59,15 @@ LoadedImage loadMachO(const uint8_t* data, size_t size, size_t budget) {
     uint64_t entry = 0;
     size_t p = 28;
     bool hasSymbols = false, hasDynamicSymbols = false;
-    uint32_t symbolCount = 0;
+    uint32_t symbolCount = 0, symbolOffset = 0, stringOffset = 0, stringBytes = 0;
+    struct IndirectSection {
+        uint32_t address, count, first, stride;
+        bool lazy, stub;
+    };
+    std::vector<IndirectSection> indirectSections;
     size_t dynamicSymbols = 0;
+    bool hasDyldInfo = false;
+    std::array<std::pair<uint32_t, uint32_t>, 4> dyldStreams{};
     for (uint32_t i = 0; i < r.u32(16); i++) {
         uint32_t cmd = r.u32(p), length = r.u32(p + 4);
         if (cmd == 1) {
@@ -86,6 +94,14 @@ LoadedImage loadMachO(const uint8_t* data, size_t size, size_t budget) {
                                sectionOffset = r.u32(q + 40);
                 const uint32_t relocationOffset = r.u32(q + 48), relocationCount = r.u32(q + 52),
                                type = r.u32(q + 56) & 0xff;
+                if (type == 6 || type == 7 || type == 8) {
+                    uint32_t stride = type == 8 ? r.u32(q + 64) : 4;
+                    if (!stride || sectionSize % stride || indirectSections.size() >= 4096)
+                        throw Error("DYLD_INDIRECT_SECTION",
+                                    "invalid indirect section stride or budget");
+                    indirectSections.push_back({address, sectionSize / stride, r.u32(q + 60),
+                                                stride, type == 7, type == 8});
+                }
                 if (address < vm || uint64_t(address) + sectionSize > uint64_t(vm) + vmSize)
                     throw Error("LOAD_SECTION_VM", "section outside its segment", address);
                 // S_ZEROFILL and S_GB_ZEROFILL have no file bytes. TLS is not implemented.
@@ -106,6 +122,7 @@ LoadedImage loadMachO(const uint8_t* data, size_t size, size_t budget) {
             }
             if (!protection && fileSize)
                 throw Error("LOAD_GUARD_DATA", "inaccessible segment has initialized data", vm);
+            if (segments.size() >= 256) throw Error("LOAD_LIMIT", "too many segments");
             segments.push_back(
                 {{vm, vmSize, uint8_t(protection), r.fixed(p + 8, 16)}, offset, fileSize});
         } else if (cmd == 0x80000028) {  // LC_MAIN: file-relative entryoff, not a guest pointer.
@@ -139,10 +156,13 @@ LoadedImage loadMachO(const uint8_t* data, size_t size, size_t budget) {
             (void)r.commandString(p, length, 12);
             result.requiresDyld = true;
         } else if (cmd == 0x22 || cmd == 0x80000022) {
-            if (length < 48) throw Error("LOAD_DYLD_INFO", "truncated dyld info");
+            if (length != 48 || hasDyldInfo)
+                throw Error("LOAD_DYLD_INFO", "invalid or duplicate dyld info");
+            hasDyldInfo = true;
             for (size_t n = 0; n < 5; n++) {
                 const uint32_t offset = r.u32(p + 8 + n * 8), bytes = r.u32(p + 12 + n * 8);
                 r.range(offset, bytes);
+                if (n < 4) dyldStreams[n] = {offset, bytes};
                 if (bytes) result.requiresDyld = true;
             }
         } else if (cmd == 2) {
@@ -150,6 +170,9 @@ LoadedImage loadMachO(const uint8_t* data, size_t size, size_t budget) {
                 throw Error("LOAD_SYMTAB", "invalid or duplicate symbol table");
             hasSymbols = true;
             symbolCount = r.u32(p + 12);
+            symbolOffset = r.u32(p + 8);
+            stringOffset = r.u32(p + 16);
+            stringBytes = r.u32(p + 20);
             r.range(r.u32(p + 8), uint64_t(r.u32(p + 12)) * 12);
             r.range(r.u32(p + 16), r.u32(p + 20));
             // Symbol binding is explicitly deferred; even local-only tables need audit.
@@ -204,6 +227,122 @@ LoadedImage loadMachO(const uint8_t* data, size_t size, size_t budget) {
                 throw Error("LOAD_DYSYMTAB", "invalid indirect symbol reference");
         }
     }
+    if (hasSymbols) {
+        size_t nameBytes = 0;
+        for (uint32_t index = 0; index < symbolCount; index++) {
+            uint64_t record = uint64_t(symbolOffset) + uint64_t(index) * 12;
+            uint8_t type = data[record + 4];
+            if ((type & 0xe0) || !(type & 1) || ((type & 0x0e) != 0x0e && (type & 0x0e) != 2))
+                continue;
+            uint32_t nameIndex = r.u32(record);
+            if (nameIndex >= stringBytes) throw Error("LOAD_EXPORT", "invalid export string index");
+            size_t start = size_t(stringOffset) + nameIndex, end = start;
+            while (end < size_t(stringOffset) + stringBytes && data[end] && end - start <= 4096)
+                end++;
+            if (end == start || end == size_t(stringOffset) + stringBytes || end - start > 4096)
+                throw Error("LOAD_EXPORT", "invalid export name");
+            if (result.exports.size() >= 100000 || end - start > 8 * 1024 * 1024 - nameBytes)
+                throw Error("LOAD_EXPORT", "export budget exceeded");
+            nameBytes += end - start;
+            uint32_t value = r.u32(record + 8);
+            if ((type & 0x0e) == 0x0e) {
+                bool inside = false;
+                for (const auto& segment : segments)
+                    if (segment.region.permissions && value >= segment.region.base &&
+                        uint64_t(value) < uint64_t(segment.region.base) + segment.region.size)
+                        inside = true;
+                if (!inside) throw Error("LOAD_EXPORT", "defined section symbol outside image");
+                if (data[record + 6] & 8) value |= 1;  // N_ARM_THUMB_DEF interworking bit.
+            }
+            result.exports.push_back(
+                {std::string(reinterpret_cast<const char*>(data + start), end - start),
+                 {value, bool(data[record + 6] & 0x80)}});
+        }
+    }
+    std::vector<DyldSegment> dyldSegments;
+    for (const auto& segment : segments)
+        dyldSegments.push_back(
+            {segment.region.base, segment.region.size, segment.region.permissions});
+    size_t dyldNames = 0;
+    for (size_t stream = 0; stream < 4; stream++) {
+        const auto [offset, bytes] = dyldStreams[stream];
+        if (!bytes) continue;
+        auto decoded =
+            decodeDyld(data + offset, bytes, dyldSegments, stream == 0, stream == 3, stream == 2);
+        if (decoded.fixups.size() > 100000 - result.dyld.fixups.size())
+            throw Error("DYLD_LIMIT", "combined fixup budget exceeded");
+        result.dyld.needsCoalescing |= decoded.needsCoalescing;
+        if (decoded.strongDefinitions.size() > 100000 - result.dyld.strongDefinitions.size())
+            throw Error("DYLD_LIMIT", "combined weak declaration count");
+        for (auto& name : decoded.strongDefinitions) {
+            if (name.size() > 8 * 1024 * 1024 - dyldNames)
+                throw Error("DYLD_LIMIT", "combined name budget");
+            dyldNames += name.size();
+            result.dyld.strongDefinitions.push_back(std::move(name));
+        }
+        for (auto& fixup : decoded.fixups) {
+            if (fixup.ordinal > 0 && size_t(fixup.ordinal) > result.dependencies.size())
+                throw Error("DYLD_ORDINAL", "binding references nonexistent dylib");
+            if (fixup.symbol.size() > 8 * 1024 * 1024 - dyldNames)
+                throw Error("DYLD_LIMIT", "combined symbol budget exceeded");
+            dyldNames += fixup.symbol.size();
+            result.dyld.fixups.push_back(std::move(fixup));
+        }
+    }
+    std::map<uint32_t, size_t> planned;
+    for (size_t index = 0; index < result.dyld.fixups.size(); index++)
+        planned[result.dyld.fixups[index].address] = index;
+    for (const auto& section : indirectSections) {
+        if (!hasDynamicSymbols)
+            throw Error("DYLD_INDIRECT_SECTION", "indirect section requires LC_DYSYMTAB");
+        uint32_t table = r.u32(dynamicSymbols + 56), entries = r.u32(dynamicSymbols + 60);
+        if (section.first > entries || section.count > entries - section.first)
+            throw Error("DYLD_INDIRECT_SECTION", "section indexes exceed indirect table");
+        if (section.stub) {
+            result.legacyStubs += section.count;
+            continue;
+        }
+        if (section.count > 100000)
+            throw Error("DYLD_LIMIT", "indirect pointer count exceeds budget");
+        for (uint32_t index = 0; index < section.count; index++) {
+            uint32_t symbol = r.u32(uint64_t(table) + uint64_t(section.first + index) * 4);
+            if (symbol & 0xc0000000u)
+                continue;  // Local/absolute pointer, not an external symbol binding.
+            uint64_t record = uint64_t(symbolOffset) + uint64_t(symbol) * 12;
+            uint32_t nameIndex = r.u32(record);
+            if (nameIndex >= stringBytes || (data[record + 4] & 0xe0))
+                throw Error("DYLD_SYMBOL", "invalid indirect nlist symbol");
+            size_t start = size_t(stringOffset) + nameIndex, end = start;
+            while (end < size_t(stringOffset) + stringBytes && data[end] && end - start <= 4096)
+                end++;
+            if (end == start || end == size_t(stringOffset) + stringBytes || end - start > 4096)
+                throw Error("DYLD_SYMBOL", "invalid indirect symbol name");
+            std::string name(reinterpret_cast<const char*>(data + start), end - start);
+            int ordinal = data[record + 7];
+            if (ordinal == 255)
+                ordinal = -1;
+            else if (ordinal == 254)
+                ordinal = -2;
+            if (ordinal > 0 && size_t(ordinal) > result.dependencies.size())
+                throw Error("DYLD_ORDINAL", "indirect symbol references missing dylib");
+            uint32_t address = section.address + index * 4;
+            if (!result.memory) throw Error("DYLD_TARGET", "missing image storage");
+            auto existing = planned.find(address);
+            if (existing != planned.end()) {
+                const auto& old = result.dyld.fixups[existing->second];
+                if (old.rebase || old.symbol != name ||
+                    (old.ordinal != ordinal && old.ordinal != -3))
+                    throw Error("DYLD_BIND_CONFLICT", "indirect/stream binding mismatch");
+                continue;
+            }
+            if (result.dyld.fixups.size() >= 100000 || name.size() > 8 * 1024 * 1024 - dyldNames)
+                throw Error("DYLD_LIMIT", "combined indirect binding budget");
+            dyldNames += name.size();
+            result.dyld.fixups.push_back({address, false, bool(data[record + 6] & 0x40),
+                                          section.lazy, ordinal, 0, std::move(name)});
+            planned.emplace(address, result.dyld.fixups.size() - 1);
+        }
+    }
     if (!hasEntry) throw Error("LOAD_ENTRY_MISSING", "no LC_MAIN or supported LC_UNIXTHREAD");
     if (entryIsOffset) {
         bool found = false;
@@ -247,8 +386,17 @@ std::string LoadedImage::summary() const {
     s << "MAPPED_ARM32: " << memory->regions().size() << " regions, " << memory->allocated()
       << " guest bytes; entry=0x" << std::hex << registers[15] << (cpsr & 0x20 ? " Thumb" : " ARM")
       << " SP=0x" << registers[13];
-    s << "\nExecution BLOCKED: " << (requiresDyld ? "dyld/symbol resolution required; " : "")
+    s << "\nExecution BLOCKED: "
+      << (requiresDyld ? "required dyld imports or coalescing unresolved; " : "")
       << "guest CPU, application ABI and frameworks not initialized.";
+    s << "\n" << dyld.summary();
+    if (!exports.empty()) s << "\nDefined exports=" << exports.size();
+    if (dyld.needsCoalescing)
+        s << "\nWeak/strong definitions require export-graph coalescing; strong declarations="
+          << dyld.strongDefinitions.size();
+    if (legacyStubs)
+        s << "\nLegacy symbol stubs=" << std::dec << legacyStubs
+          << "; ARM stub execution/dispatch is not initialized.";
     for (const auto& dependency : dependencies) s << "\nrequires " << dependency;
     return s.str();
 }

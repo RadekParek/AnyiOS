@@ -11,7 +11,7 @@ jobs:
     uses: ./.github/workflows/build.yml
     with:
       variant: release
-      artifact: PodNative.apk
+      artifact: AnyiOS.apk
     secrets: inherit
   publish:
     needs: [build, runtime-and-pc]
@@ -22,7 +22,7 @@ jobs:
     steps:
       - uses: actions/download-artifact@v4
         with:
-          name: PodNative.apk
+          name: AnyiOS.apk
           path: release
       - name: Publish reviewed, signed build only
         env:
@@ -32,4 +32,4 @@ jobs:
         run: |
           grep -q 'signing=configured' release/BUILD-INFO.txt
           ! grep -q UNSIGNED release/BUILD-INFO.txt
-          gh release create "$TAG" --verify-tag --title "PodNative $TAG" --notes 'Foundation prototype. Device rendering and game compatibility require separate evidence. See attached source revision, signing information and checksums.' release/*
+          gh release create "$TAG" --verify-tag --title "AnyiOS $TAG" --notes 'Foundation prototype. Device rendering and game compatibility require separate evidence. See attached source revision, signing information and checksums.' release/*

@@ -26,13 +26,15 @@ import android.widget.LinearLayout;
 import android.widget.ProgressBar;
 import android.widget.ScrollView;
 import android.widget.TextView;
+import dev.radek.conventor.SharedCatalog;
 import java.io.File;
 import java.io.OutputStream;
 import java.nio.charset.StandardCharsets;
 import java.util.List;
 
 public final class MainActivity extends Activity {
-    private static final int IMPORT_FILE = 10, EXPORT = 11, IMPORT_FOLDER = 12;
+    private static final int IMPORT_FILE = 10, EXPORT = 11, IMPORT_FOLDER = 12,
+                             IMPORT_APP_FOLDER = 13;
     private SharedPreferences prefs;
     private GameLibrary library;
     private PrototypeView prototype;
@@ -47,7 +49,7 @@ public final class MainActivity extends Activity {
     private final Runnable libraryChanged = () -> {
         if (prototype != null || isFinishing() || isDestroyed())
             return;
-        if (renderedRevision == library.revision && renderedBusy == library.busy
+        if (renderedRevision == library.revision && renderedBusy == SharedCatalog.isBusy()
             && renderedNotice.equals(library.notice) && progressLabel != null)
             progressLabel.setText(library.progress);
         else
@@ -56,11 +58,8 @@ public final class MainActivity extends Activity {
     @Override
     public void onCreate(Bundle state) {
         prefs = getSharedPreferences("settings", MODE_PRIVATE);
-        int mode = prefs.getInt("theme", 0);
-        dark = mode == 2
-            || mode == 0
-                && (getResources().getConfiguration().uiMode & Configuration.UI_MODE_NIGHT_MASK)
-                    == Configuration.UI_MODE_NIGHT_YES;
+        dark =
+            !getSharedPreferences("radek_settings", MODE_PRIVATE).getBoolean("light_theme", false);
         setTheme(dark ? R.style.AppThemeDark : R.style.AppTheme);
         super.onCreate(state);
         library = GameLibrary.get(this);
@@ -69,15 +68,17 @@ public final class MainActivity extends Activity {
             tab = state.getString("tab", "Library");
             exportGame = state.getString("exportGame", "");
         }
-        background = color(dark ? "#0B0B17" : "#F4F5FB");
-        surface = color(dark ? "#17172B" : "#FFFFFF");
-        ink = color(dark ? "#EDF1FC" : "#192238");
-        muted = color(dark ? "#A3ADC2" : "#6B758B");
-        line = color(dark ? "#2B3445" : "#E6EAF2");
-        accent = color(dark ? "#B9A2FF" : "#6B42E8");
-        soft = color(dark ? "#29223F" : "#EEE8FC");
+        background = color(dark ? "#0B101D" : "#F5F7FA");
+        surface = color(dark ? "#141D2F" : "#FFFFFF");
+        ink = color(dark ? "#FFFFFF" : "#16202E");
+        muted = color(dark ? "#A0B2C7" : "#5C6877");
+        line = color(dark ? "#2D3B4F" : "#DCE2EA");
+        accent = dev.radek.conventor.SharedTheme.accent(this);
+        soft = color(dark ? "#203E30" : "#DDF3E7");
         Diagnostics.record("APP", "library preview; game execution remains unavailable");
         home();
+        if (state == null && getIntent().getBooleanExtra("importIpaFolder", false))
+            selectFolder(IMPORT_FOLDER);
     }
     private static int color(String value) {
         return Color.parseColor(value);
@@ -145,7 +146,7 @@ public final class MainActivity extends Activity {
         view.setMinimumWidth(0);
         view.setMinWidth(0);
         view.setPadding(dp(18), dp(12), dp(18), dp(12));
-        view.setTextColor(primary ? (dark ? color("#1D1237") : Color.WHITE) : ink);
+        view.setTextColor(primary ? (dark ? color("#08291D") : Color.WHITE) : ink);
         clickable(view, primary ? accent : soft, 14, callback);
         return view;
     }
@@ -215,7 +216,7 @@ public final class MainActivity extends Activity {
         ImageView logo = new ImageView(this);
         logo.setImageResource(R.drawable.ic_brand);
         brand.addView(logo, new LinearLayout.LayoutParams(dp(32), dp(32)));
-        TextView wordmark = text("PodNative", 19, ink, true);
+        TextView wordmark = text("AnyiOS / Emulator", 19, ink, true);
         LinearLayout.LayoutParams wordmarkLp = new LinearLayout.LayoutParams(0, -2, 1);
         wordmarkLp.leftMargin = dp(10);
         brand.addView(wordmark, wordmarkLp);
@@ -225,6 +226,9 @@ public final class MainActivity extends Activity {
         preview.setBackground(shape(soft, 8, false));
         brand.addView(preview);
         root.addView(brand);
+        brand.setContentDescription("AnyiOS Emulator. Tap to return to module selection.");
+        brand.setFocusable(true);
+        brand.setOnClickListener(v -> finish());
         ScrollView scroll = new ScrollView(this);
         scroll.setFillViewport(true);
         scroll.setClipToPadding(false);
@@ -267,7 +271,7 @@ public final class MainActivity extends Activity {
         }
         root.addView(navigation);
         renderedRevision = library.revision;
-        renderedBusy = library.busy;
+        renderedBusy = SharedCatalog.isBusy();
         renderedNotice = library.notice;
         setContentView(root);
         root.requestApplyInsets();
@@ -283,8 +287,8 @@ public final class MainActivity extends Activity {
         if (largeText)
             gap(titleRow, 12);
         Button add = action("＋ Add game", true, this::addGame);
-        add.setEnabled(!library.busy);
-        add.setAlpha(library.busy ? 0.5f : 1);
+        add.setEnabled(!SharedCatalog.isBusy());
+        add.setAlpha(SharedCatalog.isBusy() ? 0.5f : 1);
         titleRow.addView(add);
         gap(parent, 18);
         parent.addView(titleRow);
@@ -312,13 +316,13 @@ public final class MainActivity extends Activity {
             empty.addView(intro);
             gap(empty, 12);
             TextView explanation = text(
-                "Import an IPA or an extracted game folder. We’ll keep a private copy, read its app details and select a supported ARM32 executable.",
+                "Import an IPA, a folder of separate IPAs, or an extracted app bundle. We keep a private copy and read its app details. Unsupported or broken games stay visible with an explanation.",
                 15, muted, false);
             explanation.setGravity(Gravity.CENTER);
             empty.addView(explanation);
             gap(empty, 16);
             Button button = action("Add your first game", true, this::addGame);
-            button.setEnabled(!library.busy);
+            button.setEnabled(!SharedCatalog.isBusy());
             empty.addView(button, new LinearLayout.LayoutParams(-1, -2));
         } else {
             gap(parent, 18);
@@ -361,7 +365,7 @@ public final class MainActivity extends Activity {
             for (File file : legacy)
                 if (file.isFile())
                     button(old, file.getName(), false, () -> library.importLegacy(file))
-                        .setEnabled(!library.busy);
+                        .setEnabled(!SharedCatalog.isBusy());
         }
     }
     private void operationState(LinearLayout parent) {
@@ -397,7 +401,7 @@ public final class MainActivity extends Activity {
             + ", game launch unavailable");
         FrameLayout artwork = new FrameLayout(this);
         GradientDrawable artworkBackdrop = new GradientDrawable(GradientDrawable.Orientation.TL_BR,
-            new int[] {color(dark ? "#382853" : "#E5DBFF"), color(dark ? "#172E39" : "#DBF5EF")});
+            new int[] {color(dark ? "#174C38" : "#CAF2DD"), color(dark ? "#15342C" : "#E4F4BC")});
         artworkBackdrop.setCornerRadius(dp(16));
         artwork.setBackground(artworkBackdrop);
         artwork.setClipToOutline(true);
@@ -425,9 +429,10 @@ public final class MainActivity extends Activity {
         subtitle.setEllipsize(TextUtils.TruncateAt.END);
         card.addView(subtitle);
         gap(card, 9);
-        TextView status =
-            text(game.status.equals("Encrypted") ? "Encrypted executable" : "Runtime not ready", 10,
-                muted, true);
+        TextView status = text(!game.blockReason.isEmpty() ? game.status
+                : game.status.equals("Encrypted")          ? "Encrypted executable"
+                                                           : "Runtime not ready",
+            10, muted, true);
         status.setPadding(dp(8), dp(5), dp(8), dp(5));
         status.setBackground(shape(soft, 7, false));
         card.addView(status);
@@ -452,7 +457,11 @@ public final class MainActivity extends Activity {
         });
         button(content, "Import game folder", false, () -> {
             sheet.dismiss();
-            selectFolder();
+            selectFolder(IMPORT_FOLDER);
+        });
+        button(content, "Import extracted app folder", false, () -> {
+            sheet.dismiss();
+            selectFolder(IMPORT_APP_FOLDER);
         });
         button(content, "Import executable only", false, () -> {
             sheet.dismiss();
@@ -460,7 +469,7 @@ public final class MainActivity extends Activity {
         });
         gap(content, 14);
         content.addView(text(
-            "Folder import accepts an extracted .app bundle or a parent containing one app. ARM64-only games are not supported.",
+            "Import game folder searches subfolders for separate IPAs. Use extracted app folder for .app bundles. Unsupported sources stay visible in both modules.",
             12, muted, false));
         sheet.setContentView(content);
         sheet.show();
@@ -475,11 +484,11 @@ public final class MainActivity extends Activity {
                                    .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION),
             IMPORT_FILE);
     }
-    private void selectFolder() {
+    private void selectFolder(int request) {
         startActivityForResult(new Intent(Intent.ACTION_OPEN_DOCUMENT_TREE)
                                    .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION
                                        | Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION),
-            IMPORT_FOLDER);
+            request);
     }
     private void gameDetails(GameLibrary.Game game) {
         Dialog sheet = new Dialog(this);
@@ -497,11 +506,13 @@ public final class MainActivity extends Activity {
                 + (game.bundleId.isEmpty() ? "" : "\n" + game.bundleId),
             13, muted, false));
         gap(content, 18);
-        content.addView(text(game.status.equals("Encrypted") ? "Encrypted executable"
-                                                             : "Game launch is not available yet",
+        content.addView(text(!game.blockReason.isEmpty() ? "Cannot launch this import"
+                : game.status.equals("Encrypted")        ? "Encrypted executable"
+                                                         : "Game launch is not available yet",
             17, ink, true));
         gap(content, 8);
-        content.addView(text(game.status.equals("Encrypted")
+        content.addView(text(!game.blockReason.isEmpty() ? game.blockReason
+                : game.status.equals("Encrypted")
                 ? "The game was added, but its executable is protected. This build does not bypass DRM."
                 : "Attempt launch reopens the saved executable and checks it with the native loader. It reports the first startup blocker. Guest execution and iOS frameworks are not integrated yet; no game code runs in this build.",
             14, muted, false));
@@ -516,7 +527,7 @@ public final class MainActivity extends Activity {
                     activity.presentGameArtwork(game, files);
             });
         });
-        launch.setEnabled(!library.busy);
+        launch.setEnabled(!SharedCatalog.isBusy());
         LinearLayout.LayoutParams launchLp = new LinearLayout.LayoutParams(-1, -2);
         launchLp.topMargin = dp(18);
         content.addView(launch, launchLp);
@@ -537,6 +548,10 @@ public final class MainActivity extends Activity {
         }
         button(content, "View import report", false, () -> showReport(game));
         button(content, "Export report", false, () -> exportReport(game));
+        button(content, "Refresh details & artwork", false, () -> {
+            sheet.dismiss();
+            library.refreshGame(game);
+        }).setEnabled(!SharedCatalog.isBusy());
         button(content, "Rename", false, () -> {
             if (library.busy)
                 return;
@@ -556,14 +571,14 @@ public final class MainActivity extends Activity {
                         sheet.dismiss();
                     })
                 .show();
-        }).setEnabled(!library.busy);
+        }).setEnabled(!SharedCatalog.isBusy());
         button(content, "Remove local copy", false, () -> {
             if (library.busy)
                 return;
             new AlertDialog.Builder(this)
                 .setTitle("Remove " + game.title + "?")
                 .setMessage(
-                    "This removes PodNative’s private copy only. Your original IPA or game folder is not changed.")
+                    "This removes the shared entry from BOTH Emulator and Converter, including local outputs. Your original IPA or folder is not changed.")
                 .setNegativeButton("Keep game", null)
                 .setPositiveButton("Remove",
                     (dialog, which) -> {
@@ -571,7 +586,7 @@ public final class MainActivity extends Activity {
                         sheet.dismiss();
                     })
                 .show();
-        }).setEnabled(!library.busy);
+        }).setEnabled(!SharedCatalog.isBusy());
         sheet.setContentView(scroll);
         sheet.show();
         sheet.getWindow().setBackgroundDrawableResource(android.R.color.transparent);
@@ -602,7 +617,7 @@ public final class MainActivity extends Activity {
                 .setType("text/plain")
                 .addCategory(Intent.CATEGORY_OPENABLE)
                 .putExtra(Intent.EXTRA_TITLE,
-                    game == null ? "PodNative-diagnostics.txt" : "PodNative-game-report.txt"),
+                    game == null ? "AnyiOS-diagnostics.txt" : "AnyiOS-game-report.txt"),
             EXPORT);
     }
     private void settingRow(
@@ -638,10 +653,9 @@ public final class MainActivity extends Activity {
                 -> choose("Frame limit",
                     new String[] {"30 FPS", "60 FPS", "120 FPS · experimental"},
                     new int[] {30, 60, 120}, "fps", 60));
-        String[] appearances = {"System", "Light", "Dark"};
-        settingRow(display, "Appearance", "Choose your preferred look",
-            appearances[Math.max(0, Math.min(2, prefs.getInt("theme", 0)))],
-            () -> choose("Appearance", appearances, new int[] {0, 1, 2}, "theme", 0));
+        String[] appearances = {"Light", "Dark"};
+        settingRow(display, "Appearance", "Choose your preferred look", dark ? "Dark" : "Light",
+            () -> choose("Appearance", appearances, new int[] {1, 2}, "theme", dark ? 2 : 1));
         display.addView(
             text("Rendering changes apply on the next graphics-test launch.", 12, muted, false));
         LinearLayout graphics = card(parent);
@@ -663,10 +677,10 @@ public final class MainActivity extends Activity {
             16, ink, true));
         gap(storage, 8);
         storage.addView(text(
-            "Imports include all IPA bytes or selected folder resources. Remove a game from its details to free its private copy. Limits: 2 GiB per import, 64 MiB per ARM32 slice, 64 games.",
+            "Imports include all IPA bytes or selected folder resources. Remove a game from its details to free its private copy. No fixed source-size or game-count quota; free-space and traversal/parser safety limits apply.",
             13, muted, false));
         LinearLayout about = card(parent);
-        about.addView(text("PodNative " + BuildConfig.VERSION_NAME, 16, ink, true));
+        about.addView(text("AnyiOS " + BuildConfig.VERSION_NAME, 16, ink, true));
         gap(about, 9);
         about.addView(text(
             "Game execution, guest frameworks, audio and touch overlays are not available in this preview. ARM32 CPU diagnostics are developed and tested separately.",
@@ -687,7 +701,7 @@ public final class MainActivity extends Activity {
     private void choose(String title, String[] labels, int[] values, String key, int fallback) {
         int selected = 0;
         for (int i = 0; i < values.length; i++)
-            if (values[i] == prefs.getInt(key, fallback))
+            if (values[i] == (key.equals("theme") ? (dark ? 2 : 1) : prefs.getInt(key, fallback)))
                 selected = i;
         new AlertDialog.Builder(this)
             .setTitle(title)
@@ -695,9 +709,18 @@ public final class MainActivity extends Activity {
                 (dialog, which) -> {
                     prefs.edit().putInt(key, values[which]).apply();
                     dialog.dismiss();
-                    if (key.equals("theme"))
+                    if (key.equals("theme")) {
+                        boolean light = values[which] == 1
+                            || values[which] == 0
+                                && (getResources().getConfiguration().uiMode
+                                       & Configuration.UI_MODE_NIGHT_MASK)
+                                    != Configuration.UI_MODE_NIGHT_YES;
+                        getSharedPreferences("radek_settings", MODE_PRIVATE)
+                            .edit()
+                            .putBoolean("light_theme", light)
+                            .apply();
                         recreate();
-                    else
+                    } else
                         home();
                 })
             .setNegativeButton("Cancel", null)
@@ -715,7 +738,7 @@ public final class MainActivity extends Activity {
         button(tools, "Export diagnostic log", true, () -> exportReport(null));
         button(tools, "Run graphics test", false, this::launch);
         button(tools, "Run ARM/Thumb CPU self-test", false, library::runCpuProbe)
-            .setEnabled(!library.busy);
+            .setEnabled(!SharedCatalog.isBusy());
         String backend = prefs.getString("lastBackend", "");
         if (!backend.isEmpty()) {
             LinearLayout renderer = card(parent);
@@ -872,7 +895,7 @@ public final class MainActivity extends Activity {
         Uri uri = data.getData();
         if (request == IMPORT_FILE)
             library.importFile(uri);
-        else if (request == IMPORT_FOLDER) {
+        else if (request == IMPORT_FOLDER || request == IMPORT_APP_FOLDER) {
             if (library.busy) {
                 android.widget.Toast
                     .makeText(this, "Wait for the current library action to finish",
@@ -886,7 +909,10 @@ public final class MainActivity extends Activity {
             } catch (SecurityException e) {
                 Diagnostics.record("STORAGE", "Using temporary folder grant");
             }
-            library.importFolder(uri);
+            if (request == IMPORT_FOLDER)
+                library.importIpaFolder(uri);
+            else
+                library.importFolder(uri);
         } else if (request == EXPORT) {
             String report = Diagnostics.export();
             if (!exportGame.isEmpty()) {
@@ -902,7 +928,7 @@ public final class MainActivity extends Activity {
                         .show();
                     return;
                 }
-                report = "PodNative game import report\nApp=" + selected.title
+                report = "AnyiOS game import report\nApp=" + selected.title
                     + "\nVersion=" + selected.version + "\nBuild=" + BuildConfig.SOURCE_REVISION
                     + "\n\n" + selected.report
                     + (selected.launchReport.isEmpty()
@@ -932,7 +958,7 @@ public final class MainActivity extends Activity {
                                           android.widget.Toast.LENGTH_LONG)
                                       .show());
                 }
-            }, "PodNative-export").start();
+            }, "AnyiOS-export").start();
         }
     }
 }

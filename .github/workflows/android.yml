@@ -6,7 +6,7 @@ on:
   workflow_dispatch:
 concurrency:
   group: android-${{ github.ref }}
-  cancel-in-progress: false
+  cancel-in-progress: true
 permissions:
   contents: read
 jobs:
@@ -16,4 +16,4 @@ jobs:
     uses: ./.github/workflows/build.yml
     with:
       variant: debug
-      artifact: PodNative-debug.apk
+      artifact: AnyiOS-debug.apk
