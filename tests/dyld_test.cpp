@@ -75,6 +75,57 @@ int main() {
     graph.define(weakImage, "x", {0x4321, false});
     weakPlan.applyWithGraph(memory, 0, graph, weakImage);
     assert(memory.read32(0x1000) == 0x4321);
+    // The same slot named twice with the same target is not a conflict: link editors do
+    // emit a pointer in both the lazy and the plain binding stream.
+    {
+        DyldPlan duplicate;
+        duplicate.fixups.push_back({0x1000, false, false, true, 1, 0, "_same"});
+        duplicate.fixups.push_back({0x1000, false, false, false, 1, 0, "_same"});
+        ExportGraph same;
+        size_t image = same.addImage("dup-image");
+        same.dependencies(image, {"dup-image"});
+        same.define(image, "_same", {0x9000, false});
+        Memory target;
+        target.map({0x1000, 4096, uint8_t(Read | Write), "duplicate slots"});
+        duplicate.applyWithGraph(target, 0, same, image);
+        assert(target.read32(0x1000) == 0x9000);
+        // ... unless the targets differ, which stays a hard conflict.
+        DyldPlan conflict;
+        conflict.fixups.push_back({0x1000, false, false, false, 1, 0, "_same"});
+        conflict.fixups.push_back({0x1000, false, false, false, 1, 0, "_other"});
+        try {
+            conflict.applyWithGraph(target, 0, same, image);
+            assert(false);
+        } catch (const Error& e) {
+            assert(e.code == "DYLD_TARGET" &&
+                   std::string(e.what()).find("conflicting") != std::string::npos);
+        }
+    }
+    // A stride before any segment is selected, and a stride past the final fixup, are
+    // cursor arithmetic only: they must decode, not fail with DYLD_ADDRESS.
+    {
+        // Binding opcodes: 0x80 = ADD_ADDR_ULEB before SET_SEGMENT, then DO_BIND (0x91).
+        uint8_t leadingAdvance[] = {0x11, 0x80, 8, 0x40, 'x', 0, 0x70, 0, 0x91, 0};
+        auto plan2 = decodeDyld(leadingAdvance, sizeof(leadingAdvance), segments, false);
+        assert(plan2.fixups.size() == 1);
+        // 0x51 = one rebase, then a ULEB stride (0x80 0x01 = 128) past the last fixup.
+        uint8_t trailingStride[] = {0x11, 0x20, 0, 0x51, 0x30, 0x80, 0x01, 0};
+        auto trailing = decodeDyld(trailingStride, sizeof(trailingStride), segments, true);
+        assert(trailing.fixups.size() == 1);
+        // A real overflow still fails, and names the arithmetic itself: UINT64_MAX then +1.
+        std::vector<uint8_t> overflow = {0x11, 0x30};
+        for (int n = 0; n < 9; n++) overflow.push_back(0xff);
+        overflow.push_back(0x01);
+        overflow.push_back(0x30);
+        overflow.push_back(0x01);
+        overflow.push_back(0x00);
+        try {
+            decodeDyld(overflow.data(), overflow.size(), segments, true);
+            assert(false);
+        } catch (const Error& e) {
+            assert(e.code == "DYLD_ADDRESS");
+        }
+    }
     uint8_t weakOrdinal[] = {0x11, 0x00};
     try {
         decodeDyld(weakOrdinal, sizeof(weakOrdinal), segments, false, false, true);

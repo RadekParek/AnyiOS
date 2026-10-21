@@ -188,6 +188,76 @@ int main() {
     unknown.registers[13] = Stack;
     assert(!cg.invoke("_CGBitmapContextCreate", unknown, memory));
 
-    std::cout << "CoreGraphics geometry, media time and colour-space lifetime passed\n";
+    // CATransform3D is sixteen floats returned through a hidden pointer.
+    {
+        CpuState rotate;
+        rotate.registers[0] = 0x8000;  // hidden result pointer
+        rotate.registers[1] = floatBits(static_cast<float>(M_PI / 2));
+        rotate.registers[2] = floatBits(0);
+        rotate.registers[3] = floatBits(0);
+        rotate.registers[13] = Stack;
+        memory.write32(Stack, floatBits(1));  // z axis, fifth argument on the stack
+        assert(cg.invoke("_CATransform3DMakeRotation", rotate, memory));
+        // 90 degrees about z maps x to y: m[0] ~ 0, m[1] ~ 1.
+        assert(near(bitsFloat(memory.read32(0x8000)), 0));
+        assert(near(bitsFloat(memory.read32(0x8004)), 1));
+        assert(near(bitsFloat(memory.read32(0x803C)), 1));  // m[15] stays 1
+        CpuState scale;
+        scale.registers[0] = 0x8100;
+        scale.registers[1] = floatBits(2);
+        scale.registers[2] = floatBits(3);
+        scale.registers[3] = floatBits(4);
+        scale.registers[13] = Stack;
+        assert(cg.invoke("_CATransform3DScale", scale, memory));
+        assert(near(bitsFloat(memory.read32(0x8100)), 2));
+        assert(near(bitsFloat(memory.read32(0x8114)), 3));
+        assert(near(bitsFloat(memory.read32(0x8128)), 4));
+    }
+
+    // CFBundle/CFURL report the mounted sandbox path to the guest.
+    {
+        CoreFoundation cf;
+        cf.setPaths("/var/mobile", "/var/mobile/Documents");
+        CpuState state;
+        assert(cf.invoke("_CFBundleGetMainBundle", state, memory));
+        const uint32_t bundle = state.registers[0];
+        assert(bundle != 0);
+        CpuState resources;
+        resources.registers[0] = bundle;
+        assert(cf.invoke("_CFBundleCopyResourcesDirectoryURL", resources, memory));
+        const uint32_t url = resources.registers[0];
+        assert(url != 0);
+        CpuState path;
+        path.registers[0] = url;
+        path.registers[1] = 0;
+        path.registers[2] = 0x8200;
+        path.registers[3] = 64;
+        assert(cf.invoke("_CFURLGetFileSystemRepresentation", path, memory));
+        assert(path.registers[0] == 1);
+        char text[64] = {0};
+        memory.read(0x8200, text, 12);
+        assert(std::string(text) == "/var/mobile");
+        // A buffer that is too small is reported as false, not overflowed.
+        CpuState small;
+        small.registers[0] = url;
+        small.registers[2] = 0x8200;
+        small.registers[3] = 4;
+        assert(cf.invoke("_CFURLGetFileSystemRepresentation", small, memory));
+        assert(small.registers[0] == 0);
+        // A bit vector handle is not a URL.
+        CpuState notUrl;
+        notUrl.registers[0] = 0x7fffffff;
+        notUrl.registers[2] = 0x8200;
+        notUrl.registers[3] = 64;
+        try {
+            cf.invoke("_CFURLGetFileSystemRepresentation", notUrl, memory);
+            assert(false);
+        } catch (const Error& e) {
+            assert(e.code == "CF_HANDLE");
+        }
+    }
+
+    std::cout << "CoreGraphics geometry, media time, colour-space, CATransform3D and CFBundle "
+                 "passed\n";
     return 0;
 }

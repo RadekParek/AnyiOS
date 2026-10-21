@@ -1,7 +1,13 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
     <uses-feature android:name="android.hardware.vulkan.level" android:required="false" />
     <application android:name=".AnyiOSApplication" android:theme="@style/AppTheme" android:label="AnyiOS" android:icon="@mipmap/ic_launcher" android:roundIcon="@mipmap/ic_launcher_round" android:allowBackup="false" android:supportsRtl="true">
-        <activity android:name=".MainActivity" android:exported="false" />
+        <!-- The emulator owns the whole screen while a game boots, so rotation is handled
+             in place (the ANGLE surface is resized, never recreated) and the activity is
+             not rebuilt when the device turns. -->
+        <activity android:name=".MainActivity" android:exported="false"
+            android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|keyboardHidden|uiMode|density|navigation"
+            android:resizeableActivity="true"
+            android:launchMode="singleTop" />
         <activity android:name=".ModuleActivity" android:exported="true">
             <intent-filter><action android:name="android.intent.action.MAIN" /><category android:name="android.intent.category.LAUNCHER" /></intent-filter>
         </activity>

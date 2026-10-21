@@ -85,6 +85,71 @@ Converter inclusion is explicitly requested by its owner. Upstream has no root l
   increments below take it to **130 of 438**. This is API-surface progress; it is not
   evidence that any title launches or renders.
 
+### Launch-blocker increment: dyld, stubs, msgSend and the launch UI (2026-10-21, sixth pass)
+
+This pass answers the two failures in the latest on-device report
+(`LAUNCH_BLOCKED: GUEST_SETUP: DYLD_TARGET: conflicting duplicate fixup`,
+`DYLD_ADDRESS: invalid segment or cursor arithmetic overflow`) and the 350 undispatched
+legacy stubs, then widens the runtime surface around `objc_msgSend`.
+
+- **Duplicate fixups are merged, not rejected.** A link editor may list the same pointer in
+  both the lazy and the plain binding stream; writing the same value twice is idempotent.
+  `DyldPlan::applyWithGraph` now merges entries with identical target/addend (keeping the
+  eager one) and still fails `DYLD_TARGET` when the targets genuinely differ.
+- **Cursor strides are arithmetic, not validation.** `advance()` used to throw
+  `DYLD_ADDRESS` whenever a stream advanced before selecting a segment, which rejected
+  valid streams from this binary. Only real 64-bit overflow fails now; a fixup emitted with
+  no segment is a precise `DYLD_SEGMENT`, and an out-of-range target stays `DYLD_TARGET`.
+- **Legacy symbol stubs are dispatched.** The 350 `S_SYMBOL_STUBS` entries are decoded with
+  their indirect symbol and ordinal, then rewritten before guest execution to
+  `ldr r12, [pc] / bx r12 / .word target` — the resolved gate when the API exists, a named
+  trap gate otherwise. Unresolved weak stubs bind to null, matching dyld. `Memory::patch`
+  rewrites the executable segment without granting guest write permission.
+- **`objc_msgSend` family.** Messaging nil returns 0 (real Objective-C semantics, no longer a
+  guest fault); `objc_msgSendSuper2` reads `struct objc_super`; `objc_msgSend_stret` shifts
+  the hidden result pointer for the scalar-returning classes and refuses struct returns it
+  cannot model. Added `objc_getProperty`, `objc_setProperty`, `objc_copyStruct`,
+  `objc_sync_enter/exit` (balanced bookkeeping, mismatch is an error),
+  `objc_enumerationMutation`, `objc_autoreleasePoolPush/Pop`, `objc_retainBlock`,
+  `objc_lookUpClass`, `sel_getName`, `NSClassFromString`, `NSSelectorFromString`, `NSLog`.
+  Runtime entries are registered under `libobjc.A.dylib`, Foundation's under Foundation.
+- **Bundle and asset paths.** `+[NSBundle mainBundle]`, `bundlePath`, `resourcePath`,
+  `pathForResource:ofType:` (nil unless the file really exists in the mount),
+  `NSSearchPathForDirectoriesInDomains`, `NSHomeDirectory`, plus
+  `CFBundleGetMainBundle`, `CFBundleCopyResourcesDirectoryURL`, `CFBundleCopyBundleURL`,
+  `CFURLGetFileSystemRepresentation` and `CFURLCopyFileSystemPath`.
+- **Audio session state.** `AudioSessionInitialize`, `SetActive`, `SetProperty`,
+  `GetProperty`/`GetPropertySize` implement the real AudioToolbox state machine: the
+  category and other modelled properties round-trip, unknown property IDs return
+  `kAudioSessionUnsupportedPropertyError`, wrong sizes return
+  `kAudioSessionBadPropertySizeError`, and the route is a real `"Speaker"` string. No audio is
+  rendered; playback APIs remain traps.
+- **Timing and identity.** `mach_absolute_time` (monotonic, 1/1 timebase),
+  `mach_timebase_info`, `sysctlbyname` for the keys a title actually queries
+  (`hw.machine` = `iPod5,1`, `kern.osversion`, …) with `-1` for unknown keys, and
+  `strtok_r` with real in-place tokenising.
+- **QuartzCore.** `CATransform3DMakeRotation`/`CATransform3DScale` compute the real
+  column-major 4x4 matrix with a normalised axis.
+- **Coverage** moved from 130 to **156 of 438** required imports (167 service gates, 33
+  runtime entries, 17 class objects). The remaining 282 are dominated by UIKit view and
+  lifecycle classes, OpenGL ES entry points, EAGL, CoreGraphics image/bitmap contexts and
+  AVFoundation media, none of which are stubbed.
+- **Full-screen, rotation-aware launch.** `MainActivity` now declares
+  `configChanges="orientation|screenSize|…"`, so turning the device resizes the ANGLE
+  surface in place instead of destroying the emulator. The boot view is a full-bleed
+  `SurfaceView` with floating console chrome that fades after four seconds and returns on
+  tap; system bars are hidden with transient-swipe behaviour, the display keeps the screen
+  awake, and both are restored when the launch stops. `onConfigurationChanged` and
+  `onWindowFocusChanged` re-assert immersive mode on OEMs that restore the bars.
+
+#### What this does not do
+
+No title reaches gameplay, a rendered frame or an FPS number in this increment, and nothing
+here is evidence that it will. A launch now proceeds past dyld and stub binding and stops at
+the first *actually called* unimplemented API, which the crash screen names — that is the
+honest state. UIKit views, EAGL contexts, `gl*` and CoreGraphics bitmap contexts are the next
+vertical slices.
+
 ### Guest sandbox and stdio increment (2026-10-21, fifth pass)
 
 A game that cannot open its own assets never reaches anything. The runtime previously had

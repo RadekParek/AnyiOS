@@ -41,11 +41,48 @@ Affine Affine::rotation(float r) {
 }
 Affine Affine::translation(float x, float y) { return {1, 0, 0, 1, x, y}; }
 Affine Affine::scale(float x, float y) { return {x, 0, 0, y, 0, 0}; }
+CATransform3D CATransform3D::rotation(float radians, float x, float y, float z) {
+    // Normalise the axis; a zero axis is the identity rotation, as Core Animation does.
+    const float length = std::sqrt(x * x + y * y + z * z);
+    if (length == 0) return {};
+    const float nx = x / length, ny = y / length, nz = z / length;
+    const float c = std::cos(radians), s = std::sin(radians), t = 1 - c;
+    CATransform3D result;
+    result.m[0] = t * nx * nx + c;
+    result.m[1] = t * nx * ny + s * nz;
+    result.m[2] = t * nx * nz - s * ny;
+    result.m[4] = t * nx * ny - s * nz;
+    result.m[5] = t * ny * ny + c;
+    result.m[6] = t * ny * nz + s * nx;
+    result.m[8] = t * nx * nz + s * ny;
+    result.m[9] = t * ny * nz - s * nx;
+    result.m[10] = t * nz * nz + c;
+    return result;
+}
+CATransform3D CATransform3D::scale(float x, float y, float z) {
+    CATransform3D result;
+    result.m[0] = x;
+    result.m[5] = y;
+    result.m[10] = z;
+    return result;
+}
 CoreFoundation::Bits& CoreFoundation::get(uint32_t handle) {
     auto it = objects.find(handle);
     if (it == objects.end())
         throw Error("CF_HANDLE", "unknown or released CoreFoundation object", handle);
     return it->second;
+}
+uint32_t CoreFoundation::createPath(std::string path, uint32_t kind) {
+    if (objects.size() >= 4096 || next == 0xfffffffc)
+        throw Error("CF_BUDGET", "CoreFoundation session handle limit");
+    const uint32_t handle = next;
+    next += 4;
+    Bits entry;
+    entry.references = 1;
+    entry.path = std::move(path);
+    entry.kind = kind;
+    objects.emplace(handle, std::move(entry));
+    return handle;
 }
 uint32_t CoreFoundation::create(std::vector<uint8_t> bytes, uint32_t bits, bool mutableBits) {
     if (bytes.size() > 8 * 1024 * 1024 - allocated || objects.size() >= 4096 || next == 0xfffffffc)
@@ -53,7 +90,12 @@ uint32_t CoreFoundation::create(std::vector<uint8_t> bytes, uint32_t bits, bool 
     uint32_t handle = next;
     next += 4;
     allocated += bytes.size();
-    objects.emplace(handle, Bits{std::move(bytes), bits, 1, mutableBits});
+    Bits entry;
+    entry.bytes = std::move(bytes);
+    entry.count = bits;
+    entry.references = 1;
+    entry.mutableBits = mutableBits;
+    objects.emplace(handle, std::move(entry));
     return handle;
 }
 bool CoreFoundation::invoke(const std::string& name, CpuState& cpu, Memory& memory) {
@@ -86,6 +128,35 @@ bool CoreFoundation::invoke(const std::string& name, CpuState& cpu, Memory& memo
             else
                 bits.bytes[r[1] / 8] &= uint8_t(~mask);
         }
+    } else if (name == "_CFBundleGetMainBundle") {
+        r[0] = mainBundle();
+    } else if (name == "_CFBundleCopyResourcesDirectoryURL") {
+        // The resources of a mounted bundle live at the bundle root.
+        if (bundlePath.empty()) throw Error("CF_BUNDLE", "no bundle is mounted");
+        r[0] = createPath(bundlePath, 2);
+    } else if (name == "_CFBundleCopyBundleURL") {
+        if (bundlePath.empty()) throw Error("CF_BUNDLE", "no bundle is mounted");
+        r[0] = createPath(bundlePath, 2);
+    } else if (name == "_CFURLGetFileSystemRepresentation") {
+        auto& url = get(r[0]);
+        if (url.kind == 0) throw Error("CF_URL", "object is not a URL", r[0]);
+        const uint32_t buffer = r[2], capacity = r[3];
+        if (!buffer) {
+            r[0] = 1;
+            return true;
+        }
+        if (capacity < url.path.size() + 1) {
+            r[0] = 0;  // Documented behaviour: false when the buffer is too small.
+            return true;
+        }
+        if (!memory.permits(buffer, url.path.size() + 1, Write))
+            throw Error("CF_URL", "destination buffer is not writable", buffer);
+        memory.write(buffer, url.path.c_str(), url.path.size() + 1);
+        r[0] = 1;
+    } else if (name == "_CFURLCopyFileSystemPath") {
+        auto& url = get(r[0]);
+        if (url.kind == 0) throw Error("CF_URL", "object is not a URL", r[0]);
+        r[0] = createPath(url.path, 3);
     } else if (name == "_CFRetain") {
         auto& bits = get(r[0]);
         if (bits.references == std::numeric_limits<uint32_t>::max())

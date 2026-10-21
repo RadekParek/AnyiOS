@@ -12,9 +12,19 @@ Second increment (same day): guest heap and the C runtime subset described in
 Third and fourth increments (same day): varargs formatting, the Objective-C collections
 and dispatch layer, then the C++ ABI and compiler-runtime layer in `runtime/cxx.cpp`
 (libstdc++.6 and libgcc_s.1, both bound under their real image names). Coverage is now
-**130 of 438** required imports: 121 of the report's service names plus 9 Objective-C
-class/metaclass entries. Guest file I/O and stdio are now implemented over explicit sandbox
-mounts (`runtime/fs.cpp`, `runtime/stdio.cpp`). `qsort`, UIKit lifecycle, EAGL rendering,
+**156 of 438** required imports: 128 service names, 10 Objective-C runtime entries and 15
+class/metaclass entries. Guest file I/O and stdio are implemented over explicit sandbox
+mounts (`runtime/fs.cpp`, `runtime/stdio.cpp`); classic `S_SYMBOL_STUBS` sections are now
+decoded and redirected to their resolved import (or a named trap) before execution, duplicate
+binding-stream entries with the same target are merged, and the `objc_msgSend` family,
+Foundation bundle paths, AudioSession state, `CATransform3D` and the mach time/sysctl helpers
+are implemented. `qsort`, UIKit lifecycle, EAGL rendering,
 audio and exception unwinding deliberately remain unimplemented and are refused by name.
 
 This is not implementation of every UIKit, Objective-C, C++ exception, EAGL, audio or networking API. Guest dependency loading, export tries/re-exports, class bootstrap, callbacks, variadic/hard-float ABI and application lifecycle remain separate requirements. Never bind missing APIs to success-returning placeholders. No game compatibility claim without actual device evidence.
+
+Sixth increment (same day): the two on-device blockers were fixed in the decoder itself.
+Stream cursor strides no longer raise `DYLD_ADDRESS` (only real 64-bit overflow does), an
+entry repeated across the lazy and plain binding streams is merged when the target matches,
+and the 350 undispatched legacy stubs are now bound by rewriting each stub to
+`ldr r12, [pc] / bx r12 / .word target`.

@@ -22,6 +22,12 @@ class Memory final {
     void map(Region region, const uint8_t* initial = nullptr, size_t initialSize = 0);
     void read(uint32_t address, void* destination, size_t size) const;
     void write(uint32_t address, const void* source, size_t size);
+    // Loader-only mutation that does not require guest write permission: used to rewrite
+    // an image's symbol stubs inside its executable segment before the guest starts. The
+    // range must still be mapped and readable, so a bad pointer faults instead of
+    // corrupting host memory.
+    void patch(uint32_t address, const void* source, size_t size);
+    void patch32(uint32_t address, uint32_t value);
     uint32_t read32(uint32_t address) const;
     void write32(uint32_t address, uint32_t value);
     uint32_t fetch32(uint32_t address) const;

@@ -58,18 +58,21 @@ DyldPlan decodeDyld(const uint8_t* bytes, size_t size, const std::vector<DyldSeg
     int64_t addend = 0;
     size_t operations = 0, nameBytes = 0;
     bool done = false;
+    // Strides are pure cursor arithmetic. A stream may legitimately advance before it
+    // selects a segment (the cursor is simply not anchored yet) and may run past the end
+    // of the last fixup, because only emit() dereferences the cursor. Failing here rejected
+    // valid streams from this binary; the precise complaint now comes from emit(), and the
+    // only remaining hard failure is real 64-bit arithmetic overflow.
     auto advance = [&](uint64_t amount) {
-        // A stride after the final fixup may leave the segment. Only emit()
-        // dereferences the cursor; rejecting that terminal stride rejects valid dyld streams.
-        if (segment >= segments.size() || amount > UINT64_MAX - offset)
-            throw Error("DYLD_ADDRESS", "invalid segment or cursor arithmetic overflow");
+        if (amount > UINT64_MAX - offset) throw Error("DYLD_ADDRESS", "cursor arithmetic overflow");
         offset += amount;
     };
     auto emit = [&] {
         if (type != 1)
             throw Error("DYLD_TYPE_UNSUPPORTED", "only ARM32 pointer fixups are implemented");
-        if (segment >= segments.size() || offset > segments[segment].size ||
-            segments[segment].size - offset < 4 ||
+        if (segment >= segments.size())
+            throw Error("DYLD_SEGMENT", "fixup emitted before a segment was selected");
+        if (offset > segments[segment].size || segments[segment].size - offset < 4 ||
             uint64_t(segments[segment].address) + offset + 4 > 0x100000000ULL ||
             !(segments[segment].permissions & Write) || offset % 4)
             throw Error("DYLD_TARGET", "invalid, unaligned or non-writable fixup target");
@@ -268,16 +271,27 @@ void DyldPlan::applyWithGraph(Memory& memory, uint32_t slide, const ExportGraph&
         if (old == targets.end()) {
             targets.emplace(fixup.address, normalized.fixups.size());
             normalized.fixups.push_back(fixup);
-        } else {
-            auto& previous = normalized.fixups[old->second];
-            if (!needsCoalescing || fixup.ordinal != -3 || previous.ordinal != -3 ||
-                previous.addend != fixup.addend ||
-                (!previous.rebase && previous.symbol != fixup.symbol))
-                throw Error("DYLD_TARGET", "conflicting duplicate fixup", fixup.address);
-            // Coalescing runs after ordinary rebasing/binding, but commit only its
-            // final value, so unresolved symbols cannot leave partial writes.
-            previous = fixup;
+            continue;
         }
+        auto& previous = normalized.fixups[old->second];
+        // Two streams that name the same slot with the same target are not a conflict:
+        // a link editor may list a lazy pointer in both the lazy and the plain binding
+        // stream. Writing the same value twice is idempotent, so merge and keep the
+        // eager one (a lazy marker only defers work that we would otherwise repeat).
+        const bool sameTarget =
+            previous.rebase == fixup.rebase && previous.symbol == fixup.symbol &&
+            previous.addend == fixup.addend &&
+            (previous.ordinal == fixup.ordinal || previous.ordinal == -2 || fixup.ordinal == -2 ||
+             previous.ordinal == -3 || fixup.ordinal == -3);
+        if (sameTarget) {
+            const bool coalescing = needsCoalescing && fixup.ordinal == -3;
+            if (coalescing)
+                previous = fixup;
+            else
+                previous.lazy = previous.lazy && fixup.lazy;
+            continue;
+        }
+        throw Error("DYLD_TARGET", "conflicting duplicate fixup", fixup.address);
     }
     // Coalescing already ran above. apply() must not reject the normalized plan
     // merely because its original stream was the weak-binding stream.

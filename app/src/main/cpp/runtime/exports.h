@@ -14,6 +14,9 @@ struct ExportDefinition {
 class ExportGraph final {
    public:
     size_t addImage(const std::string& installName);
+    // Existing image index for an install name/alias, so a framework that the binary
+    // depends on but nothing has registered yet can be added on demand.
+    std::optional<size_t> index(const std::string& installName) const;
     void setMainExecutable(size_t image);
     void alias(size_t image, const std::string& installName);
     void dependencies(size_t image, std::vector<std::string> names);

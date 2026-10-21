@@ -795,39 +795,98 @@ public final class MainActivity extends Activity {
             "Reports can contain app names, imported symbols and device information. Review them before sharing. Proprietary game files are never included.",
             12, muted, false));
     }
+    /**
+     * Full-screen, rotation-aware emulator chrome. The display keeps the whole window, the
+     * system bars are hidden with transient-swipe behaviour, and the screen stays awake
+     * while a game boots. Rotation is handled by this activity (see the manifest), so the
+     * ANGLE surface is resized in place instead of the emulator being torn down.
+     */
+    private void enterEmulatorDisplay() {
+        android.view.Window window = getWindow();
+        window.addFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
+        if (android.os.Build.VERSION.SDK_INT >= 30) {
+            WindowInsetsController controller = window.getInsetsController();
+            if (controller != null) {
+                controller.hide(WindowInsets.Type.systemBars() | WindowInsets.Type.displayCutout());
+                controller.setSystemBarsBehavior(
+                    WindowInsetsController.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE);
+            }
+        } else {
+            window.getDecorView().setSystemUiVisibility(View.SYSTEM_UI_FLAG_FULLSCREEN
+                | View.SYSTEM_UI_FLAG_HIDE_NAVIGATION | View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY
+                | View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN | View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION
+                | View.SYSTEM_UI_FLAG_LAYOUT_STABLE);
+        }
+    }
+    private void leaveEmulatorDisplay() {
+        android.view.Window window = getWindow();
+        window.clearFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
+        if (android.os.Build.VERSION.SDK_INT >= 30) {
+            WindowInsetsController controller = window.getInsetsController();
+            if (controller != null) {
+                controller.show(WindowInsets.Type.systemBars());
+                controller.setSystemBarsBehavior(WindowInsetsController.BEHAVIOR_DEFAULT);
+            }
+        }
+        window.getDecorView().setSystemUiVisibility(dark
+                ? 0
+                : View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR | View.SYSTEM_UI_FLAG_LIGHT_NAVIGATION_BAR);
+    }
+    @Override
+    public void onConfigurationChanged(Configuration configuration) {
+        super.onConfigurationChanged(configuration);
+        // Rotation lands here because the manifest declares configChanges. Re-assert the
+        // immersive window (bars come back on some OEMs) and let the surface report its new
+        // size; PrototypeView restarts the backend at the new dimensions.
+        if (prototype != null || showingSplashes)
+            enterEmulatorDisplay();
+        else
+            home();
+    }
+    @Override
+    public void onWindowFocusChanged(boolean focused) {
+        super.onWindowFocusChanged(focused);
+        if (focused && (prototype != null || showingSplashes))
+            enterEmulatorDisplay();
+    }
+    /** Chrome that fades out over the display and returns on tap, like a console overlay. */
+    private void autoHideChrome(final View chrome, final View tapTarget) {
+        if (chrome == null)
+            return;
+        final Runnable hide = () -> {
+            if (chrome.getVisibility() != View.VISIBLE)
+                return;
+            chrome.animate()
+                .alpha(0f)
+                .setDuration(350)
+                .withEndAction(() -> {
+                    chrome.setVisibility(View.GONE);
+                    chrome.setAlpha(1f);
+                })
+                .start();
+        };
+        chrome.postDelayed(hide, 4000);
+        if (tapTarget != null)
+            tapTarget.setOnClickListener(view -> {
+                if (chrome.getVisibility() == View.VISIBLE) {
+                    hide.run();
+                    return;
+                }
+                chrome.setVisibility(View.VISIBLE);
+                chrome.animate().alpha(1f).setDuration(180).start();
+                chrome.postDelayed(hide, 3000);
+            });
+    }
     private void presentGameArtwork(GameLibrary.Game game, List<File> files) {
         if (files.isEmpty()) {
             attempt(game);
             return;
         }
         showingSplashes = true;
+        enterEmulatorDisplay();
         int generation = ++presentationGeneration;
-        LinearLayout root = column();
-        root.setBackgroundColor(Color.BLACK);
-        root.setOnApplyWindowInsetsListener((view, insets) -> {
-            view.setPadding(insets.getSystemWindowInsetLeft(), insets.getSystemWindowInsetTop(),
-                insets.getSystemWindowInsetRight(), insets.getSystemWindowInsetBottom());
-            return insets;
-        });
-        // Console-style chrome: a slim title bar with the running title, then the bare
-        // display area, then a translucent status strip the backend reports into.
-        LinearLayout bar = row();
-        bar.setPadding(dp(16), dp(10), dp(8), dp(10));
-        TextView running = text(game.title, 14, Color.WHITE, true);
-        running.setMaxLines(1);
-        running.setEllipsize(TextUtils.TruncateAt.END);
-        bar.addView(running, new LinearLayout.LayoutParams(0, -2, 1));
-        TextView live = text("● BOOT", 10, accent, true);
-        live.setLetterSpacing(0.12f);
-        bar.addView(live);
-        Button cancel = action("Stop", false, this::stop);
-        cancel.setTextColor(Color.WHITE);
-        bar.addView(cancel);
-        root.addView(bar);
-        liveStatus =
-            text("Preparing display · anyiOS engine", 11, Color.parseColor("#B9C7D8"), false);
-        liveStatus.setPadding(dp(16), dp(8), dp(16), dp(10));
-        liveStatus.setBackgroundColor(Color.parseColor("#0D1524"));
+        FrameLayout frame = new FrameLayout(this);
+        frame.setBackgroundColor(Color.BLACK);
         prototype = new PrototypeView(this, files,
             info
             -> {
@@ -840,10 +899,45 @@ public final class MainActivity extends Activity {
                     attempt(game);
                 }
             });
-        root.addView(prototype, new LinearLayout.LayoutParams(-1, 0, 1));
-        root.addView(liveStatus);
-        setContentView(root);
-        root.requestApplyInsets();
+        // The display fills the window; the console chrome floats above it and fades away.
+        frame.addView(prototype, new FrameLayout.LayoutParams(-1, -1));
+        LinearLayout chrome = column();
+        chrome.setClipChildren(false);
+        LinearLayout bar = row();
+        bar.setPadding(dp(16), dp(10), dp(8), dp(10));
+        bar.setBackgroundColor(Color.parseColor("#CC0B1020"));
+        TextView running = text(game.title, 14, Color.WHITE, true);
+        running.setMaxLines(1);
+        running.setEllipsize(TextUtils.TruncateAt.END);
+        bar.addView(running, new LinearLayout.LayoutParams(0, -2, 1));
+        TextView live = text("● BOOT", 10, accent, true);
+        live.setLetterSpacing(0.12f);
+        bar.addView(live);
+        Button cancel = action("Stop", false, this::stop);
+        cancel.setTextColor(Color.WHITE);
+        bar.addView(cancel);
+        chrome.addView(bar);
+        liveStatus =
+            text("Preparing display · anyiOS engine", 11, Color.parseColor("#B9C7D8"), false);
+        liveStatus.setPadding(dp(16), dp(8), dp(16), dp(10));
+        liveStatus.setBackgroundColor(Color.parseColor("#CC0D1524"));
+        LinearLayout.LayoutParams spacer = new LinearLayout.LayoutParams(-1, 0, 1);
+        chrome.addView(new View(this), spacer);
+        chrome.addView(liveStatus);
+        chrome.setOnApplyWindowInsetsListener((view, insets) -> {
+            if (android.os.Build.VERSION.SDK_INT >= 30) {
+                android.graphics.Insets bars = insets.getInsets(
+                    WindowInsets.Type.systemBars() | WindowInsets.Type.displayCutout());
+                view.setPadding(bars.left, bars.top, bars.right, bars.bottom);
+            } else
+                view.setPadding(insets.getSystemWindowInsetLeft(), insets.getSystemWindowInsetTop(),
+                    insets.getSystemWindowInsetRight(), insets.getSystemWindowInsetBottom());
+            return insets;
+        });
+        frame.addView(chrome, new FrameLayout.LayoutParams(-1, -1));
+        autoHideChrome(chrome, frame);
+        setContentView(frame);
+        chrome.requestApplyInsets();
     }
     /** Boot attempt plus the crash screen that names the blocker when it stops. */
     private void attempt(GameLibrary.Game game) {
@@ -873,18 +967,12 @@ public final class MainActivity extends Activity {
             });
         root.addView(prototype, new LinearLayout.LayoutParams(-1, 0, 1));
         setContentView(root);
-        if (android.os.Build.VERSION.SDK_INT >= 30) {
-            WindowInsetsController controller = getWindow().getInsetsController();
-            controller.hide(WindowInsets.Type.systemBars());
-            controller.setSystemBarsBehavior(
-                WindowInsetsController.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE);
-        } else
-            getWindow().getDecorView().setSystemUiVisibility(View.SYSTEM_UI_FLAG_FULLSCREEN
-                | View.SYSTEM_UI_FLAG_HIDE_NAVIGATION | View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY);
+        enterEmulatorDisplay();
     }
     private void stop() {
         showingSplashes = false;
         presentationGeneration++;
+        leaveEmulatorDisplay();
         resumeTest = false;
         if (prototype != null) {
             prototype.halt();

@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <chrono>
 #include <climits>
 #include <cmath>
 #include <cstdio>
@@ -33,6 +34,7 @@ std::function<void(const std::string&)> defaultLogSink() {
     };
 }
 }  // namespace
+void guestLog(const std::string& text) { defaultLogSink()(text); }
 std::string Libc::readString(uint32_t address, size_t limit) const {
     std::string text;
     for (size_t offset = 0; offset < limit; offset++) {
@@ -242,6 +244,87 @@ bool Libc::invoke(const std::string& name, CpuState& cpu) {
     if (name == "_atoi" || name == "_atol" || name == "_atof" || name == "_strtod" ||
         name == "_strtol" || name == "_strtoul" || name == "_strtoll" || name == "_strtoull")
         return numbers(name, cpu);
+    if (name == "_mach_absolute_time") {
+        // Monotonic nanoseconds since the runtime started, with a timebase of 1/1 so guest
+        // scaling arithmetic is exact.
+        const auto now = std::chrono::steady_clock::now().time_since_epoch();
+        r[0] = uint32_t(std::chrono::duration_cast<std::chrono::nanoseconds>(now).count());
+        return true;
+    }
+    if (name == "_mach_timebase_info") {
+        if (r[0]) {
+            memory.write32(r[0], 1);      // numer
+            memory.write32(r[0] + 4, 1);  // denom
+        }
+        r[0] = 0;
+        return true;
+    }
+    if (name == "_sysctlbyname") {
+        // A small, honest device description: only the keys a title realistically queries
+        // are answered, everything else is an errno failure.
+        const std::string key = readString(r[0]);
+        static const std::map<std::string, std::string> values = {
+            {"hw.machine", "iPod5,1"},      {"hw.model", "iPod touch"},
+            {"hw.ncpu", std::to_string(2)}, {"hw.physicalcpu", "2"},
+            {"hw.logicalcpu", "2"},         {"hw.cpusubtype", "9"},
+            {"kern.osversion", "11A502"},   {"kern.ostype", "Darwin"},
+            {"kern.osrelease", "11.0.0"},
+        };
+        auto found = values.find(key);
+        if (found == values.end()) {
+            r[0] = uint32_t(-1);
+            return true;
+        }
+        const uint32_t sizeAt = r[1], buffer = r[2];
+        const std::string& value = found->second;
+        const size_t length = value.size() + 1;
+        if (sizeAt) memory.write32(sizeAt, uint32_t(length));
+        if (buffer) {
+            if (!memory.permits(buffer, length, Write))
+                throw Error("LIBC_BUFFER", "sysctlbyname destination is not writable", buffer);
+            memory.write(buffer, value.c_str(), length);
+        }
+        r[0] = 0;
+        return true;
+    }
+    if (name == "_strtok_r") {
+        const uint32_t source = r[0], separators = r[1], saveAt = r[2];
+        const std::string separatorsText = readString(separators);
+        if (!memory.permits(saveAt, 4, Write))
+            throw Error("LIBC_BUFFER", "strtok_r save pointer is not writable", saveAt);
+        uint32_t start = source ? source : memory.read32(saveAt);
+        if (!start) return true;  // No more tokens: the result stays null.
+        // Skip leading separators.
+        for (;;) {
+            char c;
+            memory.read(start, &c, 1);
+            if (!c) {
+                memory.write32(saveAt, 0);
+                r[0] = 0;
+                return true;
+            }
+            if (separatorsText.find(c) == std::string::npos) break;
+            start++;
+        }
+        uint32_t end = start;
+        for (;;) {
+            char c;
+            memory.read(end, &c, 1);
+            if (!c) {
+                memory.write32(saveAt, 0);
+                break;
+            }
+            if (separatorsText.find(c) != std::string::npos) {
+                const char terminator = 0;
+                memory.write(end, &terminator, 1);
+                memory.write32(saveAt, end + 1);
+                break;
+            }
+            end++;
+        }
+        r[0] = start;
+        return true;
+    }
     if (name == "_getenv") {
         const std::string key = readString(r[0]);
         auto known = environmentCells.find(key);

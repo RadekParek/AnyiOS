@@ -18,6 +18,11 @@ size_t ExportGraph::addImage(const std::string& name) {
     names.emplace(name, id);
     return id;
 }
+std::optional<size_t> ExportGraph::index(const std::string& installName) const {
+    auto found = names.find(installName);
+    if (found == names.end()) return std::nullopt;
+    return found->second;
+}
 void ExportGraph::setMainExecutable(size_t image) {
     if (image >= images.size()) throw Error("EXPORT_IMAGE", "invalid main executable");
     main = image;

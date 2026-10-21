@@ -51,36 +51,71 @@ int main() {
     memory.map({0x3000, 4096, uint8_t(Read | Write), "service data"}, data.data(), data.size());
 
     ExportGraph graph;
-    services.install(graph);
-    // libSystem, CoreFoundation, CoreGraphics, libstdc++.6 and libgcc_s.1 are installed
-    // by the service layer before the main executable.
+    // The binary's own dependency list is registered as images, so every two-level
+    // ordinal it uses has a target.
+    services.install(graph, {"/usr/lib/libSystem.B.dylib", "/usr/lib/libobjc.A.dylib",
+                             "/usr/lib/libstdc++.6.dylib", "/usr/lib/libgcc_s.1.dylib",
+                             "/System/Library/Frameworks/Foundation.framework/Foundation",
+                             "/System/Library/Frameworks/CoreFoundation.framework/CoreFoundation",
+                             "/System/Library/Frameworks/CoreGraphics.framework/CoreGraphics",
+                             "/System/Library/Frameworks/QuartzCore.framework/QuartzCore",
+                             "/System/Library/Frameworks/UIKit.framework/UIKit",
+                             "/System/Library/Frameworks/OpenGLES.framework/OpenGLES"});
     size_t executable = graph.addImage("<executable>");
-    assert(executable == 5);
+    // Every dependency image exists before the executable, so no ordinal dangles.
+    for (const char* dependency :
+         {"/usr/lib/libSystem.B.dylib", "/usr/lib/libobjc.A.dylib", "/usr/lib/libstdc++.6.dylib",
+          "/usr/lib/libgcc_s.1.dylib", "/System/Library/Frameworks/Foundation.framework/Foundation",
+          "/System/Library/Frameworks/CoreFoundation.framework/CoreFoundation",
+          "/System/Library/Frameworks/CoreGraphics.framework/CoreGraphics",
+          "/System/Library/Frameworks/QuartzCore.framework/QuartzCore",
+          "/System/Library/Frameworks/UIKit.framework/UIKit",
+          "/System/Library/Frameworks/OpenGLES.framework/OpenGLES"})
+        assert(graph.index(dependency).has_value());
+    assert(executable > 9);
     graph.setMainExecutable(executable);
     assert(!graph.resolve(executable, -1, "_memcpy"));
     graph.define(executable, "_local", {0x999, false});
     assert(graph.resolve(executable, -1, "_local") == 0x999u);
-    graph.setMainExecutable(1);
+    const size_t coreFoundation =
+        graph.index("/System/Library/Frameworks/CoreFoundation.framework/CoreFoundation")
+            .value_or(SIZE_MAX);
+    assert(coreFoundation != SIZE_MAX);
+    graph.setMainExecutable(coreFoundation);
     assert(graph.resolve(executable, -1, "_CFRelease"));
     graph.setMainExecutable(executable);
     assert(graph.resolve(executable, -2, "_memcpy") == memcpyGate);
     assert(!graph.resolve(executable, -2, "_missing"));
-    assert(graph.strong(1, "_CFRelease"));
+    assert(graph.strong(coreFoundation, "_CFRelease"));
     assert(graph.resolve(executable, -2, "_malloc") == services.address("_malloc"));
     assert(graph.hasStrong("_CFRelease") && !graph.hasStrong("_missing"));
     // Each gate is defined under the library that exports it on iOS, so strict
     // ordinals from a real binary resolve instead of failing at bind time.
-    graph.dependencies(executable,
-                       {"/usr/lib/libSystem.B.dylib",
-                        "/System/Library/Frameworks/CoreFoundation.framework/CoreFoundation",
-                        "/System/Library/Frameworks/CoreGraphics.framework/CoreGraphics",
-                        "/usr/lib/libstdc++.6.dylib", "/usr/lib/libgcc_s.1.dylib"});
-    assert(graph.resolve(executable, 4, "_Znwm") == services.address("_Znwm"));
-    assert(graph.resolve(executable, 5, "___divsi3") == services.address("___divsi3"));
-    assert(!graph.resolve(executable, 4, "___divsi3"));
-    assert(graph.resolve(executable, 2, "_CFRelease") == services.address("_CFRelease"));
-    assert(graph.resolve(executable, 3, "_CGColorSpaceCreateDeviceRGB") ==
+    // Ordinals number the dependency list the binary declares; each gate lives in the
+    // library that really exports it.
+    graph.dependencies(
+        executable,
+        {"/usr/lib/libSystem.B.dylib", "/usr/lib/libobjc.A.dylib", "/usr/lib/libstdc++.6.dylib",
+         "/usr/lib/libgcc_s.1.dylib", "/System/Library/Frameworks/Foundation.framework/Foundation",
+         "/System/Library/Frameworks/CoreFoundation.framework/CoreFoundation",
+         "/System/Library/Frameworks/CoreGraphics.framework/CoreGraphics",
+         "/System/Library/Frameworks/QuartzCore.framework/QuartzCore",
+         "/System/Library/Frameworks/UIKit.framework/UIKit",
+         "/System/Library/Frameworks/OpenGLES.framework/OpenGLES"});
+    assert(graph.resolve(executable, 3, "_Znwm") == services.address("_Znwm"));
+    assert(graph.resolve(executable, 4, "___divsi3") == services.address("___divsi3"));
+    assert(!graph.resolve(executable, 3, "___divsi3"));
+    assert(graph.resolve(executable, 6, "_CFRelease") == services.address("_CFRelease"));
+    assert(graph.resolve(executable, 7, "_CGColorSpaceCreateDeviceRGB") ==
            services.address("_CGColorSpaceCreateDeviceRGB"));
+    // libobjc.A.dylib exports the runtime entry points.
+    // objc_msgSend is a runtime gate, not a plain service symbol.
+    assert(graph.resolve(executable, 2, "_objc_msgSend") == ObjC::GateBase);
+    assert(graph.resolve(executable, 5, "_OBJC_CLASS_$_NSString").has_value());
+    // Foundation's own C entry points bind through the Foundation image.
+    assert(graph.resolve(executable, 5, "_NSLog"));
+    // ... and an unimplemented name in an existing framework is still unresolved, not faked.
+    assert(!graph.resolve(executable, 9, "_glGenTextures"));
     fault("EXPORT_IMAGE", [&] { graph.addImage("<executable>"); });
 
     ExportGraph deps;
