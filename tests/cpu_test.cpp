@@ -174,8 +174,13 @@ int main() {
     {
         LoadedImage guest;
         guest.memory = std::make_unique<Memory>();
+        Services guestServices(*guest.memory);
+        ExportGraph guestGraph;
+        guestServices.install(guestGraph);
+        auto guestMain = guestGraph.addImage("<guest>");
+        guestGraph.setMainExecutable(guestMain);
         std::vector<uint8_t> program(4096, 0), scratch(4096, 0);
-        const uint32_t trap = services.trapFor("_UIApplicationMain");
+        const uint32_t trap = guestServices.trapFor("_UIApplicationMain");
         putMovAddress(program, 0, trap);
         put(program, 8, 0xe12fff33);   // blx r3 -> unimplemented import
         put(program, 12, 0xeafffffe);  // b .
@@ -186,11 +191,9 @@ int main() {
         guest.registers[13] = 0x9ff0;
         guest.registers[15] = 0x8000;
         guest.cpsr = 0x10;
-        ExportGraph graph;
-        services.install(graph);
-        auto main = graph.addImage("<guest>");
-        graph.setMainExecutable(main);
-        auto run = runGuest(guest, services, graph, main, 100000, 2.0);
+        auto run = runGuest(guest, guestServices, guestGraph, guestMain, 100000, 2.0);
+        if (run.stop != "UNIMPLEMENTED")
+            std::cerr << "run stop=" << run.stop << " detail=" << run.detail << '\n';
         assert(run.stop == "UNIMPLEMENTED");
         assert(run.detail.find("_UIApplicationMain") != std::string::npos);
         assert(run.instructions >= 3);
@@ -199,8 +202,14 @@ int main() {
         // A guest that only calls an implemented API keeps running to its budget.
         LoadedImage working;
         working.memory = std::make_unique<Memory>();
+        Services workServices(*working.memory);
+        ExportGraph workGraph;
+        workServices.install(workGraph);
+        auto workMain = workGraph.addImage("<guest>");
+        workGraph.setMainExecutable(workMain);
+        const uint32_t workGate = workServices.address("_memcpy");
         std::vector<uint8_t> loops(4096, 0);
-        putMovAddress(loops, 0, gate);
+        putMovAddress(loops, 0, workGate);
         put(loops, 8, 0xe12fff33);
         put(loops, 12, 0xeafffffe);
         working.memory->map({0x8000, 4096, uint8_t(Read | Execute), "implemented call"},
@@ -213,7 +222,7 @@ int main() {
         working.registers[13] = 0xAFF0;
         working.registers[15] = 0x8000;
         working.cpsr = 0x10;
-        auto call = runGuest(working, services, graph, main, 50000, 2.0);
+        auto call = runGuest(working, workServices, workGraph, workMain, 50000, 2.0);
         assert(call.serviceCalls >= 1);
         assert(call.stop == "BUDGET" || call.stop == "UNIMPLEMENTED");
         std::cout << "Bounded guest execution, host service dispatch and trap reporting passed\n";

@@ -30,6 +30,7 @@ target_link_libraries(podnative_cpu PRIVATE dynarmic)
 target_compile_options(podnative_cpu PRIVATE -Wall -Wextra -Werror)
 add_library(podnative_hle STATIC
     "${RUNTIME}/runtime/exports.cpp"
+    "${RUNTIME}/runtime/dyld.cpp"
     "${RUNTIME}/runtime/services.cpp"
     "${RUNTIME}/runtime/libc.cpp"
     "${RUNTIME}/runtime/heap.cpp"
