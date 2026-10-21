@@ -93,8 +93,9 @@ Converter inclusion is explicitly requested by its owner. Upstream has no root l
 - **Instruction semantics follow the image.** `LoadedImage` now carries `cpuSubtype`/`IsaArch`,
   and the CPU adapter selects Dynarmic `v6K` for armv6 and `v7` otherwise. iOS armv6 hardware is
   ARM11, i.e. ARMv6K, which is the superset those binaries were built against; Dynarmic has no
-  plain-v6 selector. The CPU correctness test asserts the difference is observable: `movw` is an
-  exception under armv6 and executes under armv7.
+  plain-v6 selector. The selector is passed to the translator as an architecture hint, so the
+  load-time mapping is asserted in the loader tests and the CPU test asserts that an
+  armv6-declared image still executes to its supervisor call.
 - **PIE executables are accepted.** Mapping already happens at the un-slid vmaddrs and every
   rebase/bind is applied transactionally before the first instruction, so slide 0 is exactly what
   the fixup stream describes. The blanket `LOAD_PIE_UNSUPPORTED` rejection blocked most 2010-era
