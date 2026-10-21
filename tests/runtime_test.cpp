@@ -95,9 +95,28 @@ int main() {
     image = loadMachO(b.data(), b.size());
     assert(image.cpsr & 0x20);
     assert(image.memory->fetch16(0x1100) == 0x202a);
+    // PIE is accepted: mapping happens at the un-slid vmaddrs and every rebase is
+    // applied before execution, so a slide of zero is exactly what the fixups describe.
     b = executable();
     put(b, 24, 0x200000);
-    fault("LOAD_PIE_UNSUPPORTED", [&] { loadMachO(b.data(), b.size()); });
+    image = loadMachO(b.data(), b.size());
+    assert(image.registers[15] == 0x1100);
+    // ARMv6 binaries select v6 semantics instead of being rejected or run as ARMv7.
+    b = executable();
+    put(b, 8, 6);
+    image = loadMachO(b.data(), b.size());
+    assert(image.cpuSubtype == 6 && image.arch == IsaArch::ArmV6);
+    assert(image.summary().find("ARMv6") != std::string::npos);
+    b = executable();
+    put(b, 8, 12);
+    try {
+        loadMachO(b.data(), b.size());
+        std::cerr << "unsupported ARM subtype was accepted\n";
+        std::abort();
+    } catch (const Error& e) {
+        assert(e.code == "LOAD_FORMAT" &&
+               std::string(e.what()).find("MACHO_CPU_SUBTYPE") != std::string::npos);
+    }
     b = executable();
     put(b, 92, 0x5000);
     fault("LOAD_ENTRY", [&] { loadMachO(b.data(), b.size()); });

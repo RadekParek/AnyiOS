@@ -32,7 +32,9 @@ The PC artifact is a Linux CPU diagnostic build, not a desktop emulator GUI.
 * PodNative-owned graphics backend; source-pinned upstream ANGLE embedded Vulkan
   integration, with explicit failure and no disguised native-GLES fallback.
 * Shader-based animated textured cube with depth testing and reusable resources.
-* Bounded ARM32 Mach-O inspection and temporary validated guest-memory mapping.
+* Bounded ARM32 Mach-O inspection and temporary validated guest-memory mapping that accepts
+  **ARMv6, ARMv7 and ARMv7s** slices and PIE images, and runs each image with instruction
+  semantics matching its declared CPU subtype.
 * Actual Dynarmic CPU adapter with host-tested ARM/Thumb execution and an in-app CPU self-test; device execution and game-session integration remain pending.
 * HLE linker core: session-owned two-level export graph, deterministic strong/weak
   coalescing, transactional graph-aware fixups, and authenticated ARM `SVC` call

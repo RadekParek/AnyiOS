@@ -84,6 +84,44 @@ Converter inclusion is explicitly requested by its owner. Upstream has no root l
 - Coverage is **60 of 438** required imports. This is API-surface progress; it is not
   evidence that any title launches or renders.
 
+### ARMv6, launch acceptance and rendering increment (2026-10-21, second pass)
+
+- **ARMv6 titles are no longer refused.** Header validation accepted only `CPU_SUBTYPE_ARM_V7`
+  (9) and rejected the newer subtypes outright, so a 2009-era armv6 build never reached guest
+  code. Subtypes 6, 9, 11 and 0 are accepted and reported; anything else is a named
+  `MACHO_CPU_SUBTYPE` failure instead of an opaque one.
+- **Instruction semantics follow the image.** `LoadedImage` now carries `cpuSubtype`/`IsaArch`,
+  and the CPU adapter selects Dynarmic `v6K` for armv6 and `v7` otherwise. iOS armv6 hardware is
+  ARM11, i.e. ARMv6K, which is the superset those binaries were built against; Dynarmic has no
+  plain-v6 selector. The CPU correctness test asserts the difference is observable: `movw` is an
+  exception under armv6 and executes under armv7.
+- **PIE executables are accepted.** Mapping already happens at the un-slid vmaddrs and every
+  rebase/bind is applied transactionally before the first instruction, so slide 0 is exactly what
+  the fixup stream describes. The blanket `LOAD_PIE_UNSUPPORTED` rejection blocked most 2010-era
+  iOS builds for no remaining reason.
+- **Launcher icon** is now a green anodised-metal device mark: layered linear gradients for the
+  rim, face plate, glass screen, metal play glyph and click wheel, plus a translucent specular
+  band. The monochrome layer is a matching silhouette for themed icons.
+- **ANGLE backend selection is explicit.** The renderer requests the Vulkan backend first and, if
+  the device or driver refuses, falls back to ANGLE's OpenGL ES backend. The fallback is recorded
+  with the reason and shown as "backend in use"; the `ANGLE_IDENTITY_MISMATCH` guard still rejects
+  any renderer that does not identify as ANGLE.
+
+### Repository rename is still blocked, and the "harmful app" prompt is not an app bug
+
+`gh repo rename AnyiOS --yes` still returns **HTTP 403: Resource not accessible by integration**.
+The integration token cannot rename a repository; only the owner can do it in
+**Settings → General → Repository name**, and GitHub redirects the old URL afterwards.
+
+The Play Protect / Samsung scanner "harmful app" dialog is what Android shows for a sideloaded APK
+that is not distributed through Play, and it is weighted further by this package's declared
+`android.permission.REQUEST_INSTALL_PACKAGES`. That permission is merged in from the converter
+module and is required for the converter to install the APKs it generates, so it is not removed.
+No app-side change can whitelist a self-built APK: the honest paths are (a) dismiss with
+"install anyway" after verifying the SHA-256 published with the artifact, (b) install over `adb`
+from a trusted host, or (c) distribute through Play. The build already refuses to publish a
+debuggable APK, which removes the one property that made earlier artifacts look like test builds.
+
 ### Remaining runtime work
 
 The decoder rejection, export resolution, coalescing, checked call-gate dispatch, guest heap,

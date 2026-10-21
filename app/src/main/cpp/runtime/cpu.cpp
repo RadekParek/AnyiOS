@@ -17,10 +17,13 @@ class Cpu::Impl final : public Dynarmic::A32::UserCallbacks {
     bool poisoned = false;
     uint32_t instructionPC = 0;
     uint64_t observedMemoryRevision = 0;
-    explicit Impl(Memory& memory) : memory(memory) {
+    explicit Impl(Memory& memory, IsaArch arch) : memory(memory) {
         Dynarmic::A32::UserConfig config{};
         config.callbacks = this;
-        config.arch_version = Dynarmic::A32::ArchVersion::v7;
+        // iOS "armv6" devices are ARM11 cores, i.e. ARMv6K. Dynarmic has no plain v6
+        // selector, and v6K is the superset those binaries were built against.
+        config.arch_version = arch == IsaArch::ArmV6 ? Dynarmic::A32::ArchVersion::v6K
+                                                     : Dynarmic::A32::ArchVersion::v7;
         config.check_halt_on_memory_access = true;
         config.code_cache_size = 16 * 1024 * 1024;
         config.unsafe_optimizations = false;
@@ -113,7 +116,7 @@ class Cpu::Impl final : public Dynarmic::A32::UserCallbacks {
     void AddTicks(uint64_t) override {}
     uint64_t GetTicksRemaining() override { return 1; }
 };
-Cpu::Cpu(Memory& memory) : impl_(std::make_unique<Impl>(memory)) {}
+Cpu::Cpu(Memory& memory, IsaArch arch) : impl_(std::make_unique<Impl>(memory, arch)) {}
 Cpu::~Cpu() = default;
 void Cpu::setState(const CpuState& state) {
     if ((state.cpsr & 0x1f) != 0x10 || (state.cpsr & 0x200))

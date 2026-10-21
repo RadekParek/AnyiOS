@@ -50,10 +50,13 @@ LoadedImage loadMachO(const uint8_t* data, size_t size, size_t budget) {
     auto inspection = inspectMachO(data, size);
     if (inspection.rfind("INSPECTED_ARM32:", 0) != 0) throw Error("LOAD_FORMAT", inspection);
     Reader r{data, size};
-    if (r.u32(24) & 0x200000)
-        throw Error("LOAD_PIE_UNSUPPORTED", "PIE images need a validated rebasing implementation");
+    // PIE is accepted: the image is mapped at its own vmaddrs (slide 0) and every
+    // rebase/bind is applied transactionally against the export graph before any
+    // instruction runs, so an unslid PIE image is exactly what the fixups describe.
     std::vector<Segment> segments;
     LoadedImage result;
+    result.cpuSubtype = r.u32(8) & 0xffffff;
+    result.arch = result.cpuSubtype == 6 ? IsaArch::ArmV6 : IsaArch::ArmV7;
     result.memory = std::make_unique<Memory>(budget);
     bool hasEntry = false, entryIsOffset = false;
     uint64_t entry = 0;
@@ -386,6 +389,8 @@ std::string LoadedImage::summary() const {
     s << "MAPPED_ARM32: " << memory->regions().size() << " regions, " << memory->allocated()
       << " guest bytes; entry=0x" << std::hex << registers[15] << (cpsr & 0x20 ? " Thumb" : " ARM")
       << " SP=0x" << registers[13];
+    s << "\nInstruction set: " << (arch == IsaArch::ArmV6 ? "ARMv6 (ARM11/v6K)" : "ARMv7")
+      << " from CPU subtype " << std::dec << cpuSubtype << ".";
     s << "\nImage mapping is complete; this summary alone does not start the guest.";
     s << "\n" << dyld.summary();
     if (!exports.empty()) s << "\nDefined exports=" << exports.size();
