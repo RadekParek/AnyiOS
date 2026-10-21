@@ -7,6 +7,8 @@
 
 #include "runtime/cpu_probe.h"
 #include "runtime/error.h"
+#include "runtime/exports.h"
+#include "runtime/services.h"
 using namespace podnative::runtime;
 void put(std::vector<uint8_t>& bytes, size_t offset, uint32_t value) {
     for (size_t i = 0; i < 4; i++) bytes.at(offset + i) = uint8_t(value >> (i * 8));
@@ -108,5 +110,64 @@ int main() {
     // Resume without setState/Reset; the memory epoch must invalidate the translated old MOV.
     result = cpu.run(8);
     assert(result.reason == StopReason::SupervisorCall && cpu.state().registers[0] == 2);
+    // Real guest calls through registered ARM SVC gates, including Thumb interworking.
+    Services services(memory);
+    uint32_t gate = services.address("_memcpy");
+    auto putMovAddress = [](std::vector<uint8_t>& code, size_t at, uint32_t value) {
+        auto movw = [&](uint32_t low) {
+            return 0xe3000000u | ((low & 0xf000u) << 4) | (low & 0xfffu);
+        };
+        put(code, at, movw(value & 0xffff) | (3u << 12));
+        put(code, at + 4,
+            0xe3400000u | (((value >> 16) & 0xf000u) << 4) | ((value >> 16) & 0xfffu) | (3u << 12));
+    };
+    const char callText[] = "guest call";
+    std::vector<uint8_t> armCode(4096, 0), dataCode(4096, 0);
+    putMovAddress(armCode, 0, gate);
+    put(armCode, 8, 0xe12fff33);   // blx r3
+    put(armCode, 12, 0xeafffffe);  // b .
+    // Thumb: blx r3 (interworking to the ARM gate), then b .
+    put(armCode, 0x100, 0x4798);
+    armCode[0x102] = 0xfe;
+    armCode[0x103] = 0xe7;
+    memory.map({0x6000, 4096, uint8_t(Read | Execute), "ARM caller with gate"}, armCode.data(),
+               armCode.size());
+    memory.map({0x7000, 4096, uint8_t(Read | Write), "call arguments"}, dataCode.data(),
+               dataCode.size());
+    memory.write(0x7000, callText, sizeof(callText));
+    state = initial();
+    state.registers[0] = 0x7200;
+    state.registers[1] = 0x7000;
+    state.registers[2] = sizeof(callText);
+    state.registers[15] = 0x6000;
+    cpu.setState(state);
+    result = cpu.run(16);
+    assert(result.reason == StopReason::SupervisorCall && result.pc == gate);
+    state = cpu.state();
+    services.dispatch(result, state);
+    assert(state.registers[15] == 0x600c);
+    cpu.setState(state);
+    result = cpu.run(8);
+    assert(result.reason == StopReason::Budget);
+    uint8_t copied[sizeof(callText)]{};
+    memory.read(0x7200, copied, sizeof(copied));
+    assert(std::memcmp(copied, callText, sizeof(callText)) == 0);
+    state = initial(true);
+    state.registers[0] = 0x7300;
+    state.registers[1] = 0x7000;
+    state.registers[2] = 4;
+    state.registers[3] = gate;
+    state.registers[15] = 0x6100;
+    cpu.setState(state);
+    result = cpu.run(12);
+    assert(result.reason == StopReason::SupervisorCall && result.pc == gate);
+    state = cpu.state();
+    services.dispatch(result, state);
+    assert(state.registers[15] == 0x6102 && (state.cpsr & 0x20));
+    cpu.setState(state);
+    result = cpu.run(6);
+    assert(result.reason == StopReason::Budget);
+    memory.read(0x7300, copied, 5);
+    assert(std::memcmp(copied, callText, 4) == 0);
     std::cout << "Real Dynarmic ARM/Thumb, memory, service-trap, budget and fault tests passed\n";
 }

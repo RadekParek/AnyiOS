@@ -28,8 +28,15 @@ add_library(podnative_cpu STATIC "${RUNTIME}/runtime/cpu.cpp" "${RUNTIME}/runtim
 target_include_directories(podnative_cpu PUBLIC "${RUNTIME}")
 target_link_libraries(podnative_cpu PRIVATE dynarmic)
 target_compile_options(podnative_cpu PRIVATE -Wall -Wextra -Werror)
+add_library(podnative_hle STATIC
+    "${RUNTIME}/runtime/exports.cpp"
+    "${RUNTIME}/runtime/services.cpp"
+    "${RUNTIME}/runtime/frameworks.cpp")
+target_include_directories(podnative_hle PUBLIC "${RUNTIME}")
+target_link_libraries(podnative_hle PUBLIC podnative_cpu)
+target_compile_options(podnative_hle PRIVATE -Wall -Wextra -Werror)
 add_executable(cpu_test cpu_test.cpp)
-target_link_libraries(cpu_test PRIVATE podnative_cpu)
+target_link_libraries(cpu_test PRIVATE podnative_cpu podnative_hle)
 target_compile_options(cpu_test PRIVATE -Wall -Wextra -Werror -UNDEBUG)
 enable_testing()
 add_test(NAME cpu_correctness COMMAND cpu_test)

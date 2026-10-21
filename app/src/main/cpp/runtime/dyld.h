@@ -4,6 +4,7 @@
 #include <string>
 #include <vector>
 
+#include "exports.h"
 #include "memory.h"
 namespace podnative::runtime {
 struct DyldSegment {
@@ -20,7 +21,10 @@ struct DyldFixup {
 struct DyldPlan {
     std::vector<DyldFixup> fixups;
     bool needsCoalescing = false;
+    std::vector<std::string> strongDefinitions;
     std::string summary() const;
+    void applyWithGraph(Memory& memory, uint32_t slide, const ExportGraph& graph,
+                        size_t requester) const;
     // All resolutions/ranges are checked before writes. No unresolved required import is zeroed.
     void apply(
         Memory& memory, uint32_t slide,

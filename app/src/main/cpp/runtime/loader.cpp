@@ -227,6 +227,38 @@ LoadedImage loadMachO(const uint8_t* data, size_t size, size_t budget) {
                 throw Error("LOAD_DYSYMTAB", "invalid indirect symbol reference");
         }
     }
+    if (hasSymbols) {
+        size_t nameBytes = 0;
+        for (uint32_t index = 0; index < symbolCount; index++) {
+            uint64_t record = uint64_t(symbolOffset) + uint64_t(index) * 12;
+            uint8_t type = data[record + 4];
+            if ((type & 0xe0) || !(type & 1) || ((type & 0x0e) != 0x0e && (type & 0x0e) != 2))
+                continue;
+            uint32_t nameIndex = r.u32(record);
+            if (nameIndex >= stringBytes) throw Error("LOAD_EXPORT", "invalid export string index");
+            size_t start = size_t(stringOffset) + nameIndex, end = start;
+            while (end < size_t(stringOffset) + stringBytes && data[end] && end - start <= 4096)
+                end++;
+            if (end == start || end == size_t(stringOffset) + stringBytes || end - start > 4096)
+                throw Error("LOAD_EXPORT", "invalid export name");
+            if (result.exports.size() >= 100000 || end - start > 8 * 1024 * 1024 - nameBytes)
+                throw Error("LOAD_EXPORT", "export budget exceeded");
+            nameBytes += end - start;
+            uint32_t value = r.u32(record + 8);
+            if ((type & 0x0e) == 0x0e) {
+                bool inside = false;
+                for (const auto& segment : segments)
+                    if (segment.region.permissions && value >= segment.region.base &&
+                        uint64_t(value) < uint64_t(segment.region.base) + segment.region.size)
+                        inside = true;
+                if (!inside) throw Error("LOAD_EXPORT", "defined section symbol outside image");
+                if (data[record + 6] & 8) value |= 1;  // N_ARM_THUMB_DEF interworking bit.
+            }
+            result.exports.push_back(
+                {std::string(reinterpret_cast<const char*>(data + start), end - start),
+                 {value, bool(data[record + 6] & 0x80)}});
+        }
+    }
     std::vector<DyldSegment> dyldSegments;
     for (const auto& segment : segments)
         dyldSegments.push_back(
@@ -240,6 +272,14 @@ LoadedImage loadMachO(const uint8_t* data, size_t size, size_t budget) {
         if (decoded.fixups.size() > 100000 - result.dyld.fixups.size())
             throw Error("DYLD_LIMIT", "combined fixup budget exceeded");
         result.dyld.needsCoalescing |= decoded.needsCoalescing;
+        if (decoded.strongDefinitions.size() > 100000 - result.dyld.strongDefinitions.size())
+            throw Error("DYLD_LIMIT", "combined weak declaration count");
+        for (auto& name : decoded.strongDefinitions) {
+            if (name.size() > 8 * 1024 * 1024 - dyldNames)
+                throw Error("DYLD_LIMIT", "combined name budget");
+            dyldNames += name.size();
+            result.dyld.strongDefinitions.push_back(std::move(name));
+        }
         for (auto& fixup : decoded.fixups) {
             if (fixup.ordinal > 0 && size_t(fixup.ordinal) > result.dependencies.size())
                 throw Error("DYLD_ORDINAL", "binding references nonexistent dylib");
@@ -251,7 +291,7 @@ LoadedImage loadMachO(const uint8_t* data, size_t size, size_t budget) {
     }
     std::map<uint32_t, size_t> planned;
     for (size_t index = 0; index < result.dyld.fixups.size(); index++)
-        planned.emplace(result.dyld.fixups[index].address, index);
+        planned[result.dyld.fixups[index].address] = index;
     for (const auto& section : indirectSections) {
         if (!hasDynamicSymbols)
             throw Error("DYLD_INDIRECT_SECTION", "indirect section requires LC_DYSYMTAB");
@@ -290,7 +330,8 @@ LoadedImage loadMachO(const uint8_t* data, size_t size, size_t budget) {
             auto existing = planned.find(address);
             if (existing != planned.end()) {
                 const auto& old = result.dyld.fixups[existing->second];
-                if (old.rebase || old.symbol != name || old.ordinal != ordinal)
+                if (old.rebase || old.symbol != name ||
+                    (old.ordinal != ordinal && old.ordinal != -3))
                     throw Error("DYLD_BIND_CONFLICT", "indirect/stream binding mismatch");
                 continue;
             }
@@ -345,9 +386,14 @@ std::string LoadedImage::summary() const {
     s << "MAPPED_ARM32: " << memory->regions().size() << " regions, " << memory->allocated()
       << " guest bytes; entry=0x" << std::hex << registers[15] << (cpsr & 0x20 ? " Thumb" : " ARM")
       << " SP=0x" << registers[13];
-    s << "\nExecution BLOCKED: " << (requiresDyld ? "dyld/symbol resolution required; " : "")
+    s << "\nExecution BLOCKED: "
+      << (requiresDyld ? "required dyld imports or coalescing unresolved; " : "")
       << "guest CPU, application ABI and frameworks not initialized.";
     s << "\n" << dyld.summary();
+    if (!exports.empty()) s << "\nDefined exports=" << exports.size();
+    if (dyld.needsCoalescing)
+        s << "\nWeak/strong definitions require export-graph coalescing; strong declarations="
+          << dyld.strongDefinitions.size();
     if (legacyStubs)
         s << "\nLegacy symbol stubs=" << std::dec << legacyStubs
           << "; ARM stub execution/dispatch is not initialized.";

@@ -151,6 +151,8 @@ DyldPlan decodeDyld(const uint8_t* bytes, size_t size, const std::vector<DyldSeg
                     throw Error("DYLD_OPCODE", "unsupported rebase opcode");
             }
         } else {
+            if (weakStream && (op == 0x10 || op == 0x20 || op == 0x30))
+                throw Error("DYLD_WEAK_OPCODE", "weak stream cannot change library ordinal");
             switch (op) {
                 case 0x10:
                     ordinal = imm;
@@ -169,6 +171,13 @@ DyldPlan decodeDyld(const uint8_t* bytes, size_t size, const std::vector<DyldSeg
                     if (imm & ~9) throw Error("DYLD_SYMBOL", "unsupported symbol flags");
                     weak = imm & 1;
                     symbol = s.string();
+                    if (weakStream && (imm & 8)) {
+                        if (plan.strongDefinitions.size() >= 100000 ||
+                            symbol.size() > 8 * 1024 * 1024 - nameBytes)
+                            throw Error("DYLD_LIMIT", "weak declaration budget exceeded");
+                        nameBytes += symbol.size();
+                        plan.strongDefinitions.push_back(symbol);
+                    }
                     break;
                 case 0x50:
                     type = imm;
@@ -245,6 +254,33 @@ void DyldPlan::apply(
     }
     for (auto [address, value] : writes) memory.write32(address, value);
 }
+void DyldPlan::applyWithGraph(Memory& memory, uint32_t slide, const ExportGraph& graph,
+                              size_t requester) const {
+    for (const auto& name : strongDefinitions)
+        if (!graph.hasStrong(name))
+            throw Error("DYLD_WEAK_DEFINITION",
+                        "strong declaration has no registered strong definition");
+    DyldPlan normalized;
+    std::map<uint32_t, size_t> targets;
+    for (const auto& fixup : fixups) {
+        auto old = targets.find(fixup.address);
+        if (old == targets.end()) {
+            targets.emplace(fixup.address, normalized.fixups.size());
+            normalized.fixups.push_back(fixup);
+        } else {
+            auto& previous = normalized.fixups[old->second];
+            if (!needsCoalescing || fixup.ordinal != -3 || previous.ordinal != -3 ||
+                (!previous.rebase && previous.symbol != fixup.symbol))
+                throw Error("DYLD_TARGET", "conflicting duplicate fixup", fixup.address);
+            // Coalescing runs after ordinary rebasing/binding, but commit only its
+            // final value, so unresolved symbols cannot leave partial writes.
+            previous = fixup;
+        }
+    }
+    normalized.apply(memory, slide, [&](int ordinal, const std::string& name) {
+        return graph.resolve(requester, ordinal, name);
+    });
+}
 std::string DyldPlan::summary() const {
     size_t rebases = 0, bindings = 0;
     std::ostringstream out;
@@ -259,7 +295,7 @@ std::string DyldPlan::summary() const {
         out << (f.lazy ? " (lazy)" : "");
     }
     if (needsCoalescing)
-        out << "\nWeak-definition coalescing is not implemented; this plan cannot be applied.";
+        out << "\nWeak-definition coalescing requires the registered export graph; unresolved definitions still block application.";
     if (bindings > 120) out << "\nDisplay limited to 120 bindings.";
     return out.str();
 }

@@ -42,8 +42,10 @@ renderer or framework code is incorporated. Research is not component reuse.
 
 ## Research only, not redistributed or linked
 
-HyperHLE-Fork `5b65054c55cc33c6095f8c4b771430da5e63fbf4` (MPL-2.0):
-README/manifest/license research; no code copied.
+HyperHLE-Reborn (`KlugKlugTG/HyperHLE-Reborn`) at
+`5b65054c55cc33c6095f8c4b771430da5e63fbf4` (MPL-2.0): architecture/interface
+documentation reviewed (host dylib exports and guest-call separation); no source,
+renderer or binary copied, linked or vendored.
 Unicorn (metadata: GPL-2.0): alternative candidate, not selected or included.
 
 ## Build/test tooling, not app runtime code

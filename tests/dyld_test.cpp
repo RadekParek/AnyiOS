@@ -59,12 +59,27 @@ int main() {
     } catch (const Error& e) {
         assert(e.code == "DYLD_VALUE");
     }
-    auto coalescing = decodeDyld(binding, sizeof(binding), segments, false, false, true);
+    uint8_t weakStream[] = {0x48, 'x', 0, 0x70, 0, 0x90, 0};
+    auto weakPlan = decodeDyld(weakStream, sizeof(weakStream), segments, false, false, true);
+    assert(weakPlan.needsCoalescing && weakPlan.fixups.size() == 1);
+    assert(weakPlan.strongDefinitions.size() == 1 && weakPlan.strongDefinitions[0] == "x");
+    ExportGraph graph;
+    size_t weakImage = graph.addImage("weak-image");
     try {
-        coalescing.apply(memory, 0, {});
+        weakPlan.applyWithGraph(memory, 0, graph, weakImage);
         assert(false);
     } catch (const Error& e) {
-        assert(e.code == "DYLD_COALESCING_UNIMPLEMENTED");
+        assert(e.code == "DYLD_WEAK_DEFINITION");
+    }
+    graph.define(weakImage, "x", {0x4321, false});
+    weakPlan.applyWithGraph(memory, 0, graph, weakImage);
+    assert(memory.read32(0x1000) == 0x4321);
+    uint8_t weakOrdinal[] = {0x11, 0x00};
+    try {
+        decodeDyld(weakOrdinal, sizeof(weakOrdinal), segments, false, false, true);
+        assert(false);
+    } catch (const Error& e) {
+        assert(e.code == "DYLD_WEAK_OPCODE");
     }
     uint8_t signedBinding[] = {0x11, 0x40, 'x', 0, 0x60, 0x7f, 0x70, 0, 0x90, 0};
     auto negative = decodeDyld(signedBinding, sizeof(signedBinding), segments, false);

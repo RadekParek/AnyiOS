@@ -21,7 +21,8 @@ Technical JNI namespaces, signing/cache names and historical engineering records
 [Download current Android and PC diagnostic artifacts](https://github.com/RadekParek/PodNative/actions/workflows/android.yml)
 (choose a successful run; extract GitHub's archive, then install `AnyiOS-debug.apk`).
 The PC artifact is a Linux CPU diagnostic build, not a desktop emulator GUI.
-[Current implementation boundaries](docs/GRAPHICS_FRAMEWORK_INCREMENT.md).
+[Current implementation boundaries](docs/GRAPHICS_FRAMEWORK_INCREMENT.md) ·
+[Linker/dispatch increment](docs/DYLD_AND_IMPORT_INCREMENT.md).
 [Historical 0.2.1 build evidence](docs/STARTUP_APK_REPORT.md).
 [Historical first APK report](docs/FIRST_APK_REPORT.md).
 
@@ -33,6 +34,9 @@ The PC artifact is a Linux CPU diagnostic build, not a desktop emulator GUI.
 * Shader-based animated textured cube with depth testing and reusable resources.
 * Bounded ARM32 Mach-O inspection and temporary validated guest-memory mapping.
 * Actual Dynarmic CPU adapter with host-tested ARM/Thumb execution and an in-app CPU self-test; device execution and game-session integration remain pending.
+* HLE linker core: session-owned two-level export graph, deterministic strong/weak
+  coalescing, transactional graph-aware fixups, and authenticated ARM `SVC` call
+  gates; launch reports required-import coverage instead of claiming resolution.
 * GitHub Actions debug/tagged-release build recipes with artifacts and provenance.
 
 No inherited TouchHLE/HyperHLE renderer. No proprietary game files. No universal

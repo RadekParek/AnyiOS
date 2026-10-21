@@ -72,6 +72,50 @@ Green/mint palette and gradients replace violet, with existing animation-disable
 aware card/press effects. A generic pocket-player screen/click-wheel mark replaces
 the handheld-gamepad mark; it contains no Apple logo or proprietary game artwork.
 
+## Export resolution and call gates (2026-10-21)
+
+The latest Spinjitzu Scavenger Hunt report exposed a different game with 472 static
+imports, 1,235 binding sites and a weak/legacy-stub blocker. Additions:
+
+- Original `ExportGraph`: image/alias registration, per-image dependencies, ordered
+  ordinals (`0` self, `-1` main executable, `-2` flat, `-3` weak), deterministic
+  strong-over-weak selection and checked duplicate/name budgets. Session-owned
+  guest addresses only.
+- Loader parses defined external section symbols from `LC_SYMTAB` (including the
+  ARM Thumb bit) as graph exports. This is the executable's own export list, not
+  invented framework exports.
+- Weak-binding streams (`LC_DYLD_INFO` weak) now reject library-ordinal opcodes,
+  capture strong-definition declarations and require a globally registered strong
+  definition before graph-aware application. Duplicate weak fixups coalesce; all
+  other conflicting duplicates and every unresolved required import abort
+  transactionally.
+- `DyldPlan::applyWithGraph` commits coalesced final values only after every
+  resolution, range and definition check succeeds.
+- `Services` installs twelve RX ARM gates (`SVC #n; BX LR`). A gate is only valid
+  when its PC, number, ARM mode and guest return address authenticate. Implemented
+  APIs: bounded `memcpy`/`memmove`/`memset`/`bzero`/`memcmp`/`strlen`/`strcmp` and
+  the existing CoreFoundation bit-vector subset. Unknown imports throw; there are
+  no success-returning placeholders.
+- Launch audit reports how many unique required imports have registered host
+  implementations, missing examples, and strong declarations that cannot coalesce.
+
+### Evidence
+
+Sanitizer suites cover export ordinals/aliases, strong-over-weak selection,
+coalesced writes, conflicting targets, unresolved imports, forged traps, invalid
+returns, overlap and budgets. `cpu_test` executes real ARM and Thumb guest calls
+through `_memcpy` gates on pinned Dynarmic and checks copied guest memory.
+
+### Still required (not implemented by this increment)
+
+Dependency image loading and per-image export tries/re-exports; class/method
+dispatch and Objective-C runtime bootstrap; C++ exception personality and runtime
+(`libstdc++`); UIKit/EAGL/QuartzCore/AVFoundation/MediaPlayer/CoreAudio/OpenAL and
+CoreGraphics implementations; legacy symbol-stub execution; thunked/chained
+fixups; PIE; Darwin process/thread/task setup; callbacks into guest code; the
+ARM EABI details for variadic, VFP and aggregate arguments; application lifecycle.
+The renderer stays the independent ANGLE implementation. No playability claim.
+
 ## Evidence / remaining gate
 
 Native sanitizer tests exercise real synthetic binding/rebase application,
