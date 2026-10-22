@@ -31,7 +31,7 @@ plan "${FLAGS[*]}" tests/gles_test.cpp app/src/main/cpp/runtime/{memory,gles}.cp
 # claims marshalling, resource transitions and the frame flip — never a drawn frame.
 plan "${FLAGS[*]} -Itests" tests/gles_stub_driver.cpp -shared -fPIC -o .local/tests/libGLESv2_podnative.so
 plan "${FLAGS[*]} -Itests" tests/gles_driver_test.cpp app/src/main/cpp/runtime/{memory,gles}.cpp -o .local/tests/gles-driver-test
-plan "${FLAGS[*]}" tests/audio_test.cpp app/src/main/cpp/runtime/{memory,audio,format,libc,heap}.cpp -o .local/tests/audio-test
+plan "${FLAGS[*]}" tests/audio_test.cpp app/src/main/cpp/runtime/{memory,audio,openal,format,libc,heap}.cpp -o .local/tests/audio-test
 plan "${FLAGS[*]}" tests/fs_test.cpp app/src/main/cpp/runtime/{memory,fs,stdio,audio,libc,format,heap}.cpp -o .local/tests/fs-test
 xargs -a "$PLAN" -d '\n' -P "$JOBS" -n 1 -I {} bash -c '{}'
 # Development tools are compiled here too, so they cannot rot: the guest runner is the

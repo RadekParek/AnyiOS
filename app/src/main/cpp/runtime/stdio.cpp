@@ -674,7 +674,9 @@ bool Stdio::invoke(const std::string& name, CpuState& cpu) {
             [&input, cursor]() {
                 return *cursor < input.size() ? int(uint8_t(input[(*cursor)++])) : -1;
             },
-            [&input, cursor](int value) {
+            // The unget callback only rewinds the cursor; it never reads the buffer, and
+            // capturing `input` here is an unused capture that clang rejects under -Werror.
+            [cursor](int value) {
                 (void)value;
                 if (*cursor) (*cursor)--;
             });

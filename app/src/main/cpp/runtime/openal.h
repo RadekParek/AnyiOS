@@ -36,7 +36,12 @@ class OpenAL final {
     struct Source {
         std::vector<uint32_t> queued;  // buffer names, front is playing
         std::vector<uint32_t> processed;
-        bool playing = false, looping = false, relative = false;
+        // `paused` is its own state: OpenAL reports AL_PAUSED for a source that was
+        // paused mid-buffer, and -alSourcePlay must resume from the offset it stopped at.
+        bool playing = false, paused = false, looping = false, relative = false;
+        // OpenAL distinguishes a source that has never run (AL_INITIAL) from one that has
+        // stopped (AL_STOPPED). Queueing buffers does not count as running.
+        bool hasPlayed = false;
         float gain = 1.0f, pitch = 1.0f, maxDistance = 1.0f, rolloff = 1.0f,
               referenceDistance = 1.0f;
         float coneInner = 360.0f, coneOuter = 360.0f, coneOuterGain = 0.0f;
