@@ -951,10 +951,19 @@ bool GLES::fixedFunctionEntry(const std::string& name, Marshal& m) {
         return true;
     }
     if (name == "glMatrixMode") {
-        matrixMode = m.word();
-        matrix = matrixMode == GL_PROJECTION       ? &projection
-                 : matrixMode == GL_TEXTURE_MATRIX ? &textureMatrix
-                                                   : &modelview;
+        const uint32_t mode = m.word();
+        // Only the three stacks an ES 1.1 title can select are held here. A fourth value is
+        // either a guest bug or an enum this bridge has no meaning for, and quietly loading
+        // the matrix into the modelview stack anyway is how a title ends up transformed by a
+        // matrix it never set, with nothing in the report to say so.
+        if (mode != GL_MODELVIEW && mode != GL_PROJECTION && mode != GL_TEXTURE_MATRIX) {
+            setError("glMatrixMode was given a matrix mode this bridge does not hold");
+            return true;
+        }
+        matrixMode = mode;
+        matrix = mode == GL_PROJECTION       ? &projection
+                 : mode == GL_TEXTURE_MATRIX ? &textureMatrix
+                                             : &modelview;
         return true;
     }
     if (name == "glLoadMatrixf") {
@@ -986,7 +995,27 @@ bool GLES::fixedFunctionEntry(const std::string& name, Marshal& m) {
     if (name == "glTexEnvi") {
         const uint32_t target = m.word(), pname = m.word();
         const int value = int(m.word());
-        if (target == GL_TEXTURE_ENV && pname == GL_TEXTURE_ENV_MODE) textureEnvMode = value;
+        if (target == GL_TEXTURE_ENV && pname == GL_TEXTURE_ENV_MODE) {
+            // Classified rather than stored blindly. Modulate and replace are what the
+            // generated programs actually shade; decal, blend and add are approximated as
+            // modulate and counted per draw; anything else has no meaning here, so it is
+            // approximated once, counted and named in the report.
+            const uint32_t mode = uint32_t(value);
+            switch (mode) {
+                case GL_MODULATE_TEXTURE_ENV:
+                case GL_REPLACE_TEXTURE_ENV:
+                case GL_DECAL_TEXTURE_ENV:
+                case GL_BLEND_TEXTURE_ENV:
+                case GL_ADD_TEXTURE_ENV:
+                    textureEnvMode = int(mode);
+                    break;
+                default:
+                    textureEnvMode = GL_MODULATE_TEXTURE_ENV;
+                    approximatedTexEnv++;
+                    setError("an unknown texture environment mode was approximated as modulate");
+                    break;
+            }
+        }
         return true;
     }
     if (name == "glLightfv" || name == "glMaterialfv") {

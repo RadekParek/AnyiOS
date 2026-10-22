@@ -23,12 +23,9 @@ Es2StubState state;
 
 // Named rather than hex, so a failure reads as GL and not as a number to decode.
 constexpr uint32_t GL_VERTEX_SHADER = 0x8b31;
-constexpr uint32_t GL_FRAGMENT_SHADER = 0x8b30;
 constexpr uint32_t GL_COMPILE_STATUS = 0x8b81;
 constexpr uint32_t GL_LINK_STATUS = 0x8b82;
 constexpr uint32_t GL_ARRAY_BUFFER = 0x8892;
-constexpr uint32_t GL_ELEMENT_ARRAY_BUFFER = 0x8893;
-constexpr uint32_t GL_FLOAT = 0x1406;
 constexpr uint32_t GL_MAX_TEXTURE_SIZE = 0x0d33;
 constexpr uint32_t GL_MAX_VIEWPORT_DIMS = 0x0d3a;
 constexpr uint32_t GL_MAX_VERTEX_ATTRIBS = 0x8869;
