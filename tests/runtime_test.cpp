@@ -307,6 +307,55 @@ int main() {
             bindLegacyStubs(unmapped, stubGraph, exe, {});
         });
     }
+    // Classic external relocations: an image linked before LC_DYLD_INFO records its
+    // Objective-C class references here, and dyld applies them as bindings. Ignoring the
+    // table left every superclass and class-ref slot at zero.
+    auto relocated = [] {
+        auto fixture = executable();
+        put(fixture, 16, 4);    // ncmds
+        put(fixture, 20, 184);  // sizeofcmds
+        put(fixture, 68, 7);    // maxprot: writable so a relocation target exists
+        put(fixture, 72, 7);    // initprot
+        put(fixture, 108, 0xb);
+        put(fixture, 112, 80);
+        put(fixture, 172, 0x360);  // extreloff
+        put(fixture, 176, 1);      // nextrel
+        put(fixture, 188, 2);      // LC_SYMTAB
+        put(fixture, 192, 24);
+        put(fixture, 196, 0x300);  // symoff
+        put(fixture, 200, 1);      // nsyms
+        put(fixture, 204, 0x340);  // stroff
+        put(fixture, 208, 16);     // strsize
+        put(fixture, 0x300, 1);    // n_strx: "_UIView"
+        fixture[0x304] = 0x01;     // N_UNDF | N_EXT
+        fixture[0x305] = 0;
+        fixture[0x306] = 0;
+        fixture[0x307] = 0xff;  // EXECUTABLE_ORDINAL: a self-image reference
+        put(fixture, 0x308, 0);
+        std::memcpy(fixture.data() + 0x340, "\0_UIView\0", 9);
+        put(fixture, 0x360, 0x1f00);                   // r_address
+        put(fixture, 0x364, (2u << 25) | (1u << 27));  // r_length=4 bytes, external
+        return fixture;
+    };
+    b = relocated();
+    image = loadMachO(b.data(), b.size());
+    assert(image.dyld.fixups.size() == 1);
+    assert(image.dyld.fixups[0].address == 0x1f00);
+    assert(!image.dyld.fixups[0].rebase);
+    assert(image.dyld.fixups[0].symbol == "_UIView");
+    assert(image.dyld.fixups[0].ordinal == -1);
+    // An ordinal past the dependency list is refused instead of being guessed.
+    b = relocated();
+    b[0x307] = 0x05;
+    fault("DYLD_ORDINAL", [&] { loadMachO(b.data(), b.size()); });
+    // Only four-byte absolute pointer relocations are pointer fixups.
+    b = relocated();
+    put(b, 0x364, (1u << 25) | (1u << 27));  // two-byte relocation
+    fault("DYLD_RELOCATION", [&] { loadMachO(b.data(), b.size()); });
+    b = relocated();
+    put(b, 0x360, 0xff8);  // target outside the mapped segment
+    fault("DYLD_RELOCATION", [&] { loadMachO(b.data(), b.size()); });
+
     // A stop report says which guest function was running, so the loader keeps the image's
     // defined code symbols. Local compiler labels are not functions and are dropped.
     {

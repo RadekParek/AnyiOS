@@ -275,6 +275,11 @@ LoadedImage loadMachO(const uint8_t* data, size_t size, size_t budget) {
                     throw Error("LOAD_DYSYMTAB", "dynamic symbol partitions overlap");
             }
         }
+        // Classic linkedit tables. External relocations are how a binary linked before
+        // LC_DYLD_INFO records the class, metaclass and cache pointers an Objective-C image
+        // needs; they are eight-byte records, so validate the whole table here.
+        r.range(r.u32(dynamicSymbols + 64), uint64_t(r.u32(dynamicSymbols + 68)) * 8);
+        r.range(r.u32(dynamicSymbols + 72), uint64_t(r.u32(dynamicSymbols + 76)) * 8);
         const uint32_t offset = r.u32(dynamicSymbols + 56);
         const uint32_t count = r.u32(dynamicSymbols + 60);
         for (uint32_t index = 0; index < count; index++) {
@@ -360,6 +365,90 @@ LoadedImage loadMachO(const uint8_t* data, size_t size, size_t budget) {
     std::map<uint32_t, size_t> planned;
     for (size_t index = 0; index < result.dyld.fixups.size(); index++)
         planned[result.dyld.fixups[index].address] = index;
+    // External relocations (LC_DYSYMTAB extreloff/nextrel). An image linked before
+    // LC_DYLD_INFO carries no bind stream at all: every Objective-C superclass, metaclass,
+    // `__objc_empty_cache` and class-reference slot is described here instead. Ignoring the
+    // table left those slots at zero, so a class defined by the image had no superclass and
+    // its inherited methods did not exist. dyld applies these before the image runs.
+    if (hasDynamicSymbols) {
+        const uint32_t relocationOffset = r.u32(dynamicSymbols + 64);
+        const uint32_t relocationCount = r.u32(dynamicSymbols + 68);
+        if (relocationCount > 100000)
+            throw Error("DYLD_LIMIT", "external relocation count exceeds budget");
+        for (uint32_t index = 0; index < relocationCount; index++) {
+            const uint64_t record = uint64_t(relocationOffset) + uint64_t(index) * 8;
+            const uint32_t address = r.u32(record);
+            const uint32_t info = r.u32(record + 4);
+            const uint32_t symbolNumber = info & 0xffffff;
+            const bool pcrel = (info >> 24) & 1;
+            const uint32_t length = (info >> 25) & 3;
+            const bool external = (info >> 27) & 1;
+            const uint32_t type = (info >> 28) & 0xf;
+            if (pcrel || length != 2 || type != 0)
+                throw Error("DYLD_RELOCATION",
+                            "only 4-byte absolute pointer relocations are supported", address);
+            if (address % 4 || uint64_t(address) + 4 > 0x100000000ULL)
+                throw Error("DYLD_RELOCATION", "unaligned relocation target", address);
+            bool writable = false;
+            for (const auto& segment : segments)
+                if ((segment.region.permissions & Write) && address >= segment.region.base &&
+                    uint64_t(address) + 4 <= uint64_t(segment.region.base) + segment.region.size)
+                    writable = true;
+            if (!writable)
+                throw Error("DYLD_RELOCATION", "relocation target is not writable image data",
+                            address);
+            if (planned.count(address)) continue;  // A dyld stream already owns this slot.
+            bool rebase = !external;
+            std::string symbol;
+            int ordinal = 0;
+            bool weak = false;
+            if (external) {
+                if (symbolNumber >= symbolCount)
+                    throw Error("DYLD_RELOCATION", "relocation references a missing symbol",
+                                address);
+                const uint64_t symbolRecord = uint64_t(symbolOffset) + uint64_t(symbolNumber) * 12;
+                const uint8_t type = data[symbolRecord + 4];
+                if ((type & 0xe0) || !(type & 1))
+                    throw Error("DYLD_RELOCATION", "relocation references an invalid nlist entry",
+                                address);
+                const uint32_t nameIndex = r.u32(symbolRecord);
+                if (nameIndex >= stringBytes)
+                    throw Error("DYLD_RELOCATION", "relocation symbol name is out of bounds",
+                                address);
+                const size_t start = size_t(stringOffset) + nameIndex;
+                size_t end = start;
+                while (end < size_t(stringOffset) + stringBytes && data[end] && end - start <= 4096)
+                    end++;
+                if (end == start || end == size_t(stringOffset) + stringBytes || end - start > 4096)
+                    throw Error("DYLD_RELOCATION", "relocation symbol name is malformed", address);
+                symbol.assign(reinterpret_cast<const char*>(data + start), end - start);
+                ordinal = data[symbolRecord + 7];
+                weak = (data[symbolRecord + 6] & 0x40) != 0;
+                // A relocation against a symbol this image defines is a self reference: it
+                // needs no resolver, so it behaves like a rebase.
+                if ((type & 0x0e) == 0x0e || ordinal == 0) {
+                    rebase = true;
+                    symbol.clear();
+                } else if (ordinal == 255) {
+                    ordinal = -1;
+                } else if (ordinal == 254) {
+                    ordinal = -2;
+                } else if (ordinal == 253) {
+                    ordinal = -3;
+                }
+                if (!rebase && ordinal > 0 && size_t(ordinal) > result.dependencies.size())
+                    throw Error("DYLD_ORDINAL", "relocation references a missing dylib", address);
+                if (!rebase && symbol.size() > 8 * 1024 * 1024 - dyldNames)
+                    throw Error("DYLD_LIMIT", "relocation symbol budget exceeded");
+                if (!rebase) dyldNames += symbol.size();
+            }
+            if (result.dyld.fixups.size() >= 100000)
+                throw Error("DYLD_LIMIT", "combined fixup budget exceeded");
+            planned.emplace(address, result.dyld.fixups.size());
+            result.dyld.fixups.push_back(
+                {address, rebase, weak, false, ordinal, 0, std::move(symbol)});
+        }
+    }
     for (const auto& section : indirectSections) {
         if (!hasDynamicSymbols)
             throw Error("DYLD_INDIRECT_SECTION", "indirect section requires LC_DYSYMTAB");

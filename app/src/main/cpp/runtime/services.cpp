@@ -4,6 +4,7 @@
 #include <cstring>
 #include <filesystem>
 #include <limits>
+#include <set>
 #include <system_error>
 
 #include "error.h"
@@ -223,6 +224,7 @@ Services::Services(Memory& m)
                          0};
     memory.map({Base + Memory::PageSize, Memory::PageSize, Read, "CoreGraphics constants"},
                reinterpret_cast<const uint8_t*>(constants), sizeof(constants));
+    objc.setTrapName([this](uint32_t address) { return trapSymbol(address); });
     objc.installGates();
     uikit.installGates();
 }
@@ -286,8 +288,41 @@ void Services::install(ExportGraph& graph, const std::vector<std::string>& depen
     for (const auto& dependency : dependencies) imageFor(dependency);
     for (size_t n = 0; n < symbols.size(); n++)
         graph.define(imageFor(libraryOf(symbols[n])), symbols[n], {Base + uint32_t(n) * 8});
-    imageFor("/System/Library/Frameworks/UIKit.framework/UIKit");
+    const size_t uiKit = imageFor("/System/Library/Frameworks/UIKit.framework/UIKit");
+    const size_t openGLES = imageFor("/System/Library/Frameworks/OpenGLES.framework/OpenGLES");
     objc.defineSymbols(graph, foundation, objcLibrary, quartzCore);
+    // A class and metaclass symbol is exported by the framework that owns the class, and a
+    // two-level bind names that image by ordinal. Defining every class in Foundation left a
+    // UIKit-ordinal bind of `_OBJC_CLASS_$_UIScreen` unresolved, so the guest messaged the
+    // unimplemented-import trap instead of the class object.
+    auto classOwner = [&](const std::string& name) -> size_t {
+        if (name.rfind("UI", 0) == 0) return uiKit;
+        if (name.rfind("EAGL", 0) == 0 || name.rfind("CAEAGL", 0) == 0) return openGLES;
+        if (name.rfind("CA", 0) == 0) return quartzCore;
+        return foundation;
+    };
+    // The toll-free bridged Foundation classes are really exported by CoreFoundation on the
+    // SDK generation these titles were built against: AngryBirds binds
+    // `_OBJC_CLASS_$_NSDictionary` with the CoreFoundation ordinal, not Foundation's.
+    const std::set<std::string> bridged{
+        "NSString", "NSArray", "NSMutableArray", "NSDictionary", "NSMutableDictionary",
+        "NSNumber", "NSData",  "NSSet",          "NSMutableSet", "NSDate"};
+    for (const auto& [name, address] : objc.classObjects()) {
+        const size_t owner = classOwner(name);
+        auto define = [&](size_t image) {
+            const std::string classSymbol = "_OBJC_CLASS_$_" + name;
+            if (graph.strong(image, classSymbol)) return;
+            graph.define(image, classSymbol, {address});
+            graph.define(image, "_OBJC_METACLASS_$_" + name, {address});
+        };
+        define(owner);
+        if (bridged.count(name)) define(coreFoundation);
+    }
+    // libobjc's own data symbols: a class carries an empty cache and vtable until its first
+    // message. This runtime never dereferences them, but the image binds them, so they point
+    // at real mapped memory instead of an unimplemented-import trap.
+    for (const char* symbol : {"__objc_empty_cache", "__objc_empty_vtable"})
+        graph.define(objcLibrary, symbol, {ObjC::GateBase + Memory::PageSize - 16});
     graph.define(coreGraphics, "_CGAffineTransformIdentity", {Base + Memory::PageSize});
     graph.define(coreGraphics, "_CGRectNull", {Base + Memory::PageSize + 24});
     // Keep the handles referenced: the images must exist even when nothing is defined in
@@ -329,6 +364,11 @@ void Services::mapTrapPage(size_t index) const {
     memory.map(
         {address, Memory::PageSize, uint8_t(Read | Execute), "AnyiOS unimplemented-import traps"},
         code.data(), code.size());
+}
+std::string Services::trapSymbol(uint32_t address) const {
+    if (address < TrapBase) return {};
+    const size_t index = size_t(address - TrapBase) / 8;
+    return index < traps.size() ? traps[index] : std::string();
 }
 uint32_t Services::trapFor(const std::string& symbol) {
     auto existing = trapIndex.find(symbol);

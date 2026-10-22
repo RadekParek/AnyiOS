@@ -24,6 +24,9 @@ class ObjC final {
                        size_t quartzCore) const;
     bool dispatch(uint32_t pc, CpuState& state);
     size_t gateCount() const { return entries.size(); }
+    // The class objects this runtime models, by name. The export graph registers each
+    // class symbol under the framework that really exports it.
+    const std::map<std::string, uint32_t>& classObjects() const { return classes; }
     // Call-gate address for a runtime entry, or 0 when the runtime does not export it.
     uint32_t gateAddress(const std::string& entry) const;
     // Guest sandbox roots used by NSBundle/NSHomeDirectory/NSSearchPath. They are guest
@@ -33,6 +36,9 @@ class ObjC final {
         fileExists = std::move(probe);
     }
     void setLogSink(std::function<void(const std::string&)> sink) { logSink = std::move(sink); }
+    // Names the unimplemented import a call-gate/trap address stands for, so a message sent
+    // to a trap says which API is missing instead of "not an object".
+    void setTrapName(std::function<std::string(uint32_t)> lookup) { trapName = std::move(lookup); }
     // Guest log/exit lifecycle: releasing the pool stack at exit is real bookkeeping.
     void drainPools();
     // Classes the image defines itself, from its `__objc_classlist`. Their metadata stays
@@ -98,6 +104,10 @@ class ObjC final {
         bool hidden = false, userInteraction = true, multipleTouch = false;
         uint32_t superview = 0, window = 0, backgroundColor = 0;
         uint32_t rootViewController = 0, delegate = 0, keyWindow = 0;
+        // A view's backing layer. Its class follows the view's own +layerClass override
+        // (CAEAGLLayer for an OpenGL ES view), so the drawable properties reach the layer
+        // kind the title asked for.
+        uint32_t layer = 0;
     };
     Memory& memory;
     std::vector<std::string> entries;
@@ -111,8 +121,10 @@ class ObjC final {
     uint32_t nextText = 0x6f480000;
     uint32_t nextBytes = 0x6f4c0000;
     uint32_t userDefaults = 0;
-    uint32_t applicationObject = 0;  // +[UIApplication sharedApplication]
-    uint32_t mainScreen = 0;         // +[UIScreen mainScreen]
+    uint32_t applicationObject = 0;   // +[UIApplication sharedApplication]
+    uint32_t mainScreen = 0;          // +[UIScreen mainScreen]
+    uint32_t accelerometer = 0;       // +[UIAccelerometer sharedAccelerometer]
+    uint32_t currentEaglContext = 0;  // +[EAGLContext setCurrentContext:]
     uint32_t mainBundle = 0;
     std::map<uint32_t, uint32_t> syncDepth;  // @synchronized nesting per object
     struct GuestClass {
@@ -122,9 +134,20 @@ class ObjC final {
     };
     std::map<std::string, GuestClass> guestClasses;
     std::map<uint32_t, uint32_t> guestInstances;  // instance address -> class address
-    std::map<uint32_t, uint32_t> guestRefs;       // instance address -> retain count
+    // View state for instances whose class the image defines but which inherit from a
+    // UIView/UIWindow the runtime models.
+    std::map<uint32_t, Object> guestViews;
+    std::map<uint32_t, uint32_t> guestRefs;  // instance address -> retain count
     uint32_t nextGuestObject = 0x6f500000;
     bool guestArena = false;
+    // A class's superclass is an extern bind, not a rebase, so it is still zero when the
+    // image is first registered (dyld has not run yet). Read it from guest memory on use so
+    // a class defined by the image inherits from UIView once fixups are applied.
+    uint32_t superclassOf(const GuestClass& info) const;
+    // Name of the nearest runtime-modelled class in an image-defined class's superclass
+    // chain, or an empty string when the chain has none. Inherited methods such as
+    // -[UIView setMultipleTouchEnabled:] live there, not in the guest's own method lists.
+    std::string hostAncestorOf(uint32_t classAddress) const;
     // Reads the class's method table (only methods, not caches) and walks the superclass
     // chain. Returns 0 when no class in the guest chain implements the selector.
     void mapGuestArena();
@@ -155,6 +178,7 @@ class ObjC final {
                          CpuState& state);
     std::string bundlePath = "/var/mobile", documentsPath = "/var/mobile/Documents";
     std::function<bool(const std::string&)> fileExists;
+    std::function<std::string(uint32_t)> trapName;
     std::function<void(const std::string&)> logSink;
     uint32_t makeString(const std::string& text);
     uint32_t makeArray(const std::vector<uint32_t>& elements);

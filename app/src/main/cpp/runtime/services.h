@@ -52,6 +52,8 @@ class Services final {
     // the first missing API instead of being refused before it starts.
     uint32_t trapFor(const std::string& symbol);
     size_t trapCount() const { return traps.size(); }
+    // Name of the unimplemented import a trap address stands for, or an empty string.
+    std::string trapSymbol(uint32_t address) const;
     size_t count() const { return symbols.size(); }
 
    private:

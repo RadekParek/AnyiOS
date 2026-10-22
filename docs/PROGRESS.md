@@ -1,5 +1,48 @@
 # Continuation progress — 2026-10-22
 
+## 0.9.3 — AngryBirds runs its own code into GL
+
+The user's AngryBirds IPA now boots through the real launch path instead of stopping at the
+first dozen instructions. Each step below was a genuine defect, not a stub:
+
+* **Every guest was cut off at 200,000 instructions.** The run loop treated the end of a
+  200,000-instruction CPU slice as the end of the run, so a title could never get past its
+  startup. It now continues until the caller's total budget or the wall clock stops it.
+* **Classic external relocations were ignored.** This binary predates `LC_DYLD_INFO`: all 348
+  of its Objective-C binds (`_OBJC_CLASS_$_UIView`, `_OBJC_METACLASS_$_NSObject`,
+  `__objc_empty_cache`, `__objc_empty_vtable`, the class refs) live in `LC_DYSYMTAB`'s
+  `extreloff/nextrel` table. Without them every superclass and class-ref slot stayed zero, so
+  an image-defined class had no superclass at all. `loadMachO` decodes the table into ordinary
+  fixups (4-byte absolute pointers only; anything else is `DYLD_RELOCATION`), and the whole
+  table is range-checked like every other linkedit table.
+* **A superclass is a bind, not a rebase.** Guest classes are registered before dyld runs, so
+  their `superclass` field was read as zero once and cached. It is now read from guest memory
+  when the chain is walked, so `[MyEAGLView -initWithFrame:]` and its siblings are found.
+* **Class symbols belong to the framework that exports them.** Every class was defined under
+  Foundation, so a UIKit-ordinal bind (and the CoreFoundation-ordinal bind of `NSDictionary`)
+  resolved to the unimplemented-import trap instead. Class and metaclass symbols are now
+  defined in the owning framework, the toll-free bridged Foundation classes in CoreFoundation
+  as well, and `__objc_empty_cache`/`__objc_empty_vtable` in libobjc.
+* **Method lookup missed the metaclass and the host superclass.** `+layerClass` and friends
+  arrive with a metaclass address that is not in `__objc_classlist`; lookups now map it back to
+  its class. Methods inherited from a modelled framework class (`-layer`,
+  `-setMultipleTouchEnabled:`, `-initWithFrame:`) now reach the host implementation.
+* **Struct returns.** `objc_msgSend_stret` now writes the four returned words through the
+  caller's buffer instead of refusing, which is what `[UIScreen bounds]` needs. A `CGRect`
+  argument is accepted either as a pointer or as four words in `r2-r5`.
+* View state is kept for instances whose class the image defines, layer objects follow the
+  image's own `+layerClass` override, `UIAccelerometer`/`EAGLContext`/`CAEAGLLayer` are real
+  objects with real properties, and `+dictionaryWithObjectsAndKeys:` builds a real dictionary.
+
+Result on this host: AngryBirds runs **340,304 instructions** of its own ARMv6 code (from 86
+before this round), through `UIApplicationMain`, the `AppController` delegate, window and
+`MyEAGLView` creation and EAGL context setup, and stops at `_glFrontFace` — the first OpenGL ES
+call. That is the honest boundary: the host probe links no GL, and the next step is the
+EAGL/ANGLE bridge that forwards these calls to the real ANGLE libraries the app already ships.
+`-[EAGLContext renderbufferStorage:fromDrawable:]` and `-presentRenderbuffer:` refuse by name
+rather than pretending a drawable exists. No gameplay, rendering or device claim is made.
+
+
 ## 0.9.2 — startup-blocker sweep
 
 Every item below was a named blocker in a real launch report. Each one is now a code

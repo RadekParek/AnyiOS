@@ -79,9 +79,14 @@ GuestRun execute(LoadedImage& image, Services& services, const ExportGraph& grap
             cpu.setState(current);
             continue;
         }
-        run.stop = "BUDGET";
-        run.detail = "instruction budget or wall-clock slice reached";
-        return run;
+        // A slice that simply ran out of instruction budget is not the end of the run:
+        // the loop continues until the caller's total budget or the wall clock stops it.
+        // Returning here used to cut every guest off at the 200,000-instruction slice.
+        if (stop.reason != StopReason::Budget) {
+            run.stop = "BUDGET";
+            run.detail = "the CPU slice ended without a reason the run loop understands";
+            return run;
+        }
     }
     run.stop = "BUDGET";
     run.detail = "instruction budget reached";

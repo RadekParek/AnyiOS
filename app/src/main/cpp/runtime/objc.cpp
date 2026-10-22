@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cstdlib>
 #include <optional>
+#include <sstream>
 
 #include "abi.h"
 #include "error.h"
@@ -95,6 +96,13 @@ void ObjC::installGates() {
     classObject("UIView");
     classObject("UIViewController");
     classObject("UIColor");
+    classObject("UIAccelerometer");
+    // EAGL/CAEAGLLayer are real objects here: a title configures them before it issues a
+    // single GL call. The drawable itself belongs to the renderer, so the runtime models the
+    // object and its properties and refuses the call that would need a real surface.
+    classObject("EAGLContext");
+    classObject("CAEAGLLayer");
+    classObject("CALayer");
 }
 uint32_t ObjC::gateAddress(const std::string& entry) const {
     for (size_t n = 0; n < entries.size(); n++)
@@ -448,8 +456,39 @@ uint32_t ObjC::allocateGuestInstance(uint32_t classAddress) {
     guestRefs.emplace(object, 1);
     return object;
 }
+uint32_t ObjC::superclassOf(const GuestClass& info) const {
+    if (!info.address) return info.superclass;
+    uint32_t current = 0;
+    try {
+        current = memory.read32(info.address + 4);
+    } catch (const Error&) {
+        return info.superclass;
+    }
+    return current;
+}
+std::string ObjC::hostAncestorOf(uint32_t classAddress) const {
+    uint32_t current = classAddress;
+    for (size_t depth = 0; depth < 64 && current; depth++) {
+        const GuestClass* info = guestClassAt(current);
+        if (!info) return {};
+        const uint32_t parent = superclassOf(*info);
+        if (!guestClassAt(parent)) return hostClassName(parent);
+        current = parent;
+    }
+    return {};
+}
 uint32_t ObjC::guestMethod(uint32_t classAddress, bool classMethod, const std::string& name) const {
     const GuestClass* start = guestClassAt(classAddress);
+    if (!start) {
+        // A metaclass is not part of __objc_classlist, so +method lookups arrive with the
+        // metaclass address rather than the class it belongs to. Find its owner.
+        for (const auto& [className, info] : guestClasses)
+            if (info.meta == classAddress) {
+                start = &info;
+                classMethod = true;
+                break;
+            }
+    }
     if (!start) return 0;
     // Scans one method_list_t: {entsizeAndFlags, count, methods[]} in the modern layout,
     // {obsolete, count, methods[]} in the legacy one. Both store {SEL, types, IMP} triples.
@@ -488,7 +527,7 @@ uint32_t ObjC::guestMethod(uint32_t classAddress, bool classMethod, const std::s
                 if (uint32_t imp = scan(list)) return imp;
             }
         }
-        current = info->superclass;
+        current = superclassOf(*info);
     }
     return 0;
 }
@@ -498,7 +537,7 @@ bool ObjC::guestChainContains(uint32_t classAddress, uint32_t candidate) const {
         if (current == candidate) return true;
         const GuestClass* info = guestClassAt(current);
         if (!info) return false;
-        current = info->superclass;
+        current = superclassOf(*info);
     }
     return false;
 }
@@ -587,7 +626,7 @@ bool ObjC::guestMessage(uint32_t receiver, uint32_t selectorAddress, CpuState& s
         }
         if (method == "class") return true;
         if (method == "superclass") {
-            r[0] = cls->superclass;
+            r[0] = superclassOf(*cls);
             return true;
         }
         if (method == "description") {
@@ -604,6 +643,13 @@ bool ObjC::guestMessage(uint32_t receiver, uint32_t selectorAddress, CpuState& s
     if (uint32_t imp = guestMethod(target, cls != nullptr, method))
         return enterGuest(imp, state, receiver, selectorAddress);
     if (instance && guestFoundation(receiver, className, method, state)) return true;
+    // The selector may be inherited from the framework class the image's class derives from
+    // (UIView's -initWithFrame:, -setMultipleTouchEnabled:, -layer). Those are modelled on
+    // the host side, keyed by the receiving instance.
+    if (instance) {
+        const std::string host = hostAncestorOf(target);
+        if (!host.empty() && uiKitMessage(host, receiver, method, state)) return true;
+    }
     throw Error("OBJC_UNIMPLEMENTED",
                 "[" + className + (cls ? " +" : " -") + method +
                     "] is defined by the image, but this implementation of it is not "
@@ -662,14 +708,15 @@ bool ObjC::guestSuperMessage(uint32_t receiver, uint32_t classOfMethod, uint32_t
     const GuestClass* declaring = guestClassAt(classOfMethod);
     if (!declaring) return false;  // a runtime class did the super call: ordinary dispatch
     const bool instance = guestInstances.count(receiver) != 0;
-    uint32_t start = declaring->superclass;
+    uint32_t start = superclassOf(*declaring);
     if (!start) return false;
     if (const GuestClass* parent = guestClassAt(start)) {
         if (uint32_t imp = guestMethod(parent->address, false, method))
             return enterGuest(imp, state, receiver, selectorAddress);
         // Continue through the runtime's own classes when the guest chain ends at one.
-        if (!guestClassAt(parent->superclass)) {
-            const std::string hostName = hostClassName(parent->superclass);
+        const uint32_t parentSuper = superclassOf(*parent);
+        if (!guestClassAt(parentSuper)) {
+            const std::string hostName = hostClassName(parentSuper);
             if (!hostName.empty() && uiKitMessage(hostName, receiver, method, state)) return true;
         }
         throw Error("OBJC_UNIMPLEMENTED", "[super " + method + "] in " + declaring->name +
@@ -690,17 +737,41 @@ std::string ObjC::hostClassName(uint32_t address) const {
 bool ObjC::uiKitMessage(const std::string& className, uint32_t object, const std::string& method,
                         CpuState& state) {
     auto& r = state.registers;
-    auto found = objects.find(object);
-    if (found == objects.end()) return false;
-    Object& value = found->second;
+    // A view implemented by the image (its own UIView/UIWindow subclass) has guest-owned
+    // metadata, so its view state lives in a second store keyed by the same address instead
+    // of being invented in the host object map.
+    Object* foundValue = nullptr;
+    if (auto it = objects.find(object); it != objects.end()) {
+        foundValue = &it->second;
+    } else if (auto it = guestViews.find(object); it != guestViews.end()) {
+        foundValue = &it->second;
+    } else if (guestInstances.count(object)) {
+        Object& created = guestViews[object];
+        created.className = className;
+        foundValue = &created;
+    } else {
+        return false;
+    }
+    Object& value = *foundValue;
     // CGRect and CGPoint results travel in r0-r3 (base AAPCS: no VFP argument registers).
     auto rect = [&](const float* values) {
         for (size_t n = 0; n < 4; n++) r[n] = floatBits(values[n]);
     };
+    // A CGRect argument reaches an ARM callee either as a pointer to the caller's copy or
+    // with its four words already in r2-r5, depending on how the framework header was
+    // compiled. Both are accepted: the pointer form is used when the register really is
+    // readable, otherwise the words are taken as they were passed.
     auto readRect = [&](uint32_t address, float* out) {
-        if (!memory.permits(address, 16, Read))
-            throw Error("UIKIT_ARGUMENT", "geometry argument is not readable", address);
-        for (size_t n = 0; n < 4; n++) out[n] = bitsFloat(memory.read32(address + uint32_t(n) * 4));
+        if (memory.permits(address, 16, Read)) {
+            for (size_t n = 0; n < 4; n++)
+                out[n] = bitsFloat(memory.read32(address + uint32_t(n) * 4));
+            return;
+        }
+        if (address == r[2]) {
+            for (size_t n = 0; n < 4; n++) out[n] = bitsFloat(r[2 + n]);
+            return;
+        }
+        throw Error("UIKIT_ARGUMENT", "geometry argument is not readable", address);
     };
     if (className == "UIApplication") {
         if (method == "delegate") {
@@ -764,6 +835,78 @@ bool ObjC::uiKitMessage(const std::string& className, uint32_t object, const std
         }
         return false;
     }
+    if (className == "UIAccelerometer") {
+        if (method == "setUpdateInterval:") {
+            value.real = double(bitsFloat(r[2]));
+            return true;
+        }
+        if (method == "updateInterval") {
+            resultF64(state, value.real);
+            return true;
+        }
+        if (method == "delegate") {
+            r[0] = value.delegate;
+            return true;
+        }
+        if (method == "setDelegate:") {
+            value.delegate = r[2];
+            return true;
+        }
+        return false;
+    }
+    if (className == "EAGLContext") {
+        if (method == "initWithAPI:") {
+            value.integer = r[2];  // kEAGLRenderingAPIOpenGLES1/2, kept for -API
+            return true;
+        }
+        if (method == "API") {
+            r[0] = uint32_t(value.integer);
+            return true;
+        }
+        if (method == "setCurrentContext") {
+            currentEaglContext = object;
+            return true;
+        }
+        if (method == "sharegroup") {
+            r[0] = makeObject("EAGLSharegroup");
+            return true;
+        }
+        if (method == "renderbufferStorage:fromDrawable:") {
+            // This needs the real EGL surface the renderer owns; answering success here
+            // would let the guest believe a framebuffer exists.
+            throw Error("UIKIT_UNSUPPORTED",
+                        "-[EAGLContext renderbufferStorage:fromDrawable:] needs the EAGL "
+                        "drawable, which only the ANGLE-backed renderer can supply");
+        }
+        if (method == "presentRenderbuffer:") {
+            throw Error("UIKIT_UNSUPPORTED",
+                        "-[EAGLContext presentRenderbuffer:] needs the EAGL drawable, which "
+                        "only the ANGLE-backed renderer can supply");
+        }
+        return false;
+    }
+    if (className == "CAEAGLLayer" || className == "CALayer") {
+        if (method == "setDrawableProperties:") {
+            value.delegate = r[2];
+            return true;
+        }
+        if (method == "drawableProperties") {
+            r[0] = value.delegate;
+            return true;
+        }
+        if (method == "setOpaque:") {
+            value.hidden = r[2] == 0;
+            return true;
+        }
+        if (method == "isOpaque") {
+            r[0] = value.hidden ? 0 : 1;
+            return true;
+        }
+        if (method == "setFrame:" || method == "setBounds:" || method == "frame" ||
+            method == "bounds" || method == "setContentsScale:" || method == "contentsScale")
+            return false;  // falls through to the view/layer geometry below
+        return false;
+    }
     if (className == "UIWindow" || className == "UIView" || className == "UIControl" ||
         className == "UIButton" || className == "UILabel" || className == "UIAlertView" ||
         className == "UIScrollView" || className == "UITextField" ||
@@ -780,6 +923,33 @@ bool ObjC::uiKitMessage(const std::string& className, uint32_t object, const std
                 value.bounds[2] = value.frame[2];
                 value.bounds[3] = value.frame[3];
             }
+            return true;
+        }
+        if (method == "layer") {
+            if (!value.layer) {
+                // The layer kind is decided by the image's own +layerClass override when it
+                // declares one; that override returns CAEAGLLayer for an OpenGL ES view.
+                std::string kind = "CALayer";
+                auto instance = guestInstances.find(object);
+                if (instance != guestInstances.end())
+                    if (const GuestClass* info = guestClassAt(instance->second))
+                        if (guestMethod(info->meta ? info->meta : info->address, true,
+                                        "layerClass"))
+                            kind = "CAEAGLLayer";
+                value.layer = makeObject(kind);
+            }
+            r[0] = value.layer;
+            return true;
+        }
+        if (method == "initWithFrame:") {
+            // -[UIView initWithFrame:] is where a subclass's super call lands. The frame is
+            // real view state, so it is stored and the receiver comes back as the result.
+            readRect(r[2], value.frame);
+            value.hasFrame = true;
+            value.bounds[0] = value.bounds[1] = 0;
+            value.bounds[2] = value.frame[2];
+            value.bounds[3] = value.frame[3];
+            r[0] = object;
             return true;
         }
         if (method == "bounds") {
@@ -1229,7 +1399,16 @@ void ObjC::message(CpuState& state) {
         }
     if (!classMethod) {
         auto object = objects.find(self);
-        if (object == objects.end()) throw Error("OBJC_RECEIVER", "message to a non-object", self);
+        if (object == objects.end()) {
+            std::ostringstream out;
+            out << "message \"" << method << "\" sent to 0x" << std::hex << self
+                << ", which is not an object this runtime created";
+            if (trapName)
+                if (const std::string import = trapName(self); !import.empty())
+                    out << ": the receiver is the unimplemented-import trap for " << import
+                        << ", because that class or symbol has no implementation yet";
+            throw Error("OBJC_RECEIVER", out.str(), self);
+        }
         className = object->second.className;
     }
     auto unsupported = [&] {
@@ -1273,6 +1452,36 @@ void ObjC::message(CpuState& state) {
         }
         if (className == "NSDictionary" && method == "dictionary") {
             state.registers[0] = makeObject("NSDictionary");
+            return;
+        }
+        // +dictionaryWithObjectsAndKeys: is (object, key, ...) terminated by nil, so the
+        // variadic words are read in pairs until the terminator.
+        if ((className == "NSDictionary" || className == "NSMutableDictionary") &&
+            (method == "dictionaryWithObjectsAndKeys:" ||
+             method == "dictionaryWithObjects:forKeys:")) {
+            const uint32_t object = makeObject(
+                className == "NSMutableDictionary" ? "NSMutableDictionary" : "NSDictionary");
+            Object& created = objects[object];
+            if (method == "dictionaryWithObjectsAndKeys:") {
+                Arguments args(state, memory, 2);
+                for (size_t pair = 0; pair < 4096; pair++) {
+                    const uint32_t value = args.pointer();
+                    if (!value) break;
+                    const uint32_t key = args.pointer();
+                    if (!key) throw Error("OBJC_ARGUMENT", "dictionary key is nil");
+                    created.pairs.emplace_back(key, value);
+                }
+            } else {
+                const uint32_t values = state.registers[2], keys = state.registers[3];
+                if (!values || !keys) throw Error("OBJC_ARGUMENT", "dictionary arrays are nil");
+                const Object& valueList = objects.at(values);
+                const Object& keyList = objects.at(keys);
+                if (valueList.elements.size() != keyList.elements.size())
+                    throw Error("OBJC_ARGUMENT", "dictionary arrays differ in length");
+                for (size_t index = 0; index < valueList.elements.size(); index++)
+                    created.pairs.emplace_back(keyList.elements[index], valueList.elements[index]);
+            }
+            state.registers[0] = object;
             return;
         }
         if (className == "NSMutableDictionary" &&
@@ -1357,6 +1566,25 @@ void ObjC::message(CpuState& state) {
             if (!applicationObject) applicationObject = makeObject("UIApplication");
             state.registers[0] = applicationObject;
             return;
+        }
+        if (className == "UIAccelerometer" && method == "sharedAccelerometer") {
+            if (!accelerometer) accelerometer = makeObject("UIAccelerometer");
+            state.registers[0] = accelerometer;
+            return;
+        }
+        if (className == "EAGLContext" && method == "setCurrentContext:") {
+            currentEaglContext = state.registers[2];
+            return;
+        }
+        if (className == "EAGLContext" && method == "currentContext") {
+            state.registers[0] = currentEaglContext;
+            return;
+        }
+        if (className == "CAEAGLLayer" || className == "CALayer") {
+            if (method == "layer") {
+                state.registers[0] = makeObject("CAEAGLLayer");
+                return;
+            }
         }
         if (className == "UIScreen" && method == "mainScreen") {
             if (!mainScreen) mainScreen = makeObject("UIScreen");
@@ -1524,10 +1752,24 @@ void ObjC::invoke(const std::string& entry, CpuState& state) {
                                  target == "NSNumber" || target == "NSArray" ||
                                  target == "NSMutableArray" || target == "NSDictionary" ||
                                  target == "NSMutableDictionary" || target == "NSData";
-        if (!scalarClass)
-            throw Error("OBJC_STRET_UNIMPLEMENTED",
-                        "[" + target + " " + selectorName +
-                            "] returns a struct through a hidden pointer, which is not modelled");
+        if (!scalarClass) {
+            // A host-modelled object (UIView's -frame, UIScreen's -bounds) returns its
+            // CGRect through r0's hidden pointer, so the argument registers move down one
+            // place. The handler answers in r0-r3; store those four words and hand the
+            // buffer back as the result.
+            const uint32_t buffer = r[0];
+            if (!buffer || !memory.permits(buffer, 16, Write))
+                throw Error("OBJC_STRET", "struct return buffer is not writable", buffer);
+            CpuState shifted = state;
+            for (size_t n = 0; n + 3 < 16; n++) shifted.registers[2 + n] = r[3 + n];
+            shifted.registers[0] = receiver;
+            shifted.registers[1] = name;
+            message(shifted);
+            for (size_t n = 0; n < 4; n++)
+                memory.write32(buffer + uint32_t(n * 4), shifted.registers[n]);
+            r[0] = buffer;
+            return;
+        }
         CpuState shifted = state;
         shifted.registers[0] = receiver;
         shifted.registers[1] = name;
