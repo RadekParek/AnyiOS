@@ -5,12 +5,21 @@
 
 namespace podnative::runtime {
 // How long the guest is allowed to run, and how much of its console output the report
-// keeps. The defaults are the bounded probe; a live session passes a real time budget.
+// keeps. Both limits default to zero, which means "no limit": a title runs until it stops,
+// faults or exits, exactly like an app on a device. A positive value is a caller's own
+// probe budget and is honoured only because the caller asked for it.
 struct LaunchOptions {
-    double seconds = 2.5;
-    uint64_t instructions = 2000000;
+    double seconds = 0;         // 0 = run until the guest stops
+    uint64_t instructions = 0;  // 0 = no instruction cap
     // Guest printf/NSLog lines kept for the report. Negative disables capture.
     int logLines = 24;
+    // "Verbose logging": name every service the guest calls, every unwind decision and every
+    // GL error. Off by default; it only ever adds log lines, never changes behaviour.
+    bool verbose = false;
+    // Exact program counters for the instruction trace. Kept separate from `verbose` because
+    // single-stepping costs roughly ten times the execution rate: a verbose run that only
+    // needs names and arguments should not pay for it.
+    bool precise = false;
 };
 // Real, bounded loader attempt. Never jump into guest code with unresolved services.
 // `bundleHost` and `containerHost` are the host directories that back the guest sandbox

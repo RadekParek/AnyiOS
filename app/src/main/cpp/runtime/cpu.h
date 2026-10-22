@@ -3,6 +3,7 @@
 #include <cstdint>
 #include <memory>
 #include <string>
+#include <vector>
 
 #include "memory.h"
 namespace podnative::runtime {
@@ -35,8 +36,16 @@ class Cpu final {
     Cpu(const Cpu&) = delete;
     Cpu& operator=(const Cpu&) = delete;
     void setState(const CpuState& state);
+    // Single-step instead of running translated blocks. "Verbose logging" asks for this: it
+    // trades throughput for an exact PC for every instruction, which is what a deep trace and
+    // a fault report need.
+    void setPrecise(bool on);
     CpuState state() const;
     CpuStop run(uint64_t maxInstructions);
+    // The instructions retired immediately before the current PC, newest last. A guest that
+    // jumps to an address it read out of corrupted memory cannot be explained from the fault
+    // registers alone; the instructions that ran just before it can.
+    std::vector<uint32_t> recentPcs(size_t count) const;
 
    private:
     class Impl;

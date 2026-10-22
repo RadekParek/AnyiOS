@@ -11,6 +11,7 @@
 #include <cstring>
 #include <ctime>
 #include <functional>
+#include <thread>
 
 #if defined(__ANDROID__)
 #include <android/log.h>
@@ -23,6 +24,8 @@
 namespace podnative::runtime {
 namespace {
 constexpr size_t CopyLimit = 16 * 1024 * 1024;
+// Marks a guest jmp_buf this runtime filled in, so a stale or forged buffer is refused.
+constexpr uint32_t JumpMagic = 0x4a4d5042;  // 'JMPB'
 std::function<void(const std::string&)> defaultLogSink() {
     return [](const std::string& text) {
 #if defined(__ANDROID__)
@@ -56,6 +59,73 @@ void Libc::zero(uint32_t address, size_t bytes) {
         done += chunk;
     }
 }
+uint32_t Libc::reserveString(const std::string& text) {
+    auto known = reservedStrings.find(text);
+    if (known != reservedStrings.end()) return known->second;
+    const uint32_t cell = heap.allocate(uint32_t(text.size() + 1), 4);
+    if (!cell) throw Error("LIBC_ALLOC", "could not reserve a guest string");
+    memory.write(cell, text.c_str(), text.size() + 1);
+    reservedStrings.emplace(text, cell);
+    return cell;
+}
+uint32_t Libc::tmBuffer() {
+    if (!tmCell) {
+        tmCell = heap.allocate(44, 4);
+        if (!tmCell) throw Error("LIBC_ALLOC", "could not allocate the guest tm buffer");
+    }
+    return tmCell;
+}
+void Libc::writeTm(uint32_t address, const std::tm& parts) {
+    // Darwin: nine ints, then long tm_gmtoff and char *tm_zone.
+    const int fields[9] = {parts.tm_sec,  parts.tm_min,  parts.tm_hour, parts.tm_mday, parts.tm_mon,
+                           parts.tm_year, parts.tm_wday, parts.tm_yday, parts.tm_isdst};
+    for (size_t n = 0; n < 9; n++) memory.write32(address + uint32_t(n * 4), uint32_t(fields[n]));
+    memory.write32(address + 36, uint32_t(int32_t(parts.tm_gmtoff)));
+    memory.write32(address + 40, reserveString(parts.tm_zone ? parts.tm_zone : "UTC"));
+}
+void Libc::readTm(uint32_t address, std::tm& parts) {
+    const int fields[9] = {int(memory.read32(address)),      int(memory.read32(address + 4)),
+                           int(memory.read32(address + 8)),  int(memory.read32(address + 12)),
+                           int(memory.read32(address + 16)), int(memory.read32(address + 20)),
+                           int(memory.read32(address + 24)), int(memory.read32(address + 28)),
+                           int(memory.read32(address + 32))};
+    parts.tm_sec = fields[0];
+    parts.tm_min = fields[1];
+    parts.tm_hour = fields[2];
+    parts.tm_mday = fields[3];
+    parts.tm_mon = fields[4];
+    parts.tm_year = fields[5];
+    parts.tm_wday = fields[6];
+    parts.tm_yday = fields[7];
+    parts.tm_isdst = fields[8];
+    parts.tm_gmtoff = int32_t(memory.read32(address + 36));
+    const uint32_t zone = memory.read32(address + 40);
+    parts.tm_zone = zone ? nullptr : "UTC";
+    if (zone) {
+        // The zone string is only read back for display; keep it in the reserved pool so
+        // the pointer stays valid for the life of the process.
+        zoneText[address] = readString(zone, 64);
+        parts.tm_zone = zoneText[address].c_str();
+    }
+}
+uint32_t Libc::localeconvCell() {
+    if (lconvCell) return lconvCell;
+    lconvCell = heap.allocate(96, 4);
+    if (!lconvCell) throw Error("LIBC_ALLOC", "could not allocate the guest lconv");
+    zero(lconvCell, 96);
+    const uint32_t empty = reserveString(""), dot = reserveString(".");
+    // decimal_point, thousands_sep, grouping, int_curr_symbol, currency_symbol,
+    // mon_decimal_point, mon_thousands_sep, mon_grouping, positive_sign, negative_sign.
+    const uint32_t pointers[10] = {dot,   empty, empty, empty, empty,
+                                   empty, empty, empty, empty, empty};
+    for (size_t n = 0; n < 10; n++) memory.write32(lconvCell + uint32_t(n * 4), pointers[n]);
+    // The C locale reports CHAR_MAX for every remaining numeric field.
+    for (uint32_t offset = 40; offset < 54; offset++) {
+        const uint8_t value = 0x7f;
+        memory.write(lconvCell + offset, &value, 1);
+    }
+    return lconvCell;
+}
 bool Libc::invoke(const std::string& name, CpuState& cpu) {
     auto& r = cpu.registers;
     if (name == "_printf" || name == "_puts" || name == "_snprintf" || name == "_sprintf" ||
@@ -64,7 +134,7 @@ bool Libc::invoke(const std::string& name, CpuState& cpu) {
         return true;
     }
     if (name == "_exit" || name == "_Exit" || name == "_exit_group" || name == "exit" ||
-        name == "abort" || name == "__assert_rtn") {
+        name == "abort" || name == "_abort" || name == "__assert_rtn") {
         // Terminating the guest is real: the run stops with the guest's own exit status, and
         // the crash screen reports that status rather than pretending the app finished.
         const uint32_t status =
@@ -252,6 +322,344 @@ bool Libc::invoke(const std::string& name, CpuState& cpu) {
         memory.write(r[1], text.data(), copied);
         zero(r[1] + uint32_t(copied), 1);
         r[0] = 0;
+        return true;
+    }
+    // ---- ctype -----------------------------------------------------------------------
+    // Darwin spells its case-mapping entry points with a leading extra underscore, and its
+    // <ctype.h> macros lower to ___maskrune. All three answer over the full unsigned-char
+    // range, which is what the titles use them for; an out-of-range argument is returned
+    // unchanged, exactly as Darwin's table-driven versions do.
+    if (name == "___tolower" || name == "_tolower") {
+        const int c = int(uint8_t(r[0] & 0xff));
+        r[0] = uint32_t(r[0] & ~0xffu) | uint32_t(std::tolower(c));
+        return true;
+    }
+    if (name == "___toupper" || name == "_toupper") {
+        const int c = int(uint8_t(r[0] & 0xff));
+        r[0] = uint32_t(r[0] & ~0xffu) | uint32_t(std::toupper(c));
+        return true;
+    }
+    if (name == "___maskrune") {
+        // (rune, mask) with Darwin's _CTYPE_* bits: A 0x100, C 0x200, D 0x400, G 0x800,
+        // L 0x1000, P 0x2000, S 0x4000, U 0x8000, X 0x10000, B 0x20000, R 0x40000,
+        // I 0x80000, T 0x100000, N 0x200000, S 0x400000 (_CTYPE_SW? no: _CTYPE_S is enough).
+        const uint32_t rune = r[0], mask = r[1];
+        uint32_t bits = 0;
+        const int c = int(rune & 0xff);
+        if (std::isalpha(c)) bits |= 0x100;
+        if (std::iscntrl(c)) bits |= 0x200;
+        if (std::isdigit(c)) bits |= 0x400;
+        if (std::isgraph(c)) bits |= 0x800;
+        if (std::islower(c)) bits |= 0x1000;
+        if (std::ispunct(c)) bits |= 0x2000;
+        if (std::isspace(c)) bits |= 0x4000;
+        if (std::isupper(c)) bits |= 0x8000;
+        if (std::isxdigit(c)) bits |= 0x10000;
+        if (c == ' ') bits |= 0x20000;  // _CTYPE_B: blank
+        if (std::isprint(c)) bits |= 0x40000;
+        r[0] = (bits & mask) != 0 ? 1u : 0u;
+        return true;
+    }
+    // ---- strings ---------------------------------------------------------------------
+    if (name == "_strncat") {
+        const std::string base = readString(r[0]), tail = readString(r[1]);
+        const size_t count = r[2];
+        const size_t copied = std::min(tail.size(), count);
+        memory.write(r[0] + uint32_t(base.size()), tail.data(), copied);
+        zero(r[0] + uint32_t(base.size() + copied), 1);
+        return true;
+    }
+    if (name == "_strlcpy") {
+        const std::string text = readString(r[1]);
+        const size_t capacity = r[2];
+        if (capacity) {
+            const size_t copied = std::min(text.size(), capacity - 1);
+            memory.write(r[0], text.data(), copied);
+            zero(r[0] + uint32_t(copied), 1);
+        }
+        r[0] = uint32_t(text.size());
+        return true;
+    }
+    if (name == "_strndup") {
+        const std::string text = readString(r[0]).substr(0, r[1]);
+        const uint32_t copy = heap.allocate(uint32_t(text.size() + 1));
+        if (!copy) {
+            r[0] = 0;
+            return true;
+        }
+        memory.write(copy, text.data(), text.size());
+        zero(copy + uint32_t(text.size()), 1);
+        r[0] = copy;
+        return true;
+    }
+    if (name == "_strspn" || name == "_strcspn") {
+        const std::string text = readString(r[0]), set = readString(r[1]);
+        size_t count = 0;
+        while (count < text.size()) {
+            const bool member = set.find(text[count]) != std::string::npos;
+            if (member == (name == "_strcspn")) break;
+            count++;
+        }
+        r[0] = uint32_t(count);
+        return true;
+    }
+    if (name == "_strpbrk") {
+        const std::string text = readString(r[0]), set = readString(r[1]);
+        const size_t found = text.find_first_of(set);
+        r[0] = found == std::string::npos ? 0 : r[0] + uint32_t(found);
+        return true;
+    }
+    if (name == "_strcasestr") {
+        const std::string text = readString(r[0]), needle = readString(r[1]);
+        if (needle.empty()) {
+            r[0] = r[0];
+            return true;
+        }
+        std::string foldedText = text, foldedNeedle = needle;
+        for (char& c : foldedText) c = char(std::tolower(uint8_t(c)));
+        for (char& c : foldedNeedle) c = char(std::tolower(uint8_t(c)));
+        const size_t found = foldedText.find(foldedNeedle);
+        r[0] = found == std::string::npos ? 0 : r[0] + uint32_t(found);
+        return true;
+    }
+    if (name == "_strcoll") {
+        const std::string a = readString(r[0]), b = readString(r[1]);
+        r[0] = uint32_t(a.compare(b) < 0 ? -1 : a.compare(b) > 0 ? 1 : 0);
+        return true;
+    }
+    if (name == "_strtok") {
+        // The single-argument form keeps its cursor in process state, as libc does.
+        const uint32_t source = r[0], separators = r[1];
+        const std::string set = readString(separators);
+        uint32_t start = source ? source : strtokCursor;
+        if (!start) {
+            r[0] = 0;
+            return true;
+        }
+        for (;;) {
+            char c;
+            memory.read(start, &c, 1);
+            if (!c) {
+                strtokCursor = 0;
+                r[0] = 0;
+                return true;
+            }
+            if (set.find(c) == std::string::npos) break;
+            start++;
+        }
+        uint32_t end = start;
+        for (;;) {
+            char c;
+            memory.read(end, &c, 1);
+            if (!c) {
+                strtokCursor = 0;
+                break;
+            }
+            if (set.find(c) != std::string::npos) {
+                const char terminator = 0;
+                memory.write(end, &terminator, 1);
+                strtokCursor = end + 1;
+                break;
+            }
+            end++;
+        }
+        r[0] = start;
+        return true;
+    }
+    if (name == "_strsep") {
+        const uint32_t cursorAt = r[0], separators = r[1];
+        if (!memory.permits(cursorAt, 4, Write))
+            throw Error("LIBC_BUFFER", "strsep cursor is not writable", cursorAt);
+        uint32_t start = memory.read32(cursorAt);
+        if (!start) {
+            r[0] = 0;
+            return true;
+        }
+        const std::string set = readString(separators);
+        uint32_t at = start, end = 0;
+        for (;;) {
+            char c;
+            memory.read(at, &c, 1);
+            if (!c) break;
+            if (set.find(c) != std::string::npos) {
+                const char terminator = 0;
+                memory.write(at, &terminator, 1);
+                end = at + 1;
+                break;
+            }
+            at++;
+        }
+        memory.write32(cursorAt, end);
+        r[0] = start;
+        return true;
+    }
+    if (name == "_memmem") {
+        const uint32_t haystack = r[0], haystackLength = r[1];
+        const uint32_t needle = r[2], needleLength = r[3];
+        if (needleLength > haystackLength) {
+            r[0] = 0;
+            return true;
+        }
+        const std::string text = readString(haystack, haystackLength + 1);
+        const std::string target = readString(needle, needleLength + 1);
+        const size_t found = text.find(target);
+        r[0] = found == std::string::npos ? 0 : haystack + uint32_t(found);
+        return true;
+    }
+    if (name == "_strerror") {
+        // A stable guest buffer, so a caller may print the result without copying it.
+        const char* text = std::strerror(int(r[0]));
+        const size_t length = std::strlen(text);
+        if (errorBufferSize < length + 1) {
+            errorBuffer = heap.allocate(uint32_t(length + 1));
+            errorBufferSize = uint32_t(length + 1);
+        }
+        if (errorBuffer) memory.write(errorBuffer, text, length + 1);
+        r[0] = errorBuffer;
+        return true;
+    }
+    if (name == "___error") {
+        // Darwin's errno accessor: a pointer to the calling thread's errno cell.
+        r[0] = errnoCell ? errnoCell : (errnoCell = [&] {
+            const uint32_t cell = heap.allocate(4, 4);
+            if (!cell) throw Error("LIBC_ALLOC", "could not allocate the guest errno cell");
+            zero(cell, 4);
+            return cell;
+        }());
+        return true;
+    }
+    if (name == "_setlocale" || name == "_localeconv") {
+        // Only the "C" locale is modelled. setlocale(C) succeeds and returns "C";
+        // localeconv hands back a real lconv full of C-locale values.
+        if (name == "_setlocale") {
+            static const std::string clocale = "C";
+            if (r[1] == 0) {
+                r[0] = reserveString(clocale);
+                return true;
+            }
+            const std::string requested = readString(r[1]);
+            const bool c = requested.empty() || requested == "C" || requested == "POSIX";
+            if (!c) {
+                emit("setlocale(\"" + requested + "\") is not available; only the C locale is");
+                r[0] = 0;
+                return true;
+            }
+            r[0] = reserveString(clocale);
+            return true;
+        }
+        r[0] = localeconvCell();
+        return true;
+    }
+    // ---- setjmp / longjmp --------------------------------------------------------------
+    if (name == "_setjmp" || name == "_sigsetjmp" || name == "setjmp") {
+        // A jmp_buf is opaque to the caller, so it holds a token rather than a copy of the
+        // host register file. That keeps this correct for any guest buffer size: exactly two
+        // words are written. Like Darwin's _setjmp, no signal mask is saved.
+        const uint32_t buffer = r[0];
+        if (!memory.permits(buffer, 8, Write))
+            throw Error("LIBC_BUFFER", "setjmp buffer is not a writable guest range", buffer);
+        const uint32_t token = nextJumpToken++;
+        JumpRecord& record = jumpRecords[token];
+        for (size_t n = 0; n < 8; n++) record.registers[n] = cpu.registers[4 + n];
+        record.stack = cpu.registers[13];
+        record.resume = cpu.registers[14];  // where this call returns to
+        record.cpsr = cpu.cpsr;
+        memory.write32(buffer, JumpMagic);
+        memory.write32(buffer + 4, token);
+        r[0] = 0;
+        return true;
+    }
+    if (name == "_longjmp" || name == "_siglongjmp" || name == "longjmp") {
+        const uint32_t buffer = r[0], value = r[1] ? r[1] : 1;
+        if (!memory.permits(buffer, 8, Read) || memory.read32(buffer) != JumpMagic)
+            throw Error("LIBC_BUFFER", "longjmp on a buffer that was never set", buffer);
+        const uint32_t token = memory.read32(buffer + 4);
+        auto record = jumpRecords.find(token);
+        if (record == jumpRecords.end())
+            throw Error("LIBC_STATE", "longjmp on a stale jmp_buf", buffer);
+        for (size_t n = 0; n < 8; n++) cpu.registers[4 + n] = record->second.registers[n];
+        cpu.registers[13] = record->second.stack;
+        cpu.registers[15] = record->second.resume & ~1u;
+        cpu.cpsr = (cpu.cpsr & ~0x20u) | (record->second.resume & 1 ? 0x20 : 0);
+        r[0] = value;  // setjmp appears to return `value` in the resumed frame
+        // The record is single-shot until the buffer is set again, as with a real jmp_buf.
+        jumpRecords.erase(record);
+        return true;
+    }
+    // ---- process ---------------------------------------------------------------------
+    if (name == "_getpid") {
+        r[0] = 1000;
+        return true;
+    }
+    if (name == "_getuid" || name == "_geteuid") {
+        r[0] = 501;  // mobile
+        return true;
+    }
+    if (name == "_system") {
+        // iOS has no shell, and a device returns -1 with EPERM here. Reporting that is the
+        // honest answer; pretending to run a command would let a title believe it worked.
+        if (errnoCell) memory.write32(errnoCell, 1 /* EPERM */);
+        emit("system(\"" + readString(r[0]) + "\") refused: this platform has no shell");
+        r[0] = uint32_t(-1);
+        return true;
+    }
+    if (name == "_clock") {
+        const auto now = std::chrono::steady_clock::now().time_since_epoch();
+        // Darwin's CLOCKS_PER_SEC is 1,000,000, and clock() counts process CPU time.
+        r[0] = uint32_t(std::chrono::duration_cast<std::chrono::microseconds>(now).count() &
+                        0xffffffff);
+        return true;
+    }
+    // ---- time ------------------------------------------------------------------------
+    if (name == "_difftime") {
+        resultF64(cpu, double(int32_t(r[0])) - double(int32_t(r[1])));
+        return true;
+    }
+    if (name == "_gmtime" || name == "_localtime" || name == "_gmtime_r" ||
+        name == "_localtime_r") {
+        const bool local = name == "_localtime" || name == "_localtime_r";
+        time_t when = time_t(int32_t(r[0]));
+        std::tm parts{};
+        if (local)
+            localtime_r(&when, &parts);
+        else
+            gmtime_r(&when, &parts);
+        uint32_t target = 0;
+        if (name == "_gmtime_r" || name == "_localtime_r") {
+            if (!r[1]) throw Error("LIBC_ARGUMENT", "gmtime_r/localtime_r needs a result buffer");
+            target = r[1];
+        } else {
+            target = tmBuffer();
+        }
+        writeTm(target, parts);
+        r[0] = target;
+        return true;
+    }
+    if (name == "_timegm" || name == "_mktime") {
+        std::tm parts{};
+        readTm(r[0], parts);
+        const time_t value = name == "_timegm" ? timegm(&parts) : mktime(&parts);
+        writeTm(r[0], parts);  // mktime normalises the caller's struct in place
+        r[0] = uint32_t(int32_t(value));
+        return true;
+    }
+    if (name == "_strftime") {
+        const uint32_t buffer = r[0], capacity = r[1];
+        const std::string format = readString(r[2]);
+        std::tm parts{};
+        readTm(r[3], parts);
+        if (!capacity) {
+            r[0] = 0;
+            return true;
+        }
+        std::vector<char> text(capacity);
+        const size_t written = std::strftime(text.data(), capacity, format.c_str(), &parts);
+        if (written) memory.write(buffer, text.data(), written + 1);
+        r[0] = uint32_t(written);
+        return true;
+    }
+    if (name == "_tzset") {
+        // No timezone database is mounted; UTC is the honest default and matches gmtime.
         return true;
     }
     if (name == "_atoi" || name == "_atol" || name == "_atof" || name == "_strtod" ||
@@ -556,37 +964,144 @@ void Libc::emit(const std::string& text) const {
 bool Libc::math(CpuState& cpu, Memory& memory, const std::string& name) {
     // iOS ARMv7 marshals floating-point arguments in the core registers, so these
     // entry points read r0-r3 and return in r0/r0-r1 rather than the VFP file.
-    Arguments args(cpu, memory);
-    if (name == "_sin" || name == "_cos") {
-        const double value = args.f64();
-        resultF64(cpu, name == "_sin" ? std::sin(value) : std::cos(value));
+    using Unary64 = double (*)(double);
+    using Unary32 = float (*)(float);
+    using Binary64 = double (*)(double, double);
+    using Binary32 = float (*)(float, float);
+    static const std::map<std::string, Unary64> unary64 = {
+        {"_sin", [](double x) { return std::sin(x); }},
+        {"_cos", [](double x) { return std::cos(x); }},
+        {"_tan", [](double x) { return std::tan(x); }},
+        {"_asin", [](double x) { return std::asin(x); }},
+        {"_acos", [](double x) { return std::acos(x); }},
+        {"_atan", [](double x) { return std::atan(x); }},
+        {"_sinh", [](double x) { return std::sinh(x); }},
+        {"_cosh", [](double x) { return std::cosh(x); }},
+        {"_tanh", [](double x) { return std::tanh(x); }},
+        {"_exp", [](double x) { return std::exp(x); }},
+        {"_exp2", [](double x) { return std::exp2(x); }},
+        {"_log", [](double x) { return std::log(x); }},
+        {"_log10", [](double x) { return std::log10(x); }},
+        {"_log2", [](double x) { return std::log2(x); }},
+        {"_sqrt", [](double x) { return std::sqrt(x); }},
+        {"_cbrt", [](double x) { return std::cbrt(x); }},
+        {"_ceil", [](double x) { return std::ceil(x); }},
+        {"_floor", [](double x) { return std::floor(x); }},
+        {"_round", [](double x) { return std::round(x); }},
+        {"_trunc", [](double x) { return std::trunc(x); }},
+        {"_fabs", [](double x) { return std::fabs(x); }},
+    };
+    static const std::map<std::string, Unary32> unary32 = {
+        {"_sinf", [](float x) { return std::sin(x); }},
+        {"_cosf", [](float x) { return std::cos(x); }},
+        {"_tanf", [](float x) { return std::tan(x); }},
+        {"_asinf", [](float x) { return std::asin(x); }},
+        {"_acosf", [](float x) { return std::acos(x); }},
+        {"_atanf", [](float x) { return std::atan(x); }},
+        {"_sinhf", [](float x) { return std::sinh(x); }},
+        {"_coshf", [](float x) { return std::cosh(x); }},
+        {"_tanhf", [](float x) { return std::tanh(x); }},
+        {"_expf", [](float x) { return std::exp(x); }},
+        {"_exp2f", [](float x) { return std::exp2(x); }},
+        {"_logf", [](float x) { return std::log(x); }},
+        {"_log10f", [](float x) { return std::log10(x); }},
+        {"_log2f", [](float x) { return std::log2(x); }},
+        {"_sqrtf", [](float x) { return std::sqrt(x); }},
+        {"_cbrtf", [](float x) { return std::cbrt(x); }},
+        {"_ceilf", [](float x) { return std::ceil(x); }},
+        {"_floorf", [](float x) { return std::floor(x); }},
+        {"_roundf", [](float x) { return std::round(x); }},
+        {"_truncf", [](float x) { return std::trunc(x); }},
+        {"_fabsf", [](float x) { return std::fabs(x); }},
+        {"_expm1f", [](float x) { return std::expm1(x); }},
+        {"_log1pf", [](float x) { return std::log1p(x); }},
+    };
+    static const std::map<std::string, Binary64> binary64 = {
+        {"_pow", [](double a, double b) { return std::pow(a, b); }},
+        {"_fmod", [](double a, double b) { return std::fmod(a, b); }},
+        {"_atan2", [](double a, double b) { return std::atan2(a, b); }},
+        {"_hypot", [](double a, double b) { return std::hypot(a, b); }},
+        {"_copysign", [](double a, double b) { return std::copysign(a, b); }},
+        {"_remainder", [](double a, double b) { return std::remainder(a, b); }},
+        {"_fmin", [](double a, double b) { return std::fmin(a, b); }},
+        {"_fmax", [](double a, double b) { return std::fmax(a, b); }},
+    };
+    static const std::map<std::string, Binary32> binary32 = {
+        {"_powf", [](float a, float b) { return std::pow(a, b); }},
+        {"_fmodf", [](float a, float b) { return std::fmod(a, b); }},
+        {"_atan2f", [](float a, float b) { return std::atan2(a, b); }},
+        {"_hypotf", [](float a, float b) { return std::hypot(a, b); }},
+        {"_copysignf", [](float a, float b) { return std::copysign(a, b); }},
+        {"_remainderf", [](float a, float b) { return std::remainder(a, b); }},
+        {"_fminf", [](float a, float b) { return std::fmin(a, b); }},
+        {"_fmaxf", [](float a, float b) { return std::fmax(a, b); }},
+    };
+    if (auto found = unary64.find(name); found != unary64.end()) {
+        Arguments args(cpu, memory);
+        resultF64(cpu, found->second(args.f64()));
         return true;
     }
-    if (name == "_pow" || name == "_fmod") {
+    if (auto found = unary32.find(name); found != unary32.end()) {
+        Arguments args(cpu, memory);
+        resultF32(cpu, found->second(args.f32()));
+        return true;
+    }
+    if (auto found = binary64.find(name); found != binary64.end()) {
+        Arguments args(cpu, memory);
         const double first = args.f64(), second = args.f64();
-        resultF64(cpu, name == "_pow" ? std::pow(first, second) : std::fmod(first, second));
+        resultF64(cpu, found->second(first, second));
         return true;
     }
-    if (name == "_powf") {
+    if (auto found = binary32.find(name); found != binary32.end()) {
+        Arguments args(cpu, memory);
         const float first = args.f32(), second = args.f32();
-        resultF32(cpu, std::pow(first, second));
+        resultF32(cpu, found->second(first, second));
         return true;
     }
-    if (name == "_sinf" || name == "_cosf" || name == "_tanf" || name == "_acosf" ||
-        name == "_atanf") {
-        const float value = args.f32();
-        float result = 0;
-        if (name == "_sinf") result = std::sin(value);
-        if (name == "_cosf") result = std::cos(value);
-        if (name == "_tanf") result = std::tan(value);
-        if (name == "_acosf") result = std::acos(value);
-        if (name == "_atanf") result = std::atan(value);
-        resultF32(cpu, result);
+    // frexp/ldexp/modf split a value rather than mapping it, so they are written out.
+    if (name == "_frexp" || name == "_frexpf") {
+        Arguments args(cpu, memory);
+        const bool single = name == "_frexpf";
+        int exponent = 0;
+        if (single) {
+            const float mantissa = std::frexp(args.f32(), &exponent);
+            const uint32_t exponentAt = args.pointer();
+            if (exponentAt) memory.write32(exponentAt, uint32_t(exponent));
+            resultF32(cpu, mantissa);
+        } else {
+            const double mantissa = std::frexp(args.f64(), &exponent);
+            const uint32_t exponentAt = args.pointer();
+            if (exponentAt) memory.write32(exponentAt, uint32_t(exponent));
+            resultF64(cpu, mantissa);
+        }
         return true;
     }
-    if (name == "_atan2f") {
-        const float first = args.f32(), second = args.f32();
-        resultF32(cpu, std::atan2(first, second));
+    if (name == "_ldexp" || name == "_ldexpf") {
+        if (name == "_ldexpf") {
+            resultF32(cpu, std::ldexp(bitsFloat(cpu.registers[0]), int32_t(cpu.registers[1])));
+        } else {
+            resultF64(cpu, std::ldexp(bitsDouble(uint64_t(cpu.registers[0]) |
+                                                 uint64_t(cpu.registers[1]) << 32),
+                                      int32_t(cpu.registers[2])));
+        }
+        return true;
+    }
+    if (name == "_modf" || name == "_modff") {
+        if (name == "_modff") {
+            const uint32_t integralAt = cpu.registers[1];
+            float integral = 0;
+            const float fraction = std::modf(bitsFloat(cpu.registers[0]), &integral);
+            if (integralAt) memory.write32(integralAt, floatBits(integral));
+            resultF32(cpu, fraction);
+        } else {
+            const uint32_t integralAt = cpu.registers[2];
+            double integral = 0;
+            const double value =
+                bitsDouble(uint64_t(cpu.registers[0]) | uint64_t(cpu.registers[1]) << 32);
+            const double fraction = std::modf(value, &integral);
+            if (integralAt) storeThroughPointer(memory, integralAt, integral);
+            resultF64(cpu, fraction);
+        }
         return true;
     }
     return false;

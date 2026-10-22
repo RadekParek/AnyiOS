@@ -366,3 +366,72 @@ and patched ARM64 diagnostic compilation. Full evidence, download links and exac
 limits are in [FIRST_APK_REPORT.md](FIRST_APK_REPORT.md). No device frame, gameplay
 or Android CPU execution is claimed. The next required gate is the user's real
 S23 Ultra graphics test; it cannot be verified from this unattached sandbox.
+
+## Angry Birds 1.0 (os30, armv6): start-up reaches its own game loop
+
+Measured with `tools/guest_runner` on the host CPU engine. This is guest execution
+evidence only: the host GL harness is a recording double that renders nothing, so
+nothing here is a claim of a drawn frame, gameplay or frame rate.
+
+The title's own structure explains what it needs from the runtime. `AppController`
+implements `applicationDidFinishLaunching:`, `applicationDidBecomeActive:`,
+`mainloop`, `update` and `present`; its `-applicationDidBecomeActive:` creates an
+`NSThread` whose selector is `mainloop`, and `mainloop` hands `update` to the main
+thread with `performSelectorOnMainThread:withObject:waitUntilDone:`. Each of those
+steps was a named blocker, and each is now implemented rather than stubbed:
+
+* The launch sequence delivers `-applicationDidBecomeActive:` after
+  `-applicationDidFinishLaunching:`, as UIKit does. Without it the title never
+  started its loop thread and exited from `UIApplicationMain`.
+* `NSThread` is real: `-initWithTarget:selector:object:` plus `-start` (and
+  `+detachNewThreadSelector:…`) create a guest thread through the scheduler, which
+  enters the target's selector on that thread's own stack; `-cancel`,
+  `-isCancelled`, `-isExecuting`, `-isFinished` report the thread's real state.
+* The main-thread hop is real: the selector is queued, the run loop dispatches it on
+  the main thread, and a `waitUntilDone:YES` caller stays blocked until it has run.
+  The main thread parks in the run loop and is woken by the queue.
+* `sched_yield` and the sleep family block the *guest* thread instead of the host:
+  the scheduler switches to another thread and is idle (not spinning) when only
+  sleepers remain.
+
+Faults that C++ cannot report are now reported as guest faults: host code inside
+translated code has no unwind tables, so a SIGSEGV/SIGBUS is printed with the guest
+registers and the 256-instruction PC ring before the default action.
+
+Measured on the current tree (host, recording GL double):
+
+* start-up completes: the delegate launches, the application becomes active, the
+  loop thread is created and `-[AppController mainloop]` runs;
+* the run loop dispatches `update` on the main thread;
+* a 15-minute run reached 1.46G instructions with no unimplemented-import trap and
+  no fault until the guest heap could not satisfy a single 47 MB `operator new`.
+  That was a real limit of the runtime, not of the title: the heap window is now
+  512 MiB and it is committed to the guest address space in 8 MiB steps on demand,
+  so the host only backs the pages the title actually touches. The report prints
+  used/mapped/reserved bytes and the live allocation count, which is what turns the
+  next exhaustion into a diagnosis instead of a mystery;
+* GL: the driver is loaded, the EAGL drawable is created, the title's own GL state
+  calls execute and draw calls are actually issued — the previous version handed
+  guest addresses straight to the host driver, which is what produced the host
+  SIGSEGV at 200M instructions. Client arrays are now copied into host storage
+  whenever no buffer object is bound, and the count of draws stays the honest
+  number the bridge observed.
+
+A guest pointer can no longer reach the driver: the bridge copies client arrays
+into host storage and passes offsets only when a buffer object is bound, which is
+the only case in which the driver would dereference one.
+
+The main-thread queue is bounded (8192 pending selectors): a title that queues
+faster than the run loop drains is a runtime bug worth naming, not a memory leak to
+absorb silently.
+
+The Settings screen has a **Verbose logging** switch, off by default. When it is
+on, the runtime logs the guest's service calls, its Objective-C call graph, every
+GL entry point with its arguments, and — after each GL call — the driver's own
+`glGetError`, so a GL error is traced where it happens instead of being swallowed.
+
+Still open: no displayed frame (the host harness renders nothing, and no display
+link or touch source exists), no texture upload path for compressed atlases if the
+title asks for one, and the four Itanium RTTI vtables
+(`__ZTVN10__cxxabiv1*`) are still unbound, so `dynamic_cast`/`typeid` are reported
+as missing rather than approximated.

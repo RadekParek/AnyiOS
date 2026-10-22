@@ -11,7 +11,7 @@ trap 'rm -f "$PLAN"' EXIT
 plan() { printf 'c++ %s\n' "$*" >> "$PLAN"; }
 plan "${FLAGS[*]}" tests/macho_test.cpp app/src/main/cpp/macho.cpp -o .local/tests/macho-test
 plan "${FLAGS[*]}" tests/runtime_test.cpp app/src/main/cpp/macho.cpp \
-  app/src/main/cpp/runtime/{memory,loader,launch,dyld,exports,services,frameworks,coregraphics,libc,cxx,fs,stdio,audio,format,heap,objc,uikit,gles}.cpp \
+  app/src/main/cpp/runtime/{memory,loader,launch,dyld,exports,services,frameworks,coregraphics,libc,cxx,fs,stdio,audio,posix,openal,format,heap,objc,uikit,gles}.cpp \
   -o .local/tests/runtime-test
 plan "${FLAGS[*]}" tests/imports_test.cpp app/src/main/cpp/{macho,macho_info}.cpp -o .local/tests/imports-test
 plan "${FLAGS[*]}" tests/fat_test.cpp app/src/main/cpp/macho_container.cpp -o .local/tests/fat-test
@@ -19,7 +19,7 @@ plan "${FLAGS[*]}" tests/frameworks_test.cpp app/src/main/cpp/runtime/{memory,fr
 plan "${FLAGS[*]}" tests/coregraphics_test.cpp app/src/main/cpp/runtime/{memory,frameworks,coregraphics}.cpp -o .local/tests/coregraphics-test
 plan "${FLAGS[*]}" tests/dyld_test.cpp app/src/main/cpp/runtime/{memory,dyld,exports}.cpp -o .local/tests/dyld-test
 plan "${FLAGS[*]}" tests/exports_test.cpp \
-  app/src/main/cpp/runtime/{memory,exports,services,frameworks,coregraphics,dyld,libc,cxx,fs,stdio,audio,format,heap,objc,uikit,gles}.cpp \
+  app/src/main/cpp/runtime/{memory,exports,services,frameworks,coregraphics,dyld,libc,cxx,fs,stdio,audio,posix,openal,format,heap,objc,uikit,gles}.cpp \
   -o .local/tests/exports-test
 plan "${FLAGS[*]}" tests/objc_test.cpp app/src/main/cpp/runtime/{memory,objc,exports,format,libc,heap,gles}.cpp -o .local/tests/objc-test
 plan "${FLAGS[*]}" tests/libc_test.cpp app/src/main/cpp/runtime/{memory,libc,format,heap}.cpp -o .local/tests/libc-test

@@ -17,15 +17,23 @@ void writeWord(std::vector<uint8_t>& code, size_t offset, uint32_t word) {
 void UIKit::installGates() {
     // The lifecycle gate is where a host-initiated guest callback returns: ordinary guest
     // code that traps back into the host, so the guest's own `bx lr` needs no special case.
+    // LifecycleGate is a labelled address inside the page, not the page base: the trap has to
+    // live *at* that address, or a guest `bx lr` into it executes the zero fill after the
+    // code and runs off the end of the mapping.
+    const uint32_t page = LifecycleGate & ~(Memory::PageSize - 1);
+    const size_t offset = LifecycleGate - page;
+    if (offset + 8 > Memory::PageSize)
+        throw Error("UIKIT_GATE", "lifecycle gate does not fit its page", LifecycleGate);
     std::vector<uint8_t> gate(Memory::PageSize, 0);
-    writeWord(gate, 0, SvC | 0xffu);
-    writeWord(gate, 4, BxLr);
-    memory.map({LifecycleGate & ~(Memory::PageSize - 1), Memory::PageSize, uint8_t(Read | Execute),
-                "UIKit lifecycle return gate"},
+    writeWord(gate, offset, SvC | 0xffu);
+    writeWord(gate, offset + 4, BxLr);
+    memory.map({page, Memory::PageSize, uint8_t(Read | Execute), "UIKit lifecycle return gate"},
                gate.data(), gate.size());
 }
-void UIKit::emit(const std::string& text) const {
+void UIKit::emit(const std::string& text) {
     if (logSink) logSink(text);
+    if (events.size() >= 64) events.erase(events.begin());
+    events.push_back(text);
 }
 std::vector<std::string> UIKit::readArguments(uint32_t argc, uint32_t argvAddress) const {
     if (!argc) return {};
@@ -111,7 +119,6 @@ bool UIKit::invoke(const std::string& symbol, CpuState& state, ObjC& objc) {
     return true;
 }
 void UIKit::resume(CpuState& state, ObjC& objc) {
-    (void)objc;  // no second guest callback is issued until the run loop has sources.
     if (stage == Stage::DelegateLaunching) {
         const uint32_t launched = state.registers[0];
         std::ostringstream line;
@@ -122,14 +129,71 @@ void UIKit::resume(CpuState& state, ObjC& objc) {
             line << (launched ? "YES" : "NO");
         line << " from " << delegateDescription;
         emit(line.str());
+        // Real UIKit sends -applicationDidBecomeActive: right after the launch callback, when
+        // the application comes to the foreground. Titles hang their engine loop off it — this
+        // one starts the thread that calls -[AppController mainloop] — so skipping it would
+        // leave such a title alive but idle forever.
+        if (objc.respondsTo(delegateObject, "applicationDidBecomeActive:")) {
+            stage = Stage::Activating;
+            emit("UIApplicationMain: -[" + delegateDescription +
+                 " applicationDidBecomeActive:] (the application became active)");
+            objc.sendGuestMessage(delegateObject, "applicationDidBecomeActive:", state, {appObject},
+                                  LifecycleGate);
+            return;
+        }
         stage = Stage::RunLoop;
-        // Everything that would keep a real application alive lives in the window server and
-        // the event sources; neither exists yet, so the loop is entered and immediately
-        // reports itself empty rather than spinning.
+    }
+    if (stage == Stage::Activating) {
+        emit("UIApplicationMain: -[" + delegateDescription +
+             " applicationDidBecomeActive:] returned void");
+        stage = Stage::RunLoop;
+    }
+    if (stage == Stage::RunLoop) {
+        // The run loop dispatches everything that is queued, then waits. The queue is checked
+        // immediately before parking because a guest thread may have queued a call while this
+        // thread was still on its way here.
+        for (;;) {
+            if (hasActiveTask) {
+                objc.finishMainThreadTask(activeTaskEvent);
+                hasActiveTask = false;
+            }
+            ObjC::MainThreadTask task;
+            if (objc.nextMainThreadTask(task)) {
+                activeTaskEvent = task.eventId;
+                hasActiveTask = true;
+                char line[128];
+                std::snprintf(line, sizeof(line),
+                              "UIApplicationMain: run loop runs %s on 0x%08x for the main thread",
+                              task.selector.c_str(), task.target);
+                emit(line);
+                state.registers[0] = 0;
+                objc.sendGuestMessage(task.target, task.selector, state, {task.argument},
+                                      LifecycleGate);
+                return;
+            }
+            // A title that started its own guest threads keeps running on them, exactly as it
+            // would on a device: the main thread waits in the run loop instead of returning
+            // out of UIApplicationMain. The decision looks at live threads, not runnable ones,
+            // because a game loop thread sleeping between frames is still the app running.
+            if (runnableThreads && parkMainThread && runnableThreads() > 1) {
+                outcome =
+                    "the delegate finished launching; the application keeps running on the "
+                    "guest thread it started, while the main thread waits in the run loop for "
+                    "events.";
+                state.registers[0] = 0;
+                state.registers[15] = LifecycleGate;  // re-entered when a task is queued
+                parkMainThread();
+                emit(outcome);
+                return;
+            }
+            break;
+        }
+        // Nothing keeps the application alive yet: no event source, timer or display link
+        // exists, so the bootstrap returns to the guest rather than pretending otherwise.
         outcome =
             "the delegate finished launching, but the main run loop has no implemented "
             "sources: there is no event source, timer or display link to dispatch, so the "
-            "bootstrap returns to the guest instead of pretending the app is running.";
+            "bootstrap returns to the guest instead of pretending to run the app.";
         stage = Stage::Finished;
         state.registers[15] = launchReturn & ~1u;
         state.cpsr = (state.cpsr & ~0x20u) | (launchReturn & 1u ? 0x20u : 0u);
@@ -142,6 +206,10 @@ void UIKit::resume(CpuState& state, ObjC& objc) {
 std::string UIKit::describe() const {
     std::ostringstream out;
     out << "UIKIT_STATE: " << outcome;
+    if (!events.empty()) {
+        out << "\nUIKIT_EVENTS:";
+        for (const std::string& line : events) out << "\n  " << line;
+    }
     if (!delegateDescription.empty()) out << "\nUIKIT_DELEGATE: " << delegateDescription;
     if (!argv.empty()) {
         out << "\nUIKIT_ARGV:";

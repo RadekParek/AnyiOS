@@ -9,16 +9,39 @@ GuestHeap::GuestHeap(Memory& m, uint32_t b, uint32_t s) : memory(m), base(b), si
     if (!s || s % Memory::PageSize || uint64_t(b) + s > 0x100000000ULL)
         throw Error("HEAP_CONFIG", "invalid guest heap range");
 }
-bool GuestHeap::ensureMapped() noexcept {
-    if (mapped) return true;
+bool GuestHeap::grow() noexcept {
+    if (committedSize >= size) return false;
+    const uint32_t chunk = std::min(GrowStep, size - committedSize);
     try {
-        memory.map({base, size, uint8_t(Read | Write), "guest heap"});
-        freeBlocks.emplace(base, size);
-        mapped = true;
-        return true;
+        memory.map({base + committedSize, chunk, uint8_t(Read | Write), "guest heap"});
     } catch (const Error&) {
         return false;
     }
+    const uint32_t start = base + committedSize;
+    committedSize += chunk;
+    // Merge the new chunk with a free block that ends exactly where it starts, so the heap
+    // keeps its single contiguous free tail instead of one block per growth step.
+    auto next = freeBlocks.lower_bound(start);
+    uint32_t length = chunk;
+    if (next != freeBlocks.end() && uint64_t(start) + chunk == next->first) {
+        length += next->second;
+        next = freeBlocks.erase(next);
+    }
+    if (next != freeBlocks.begin()) {
+        auto previous = std::prev(next);
+        if (uint64_t(previous->first) + previous->second == start) {
+            previous->second += length;
+            return true;
+        }
+    }
+    freeBlocks.emplace(start, length);
+    return true;
+}
+bool GuestHeap::ensureMapped() noexcept {
+    if (mapped) return true;
+    if (!grow()) return false;
+    mapped = true;
+    return true;
 }
 uint32_t GuestHeap::allocate(uint32_t bytes, uint32_t alignment) noexcept {
     if (!bytes || alignment < 4 || alignment > 4096 || (alignment & (alignment - 1))) return 0;
@@ -36,7 +59,16 @@ uint32_t GuestHeap::allocate(uint32_t bytes, uint32_t alignment) noexcept {
         live.emplace(uint32_t(start), bytes);
         return uint32_t(start);
     }
+    // The remaining free space is fragmented or too small: map more of the address space and
+    // retry. This is how a real heap grows, and it keeps the host allocation proportional to
+    // what the title actually uses.
+    if (grow()) return allocate(bytes, alignment);
     return 0;
+}
+uint32_t GuestHeap::used() const {
+    uint32_t total = 0;
+    for (const auto& entry : live) total += entry.second;
+    return total;
 }
 void GuestHeap::release(uint32_t pointer) {
     auto found = live.find(pointer);

@@ -31,17 +31,35 @@ class UIKit final {
     // Called at that gate. Either enters the next guest callback or finishes the bootstrap.
     void resume(CpuState& state, ObjC& objc);
     void setLogSink(std::function<void(const std::string&)> sink) { logSink = std::move(sink); }
+    // The bootstrap needs two facts from the scheduler: whether a guest thread the
+    // application started is runnable, and how to park the main thread while it is. A title
+    // that runs its game loop on its own thread keeps running that way on a device too.
+    void setThreadHooks(std::function<size_t()> runnable, std::function<void()> park) {
+        runnableThreads = std::move(runnable);
+        parkMainThread = std::move(park);
+    }
     std::string describe() const;
 
    private:
-    enum class Stage { Idle, DelegateLaunching, RunLoop, Finished };
+    enum class Stage { Idle, DelegateLaunching, Activating, RunLoop, Finished };
     Memory& memory;
 
     Stage stage = Stage::Idle;
+    std::function<size_t()> runnableThreads;
+    // The main thread waits here for a run-loop event; it is woken when a guest thread
+    // queues one with performSelectorOnMainThread:.
+    std::function<void()> parkMainThread;
     std::function<void(const std::string&)> logSink;
     std::string applicationDescription = "none";
     std::string delegateDescription = "none";
     std::string outcome = "not started";
+    // The life-cycle decisions this runtime made, kept out of the general log ring so a report
+    // still shows them after an audio thread has filled the ring.
+    mutable std::vector<std::string> events;
+    // The main-thread call the run loop is currently running, so its waiter can be released
+    // when the call returns to the lifecycle gate.
+    uint32_t activeTaskEvent = 0;
+    bool hasActiveTask = false;
     uint32_t appObject = 0;
     uint32_t delegateObject = 0;
     uint32_t launchReturn = 0;
@@ -49,7 +67,7 @@ class UIKit final {
     // implement `applicationDidFinishLaunching:`; later ones implement the options variant.
     std::string launchSelector;
     std::vector<std::string> argv;
-    void emit(const std::string& text) const;
+    void emit(const std::string& text);
     // Reads the guest argv array into printable strings; a malformed array is refused.
     std::vector<std::string> readArguments(uint32_t argc, uint32_t argvAddress) const;
 };

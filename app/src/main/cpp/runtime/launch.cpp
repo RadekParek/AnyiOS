@@ -1,6 +1,7 @@
 #include "launch.h"
 
 #include <algorithm>
+#include <cstdio>
 #include <set>
 #include <vector>
 
@@ -71,18 +72,20 @@ void prepareStack(LoadedImage& image, Memory& memory) {
 std::string attemptLaunch(const uint8_t* data, size_t size, const std::string& bundleHost,
                           const std::string& containerHost, const LaunchOptions& options) {
     try {
-        auto image = loadMachO(data, size, 64 * 1024 * 1024);
+        auto image =  // The guest's address-space budget covers the image, the framework pages this
+                      // runtime
+            // maps and the stacks of every thread the title creates. A title that starts its
+            // audio and loader threads needs more than the image alone, so the budget is the
+            // whole 32-bit user space the runtime is willing to own, not a startup probe.
+            loadMachO(data, size, size_t(2048) * 1024 * 1024);
         Services services(*image.memory);
         // The guest's own console output is the most direct evidence of what it is doing,
         // so the tail of it belongs in the report instead of being dropped.
-        std::vector<std::string> guestLog;
-        if (options.logLines >= 0) {
-            services.setLogSink([&](const std::string& line) {
-                guestLog.push_back(line);
-                constexpr size_t Keep = 512;
-                if (guestLog.size() > Keep) guestLog.erase(guestLog.begin());
-            });
-        }
+        // Every module writes into the service ring; the report reads its tail below.
+        services.setLogSink({});
+        if (options.logLines >= 0) services.setLogCapacity(options.verbose ? 20000 : 512);
+        services.setVerbose(options.verbose);
+        services.setPrecise(options.precise);
         services.setEnvironment({{"HOME", "/var/mobile"},
                                  {"TMPDIR", "/var/mobile/Documents"},
                                  {"PATH", "/usr/bin:/bin:/usr/sbin:/sbin"}});
@@ -100,6 +103,13 @@ std::string attemptLaunch(const uint8_t* data, size_t size, const std::string& b
 
         const Coverage coverage = audit(image, graph, main);
         const std::string report = coverage.describe(services.count());
+        // Verbose logging names every import that still has no implementation: that list is
+        // the compatibility work queue, so it is printed instead of only counted.
+        std::string missing;
+        if (options.verbose) {
+            for (const std::string& name : coverage.missingRequired) missing += "\n  " + name;
+            if (missing.empty()) missing = " (none)";
+        }
         if (!image.requiresDyld || (image.dyld.fixups.empty() && image.stubs.empty())) {
             return "LAUNCH_BLOCKED: GUEST_ABI_UNIMPLEMENTED: the image needs no dyld work, but "
                    "Darwin process bootstrap is not implemented.\nDYLD_EXPORT_AUDIT: " +
@@ -128,17 +138,44 @@ std::string attemptLaunch(const uint8_t* data, size_t size, const std::string& b
                   "implemented yet."
                 : "LAUNCH_ATTEMPT: the guest image actually executed.";
         std::string log;
-        if (options.logLines > 0 && !guestLog.empty()) {
-            log = "\nGUEST_LOG: " + std::to_string(guestLog.size()) + " line(s), last " +
-                  std::to_string(std::min<size_t>(guestLog.size(), size_t(options.logLines))) + ":";
-            const size_t first =
-                guestLog.size() > size_t(options.logLines) ? guestLog.size() - options.logLines : 0;
-            for (size_t n = first; n < guestLog.size(); n++) log += "\n| " + guestLog[n];
+        if (options.logLines > 0 && services.logSize()) {
+            const size_t shown = std::min<size_t>(services.logSize(), size_t(options.logLines));
+            log = "\nGUEST_LOG: " + std::to_string(services.logSize()) + " line(s), last " +
+                  std::to_string(shown) + ":";
+            for (const std::string& line : services.logTail(shown)) log += "\n| " + line;
         }
-        return header + "\n" + describeRun(run) + "\nDYLD_EXPORT_AUDIT: " + report + log + "\n" +
-               services.uiSummary() + "\n" + services.graphicsSummary() + "\n" +
-               services.guestClassSummary() + "\nGUEST_STORAGE: " + services.storageSummary() +
-               "\n" + image.summary() +
+        const std::string gaps = missing.empty() ? std::string() : "\nMISSING_REQUIRED:" + missing;
+        // Verbose runs list every mapping: a guest pointer that is "obviously" wrong is
+        // usually a pointer into a mapping whose extent nobody checked.
+        // The Objective-C call graph the guest built, once per receiver/selector pair: this
+        // is what shows whether a title started its own loop thread or waited for events.
+        std::string trace;
+        if (options.verbose && !services.objectiveCTrace().empty()) {
+            trace = "\nOBJC_TRACE: " + std::to_string(services.objectiveCTrace().size()) +
+                    " receiver/selector pair(s):";
+            for (const std::string& line : services.objectiveCTrace()) trace += "\n  " + line;
+        }
+        std::string mappings;
+        if (options.verbose && image.memory) {
+            for (const Region& region : image.memory->regions()) {
+                char line[160];
+                std::snprintf(line, sizeof(line), "\n  0x%08x-0x%08x %s %s", region.base,
+                              region.base + region.size,
+                              region.permissions & Execute ? "rx"
+                              : region.permissions & Write ? "rw"
+                                                           : "r-",
+                              region.label.c_str());
+                mappings += line;
+            }
+            if (!mappings.empty()) mappings = "\nMAPPED_REGIONS:" + mappings;
+        }
+        return header + "\n" + describeRun(run) + "\nDYLD_EXPORT_AUDIT: " + report + gaps +
+               mappings + trace + log + "\n" + services.uiSummary() + "\n" +
+               services.graphicsSummary() + "\n" + services.guestClassSummary() +
+               "\nGUEST_THREADS: " + services.threadSummary() +
+               "\nGUEST_AUDIO: " + services.audioSummary() +
+               "\nGUEST_STORAGE: " + services.storageSummary() +
+               "\nGUEST_HEAP: " + services.heapSummary() + "\n" + image.summary() +
                "\nThis is bounded execution of a validated image, not evidence of gameplay, "
                "rendering or a working app.";
 #else

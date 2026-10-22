@@ -15,6 +15,9 @@
 #include "runtime/loader.h"
 namespace {
 std::unique_ptr<podnative::GraphicsBackend> backend;
+// The Settings switch. It is process-wide on purpose: the report and the guest log must agree
+// about whether deep tracing was on for the run that produced them.
+bool verboseLogging = false;
 void fail(JNIEnv* env, const std::exception& e) {
     __android_log_print(ANDROID_LOG_ERROR, "PodNative", "%s", e.what());
     env->ThrowNew(env->FindClass("java/lang/IllegalStateException"), e.what());
@@ -133,13 +136,21 @@ extern "C" JNIEXPORT jstring JNICALL Java_org_podnative_NativeBridge_attemptLaun
         if (env->ExceptionCheck()) return nullptr;
         const std::string bundle = pathFrom(env, bundlePath);
         const std::string container = pathFrom(env, containerPath);
+        podnative::runtime::LaunchOptions options;
+        options.verbose = verboseLogging;
+        if (options.verbose) options.logLines = 4000;
         const auto report =
-            podnative::runtime::attemptLaunch(data.data(), data.size(), bundle, container);
+            podnative::runtime::attemptLaunch(data.data(), data.size(), bundle, container, options);
         return env->NewStringUTF(report.c_str());
     } catch (const std::exception& e) {
         fail(env, e);
         return nullptr;
     }
+}
+
+extern "C" JNIEXPORT void JNICALL Java_org_podnative_NativeBridge_setVerbose(JNIEnv*, jclass,
+                                                                             jboolean on) {
+    verboseLogging = on == JNI_TRUE;
 }
 
 extern "C" JNIEXPORT void JNICALL Java_org_podnative_NativeBridge_image(JNIEnv* env, jclass,
