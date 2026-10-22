@@ -170,6 +170,35 @@ int main() {
         put(memory, 0x3020, "ready");
         call("___assert_rtn", 0x3000, 0x3010, 12, 0x3020);
     });
+    // The SjLj frame chain is real guest memory: each registration links the new frame to
+    // the previous head through the frame's first word, which is what libgcc's unwinder
+    // walks and what the personality reads the frame's LSDA from.
+    {
+        const uint32_t outer = 0x5000, inner = 0x5040;
+        put(memory, 0x6000, "N2io11IOExceptionE");
+        memory.write32(0x6014, 0x6000);      // type_info: vptr at +0, the name pointer at +4
+        memory.write32(0x5000, 0xdeadbeef);  // stale contents must be replaced
+        call("__Unwind_SjLj_Register", outer);
+        check(memory.read32(outer) == 0, "the outermost frame links to the empty chain");
+        call("__Unwind_SjLj_Register", inner);
+        check(memory.read32(inner) == outer, "an inner frame links to the frame below it");
+        call("__Unwind_SjLj_Unregister", inner);
+        check(memory.read32(outer) == 0, "unregistering the inner frame keeps the chain");
+        // A throw names the type it was given and says how deep the chain was.
+        memory.write32(0x5004, 0);  // reset the outer link so the report says one frame
+        call("__Unwind_SjLj_Register", inner);
+        bool reported = false;
+        try {
+            call("___cxa_throw", 0x1800, 0x6010, 0);
+        } catch (const Error& e) {
+            const std::string what = e.what();
+            reported = what.find("N2io11IOExceptionE") != std::string::npos &&
+                       what.find("2 SjLj frame(s)") != std::string::npos;
+        }
+        check(reported, "a throw reports its type name and the SjLj chain depth");
+        call("__Unwind_SjLj_Unregister", inner);
+        call("__Unwind_SjLj_Unregister", outer);
+    }
     fault("CXX_UNCAUGHT", [&] { call("___cxa_throw", 0x1800, 0, 0); });
     fault("CXX_UNWIND", [&] { call("___gxx_personality_sj0", 0, 0, 0, 0); });
     fault("CXX_TERMINATE", [&] { call("_ZSt9terminatev"); });

@@ -196,8 +196,29 @@ bool CxxRuntime::compilerHelper(const std::string& name, CpuState& cpu) {
                 throw Error("CXX_UNWIND", "SjLj register without a valid function context",
                             context);
             if (sjljFrames.size() >= 4096) throw Error("CXX_LIMIT", "too many SjLj frames");
+            // The frame context is a real linked list in guest memory: libgcc's unwinder
+            // walks `prev`, and the personality reads the frame's LSDA out of it. Keeping
+            // the host-side list in step is bookkeeping; `prev` is the contract.
+            memory.write32(context, sjljHead);
+            sjljHead = context;
             sjljFrames.push_back(context);
+        } else if (sjljHead == context) {
+            sjljHead = memory.permits(context, 4, Read) ? memory.read32(context) : 0;
+            auto found = std::find(sjljFrames.rbegin(), sjljFrames.rend(), context);
+            if (found != sjljFrames.rend()) sjljFrames.erase(std::next(found).base());
         } else {
+            // Unregistering an inner frame first (an early return that skipped an
+            // unregister) must not drop the whole chain: splice it out of the list.
+            uint32_t previous = sjljHead;
+            for (size_t guard = 0; previous && guard < 4096; guard++) {
+                const uint32_t next =
+                    memory.permits(previous, 4, Read) ? memory.read32(previous) : 0;
+                if (next == context) {
+                    memory.write32(previous, memory.read32(context));
+                    break;
+                }
+                previous = next;
+            }
             auto found = std::find(sjljFrames.rbegin(), sjljFrames.rend(), context);
             if (found != sjljFrames.rend()) sjljFrames.erase(std::next(found).base());
         }
@@ -311,8 +332,25 @@ bool CxxRuntime::abi(const std::string& name, CpuState& cpu) {
         return true;
     }
     if (name == "___cxa_throw") {
-        throw Error("CXX_UNCAUGHT",
-                    "the guest threw a C++ exception; guest unwinding is not implemented");
+        // __cxa_throw(object, type_info, destructor). The type name lives at type_info+4 in
+        // the Itanium ABI, so the report can say *what* was thrown instead of only that
+        // something was.
+        std::string what = "an unnamed C++ type";
+        if (r[1] && memory.permits(r[1] + 4, 4, Read)) {
+            const uint32_t nameAt = memory.read32(r[1] + 4);
+            if (nameAt && memory.permits(nameAt, 1, Read)) {
+                const std::string mangled = readGuestString(memory, nameAt, 512);
+                if (!mangled.empty()) what = "'" + mangled + "'";
+            }
+        }
+        // The frames are the guest's own SjLj chain; reporting its depth and the innermost
+        // LSDA says exactly how far the unwinder would have had to walk, which is what the
+        // next piece of work needs. Nothing is presented as caught.
+        const size_t depth = sjljFrames.size();
+        throw Error("CXX_UNCAUGHT", "the guest threw a C++ exception of type " + what + " with " +
+                                        std::to_string(depth) +
+                                        " SjLj frame(s) registered; C++ unwinding is not "
+                                        "implemented, so the guest's handler cannot run");
     }
     if (name == "___cxa_begin_catch" || name == "___cxa_end_catch" || name == "___cxa_rethrow" ||
         name == "___cxa_call_unexpected" || name == "___cxa_pure_virtual" ||

@@ -1,5 +1,7 @@
 .gradle/
 .local/
+# Extracted IPAs used while testing the runtime on a desktop host
+.cache-ipas/
 **/build/
 local.properties
 third_party/angle/include/
@@ -18,5 +20,7 @@ third_party/angle/lib/
 
 # Integrated converter caches and generated third-party notices
 converter/.local/
+# Extracted IPAs used while testing the runtime on a desktop host
+.cache-ipas/
 converter/app/src/main/assets/converter-notices/
 converter/**/.cxx/

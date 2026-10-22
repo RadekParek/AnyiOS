@@ -125,11 +125,16 @@ uint32_t Stdio::openStream(uint32_t pathAddress, uint32_t modeAddress) {
     entries[token] = {file, true, false, path};
     return makeObject(token, path.c_str());
 }
-void Stdio::fprintfGuest(CpuState& cpu, size_t firstWord) {
+void Stdio::fprintfGuest(CpuState& cpu, size_t firstWord, uint32_t vaList) {
     auto& r = cpu.registers;
     Entry* entry = lookup(r[0]);
-    Arguments args(cpu, memory, firstWord);
-    const std::string text = formatGuest(readString(r[1]), args);
+    std::string text;
+    if (vaList) {
+        text = formatGuestVarargs(readString(r[1]), memory, vaList);
+    } else {
+        Arguments args(cpu, memory, firstWord);
+        text = formatGuest(readString(r[1]), args);
+    }
     if (!entry->standard) {
         const size_t written =
             text.empty() ? 0 : std::fwrite(text.data(), 1, text.size(), entry->file);
@@ -173,8 +178,12 @@ bool Stdio::invoke(const std::string& name, CpuState& cpu) {
         r[0] = uint32_t(std::fflush(lookup(r[0])->file));
         return true;
     }
-    if (name == "_fprintf") {
-        fprintfGuest(cpu, 2);
+    if (name == "_fprintf" || name == "_vfprintf") {
+        // vfprintf(file, format, ap): the varargs live in the guest's saved-argument area.
+        if (name == "_vfprintf")
+            fprintfGuest(cpu, 2, /*fromVaList=*/r[2]);
+        else
+            fprintfGuest(cpu, 2);
         return true;
     }
     if (name == "_fread" || name == "_fwrite") {

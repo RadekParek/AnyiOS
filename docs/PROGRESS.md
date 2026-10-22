@@ -1,5 +1,72 @@
 # Continuation progress — 2026-10-22
 
+## 0.9.5 — measured on the host, from real launches instead of guesses
+
+AngryBirds now runs **564,869 instructions** (from 340,304) and reaches its own error
+handling. Getting there needed a way to *see* what the guest is doing, so the work started
+with the measurement, not the fix.
+
+* **`tools/guest_runner` — the app's entry point on a desktop.** It takes a `.app` bundle
+  (or a bare Mach-O), mounts a container directory, and prints the same launch report the
+  app's crash screen shows. `PODNATIVE_CPU_IN_APP` is defined for that one target so the
+  real guest path is linked in. It ships in the PC artifact, so any report can be
+  reproduced without a phone.
+* **`tools/host_gles_driver.cpp` — a GLES 1.1/EGL diagnostic double.** The host has no GL
+  driver, so the guest used to stop at the first `gl*` call. This harness tracks real GL
+  state (matrix stacks with real multiply/push/pop, enables, texture and buffer objects,
+  framebuffer/renderbuffer objects), answers `glGet*` with real values, and *checks that
+  every client array it is handed is readable host memory* — which is what turns a
+  marshalling regression into a failure instead of silent garbage. It rasterises nothing:
+  the frame it returns is a test pattern, and no run is ever described as rendering.
+* **`sprintf` and `vsprintf` never wrote their buffer.** Both were treated as
+  capacity-zero `snprintf`s, so every formatted string produced by a title came out empty.
+  The guest proved it: its log line read `Created Throwable( "" )` before the fix and
+  `Created Throwable( "Failed to open /var/mobile/data/bundleIndex.idx" )` after it.
+  `vprintf`/`vfprintf` are implemented too, over the same guest `va_list` cursor.
+* **The bundle is writable, like the iOS 3 directory it stands for.** This title writes
+  `data/bundleIndex.idx` next to its resources on first run and treats a failure as fatal;
+  a read-only mount turned a normal first launch into an error. The host directory is a
+  private extraction of the IPA and the path sandbox is unchanged, so nothing outside the
+  mounts is reachable (`..`, symlinks and absolute escapes are still refused).
+* **The stop report names what happened.** `HOST_CALLS` used to repeat `CPU_SVC` twelve
+  times; it now shows the last 24 *services* the guest called (a ring, so the tail is the
+  part that survives). A C++ throw reports the thrown type by reading the Itanium
+  `type_info` name, plus the depth of the guest's SjLj frame chain.
+* **The SjLj chain is the guest's own.** `__Unwind_SjLj_Register` now writes the previous
+  frame into the frame context in guest memory (the linked list libgcc's unwinder walks),
+  and `__Unwind_SjLj_Unregister` unlinks from the head or splices an inner frame out.
+* **GL entry points are resolved from the driver that owns them.** EGL and GLESv2 are
+  `dlopen`ed as a pair (ANGLE's `libEGL_podnative.so`/`libGLESv2_podnative.so` first on
+  Android) and symbols are looked up in that handle before the process-global table.
+  Android has a system `libEGL` in memory, and mixing it with ANGLE's GLESv2 yields a
+  display the other library knows nothing about.
+
+### Where AngryBirds stops now, and why
+
+`GUEST_STOP: TRAPPED — CXX_UNCAUGHT: the guest threw a C++ exception of type
+'N2io11IOExceptionE' with 6 SjLj frame(s) registered`.
+
+The guest's own log shows this is **not** a fatal path: it constructs
+`Throwable("Failed to open /var/mobile/data/bundleIndex.idx")` and throws so an enclosing
+`catch` can fall back to reading the data files directly. Emulating that needs the SjLj
+unwinder, which is the next piece of work. The ABI is now documented rather than guessed:
+
+* `struct SjLj_Function_Context` (libgcc, `unwind-sjlj.c`) is `prev` at +0, `call_site`
+  at +4, `data[4]` at +8, `personality` at +24, `lsda` at +28, `jbuf[]` after that;
+  confirmed against the guest's own frames (the personality slot holds
+  `___gxx_personality_sj0`, the LSDA slots point into `__DATA,__gcc_except_tab`).
+* `__cxa_throw`, `__Unwind_SjLj_Register/Unregister/Resume` and
+  `___gxx_personality_sj0` are **all** HLE boundaries in this image, so the driver, the
+  personality and the LSDA walk all belong to this runtime — no guest callback is needed.
+* Installing a frame means restoring `sp`/`fp`/`pc` from `jbuf` and letting the guest's
+  own dispatch code run; the landing pad is chosen from the LSDA call-site table.
+* The open question is this old toolchain's exact LSDA header encoding
+  (`__DATA,__gcc_except_tab` at `0x141420`), which is needed to map a call-site index to a
+  landing pad. That decoding is the first thing the next round should settle; guessing it
+  would corrupt guest stacks, so nothing was invented here.
+
+No gameplay, rendering, audio or device claim is made. The PC host suites, the CPU suites
+and the Android build are the evidence that exists.
 ## 0.9.4 — the OpenGL ES boundary is a real driver call, not a stub
 
 AngryBirds' 51 GL imports used to stop the run at `_glFrontFace`. They now reach a real

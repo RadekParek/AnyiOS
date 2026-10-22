@@ -34,6 +34,12 @@ plan "${FLAGS[*]} -Itests" tests/gles_driver_test.cpp app/src/main/cpp/runtime/{
 plan "${FLAGS[*]}" tests/audio_test.cpp app/src/main/cpp/runtime/{memory,audio,format,libc,heap}.cpp -o .local/tests/audio-test
 plan "${FLAGS[*]}" tests/fs_test.cpp app/src/main/cpp/runtime/{memory,fs,stdio,audio,libc,format,heap}.cpp -o .local/tests/fs-test
 xargs -a "$PLAN" -d '\n' -P "$JOBS" -n 1 -I {} bash -c '{}'
+# Development tools are compiled here too, so they cannot rot: the guest runner is the
+# entry point the compatibility work is measured with, and the host GL harness is a
+# diagnostic double that must keep matching the bridge's expectations.
+c++ -std=c++20 -Wall -Wextra -Werror -DPODNATIVE_CPU_IN_APP=1 -Iapp/src/main/cpp \
+  -fsyntax-only tools/guest_runner.cpp
+c++ -std=c++20 -Wall -Wextra -Werror -Iapp/src/main/cpp -fsyntax-only tools/host_gles_driver.cpp
 # Host-visible units must also survive the Xcode/NDK warning set used for the app.
 # cpu.cpp is excluded: it needs the pinned Dynarmic headers, which the PC suite owns.
 find app/src/main/cpp/runtime -maxdepth 1 -name '*.cpp' ! -name 'cpu.cpp' -print0 |

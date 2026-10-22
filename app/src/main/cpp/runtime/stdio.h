@@ -48,6 +48,8 @@ class Stdio final {
     std::string readString(uint32_t address) const;
     void emit(const std::string& text) const;
     uint32_t openStream(uint32_t pathAddress, uint32_t modeAddress);
-    void fprintfGuest(CpuState& cpu, size_t firstWord);
+    // `vaList` is a guest va_list when non-zero (vfprintf), otherwise the arguments are read
+    // from the call's own registers and stack (fprintf).
+    void fprintfGuest(CpuState& cpu, size_t firstWord, uint32_t vaList = 0);
 };
 }  // namespace podnative::runtime

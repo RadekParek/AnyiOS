@@ -91,6 +91,12 @@ class GLES final {
     size_t calls = 0, draws = 0;
     bool driverLoaded = false;
     // Display/context/drawable. Opaque so this header stays free of EGL types.
+    // Handles of the libraries the entry points were resolved from. Resolving through a
+    // handle instead of the process-global table is what keeps ANGLE's EGL and ANGLE's
+    // GLESv2 together: Android also has a system libEGL in memory, and mixing the two
+    // produces a display that the other library knows nothing about.
+    void* eglLibrary = nullptr;
+    void* glesLibrary = nullptr;
     void* display = nullptr;
     void* context = nullptr;
     void* surface = nullptr;
@@ -106,6 +112,8 @@ class GLES final {
 
     Entry function(const char* name) const;
     bool resolve(const char* name);
+    // One lookup in a handle, then through eglGetProcAddress, then the other handle.
+    void* lookup(const char* name) const;
     // EGL is not in ImportNames (the guest never calls it), so its entry points are
     // resolved on use; every caller goes through here instead of fn() directly.
     template <typename Fn>

@@ -169,11 +169,24 @@ GLES::Entry GLES::function(const char* name) const {
     return found == functions.end() ? nullptr : found->second;
 }
 
+void* GLES::lookup(const char* name) const {
+    // The guest's GL symbols and the runtime's own EGL calls must come from one driver
+    // family, so the handle of the library that owns the name is tried first.
+    const bool eglName = std::strncmp(name, "egl", 3) == 0;
+    void* preferred = eglName ? eglLibrary : glesLibrary;
+    void* fallback = eglName ? glesLibrary : eglLibrary;
+    if (preferred) {
+        if (void* symbol = dlsym(preferred, name)) return symbol;
+    }
+    return fallback ? dlsym(fallback, name) : nullptr;
+}
+
 bool GLES::resolve(const char* name) {
     if (function(name)) return true;
-    void* symbol = dlsym(RTLD_DEFAULT, name);
+    void* symbol = lookup(name);
     auto getProc = fn<void* (*)(const char*)>("eglGetProcAddress");
     if (!symbol && getProc) symbol = getProc(name);
+    if (!symbol && !eglLibrary && !glesLibrary) symbol = dlsym(RTLD_DEFAULT, name);
     if (!symbol) {
         // The framebuffer/renderbuffer entry points exist twice: as the OES extension an
         // ES 1.1 title imports, and as the core ES 2.0 names. The runtime asks for the core
@@ -182,8 +195,9 @@ bool GLES::resolve(const char* name) {
         const std::string full(name);
         const bool oes = full.size() > 3 && full.compare(full.size() - 3, 3, "OES") == 0;
         const std::string alternate = oes ? full.substr(0, full.size() - 3) : full + "OES";
-        symbol = dlsym(RTLD_DEFAULT, alternate.c_str());
+        symbol = lookup(alternate.c_str());
         if (!symbol && getProc) symbol = getProc(alternate.c_str());
+        if (!symbol && !eglLibrary && !glesLibrary) symbol = dlsym(RTLD_DEFAULT, alternate.c_str());
     }
     if (!symbol) return false;
     functions.emplace(name, reinterpret_cast<Entry>(symbol));
