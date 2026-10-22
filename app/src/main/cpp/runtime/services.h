@@ -59,6 +59,8 @@ class Services final {
     // Name of the unimplemented import a trap address stands for, or an empty string.
     std::string trapSymbol(uint32_t address) const;
     size_t count() const { return symbols.size(); }
+    // Name of the most recent service the guest called, for the stop report.
+    const std::string& lastCall() const { return lastSymbol; }
 
    private:
     Memory& memory;
@@ -73,6 +75,7 @@ class Services final {
     GLES gles;
     UIKit uikit;
     std::vector<std::string> symbols;
+    std::string lastSymbol;
     std::vector<std::string> traps;
     std::map<std::string, uint32_t> trapIndex;
     void mapTrapPage(size_t index) const;

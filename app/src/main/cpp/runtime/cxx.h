@@ -38,6 +38,8 @@ class CxxRuntime final {
     std::vector<ExitHandler> atExit;
     // Stack of live `__Unwind_SjLj_Register` frames (innermost last).
     std::vector<uint32_t> sjljFrames;
+    // Head of the guest's SjLj frame chain (each frame stores its `prev` in guest memory).
+    uint32_t sjljHead = 0;
     uint32_t errnoCell = 0;
     uint32_t allocate(uint32_t bytes, const char* what);
     uint32_t errnoAddress();

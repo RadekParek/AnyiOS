@@ -81,3 +81,13 @@ add_executable(cxx_test cxx_test.cpp)
 target_link_libraries(cxx_test PRIVATE podnative_hle)
 target_compile_options(cxx_test PRIVATE -Wall -Wextra -Werror -UNDEBUG)
 add_test(NAME cxx_runtime COMMAND cxx_test)
+
+# Host runner for a real .app bundle: the same entry point the Android app calls, so a
+# launch report (and the API the guest stopped at) can be reproduced without a device.
+# launch.cpp is compiled again here with PODNATIVE_CPU_IN_APP so the runner gets the real
+# guest path; the archive's copy stays unbound and is not pulled in.
+add_executable(guest_runner "${CMAKE_CURRENT_LIST_DIR}/../tools/guest_runner.cpp"
+    "${RUNTIME}/runtime/launch.cpp")
+target_link_libraries(guest_runner PRIVATE podnative_hle podnative_cpu)
+target_compile_definitions(guest_runner PRIVATE PODNATIVE_CPU_IN_APP=1)
+target_compile_options(guest_runner PRIVATE -Wall -Wextra -Werror)

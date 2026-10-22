@@ -59,7 +59,7 @@ void Libc::zero(uint32_t address, size_t bytes) {
 bool Libc::invoke(const std::string& name, CpuState& cpu) {
     auto& r = cpu.registers;
     if (name == "_printf" || name == "_puts" || name == "_snprintf" || name == "_sprintf" ||
-        name == "_vsnprintf") {
+        name == "_vsnprintf" || name == "_vsprintf" || name == "_vprintf") {
         formatted(name, cpu);
         return true;
     }
@@ -499,24 +499,40 @@ void Libc::formatted(const std::string& name, CpuState& cpu) {
         buffer = r[0];
         formatAddress = r[1];
         firstWord = 2;
+    } else if (name == "_vsprintf") {
+        buffer = r[0];
+        formatAddress = r[1];
+        vaList = r[2];
+        firstWord = 2;
+    } else if (name == "_vprintf") {
+        formatAddress = r[0];
+        vaList = r[1];
+        firstWord = 1;
     }
     // vsnprintf(str, size, format, ap): the expected string is written through the same
     // path as snprintf, but arguments come from the guest's saved-argument area.
     std::string text;
-    if (name == "_vsnprintf") {
+    if (name == "_vsnprintf" || name == "_vsprintf" || name == "_vprintf") {
+        // A guest va_list is the address of its saved-argument area, so the same cursor
+        // serves vprintf/vsprintf/vsnprintf.
+        if (!vaList && name != "_vsnprintf")
+            throw Error("LIBC_ARGUMENT", "a v-format call needs a guest va_list");
         text = formatGuestVarargs(readString(formatAddress), memory, vaList);
     } else {
         Arguments args(cpu, memory, firstWord);
         text = formatGuest(readString(formatAddress), args);
     }
     if (buffer) {
-        if (capacity == 0) {
-            r[0] = uint32_t(text.size());
-            return;
-        }
-        if (!memory.permits(buffer, capacity, Write))
+        // sprintf/vsprintf have no capacity argument: they write the whole string plus its
+        // terminator. Treating their missing capacity as "nothing fits" silently produced an
+        // empty string, which is the kind of quiet wrong answer this runtime must not give.
+        const bool bounded = capacity != 0;
+        const size_t limit = bounded ? capacity - 1 : text.size();
+        if (bounded && !memory.permits(buffer, capacity, Write))
             throw Error("LIBC_BUFFER", "format destination is not a writable guest range", buffer);
-        const size_t written = std::min<size_t>(text.size(), capacity - 1);
+        if (!memory.permits(buffer, limit + 1, Write))
+            throw Error("LIBC_BUFFER", "format destination is not a writable guest range", buffer);
+        const size_t written = std::min<size_t>(text.size(), limit);
         if (written) memory.write(buffer, text.data(), written);
         const char terminator = 0;
         memory.write(buffer + uint32_t(written), &terminator, 1);

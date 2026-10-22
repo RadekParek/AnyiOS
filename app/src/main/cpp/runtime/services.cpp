@@ -50,6 +50,8 @@ Services::Services(Memory& m)
           "_snprintf",
           "_sprintf",
           "_vsnprintf",
+          "_vsprintf",
+          "_vprintf",
           "_puts",
           "_getenv",
           "_mach_absolute_time",
@@ -182,6 +184,7 @@ Services::Services(Memory& m)
           "_fclose",
           "_fflush",
           "_fprintf",
+          "_vfprintf",
           "_fread",
           "_fwrite",
           "_fseek",
@@ -390,7 +393,12 @@ void Services::mountSandbox(const std::string& bundleHost, const std::string& co
     if (bundleHost.empty() || containerHost.empty())
         throw Error("FS_MOUNT", "the bundle and container directories are both required");
     files.mount("/var/mobile/Documents", containerHost, true);
-    files.mount("/var/mobile", bundleHost, false);
+    // The bundle is writable on purpose. This image targets iOS 3, where the app's own
+    // directory under /var/mobile/Applications/... was writable and titles really did write
+    // caches next to their resources (AngryBirds writes data/bundleIndex.idx on first run).
+    // The host directory is a private extraction of the IPA, so allowing those writes keeps
+    // the game working without opening anything outside the sandbox.
+    files.mount("/var/mobile", bundleHost, true);
     // NSBundle/NSHomeDirectory/NSSearchPath answer with the guest paths of those mounts,
     // and only report a resource path when the file really exists inside the sandbox.
     objc.setGuestPaths("/var/mobile", "/var/mobile/Documents");
@@ -478,6 +486,9 @@ void Services::dispatch(const CpuStop& stop, CpuState& state) {
     }
 }
 void Services::invoke(const std::string& name, CpuState& state) {
+    // The last symbol the guest asked for, so a stop report can show the calls leading up
+    // to it instead of a row of identical trap codes.
+    lastSymbol = name;
     // Order matters only for diagnostics: every module reports "not mine" without
     // inventing a result, and anything unclaimed is a hard guest-visible failure.
     if (uikit.invoke(name, state, objc)) return;

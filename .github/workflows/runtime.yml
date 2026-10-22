@@ -77,6 +77,9 @@ jobs:
           mkdir -p .local/pc-artifact
           cp .local/cpu-tests/cpu_test .local/pc-artifact/AnyiOS-linux-x86_64-cpu-test
           cp .local/cpu-tests/oaknut_wx_test .local/pc-artifact/AnyiOS-linux-x86_64-wx-test
+          # Runs a real .app bundle through the same entry point the app uses and prints the
+          # launch report, so a compatibility report can be reproduced on a desktop.
+          cp .local/cpu-tests/guest_runner .local/pc-artifact/AnyiOS-linux-x86_64-guest-runner
           cp -r third_party/dynarmic/notices .local/pc-artifact/third-party-notices
           cp third_party/dynarmic/LICENSE.txt .local/pc-artifact/third-party-notices/dynarmic.txt
           cp THIRD_PARTY_NOTICES.md .local/pc-artifact/

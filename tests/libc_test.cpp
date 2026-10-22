@@ -235,6 +235,33 @@ int main() {
         assert(std::string(buffer) == "word-41-2.50");
         assert(call.registers[0] == 12);
     }
+    // vsprintf is the same formatting with the string in r0 and the va_list in r2; games
+    // built against the iOS 3 SDK call it instead of vsnprintf.
+    {
+        CpuState call;
+        const char* format = "%s/%d";
+        memory.write(0x4400, format, std::strlen(format) + 1);
+        memory.write(0x4500, "bundle", 7);
+        memory.write32(0x4600, 0x4500);
+        memory.write32(0x4604, 7);
+        call.registers[0] = 0x4700;  // destination
+        call.registers[1] = 0x4400;  // format
+        call.registers[2] = 0x4600;  // va_list
+        assert(libc.invoke("_vsprintf", call));
+        char text[32]{};
+        memory.read(0x4700, text, 9);
+        assert(std::string(text) == "bundle/7");
+        assert(call.registers[0] == 8);  // the length, not the capacity
+        // vprintf goes to the console sink.
+        std::string logged;
+        libc.setLogSink([&](const std::string& line) { logged += line; });
+        CpuState direct;
+        direct.registers[0] = 0x4400;
+        direct.registers[1] = 0x4600;
+        assert(libc.invoke("_vprintf", direct));
+        assert(logged == "bundle/7");
+        libc.setLogSink(nullptr);
+    }
     // Unimplemented APIs stay unimplemented instead of returning invented success.
     CpuState unknown;
     assert(!libc.invoke("_UIApplicationMain", unknown));

@@ -1,6 +1,8 @@
 #include "launch.h"
 
+#include <algorithm>
 #include <set>
+#include <vector>
 
 #include "error.h"
 #ifdef PODNATIVE_CPU_IN_APP
@@ -12,9 +14,6 @@
 
 namespace podnative::runtime {
 namespace {
-constexpr uint64_t InstructionBudget = 2000000;
-constexpr double Seconds = 2.5;
-
 // Coverage audit over everything that must bind before guest code may run: pointer
 // fixups and classic symbol stubs. Stub symbols are reported too, because a stub that
 // forwards to an unimplemented API is exactly as fatal as an unresolvable pointer.
@@ -70,10 +69,20 @@ void prepareStack(LoadedImage& image, Memory& memory) {
 }  // namespace
 
 std::string attemptLaunch(const uint8_t* data, size_t size, const std::string& bundleHost,
-                          const std::string& containerHost) {
+                          const std::string& containerHost, const LaunchOptions& options) {
     try {
         auto image = loadMachO(data, size, 64 * 1024 * 1024);
         Services services(*image.memory);
+        // The guest's own console output is the most direct evidence of what it is doing,
+        // so the tail of it belongs in the report instead of being dropped.
+        std::vector<std::string> guestLog;
+        if (options.logLines >= 0) {
+            services.setLogSink([&](const std::string& line) {
+                guestLog.push_back(line);
+                constexpr size_t Keep = 512;
+                if (guestLog.size() > Keep) guestLog.erase(guestLog.begin());
+            });
+        }
         services.setEnvironment({{"HOME", "/var/mobile"},
                                  {"TMPDIR", "/var/mobile/Documents"},
                                  {"PATH", "/usr/bin:/bin:/usr/sbin:/sbin"}});
@@ -105,7 +114,7 @@ std::string attemptLaunch(const uint8_t* data, size_t size, const std::string& b
         prepareStack(image, *image.memory);
         GuestRun run;
         try {
-            run = runGuest(image, services, graph, main, InstructionBudget, Seconds);
+            run = runGuest(image, services, graph, main, options.instructions, options.seconds);
             services.closeGuestFiles();
             services.drainGuestPools();
         } catch (const Error& e) {
@@ -118,7 +127,15 @@ std::string attemptLaunch(const uint8_t* data, size_t size, const std::string& b
                 ? "LAUNCH_BLOCKED: HLE_GAP: the guest started and stopped at an API that is not "
                   "implemented yet."
                 : "LAUNCH_ATTEMPT: the guest image actually executed.";
-        return header + "\n" + describeRun(run) + "\nDYLD_EXPORT_AUDIT: " + report + "\n" +
+        std::string log;
+        if (options.logLines > 0 && !guestLog.empty()) {
+            log = "\nGUEST_LOG: " + std::to_string(guestLog.size()) + " line(s), last " +
+                  std::to_string(std::min<size_t>(guestLog.size(), size_t(options.logLines))) + ":";
+            const size_t first =
+                guestLog.size() > size_t(options.logLines) ? guestLog.size() - options.logLines : 0;
+            for (size_t n = first; n < guestLog.size(); n++) log += "\n| " + guestLog[n];
+        }
+        return header + "\n" + describeRun(run) + "\nDYLD_EXPORT_AUDIT: " + report + log + "\n" +
                services.uiSummary() + "\n" + services.graphicsSummary() + "\n" +
                services.guestClassSummary() + "\nGUEST_STORAGE: " + services.storageSummary() +
                "\n" + image.summary() +

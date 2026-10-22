@@ -8,13 +8,32 @@
 
 namespace podnative::runtime {
 namespace {
-constexpr size_t MaxRememberedCalls = 12;
+constexpr size_t MaxRememberedCalls = 24;
+constexpr size_t MaxFrames = 16;
+// ARM frames are {previous fp, return address} pairs. The chain is only followed while it
+// stays inside mapped, readable guest memory and moves upwards, so a corrupt frame cannot
+// turn a stop report into a crash.
+std::vector<uint32_t> frames(const Memory& memory, const CpuState& state) {
+    std::vector<uint32_t> addresses;
+    uint32_t frame = state.registers[11], last = 0;
+    for (size_t depth = 0; depth < MaxFrames; depth++) {
+        if (!frame || frame <= last || (frame & 3) || !memory.permits(frame, 8, Read)) break;
+        last = frame;
+        const uint32_t previous = memory.read32(frame), caller = memory.read32(frame + 4);
+        if (caller && memory.permits(caller & ~1u, 2, Execute)) addresses.push_back(caller & ~1u);
+        frame = previous;
+    }
+    return addresses;
+}
+// The calls that matter when a run stops are the last ones, not the first: the first dozen
+// are always startup boilerplate. A ring keeps the tail without letting a long run grow it.
 void remember(GuestRun& run, const std::string& name) {
     if (run.called.size() < MaxRememberedCalls) {
         run.called.push_back(name);
-    } else if (run.called.size() == MaxRememberedCalls) {
-        run.called.push_back("…");
+        return;
     }
+    run.called.erase(run.called.begin());
+    run.called.push_back(name);
 }
 std::string pointer(uint32_t value) {
     std::ostringstream out;
@@ -67,9 +86,10 @@ GuestRun execute(LoadedImage& image, Services& services, const ExportGraph& grap
                 run.stop = e.code == "HLE_UNIMPLEMENTED" ? "UNIMPLEMENTED" : "TRAPPED";
                 run.detail = e.what();
                 run.pc = stop.pc;
+                run.frames = frames(*image.memory, current);
                 return run;
             }
-            remember(run, stop.code);
+            remember(run, services.lastCall());
             const uint32_t next = current.registers[15];
             if (!next) {
                 run.stop = "EXITED";
@@ -97,6 +117,10 @@ GuestRun runGuest(LoadedImage& image, Services& services, const ExportGraph& gra
                   size_t requester, uint64_t instructionBudget, double seconds) {
     GuestRun run = execute(image, services, graph, requester, instructionBudget, seconds);
     run.pcSymbol = image.nearestSymbol(run.pc);
+    for (uint32_t address : run.frames) {
+        const std::string symbol = image.nearestSymbol(address);
+        run.backtrace.push_back(symbol.empty() ? pointer(address) : symbol + "()");
+    }
     return run;
 }
 namespace {
@@ -146,6 +170,11 @@ std::string describeRun(GuestRun& run) {
     // "pc=0x47054" alone does not tell anyone what the guest was doing; the nearest
     // preceding function symbol does.
     if (!run.pcSymbol.empty()) out << " symbol=" << run.pcSymbol;
+    if (!run.backtrace.empty()) {
+        out << "\nGUEST_BACKTRACE: ";
+        for (size_t n = 0; n < run.backtrace.size(); n++)
+            out << (n ? " <- " : "") << run.backtrace[n];
+    }
     if (!run.called.empty()) {
         out << "\nHOST_CALLS: ";
         for (size_t n = 0; n < run.called.size(); n++) out << (n ? " " : "") << run.called[n];
