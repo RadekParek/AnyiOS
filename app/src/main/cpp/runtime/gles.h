@@ -1,5 +1,6 @@
 #pragma once
 #include <cstdint>
+#include <functional>
 #include <map>
 #include <string>
 #include <vector>
@@ -41,6 +42,10 @@ class GLES final {
     std::vector<std::string> symbols() const;
     // True when `symbol` was a GL/EGL entry point this bridge owns.
     bool invoke(const std::string& symbol, CpuState& state);
+    // "Verbose logging": every GL call with its arguments plus the real glGetError result,
+    // decoded. Off by default; it never changes what is drawn.
+    void setVerbose(bool on) { verbose = on; }
+    void setLogSink(std::function<void(const std::string&)> sink) { logSink = std::move(sink); }
     // One-line evidence for the launch report: backend, driver strings and counters.
     std::string describe() const;
     size_t callCount() const { return calls; }
@@ -137,5 +142,11 @@ class GLES final {
     bool bindClientArrays(size_t count, std::vector<std::vector<uint8_t>>& storage);
     void setError(const std::string& text);
     std::string lastError;
+    // The dispatch table itself, without the tracing wrapper.
+    bool invokeEntry(const std::string& symbol, CpuState& state);
+    // Reads the driver's error state after a call and names it, or returns an empty string.
+    std::string takeError();
+    bool verbose = false;
+    std::function<void(const std::string&)> logSink;
 };
 }  // namespace podnative::runtime

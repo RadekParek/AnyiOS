@@ -1,6 +1,7 @@
 #include "execution.h"
 
 #include <chrono>
+#include <cstdio>
 #include <sstream>
 
 #include "cpu.h"
@@ -54,27 +55,90 @@ GuestRun execute(LoadedImage& image, Services& services, const ExportGraph& grap
     run.trappedImports = services.trapCount();
 
     Cpu cpu(*image.memory, image.arch);
+    // A precise trace asks the CPU for single-stepping: a trace whose PCs are block entries
+    // would not be a trace of what the guest did. It is its own switch because it costs about
+    // ten times the execution rate.
+    cpu.setPrecise(services.isPrecise());
     CpuState state;
     state.registers = image.registers;
     state.cpsr = image.cpsr;
     cpu.setState(state);
+    services.adoptMainThread(state);
 
+    // No budget means no budget: the run continues until the guest itself stops. The slice
+    // size only decides how often the loop can observe a host-side condition; it is not a
+    // cap on the run.
     const auto deadline =
         std::chrono::steady_clock::now() + std::chrono::milliseconds(uint64_t(seconds * 1000));
     constexpr uint64_t Slice = 200000;
-    while (run.instructions < instructionBudget) {
-        if (std::chrono::steady_clock::now() >= deadline) {
+    // One sample per few seconds of host time keeps a long run observable without turning
+    // the report into a trace.
+    constexpr size_t MaxSamples = 120;
+    auto lastSample = std::chrono::steady_clock::now();
+    while (instructionBudget == 0 || run.instructions < instructionBudget) {
+        if (seconds > 0 && std::chrono::steady_clock::now() >= deadline) {
             run.stop = "BUDGET";
-            run.detail = "wall-clock slice reached";
+            run.detail = "the caller's " + std::to_string(seconds) + " s probe budget was reached";
             return run;
         }
-        const uint64_t slice = std::min(Slice, instructionBudget - run.instructions);
+        const uint64_t slice =
+            instructionBudget ? std::min(Slice, instructionBudget - run.instructions) : Slice;
         CpuStop stop = cpu.run(slice);
         run.instructions += stop.attemptedInstructions;
         run.pc = stop.pc;
+        const auto now = std::chrono::steady_clock::now();
+        if (now - lastSample >= std::chrono::seconds(3)) {
+            lastSample = now;
+            if (run.samples.size() >= MaxSamples) run.samples.erase(run.samples.begin());
+            run.samples.push_back({run.instructions, stop.pc, services.lastCall()});
+        }
         if (stop.reason == StopReason::Fault) {
+            // The register state at the fault is what makes a guest fault actionable: it says
+            // whether the guest branched to a value it read from memory, returned through a
+            // corrupted frame, or was handed a bad pointer by a service.
+            const CpuState faulted = cpu.state();
+            char registers[192];
+            std::snprintf(registers, sizeof(registers),
+                          " (r0=0x%08x r1=0x%08x r2=0x%08x r3=0x%08x r12=0x%08x sp=0x%08x "
+                          "lr=0x%08x cpsr=0x%08x)",
+                          faulted.registers[0], faulted.registers[1], faulted.registers[2],
+                          faulted.registers[3], faulted.registers[12], faulted.registers[13],
+                          faulted.registers[14], faulted.cpsr);
             run.stop = "FAULT";
-            run.detail = stop.code + ": " + stop.detail + " at " + pointer(stop.pc);
+            run.detail = stop.code + ": " + stop.detail + " at " + pointer(stop.pc) + registers;
+            // The last instructions before the fault: a jump to a value read out of memory is
+            // only explainable by the code that produced it.
+            std::ostringstream trace;
+            bool first = true;
+            for (uint32_t pc : cpu.recentPcs(48)) {
+                trace << (first ? "" : " ") << pointer(pc);
+                first = false;
+            }
+            if (!first) run.detail += "\nrecent PCs (oldest first): " + trace.str();
+            // Which mapping the PC landed in, and with what permissions: "unmapped" and
+            // "mapped but not executable" are different bugs.
+            std::string placement = "unmapped";
+            for (const Region& region : image.memory->regions()) {
+                if (stop.pc < region.base || stop.pc - region.base >= region.size) continue;
+                placement = region.label + " [" +
+                            std::string(region.permissions & Execute ? "rx"
+                                        : region.permissions & Write ? "rw"
+                                                                     : "r-") +
+                            ", " + std::to_string(region.size) + " bytes]";
+                break;
+            }
+            run.detail += "\nfaulting PC is in: " + placement;
+            // The stack the faulting instruction stands on: a corrupted return address is
+            // visible here even when the branch source is already off the trace.
+            std::ostringstream stack;
+            for (size_t n = 0; n < 12; n++) {
+                const uint32_t at = faulted.registers[13] + uint32_t(n * 4);
+                if (!image.memory->permits(at, 4, Read)) break;
+                char cell[16];
+                std::snprintf(cell, sizeof(cell), " %08x", image.memory->read32(at));
+                stack << cell;
+            }
+            if (!stack.str().empty()) run.detail += "\nstack from SP:" + stack.str();
             return run;
         }
         if (stop.reason == StopReason::SupervisorCall) {
@@ -97,7 +161,31 @@ GuestRun execute(LoadedImage& image, Services& services, const ExportGraph& grap
                 return run;
             }
             cpu.setState(current);
+            // A blocking call (a mutex, a join) or an explicit yield asks for another guest
+            // thread to run now. Nothing is switched until the guest asked for it, so a
+            // single-threaded title sees exactly the same execution as before.
+            if (services.threadSwitchWanted()) {
+                CpuState next = current;
+                if (!services.switchGuestThread(next)) {
+                    run.stop = "TRAPPED";
+                    run.detail = services.guestThreadStall();
+                    run.pc = current.registers[15];
+                    return run;
+                }
+                cpu.setState(next);
+            }
             continue;
+        }
+        // The end of a quantum is a scheduling point when more than one guest thread exists:
+        // the slice boundary is this runtime's preemption tick.
+        if (services.guestThreadCount() > 1) {
+            CpuState slice = cpu.state();
+            if (!services.switchGuestThread(slice) && services.guestThreadsFinished()) {
+                run.stop = "EXITED";
+                run.detail = services.guestThreadStall();
+                return run;
+            }
+            cpu.setState(slice);
         }
         // A slice that simply ran out of instruction budget is not the end of the run:
         // the loop continues until the caller's total budget or the wall clock stops it.
@@ -174,6 +262,14 @@ std::string describeRun(GuestRun& run) {
         out << "\nGUEST_BACKTRACE: ";
         for (size_t n = 0; n < run.backtrace.size(); n++)
             out << (n ? " <- " : "") << run.backtrace[n];
+    }
+    if (run.samples.size() > 1) {
+        out << "\nGUEST_PROGRESS: " << run.samples.size() << " sample(s), last 12:";
+        const size_t first = run.samples.size() > 12 ? run.samples.size() - 12 : 0;
+        for (size_t n = first; n < run.samples.size(); n++)
+            out << "\n  " << run.samples[n].instructions << " instructions at "
+                << pointer(run.samples[n].pc)
+                << (run.samples[n].lastCall.empty() ? "" : " after " + run.samples[n].lastCall);
     }
     if (!run.called.empty()) {
         out << "\nHOST_CALLS: ";

@@ -24,12 +24,21 @@ struct GuestRun {
     // Read from the frame-pointer chain, which is all an ARMv6 bin can offer without DWARF;
     // it is evidence of where the guest was, not a promise of a complete stack.
     std::vector<std::string> backtrace;
+    // Periodic progress samples: instructions retired and the guest PC at that point. A run
+    // with no time limit needs this, because "still running" alone says nothing about
+    // whether the title is getting anywhere.
+    struct Sample {
+        uint64_t instructions;
+        uint32_t pc;
+        std::string lastCall;
+    };
+    std::vector<Sample> samples;
     // Human-readable blocker for the crash screen: kind, subject and next action.
     std::string blockerKind;     // Startup, Unimplemented API, Guest fault, Trap, Exit
     std::string blockerSubject;  // the exact symbol or fault code
 };
-// Bounded real execution: guest instructions run until the budget, wall clock,
-// a fault, or the first import that has no implementation.
+// Real execution. With a zero instruction budget and zero seconds the guest runs until it
+// stops by itself: a fault, an unimplemented import, or its own exit.
 GuestRun runGuest(LoadedImage& image, Services& services, const ExportGraph& graph,
                   size_t requester, uint64_t instructionBudget, double seconds);
 std::string describeRun(GuestRun& run);

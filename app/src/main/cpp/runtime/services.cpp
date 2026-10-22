@@ -1,6 +1,8 @@
 #include "services.h"
 
 #include <algorithm>
+#include <cctype>
+#include <cstdio>
 #include <cstring>
 #include <filesystem>
 #include <limits>
@@ -16,6 +18,8 @@ Services::Services(Memory& m)
       cxx(m, libc.guestHeap()),
       stdio(m, libc.guestHeap(), files),
       audio(m),
+      posix(m, libc.guestHeap()),
+      openal(m),
       objc(m),
       gles(m),
       uikit(m),
@@ -154,6 +158,8 @@ Services::Services(Memory& m)
           "__Unwind_SjLj_Register",
           "__Unwind_SjLj_Unregister",
           "__Unwind_SjLj_Resume",
+          "___floatdisf",
+          "___floatundisf",
           // libsystem_c: fortified (object-size aware) entry points.
           "_atexit",
           "_exit",
@@ -167,6 +173,194 @@ Services::Services(Memory& m)
           "___strcat_chk",
           "___strncpy_chk",
           "___sprintf_chk",
+          // ctype: Darwin's case-mapping and classification entry points.
+          "___tolower",
+          "___toupper",
+          "_tolower",
+          "_toupper",
+          "___maskrune",
+          // Strings.
+          "_strncat",
+          "_strlcpy",
+          "_strndup",
+          "_strspn",
+          "_strcspn",
+          "_strpbrk",
+          "_strcasestr",
+          "_strcoll",
+          "_strtok",
+          "_strsep",
+          "_memmem",
+          "_strerror",
+          "___error",
+          "_setlocale",
+          "_localeconv",
+          "_setjmp",
+          "_sigsetjmp",
+          "setjmp",
+          "_longjmp",
+          "_siglongjmp",
+          "longjmp",
+          // POSIX threads and scheduling, plus the gate a returning thread routine lands on.
+          "___podnative_thread_exit",
+          "___podnative_thread_callback",
+          "_pthread_create",
+          // The rest of pthread's API: a second thread needs these as soon as it starts.
+          "_pthread_attr_init",
+          "_pthread_attr_destroy",
+          "_pthread_attr_setstacksize",
+          "_pthread_attr_getstacksize",
+          "_pthread_attr_setdetachstate",
+          "_pthread_detach",
+          "_pthread_equal",
+          "_pthread_kill",
+          "_nanosleep",
+          "_sleep",
+          "_pthread_join",
+          "_pthread_mutex_init",
+          "_pthread_mutex_destroy",
+          "_pthread_mutex_lock",
+          "_pthread_mutex_trylock",
+          "_pthread_mutex_unlock",
+          "_pthread_mutexattr_init",
+          "_pthread_mutexattr_destroy",
+          "_pthread_mutexattr_settype",
+          "_pthread_self",
+          "_pthread_getschedparam",
+          "_pthread_setschedparam",
+          "_pthread_exit",
+          // Process and scheduling.
+          "_getpid",
+          "_getuid",
+          "_geteuid",
+          "_system",
+          "_usleep",
+          "_sched_yield",
+          "_clock",
+          // Time.
+          "_difftime",
+          "_gmtime",
+          "_localtime",
+          "_gmtime_r",
+          "_localtime_r",
+          "_mktime",
+          "_timegm",
+          "_strftime",
+          "_tzset",
+          // libm, both precisions. iOS ARMv7 passes floating-point arguments in the core
+          // registers, so every one of these is marshalled through the shared ABI helpers.
+          "_tan",
+          "_asin",
+          "_acos",
+          "_atan",
+          "_sinh",
+          "_cosh",
+          "_tanh",
+          "_exp",
+          "_exp2",
+          "_log",
+          "_log10",
+          "_log2",
+          "_sqrt",
+          "_cbrt",
+          "_ceil",
+          "_floor",
+          "_round",
+          "_trunc",
+          "_fabs",
+          "_asinf",
+          "_sinhf",
+          "_coshf",
+          "_tanhf",
+          "_expf",
+          "_exp2f",
+          "_logf",
+          "_log10f",
+          "_log2f",
+          "_sqrtf",
+          "_cbrtf",
+          "_ceilf",
+          "_floorf",
+          "_roundf",
+          "_truncf",
+          "_fabsf",
+          "_expm1f",
+          "_log1pf",
+          "_atan2",
+          "_hypot",
+          "_copysign",
+          "_remainder",
+          "_fmin",
+          "_fmax",
+          "_fmodf",
+          "_hypotf",
+          "_copysignf",
+          "_remainderf",
+          "_fminf",
+          "_fmaxf",
+          "_frexp",
+          "_frexpf",
+          "_ldexp",
+          "_ldexpf",
+          "_modf",
+          "_modff",
+          // Standard I/O beyond the streaming primitives.
+          "_freopen",
+          "_ungetc",
+          "_sscanf",
+          "_fscanf",
+          "_perror",
+          "_setbuf",
+          "_tmpfile",
+          "_tmpnam",
+          // POSIX file descriptors over the same sandboxed handles as stdio.
+          "_open",
+          "_creat",
+          "_read",
+          "_write",
+          "_close",
+          "_lseek",
+          "_fcntl",
+          "_select",
+          "_fsync",
+          "_abort",
+          // OpenAL: the null output device, with real buffers, queues and playback timing.
+          "_alcOpenDevice",
+          "_alcCloseDevice",
+          "_alcCreateContext",
+          "_alcDestroyContext",
+          "_alcMakeContextCurrent",
+          "_alcProcessContext",
+          "_alcSuspendContext",
+          "_alcGetContextsDevice",
+          "_alcGetError",
+          "_alcGetIntegerv",
+          "_alGetError",
+          "_alGenBuffers",
+          "_alDeleteBuffers",
+          "_alGenSources",
+          "_alDeleteSources",
+          "_alBufferData",
+          "_alSourceQueueBuffers",
+          "_alSourceUnqueueBuffers",
+          "_alSourcePlay",
+          "_alSourcePause",
+          "_alSourceStop",
+          "_alSourceRewind",
+          "_alSourcePlayv",
+          "_alGetSourcei",
+          "_alGetSourcef",
+          "_alSourcei",
+          "_alSourcef",
+          "_alSource3f",
+          "_alGetBufferi",
+          "_alListenerf",
+          "_alListener3f",
+          "_alListenerfv",
+          "_alGetListenerf",
+          "_alDistanceModel",
+          "_alDopplerFactor",
+          "_alSpeedOfSound",
           // AudioToolbox AudioSession configuration (state, not playback).
           "_AudioSessionInitialize",
           "_AudioSessionSetActive",
@@ -256,6 +450,17 @@ Services::Services(Memory& m)
           "_glVertexPointer",
           "_glViewport",
       } {
+    // Two entries for one symbol would define it twice in the same image, which the export
+    // graph refuses; catching it here names the symbol instead of failing the launch.
+    {
+        std::set<std::string> unique(symbols.begin(), symbols.end());
+        if (unique.size() != symbols.size())
+            throw Error("HLE_LIMIT", "duplicate service entry point",
+                        uint32_t(symbols.size() - unique.size()));
+    }
+    if (symbols.size() * 8 > Memory::PageSize)
+        throw Error("HLE_LIMIT", "more service entry points than the gate page holds",
+                    uint32_t(symbols.size()));
     std::vector<uint8_t> code(Memory::PageSize);
     auto put = [&](size_t offset, uint32_t word) {
         for (unsigned n = 0; n < 4; n++) code[offset + n] = uint8_t(word >> (n * 8));
@@ -280,10 +485,20 @@ Services::Services(Memory& m)
                          0};
     memory.map({Base + Memory::PageSize, Memory::PageSize, Read, "CoreGraphics constants"},
                reinterpret_cast<const uint8_t*>(constants), sizeof(constants));
+    posix.setExitGate(address("___podnative_thread_exit"));
     objc.setTrapName([this](uint32_t address) { return trapSymbol(address); });
     objc.setGraphics(&gles);
     objc.installGates();
     uikit.installGates();
+    uikit.setThreadHooks([this] { return posix.liveThreadCount(); },
+                         [this] { posix.blockInRunLoop(); });
+    objc.setMainThreadHooks([this](uint32_t event) { posix.blockOnEvent(event); },
+                            [this](uint32_t event) { posix.wakeEvent(event); },
+                            [this] { posix.wakeRunLoopThread(); });
+    objc.setLiveThreads([this] { return posix.threadCount(); });
+    objc.setThreadSpawn([this](uint32_t target, const std::string& selector, uint32_t argument) {
+        return spawnCallbackThread(target, selector, argument);
+    });
 }
 uint32_t Services::address(const std::string& name) const {
     auto it = std::find(symbols.begin(), symbols.end(), name);
@@ -307,6 +522,7 @@ const std::string& Services::libraryOf(const std::string& symbol) const {
         "/System/Library/Frameworks/QuartzCore.framework/QuartzCore";
     static const std::string audioToolbox =
         "/System/Library/Frameworks/AudioToolbox.framework/AudioToolbox";
+    static const std::string openAL = "/System/Library/Frameworks/OpenAL.framework/OpenAL";
     static const std::string openGLES = "/System/Library/Frameworks/OpenGLES.framework/OpenGLES";
     static const std::string standard = "/usr/lib/libstdc++.6.dylib";
     static const std::string helpers = "/usr/lib/libgcc_s.1.dylib";
@@ -317,6 +533,12 @@ const std::string& Services::libraryOf(const std::string& symbol) const {
     if (symbol.rfind("_CG", 0) == 0) return coreGraphics;
     if (symbol.rfind("_CA", 0) == 0 || symbol.rfind("_kCA", 0) == 0) return quartzCore;
     if (symbol.rfind("_AudioSession", 0) == 0) return audioToolbox;
+    // OpenAL's entry points all start with al/alc followed by a capitalised verb. The image
+    // is imported by ordinal, so a gate defined anywhere else never binds.
+    for (const char* prefix :
+         {"_alc", "_alBuffer", "_alDelete", "_alGen", "_alSource", "_alGetSource", "_alGetBuffer",
+          "_alGetListener", "_alListener", "_alDistanceModel", "_alDoppler", "_alSpeedOfSound"})
+        if (symbol.rfind(prefix, 0) == 0) return openAL;
     if (symbol.rfind("_gl", 0) == 0) return openGLES;
     if (symbol.rfind("_objc_", 0) == 0) return objc;
     if (cxx.isCxxSymbol(symbol)) return standard;
@@ -324,7 +546,7 @@ const std::string& Services::libraryOf(const std::string& symbol) const {
     if (symbol.rfind("_NS", 0) == 0) return foundation;
     return system;
 }
-void Services::install(ExportGraph& graph, const std::vector<std::string>& dependencies) const {
+void Services::install(ExportGraph& graph, const std::vector<std::string>& dependencies) {
     auto imageFor = [&graph](const std::string& installName) {
         if (auto existing = graph.index(installName)) return *existing;
         return graph.addImage(installName);
@@ -343,8 +565,23 @@ void Services::install(ExportGraph& graph, const std::vector<std::string>& depen
     // Every framework the image links against must exist in the graph, or its two-level
     // ordinals cannot resolve at all. Register them all, in the binary's own order.
     for (const auto& dependency : dependencies) imageFor(dependency);
+    // The image binds an import by ordinal, so a definition in the *right* library is what
+    // makes it resolve. Most names have exactly one owner; the few C++ runtime entry points
+    // this SDK generation exports from both libstdc++ and libgcc_s are listed here, so a bind
+    // that names either ordinal still finds the implementation. Everything else stays
+    // single-owner: defining every gate everywhere would make a name resolve from a library
+    // that does not export it, which is exactly the class of bug the audit exists to catch.
+    const size_t helpers = imageFor("/usr/lib/libgcc_s.1.dylib");
+    const size_t standard = imageFor("/usr/lib/libstdc++.6.dylib");
     for (size_t n = 0; n < symbols.size(); n++)
         graph.define(imageFor(libraryOf(symbols[n])), symbols[n], {Base + uint32_t(n) * 8});
+    for (const char* sharedName : {"___cxa_atexit", "___cxa_finalize", "___gxx_personality_sj0"}) {
+        const auto found = std::find(symbols.begin(), symbols.end(), sharedName);
+        if (found == symbols.end()) continue;
+        const uint32_t address = Base + uint32_t(found - symbols.begin()) * 8;
+        for (size_t image : {standard, helpers})
+            if (!graph.strong(image, sharedName)) graph.define(image, sharedName, {address});
+    }
     const size_t uiKit = imageFor("/System/Library/Frameworks/UIKit.framework/UIKit");
     const size_t openGLES = imageFor("/System/Library/Frameworks/OpenGLES.framework/OpenGLES");
     objc.defineSymbols(graph, foundation, objcLibrary, quartzCore);
@@ -364,6 +601,10 @@ void Services::install(ExportGraph& graph, const std::vector<std::string>& depen
     const std::set<std::string> bridged{
         "NSString", "NSArray", "NSMutableArray", "NSDictionary", "NSMutableDictionary",
         "NSNumber", "NSData",  "NSSet",          "NSMutableSet", "NSDate"};
+    // A few classes are bound through an image that re-exports them rather than defining
+    // them, so the two-level lookup has to find them in both places.
+    const std::set<std::string> reexportedByCoreFoundation{"NSObject", "NSProxy"};
+    const std::set<std::string> reexportedByQuartzCore{"CAEAGLLayer"};
     for (const auto& [name, address] : objc.classObjects()) {
         const size_t owner = classOwner(name);
         auto define = [&](size_t image) {
@@ -373,13 +614,34 @@ void Services::install(ExportGraph& graph, const std::vector<std::string>& depen
             graph.define(image, "_OBJC_METACLASS_$_" + name, {address});
         };
         define(owner);
-        if (bridged.count(name)) define(coreFoundation);
+        if (bridged.count(name) || reexportedByCoreFoundation.count(name)) define(coreFoundation);
+        if (reexportedByQuartzCore.count(name)) define(quartzCore);
     }
     // libobjc's own data symbols: a class carries an empty cache and vtable until its first
     // message. This runtime never dereferences them, but the image binds them, so they point
     // at real mapped memory instead of an unimplemented-import trap.
     for (const char* symbol : {"__objc_empty_cache", "__objc_empty_vtable"})
         graph.define(objcLibrary, symbol, {ObjC::GateBase + Memory::PageSize - 16});
+    // Real data cells, not gate code: the standard-stream `FILE *` variables hold the
+    // address of the stream object, and Darwin's rune tables are the real classification
+    // data a ctype macro indexes.
+    // The Mach-O spelling of the C variable `__stdinp` carries the image's own leading
+    // underscore, so the symbol the guest imports is `___stdinp`. Defining `__stdinp`
+    // resolved nothing and left three required imports trapped.
+    graph.define(system, "___stdinp", {stdio.standardPointerCell(0)});
+    graph.define(system, "___stdoutp", {stdio.standardPointerCell(1)});
+    graph.define(system, "___stderrp", {stdio.standardPointerCell(2)});
+    graph.define(system, "__DefaultRuneLocale", {runeLocale()});
+    // EAGL's drawable keys and colour-format values are CFString globals. A title reads the
+    // global and hands the string to -setValue:forKey:, so the value must be a real string.
+    graph.define(openGLES, "_kEAGLColorFormatRGBA8", {constantStringVariable("RGBA8")});
+    graph.define(openGLES, "_kEAGLColorFormatRGB565", {constantStringVariable("RGB565")});
+    graph.define(openGLES, "_kEAGLDrawablePropertyColorFormat",
+                 {constantStringVariable("ColorFormat")});
+    graph.define(openGLES, "_kEAGLDrawablePropertyRetainedBacking",
+                 {constantStringVariable("RetainedBacking")});
+    graph.define(coreFoundation, "___CFConstantStringClassReference",
+                 {objc.classAddress("NSConstantString", false)});
     graph.define(coreGraphics, "_CGAffineTransformIdentity", {Base + Memory::PageSize});
     graph.define(coreGraphics, "_CGRectNull", {Base + Memory::PageSize + 24});
     // Keep the handles referenced: the images must exist even when nothing is defined in
@@ -388,6 +650,62 @@ void Services::install(ExportGraph& graph, const std::vector<std::string>& depen
     (void)foundation;
     (void)coreFoundation;
     (void)audioToolbox;
+}
+uint32_t Services::constantStringVariable(const std::string& text) {
+    // A CFString global is a variable holding a pointer to a __CFConstantString: a class
+    // word, the 0x7c8 flag word, the bytes and the length. The runtime recognises literals by
+    // that layout, so a guest that passes one of these to a framework call sees a real string.
+    GuestHeap& heap = libc.guestHeap();
+    const uint32_t bytes = heap.allocate(uint32_t(text.size() + 1), 4);
+    if (!bytes) throw Error("HLE_ALLOC", "could not allocate a guest constant string");
+    memory.write(bytes, text.c_str(), text.size() + 1);
+    const uint32_t record = heap.allocate(16, 4);
+    if (!record) throw Error("HLE_ALLOC", "could not allocate a __CFConstantString");
+    memory.write32(record, 0);          // class reference: never dereferenced by this runtime
+    memory.write32(record + 4, 0x7c8);  // 8-bit constant string
+    memory.write32(record + 8, bytes);
+    memory.write32(record + 12, uint32_t(text.size()));
+    const uint32_t variable = heap.allocate(4, 4);
+    if (!variable) throw Error("HLE_ALLOC", "could not allocate a CFString global");
+    memory.write32(variable, record);
+    return variable;
+}
+uint32_t Services::runeLocale() {
+    if (runeLocaleCell) return runeLocaleCell;
+    // _RuneLocale (Darwin runetype.h): char __magic[8]; char __encoding[32];
+    // int (*__sgetrune)(); int (*__sputrune)(); __darwin_rune_t __invalid_rune;
+    // __uint32_t __runetype[256]; __darwin_rune_t __maplower[256]; __darwin_rune_t __mapupper[256];
+    // union { ... } __lc;
+    constexpr uint32_t Runetype = 52, Maplower = 52 + 1024, Mapupper = 52 + 2048, TableSize = 4096;
+    runeLocaleCell = libc.guestHeap().allocate(TableSize, 4);
+    if (!runeLocaleCell) throw Error("HLE_ALLOC", "could not allocate the guest rune tables");
+    std::vector<uint8_t> table(TableSize, 0);
+    auto put32 = [&table](uint32_t offset, uint32_t value) {
+        for (unsigned n = 0; n < 4; n++) table[offset + n] = uint8_t(value >> (n * 8));
+    };
+    std::memcpy(table.data(), "RuneMagi", 8);
+    std::memcpy(table.data() + 8, "NONE", 4);
+    put32(48, 0xfffd);  // __invalid_rune
+    for (uint32_t c = 0; c < 256; c++) {
+        uint32_t bits = 0;
+        if (std::isalpha(int(c))) bits |= 0x00000100;   // _CTYPE_A
+        if (std::iscntrl(int(c))) bits |= 0x00000200;   // _CTYPE_C
+        if (std::isdigit(int(c))) bits |= 0x00000400;   // _CTYPE_D
+        if (std::isgraph(int(c))) bits |= 0x00000800;   // _CTYPE_G
+        if (std::islower(int(c))) bits |= 0x00001000;   // _CTYPE_L
+        if (std::ispunct(int(c))) bits |= 0x00002000;   // _CTYPE_P
+        if (std::isspace(int(c))) bits |= 0x00004000;   // _CTYPE_S
+        if (std::isupper(int(c))) bits |= 0x00008000;   // _CTYPE_U
+        if (std::isxdigit(int(c))) bits |= 0x00010000;  // _CTYPE_X
+        if (c == ' ' || c == '\t') bits |= 0x00020000;  // _CTYPE_B
+        if (std::isprint(int(c))) bits |= 0x00040000;   // _CTYPE_R
+        put32(Runetype + c * 4, bits ? bits | 0x01000000 : 0);
+        // The high byte records the character class Darwin's table carries as a rune type.
+        put32(Maplower + c * 4, uint32_t(std::tolower(int(c))));
+        put32(Mapupper + c * 4, uint32_t(std::toupper(int(c))));
+    }
+    memory.write(runeLocaleCell, table.data(), table.size());
+    return runeLocaleCell;
 }
 void Services::mountSandbox(const std::string& bundleHost, const std::string& containerHost) {
     if (bundleHost.empty() || containerHost.empty())
@@ -478,6 +796,7 @@ void Services::dispatch(const CpuStop& stop, CpuState& state) {
         stop.service != (stop.pc - Base) / 8 + 1)
         throw Error("HLE_TRAP", "unregistered guest service trap", stop.pc);
     const uint32_t entry = (stop.pc - Base) / 8;
+    if (verbose) traceSymbol(symbols[entry], state);
     invoke(symbols[entry], state);
     // Same rule as above: a service that starts a guest callback keeps the PC it set.
     if (state.registers[15] == stop.pc + 4) {
@@ -485,10 +804,55 @@ void Services::dispatch(const CpuStop& stop, CpuState& state) {
         state.cpsr = (state.cpsr & ~0x20u) | (thumb ? 0x20 : 0);
     }
 }
+bool Services::spawnCallbackThread(uint32_t target, const std::string& selector,
+                                   uint32_t argument) {
+    const uint32_t id = nextThreadStart++;
+    threadStarts[id] = ThreadStart{target, selector, argument};
+    // The created thread starts on the trampoline gate: the gate runs on that thread, so the
+    // selector really is entered with the new thread's own stack and registers.
+    const uint32_t gate = address("___podnative_thread_callback");
+    posix.spawnThread(gate, id);
+    return true;
+}
+void Services::runThreadStart(CpuState& state) {
+    const uint32_t id = state.registers[0];
+    auto found = threadStarts.find(id);
+    if (found == threadStarts.end())
+        throw Error("POSIX_THREAD", "a thread trampoline ran without a pending start", id);
+    const ThreadStart start = found->second;  // copy: the map entry is erased below
+    threadStarts.erase(found);
+    if (!objc.sendGuestMessage(start.target, start.selector, state, {start.argument},
+                               address("___podnative_thread_exit")))
+        throw Error("OBJC_UNIMPLEMENTED", "thread target " + objc.stringValue(start.target) +
+                                              " does not implement " + start.selector);
+}
+void Services::log(const std::string& line) {
+    guestLog.push_back(line);
+    if (guestLog.size() > logCapacity) guestLog.erase(guestLog.begin());
+    if (externalLog) externalLog(line);
+}
+std::vector<std::string> Services::logTail(size_t count) const {
+    if (count >= guestLog.size()) return guestLog;
+    return {guestLog.end() - std::ptrdiff_t(count), guestLog.end()};
+}
+void Services::traceSymbol(const std::string& name, const CpuState& state) {
+    // Argument words as the guest passed them, and the guest stack pointer, which is what
+    // makes a crash trace in a verbose log actionable.
+    char line[256];
+    std::snprintf(line, sizeof(line),
+                  "call %s(r0=0x%08x r1=0x%08x r2=0x%08x r3=0x%08x) sp=0x%08x lr=0x%08x",
+                  name.c_str(), state.registers[0], state.registers[1], state.registers[2],
+                  state.registers[3], state.registers[13], state.registers[14]);
+    log(line);
+}
 void Services::invoke(const std::string& name, CpuState& state) {
     // The last symbol the guest asked for, so a stop report can show the calls leading up
     // to it instead of a row of identical trap codes.
     lastSymbol = name;
+    if (name == "___podnative_thread_callback") {
+        runThreadStart(state);
+        return;
+    }
     // Order matters only for diagnostics: every module reports "not mine" without
     // inventing a result, and anything unclaimed is a hard guest-visible failure.
     if (uikit.invoke(name, state, objc)) return;
@@ -496,6 +860,8 @@ void Services::invoke(const std::string& name, CpuState& state) {
     if (libc.invoke(name, state)) return;
     if (stdio.invoke(name, state)) return;
     if (audio.invoke(name, state)) return;
+    if (openal.invoke(name, state)) return;
+    if (posix.invoke(name, state)) return;
     if (cxx.invoke(name, state)) return;
     if (cf.invoke(name, state, memory)) return;
     if (cg.invoke(name, state, memory)) return;

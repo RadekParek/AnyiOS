@@ -60,6 +60,9 @@ public final class MainActivity extends Activity {
     @Override
     public void onCreate(Bundle state) {
         prefs = getSharedPreferences("settings", MODE_PRIVATE);
+        // Verbose logging is a persisted developer switch; applying it before the first
+        // launch attempt is what makes it take effect for the game that needs diagnosing.
+        NativeBridge.setVerbose(prefs.getBoolean("verboseLogging", false));
         dark =
             !getSharedPreferences("radek_settings", MODE_PRIVATE).getBoolean("light_theme", false);
         setTheme(dark ? R.style.AppThemeDark : R.style.AppTheme);
@@ -679,6 +682,12 @@ public final class MainActivity extends Activity {
                     new int[] {30, 60, 120}, "fps", 60));
         settingRow(display, "On-screen console", "Debug overlay while a game boots",
             prefs.getBoolean("showConsole", false) ? "Shown" : "Hidden", this::toggleConsole);
+        // The deep trace the compatibility work needs: every service the guest calls, every
+        // exception-unwinding decision and every GL error, in the launch report. Off by
+        // default, because it is slow and it is only useful when something goes wrong.
+        settingRow(display, "Verbose logging",
+            "Deep runtime trace in launch reports: API calls, unwinding, GL errors",
+            prefs.getBoolean("verboseLogging", false) ? "On" : "Off", this::toggleVerbose);
         String[] appearances = {"Light", "Dark"};
         settingRow(display, "Appearance", "Choose your preferred look", dark ? "Dark" : "Light",
             () -> choose("Appearance", appearances, new int[] {1, 2}, "theme", dark ? 2 : 1));
@@ -783,6 +792,20 @@ public final class MainActivity extends Activity {
                     home();
                 })
             .show();
+    }
+    /**
+     * Verbose logging is a developer switch: it adds a deep trace (service calls, exception
+     * unwinding, GL errors) to the report a launch produces. It never changes what the guest
+     * does, and it stays off unless someone asks for it.
+     */
+    private void toggleVerbose() {
+        boolean on = !prefs.getBoolean("verboseLogging", false);
+        prefs.edit().putBoolean("verboseLogging", on).apply();
+        NativeBridge.setVerbose(on);
+        Diagnostics.record("Settings",
+            on ? "Verbose logging enabled; the next launch report carries the deep trace."
+               : "Verbose logging disabled.");
+        home();
     }
     private void diagnostics(LinearLayout parent) {
         heading(parent, "Diagnostics", "Useful evidence, without uploading your games.");

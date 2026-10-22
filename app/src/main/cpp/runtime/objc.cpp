@@ -1,9 +1,11 @@
 #include "objc.h"
 
 #include <algorithm>
+#include <chrono>
 #include <cstdlib>
 #include <optional>
 #include <sstream>
+#include <thread>
 
 #include "abi.h"
 #include "error.h"
@@ -86,6 +88,7 @@ void ObjC::installGates() {
     classObject("NSException");
     classObject("NSNotificationCenter");
     classObject("NSRunLoop");
+    classObject("NSThread");
     classObject("NSURL");
     classObject("NSConstantString");
     // UIKit classes the launcher models. A class is registered only when its messages have
@@ -138,6 +141,18 @@ uint32_t ObjC::classNamePointer(const std::string& name) {
     auto found = classes.find(name);
     if (found != classes.end()) return found->second;
     return classObject(name);
+}
+std::string ObjC::selectorText(uint32_t address) const {
+    // A selector is a plain C string in guest memory.
+    std::string name;
+    for (size_t n = 0; n < 256; n++) {
+        uint8_t byte = 0;
+        if (!memory.permits(address + uint32_t(n), 1, Read)) break;
+        memory.read(address + uint32_t(n), &byte, 1);
+        if (!byte) break;
+        name.push_back(char(byte));
+    }
+    return name;
 }
 std::string ObjC::readText(uint32_t address) const {
     std::string text;
@@ -592,6 +607,36 @@ bool ObjC::guestFoundation(uint32_t receiver, const std::string& className,
             r[0] = 0;
         return true;
     }
+    if (method == "performSelector:withObject:waitUntilDone:" ||
+        method == "performSelectorOnMainThread:withObject:waitUntilDone:") {
+        // Foundation's main-thread hop. The selector is queued for UIKit's run loop, and a
+        // caller that asked to wait stays blocked until the main thread has run it. The
+        // waitUntilDone: flag is the fifth argument, so it arrives on the stack, not in r4.
+        const std::string name = selectorText(r[2]);
+        if (name.empty()) throw Error("OBJC_SELECTOR", "performSelector with a null selector");
+        Arguments args(state, memory, 4);
+        const bool wait = args.word() != 0;
+        performOnMainThread(receiver, name, r[3], wait);
+        r[0] = receiver;
+        return true;
+    }
+    if (method == "performSelector:" || method == "performSelector:withObject:" ||
+        method == "performSelector:withObject:withObject:") {
+        // A direct perform is a synchronous call: there is no queue in between, so the
+        // selector is entered with the same self and the objects the caller passed.
+        const std::string name = selectorText(r[2]);
+        auto found = guestInstances.find(receiver);
+        if (found == guestInstances.end())
+            throw Error("OBJC_RECEIVER", "performSelector on an object the image did not allocate",
+                        receiver);
+        const uint32_t imp = guestMethod(found->second, false, name);
+        if (!imp)
+            throw Error("OBJC_UNIMPLEMENTED",
+                        "-" + className + " does not implement " + name + " for performSelector");
+        state.registers[2] = r[3];
+        state.registers[3] = r[4];
+        return enterGuest(imp, state, receiver, r[2]);
+    }
     if (method == "description") {
         r[0] = makeString("<" + className + ">");
         return true;
@@ -640,8 +685,10 @@ bool ObjC::guestMessage(uint32_t receiver, uint32_t selectorAddress, CpuState& s
     }
     const uint32_t target = instance ? guestInstances.at(receiver) : receiver;
     const std::string className = cls ? cls->name : guestClassName(target);
-    if (uint32_t imp = guestMethod(target, cls != nullptr, method))
+    if (uint32_t imp = guestMethod(target, cls != nullptr, method)) {
+        traceSend((cls ? "+" : "-") + className, method);
         return enterGuest(imp, state, receiver, selectorAddress);
+    }
     if (instance && guestFoundation(receiver, className, method, state)) return true;
     // The selector may be inherited from the framework class the image's class derives from
     // (UIView's -initWithFrame:, -setMultipleTouchEnabled:, -layer). Those are modelled on
@@ -669,6 +716,7 @@ bool ObjC::sendGuestMessage(uint32_t receiver, const std::string& selectorName, 
     if (!cls && !instance) return false;
     const uint32_t target = instance ? guestInstances.at(receiver) : receiver;
     const std::string className = cls ? cls->name : guestClassName(target);
+    traceSend("->" + className, selectorName);
     const uint32_t sel = selectorString(selectorName);
     const uint32_t imp = guestMethod(target, cls != nullptr, selectorName);
     if (!imp)
@@ -682,6 +730,44 @@ bool ObjC::sendGuestMessage(uint32_t receiver, const std::string& selectorName, 
     state.registers[15] = imp & ~1u;
     state.cpsr = (state.cpsr & ~0x20u) | (imp & 1u ? 0x20u : 0u);
     return true;
+}
+namespace {
+// A title that queues faster than the run loop drains would grow the queue without bound;
+// a run loop that stops draining is a bug worth naming, not a memory leak to absorb.
+constexpr size_t MainThreadQueueLimit = 8192;
+}  // namespace
+void ObjC::performOnMainThread(uint32_t target, const std::string& selector, uint32_t argument,
+                               bool wait) {
+    if (mainThreadTasks.size() >= MainThreadQueueLimit)
+        throw Error("OBJC_LIMIT",
+                    "the main-thread queue holds " + std::to_string(mainThreadTasks.size()) +
+                        " pending selectors; the run loop is not draining it",
+                    target);
+    MainThreadTask task;
+    task.target = target;
+    task.selector = selector;
+    task.argument = argument;
+    task.eventId = nextEventId++;
+    // Queue first and wake the run loop before blocking: a waitUntilDone:YES caller must never
+    // block the only thread that could run its own selector.
+    mainThreadTasks.push_back(task);
+    if (logSink) {
+        char line[128];
+        std::snprintf(line, sizeof(line), "run loop: queued %s on 0x%08x (wait %s)",
+                      selector.c_str(), target, wait ? "yes" : "no");
+        logSink(line);
+    }
+    if (signalRunLoop) signalRunLoop();
+    if (wait && blockOnEvent) blockOnEvent(task.eventId);
+}
+bool ObjC::nextMainThreadTask(MainThreadTask& task) {
+    if (mainThreadTasks.empty()) return false;
+    task = mainThreadTasks.front();
+    mainThreadTasks.pop_front();
+    return true;
+}
+void ObjC::finishMainThreadTask(uint32_t eventId) {
+    if (wakeEvent) wakeEvent(eventId);
 }
 void ObjC::setGuestPaths(std::string bundle, std::string documents) {
     bundlePath = std::move(bundle);
@@ -753,6 +839,57 @@ bool ObjC::uiKitMessage(const std::string& className, uint32_t object, const std
         return false;
     }
     Object& value = *foundValue;
+    // NSThread's instance API. -start is where a title's own game loop begins: it must create
+    // a real guest thread, not return success for a thread that never runs.
+    if (className == "NSThread") {
+        if (method == "initWithTarget:selector:object:") {
+            Arguments args(state, memory, 4);
+            value.threadTarget = r[2];
+            value.threadArgument = args.word();
+            const uint32_t selector = r[3];
+            if (!selector || !memory.permits(selector, 1, Read))
+                throw Error("OBJC_SELECTOR", "NSThread needs a readable selector", selector);
+            value.threadSelector = selectorText(selector);
+            value.threadStarted = false;
+            r[0] = object;
+            return true;
+        }
+        if (method == "start" || method == "main") {
+            if (!value.threadTarget || value.threadSelector.empty())
+                throw Error("OBJC_THREAD",
+                            "NSThread -start without a target and selector; nothing to run");
+            if (!spawnThread)
+                throw Error("OBJC_THREAD", "no guest scheduler is wired for NSThread -start");
+            if (value.threadStarted) {
+                r[0] = 0;  // Darwin also refuses to start the same thread twice
+                return true;
+            }
+            if (!spawnThread(value.threadTarget, value.threadSelector, value.threadArgument))
+                throw Error("OBJC_THREAD", "the guest thread could not be created");
+            value.threadStarted = true;
+            r[0] = 0;
+            return true;
+        }
+        if (method == "isExecuting") {
+            r[0] = value.threadStarted && !value.threadFinished ? 1 : 0;
+            return true;
+        }
+        if (method == "isFinished") {
+            r[0] = value.threadFinished ? 1 : 0;
+            return true;
+        }
+        if (method == "cancel") {
+            // Cooperative cancellation, exactly like Foundation: the flag is set and a loop
+            // that polls -isCancelled stops on its next pass.
+            value.threadCancelled = true;
+            r[0] = 0;
+            return true;
+        }
+        if (method == "isCancelled") {
+            r[0] = value.threadCancelled ? 1 : 0;
+            return true;
+        }
+    }
     // CGRect and CGPoint results travel in r0-r3 (base AAPCS: no VFP argument registers).
     auto rect = [&](const float* values) {
         for (size_t n = 0; n < 4; n++) r[n] = floatBits(values[n]);
@@ -1397,6 +1534,13 @@ bool ObjC::collection(const std::string& className, const std::string& method, O
     }
     return false;
 }
+void ObjC::traceSend(const std::string& receiver, const std::string& method) {
+    if (!logSink) return;
+    // Once per receiver/selector pair: a repeated send adds nothing a reader of the trace
+    // needs, and a per-call line would bury the call graph under the audio thread.
+    if (!tracedSends.insert(receiver + " " + method).second) return;
+    logSink("msg " + receiver + " " + method);
+}
 void ObjC::message(CpuState& state) {
     const uint32_t self = state.registers[0], name = state.registers[1];
     // Messaging nil is well defined in Objective-C and returns zero — that is not an
@@ -1446,6 +1590,7 @@ void ObjC::message(CpuState& state) {
         }
         className = object->second.className;
     }
+    traceSend((classMethod ? "+" : "-") + className, method);
     auto unsupported = [&] {
         throw Error("OBJC_UNIMPLEMENTED",
                     std::string(classMethod ? "+[" : "-[") + className + " " + method + "]");
@@ -1595,6 +1740,49 @@ void ObjC::message(CpuState& state) {
             objects[object].integer = state.registers[2] ? 1 : 0;
             objects[object].real = objects[object].integer;
             state.registers[0] = object;
+            return;
+        }
+        if (className == "NSThread" && method == "isMultiThreaded") {
+            state.registers[0] = liveThreads && liveThreads() > 1 ? 1 : 0;
+            return;
+        }
+        if (className == "NSThread" && (method == "currentThread" || method == "mainThread")) {
+            if (!currentThreadObject) currentThreadObject = makeObject("NSThread");
+            state.registers[0] = currentThreadObject;
+            return;
+        }
+        if (className == "NSThread" && method == "sleepForTimeInterval:") {
+            // A real sleep, in short slices so the run's own wall-clock accounting still sees
+            // progress. Long sleeps are capped and reported rather than silently shortened.
+            Arguments args(state, memory, 2);
+            double seconds = args.f64();
+            if (!(seconds > 0)) seconds = 0;
+            constexpr double Cap = 5.0;
+            if (seconds > Cap) {
+                emitLog("NSThread: -sleepForTimeInterval: asked for " + std::to_string(seconds) +
+                        " s; waiting the " + std::to_string(Cap) + " s cap");
+                seconds = Cap;
+            }
+            const auto deadline = std::chrono::steady_clock::now() +
+                                  std::chrono::milliseconds(int64_t(seconds * 1000));
+            while (std::chrono::steady_clock::now() < deadline)
+                std::this_thread::sleep_for(std::chrono::milliseconds(5));
+            state.registers[0] = 0;
+            return;
+        }
+        if (className == "NSThread" &&
+            (method == "detachNewThreadSelector:toTarget:withObject:" ||
+             method == "detachNewThreadSelector:toTarget:withObject:pool:")) {
+            // +detachNewThreadSelector: is -initWithTarget:selector:object: followed by -start,
+            // so it creates the same real guest thread through the same scheduler hook.
+            if (!spawnThread)
+                throw Error("OBJC_THREAD", "no guest scheduler is wired for NSThread detach");
+            const uint32_t target = state.registers[2];
+            const std::string selector = selectorText(state.registers[3]);
+            Arguments args(state, memory, 4);
+            const uint32_t argument = args.word();
+            if (target && !selector.empty()) spawnThread(target, selector, argument);
+            state.registers[0] = 0;
             return;
         }
         if (className == "UIApplication" && (method == "sharedApplication" || method == "app")) {

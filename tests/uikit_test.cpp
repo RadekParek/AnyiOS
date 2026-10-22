@@ -64,6 +64,12 @@ int main() {
     uikit.installGates();
     std::vector<std::string> log;
     uikit.setLogSink([&](const std::string& line) { log.push_back(line); });
+    // The lifecycle gate is a labelled address inside its page, not the page base. A trap
+    // written at offset zero of the page is invisible to a guest that returns to
+    // LifecycleGate: it lands on the zero fill, runs off the end of the mapping and faults.
+    assert(memory.fetch32(UIKit::LifecycleGate) == 0xef0000ffu);
+    assert(memory.fetch32(UIKit::LifecycleGate + 4) == 0xe12fff1eu);
+    assert(memory.fetch32(UIKit::LifecycleGate & ~0xfffu) == 0);
     objc.setLogSink([&](const std::string&) {});
     // Guest image: one page of class metadata, one page of executable guest code, and the
     // literal string the game passes as the delegate class name.
@@ -116,6 +122,48 @@ int main() {
     assert(report.find("GameAppDelegate") != std::string::npos);
     assert(report.find("no implemented sources") != std::string::npos);
     assert(!log.empty());
+    // A title that runs its game loop on its own thread keeps running: the main thread parks
+    // in the run loop instead of returning out of UIApplicationMain (which would make the
+    // title exit immediately after its launch callback).
+    {
+        Memory loop;
+        ObjC threaded(loop);
+        threaded.installGates();
+        UIKit bootstrap(loop);
+        bootstrap.installGates();
+        std::vector<std::string> parked;
+        size_t runnable = 2;
+        bootstrap.setThreadHooks([&] { return runnable; }, [&] { parked.push_back("park"); });
+        threaded.setLogSink([](const std::string&) {});
+        std::vector<uint8_t> metas(4096, 0), text(4096, 0), lits(4096, 0);
+        loop.map({0x300000, 4096, uint8_t(Read | Write), "classes"}, metas.data(), metas.size());
+        loop.map({0x301000, 4096, uint8_t(Read | Execute), "code"}, text.data(), text.size());
+        loop.map({0x302000, 4096, uint8_t(Read | Write), "literals"}, lits.data(), lits.size());
+        buildClass(loop, 0x300000, "ThreadedDelegate", "applicationDidFinishLaunching:", 0x301001);
+        threaded.registerGuestClasses({0x300000});
+        loop.write(0x302100, "ThreadedDelegate", 16);
+        loop.write32(0x302080, 0);
+        loop.write32(0x302084, 0x7c8);
+        loop.write32(0x302088, 0x302100);
+        loop.write32(0x30208c, 16);
+        CpuState state;
+        state.registers[3] = 0x302080;
+        state.registers[14] = 0x300fff;
+        assert(bootstrap.invoke("_UIApplicationMain", state, threaded));
+        state.registers[0] = 1;
+        state.registers[15] = UIKit::LifecycleGate;
+        bootstrap.resume(state, threaded);
+        assert(parked.size() == 1);
+        // Still inside the gate: the main thread re-enters it once it is woken again, so the
+        // bootstrap never claims that UIApplicationMain returned while the app runs.
+        assert(state.registers[15] == UIKit::LifecycleGate);
+        assert(bootstrap.describe().find("keeps running") != std::string::npos);
+        // With no other runnable thread the old contract holds: the bootstrap returns.
+        runnable = 1;
+        state.registers[15] = UIKit::LifecycleGate;
+        bootstrap.resume(state, threaded);
+        assert(state.registers[15] == 0x300ffe);
+    }
     // A delegate that implements neither launch selector is a named failure, not a silent
     // "started".
     {

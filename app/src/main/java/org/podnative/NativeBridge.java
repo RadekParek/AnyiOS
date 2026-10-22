@@ -14,5 +14,8 @@ final class NativeBridge {
     static native String inspect(byte[] bytes);
     static native String cpuProbe();
     static native String attemptLaunch(byte[] bytes, String bundlePath, String containerPath);
+    // Settings ▸ "Verbose logging": names every service the guest calls, every unwind
+    // decision and every GL error in the launch report. Off by default.
+    static native void setVerbose(boolean on);
     static native long[] arm32Slice(byte[] header, long fileLength);
 }

@@ -310,6 +310,9 @@ int main() {
         state.registers[2] = 3;
         assert(harness.objc.dispatch(harness.objc.gateAddress("_NSLog"), state));
         assert(logged.size() == 1 && logged[0] == "loaded AnyiOS (3)");
+        // The sink captures `logged`, so it must not outlive this scope: the runtime would
+        // keep calling it for later sends.
+        harness.objc.setLogSink({});
     }
 
     // NSClassFromString resolves known classes and returns nil for unknown ones.

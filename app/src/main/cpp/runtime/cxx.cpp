@@ -51,6 +51,8 @@ const char* const CompilerSymbols[] = {
     "___umoddi3",
     "___floatundidf",
     "___floatdidf",
+    "___floatdisf",
+    "___floatundisf",
     "___fixdfdi",
     "___fixunsdfdi",
     "___gxx_personality_sj0",
@@ -105,7 +107,12 @@ void CxxRuntime::zero(uint32_t address, size_t bytes) {
 uint32_t CxxRuntime::allocate(uint32_t bytes, const char* what) {
     if (!bytes) bytes = 1;
     const uint32_t pointer = heap.allocate(bytes, 8);
-    if (!pointer) throw Error("CXX_ALLOC", std::string(what) + " could not be satisfied");
+    if (!pointer)
+        throw Error("CXX_ALLOC",
+                    std::string(what) + " could not be satisfied: the guest heap " + "holds " +
+                        std::to_string(heap.used()) + " of " + std::to_string(heap.capacity()) +
+                        " bytes and the request " + "was " + std::to_string(bytes) + " bytes",
+                    bytes);
     return pointer;
 }
 uint32_t CxxRuntime::errnoAddress() {
@@ -171,6 +178,15 @@ bool CxxRuntime::compilerHelper(const std::string& name, CpuState& cpu) {
         split(doubleBits(value), cpu);
         return true;
     }
+    // The ARM backend calls these for an int64-to-float conversion; the result comes back
+    // as single-precision bits in r0, while a double result uses r0/r1.
+    if (name == "___floatdisf" || name == "___floatundisf") {
+        const uint64_t bits = combine(r[0], r[1]);
+        const bool unsignedSource = name == "___floatundisf";
+        resultF32(cpu, unsignedSource ? static_cast<float>(bits)
+                                      : static_cast<float>(static_cast<int64_t>(bits)));
+        return true;
+    }
     if (name == "___fixdfdi" || name == "___fixunsdfdi") {
         const double value = bitsDouble(combine(r[0], r[1]));
         const bool unsignedResult = name == "___fixunsdfdi";
@@ -225,14 +241,262 @@ bool CxxRuntime::compilerHelper(const std::string& name, CpuState& cpu) {
         r[0] = 0;
         return true;
     }
-    if (name == "__Unwind_SjLj_Resume" || name == "___gxx_personality_sj0" ||
-        name == "___objc_personality_v0") {
-        throw Error("CXX_UNWIND", "guest threw a C++ exception: " + name +
-                                      " requires SjLj resumption, which is not emulated yet "
-                                      "(frames registered: " +
-                                      std::to_string(sjljFrames.size()) + ")");
+    if (name == "__Unwind_SjLj_Resume") {
+        // A cleanup landing pad (or __cxa_rethrow) calls this to keep unwinding. The frame
+        // that is running has already stored -1 in its call site, so it reports "no action"
+        // and the walk naturally continues outwards, exactly as libgcc relies on.
+        if (!thrown.active) throw Error("CXX_UNWIND", "SjLj resume with no exception in flight");
+        return unwindPhase2(cpu);
+    }
+    if (name == "___gxx_personality_sj0") {
+        // The unwinder that invokes personalities is this runtime; a guest call means the
+        // image expects a different unwinder contract.
+        throw Error("CXX_UNWIND", "the guest called the SjLj personality routine directly");
+    }
+    if (name == "___objc_personality_v0") {
+        throw Error("CXX_OBJC_UNWIND",
+                    "the guest threw or resumed an Objective-C exception, which this runtime "
+                    "does not unwind yet");
     }
     return false;
+}
+namespace {
+// Personality return codes, as libgcc defines them.
+constexpr int UnwindContinue = 0;
+}  // namespace
+std::string CxxRuntime::hex(uint32_t value) const {
+    char text[16];
+    std::snprintf(text, sizeof(text), "%08x", value);
+    return text;
+}
+std::string CxxRuntime::thrownTypeName() const {
+    // The Itanium ABI puts the mangled name at type_info+4 (the vtable pointer is at +0).
+    if (thrown.typeInfo && memory.permits(thrown.typeInfo + 4, 4, Read)) {
+        const uint32_t nameAt = memory.read32(thrown.typeInfo + 4);
+        if (nameAt && memory.permits(nameAt, 1, Read)) {
+            const std::string mangled = readString(nameAt);
+            if (!mangled.empty()) return "'" + mangled + "'";
+        }
+    }
+    return "a C++ exception of unknown type";
+}
+std::string CxxRuntime::frameDescription(uint32_t frame) const {
+    if (!memory.permits(frame, FrameLayout::size, Read)) return "0x" + hex(frame) + " (unreadable)";
+    return "0x" + hex(frame) +
+           " call_site=" + std::to_string(int32_t(memory.read32(frame + FrameLayout::callSite))) +
+           " lsda=0x" + hex(memory.read32(frame + FrameLayout::lsda));
+}
+bool CxxRuntime::readUleb(uint32_t& cursor, uint32_t& value) const {
+    value = 0;
+    for (uint32_t shift = 0; shift < 35; shift += 7) {
+        if (!memory.permits(cursor, 1, Read)) return false;
+        uint8_t byte = 0;
+        memory.read(cursor, &byte, 1);
+        cursor++;
+        value |= uint32_t(byte & 0x7f) << shift;
+        if (!(byte & 0x80)) return true;
+    }
+    return false;
+}
+bool CxxRuntime::readSleb(uint32_t& cursor, int32_t& value) const {
+    int64_t result = 0;
+    uint32_t shift = 0;
+    uint8_t byte = 0;
+    do {
+        if (!memory.permits(cursor, 1, Read) || shift >= 35) return false;
+        memory.read(cursor, &byte, 1);
+        cursor++;
+        result |= int64_t(byte & 0x7f) << shift;
+        shift += 7;
+    } while (byte & 0x80);
+    if ((byte & 0x40) && shift < 64) result |= -(int64_t(1) << shift);
+    value = int32_t(result);
+    return true;
+}
+bool CxxRuntime::parseLsda(uint32_t address, LsdaHeader& header) const {
+    uint32_t cursor = address;
+    uint8_t byte = 0;
+    if (!memory.permits(cursor, 4, Read)) return false;
+    memory.read(cursor, &byte, 1);
+    cursor++;
+    if (byte != 0xff)
+        throw Error("CXX_LSDA",
+                    "landing-pad start encoding is not implemented (0x" + hex(byte) + ")", address);
+    memory.read(cursor, &byte, 1);
+    cursor++;
+    header.typeEncoding = byte;
+    if (byte != 0xff) {
+        uint32_t offset = 0;
+        if (!readUleb(cursor, offset))
+            throw Error("CXX_LSDA", "type table offset is not readable", address);
+        header.typeTable = cursor + offset;
+    } else {
+        header.typeTable = 0;
+    }
+    // The call-site encoding byte is present but unused: a SjLj table is indexed by the
+    // frame's call-site number, not by an instruction address.
+    cursor++;
+    uint32_t length = 0;
+    if (!readUleb(cursor, length))
+        throw Error("CXX_LSDA", "call-site table is not readable", address);
+    header.callSiteTable = cursor;
+    header.actionTable = cursor + length;
+    return true;
+}
+uint32_t CxxRuntime::typeEntry(const LsdaHeader& header, int32_t filter) const {
+    if (!header.typeTable || filter <= 0) return 0;
+    // GCC stores the type table backwards from @TType: entry i lives at TType - i * size.
+    if (header.typeEncoding != 0x00 && header.typeEncoding != 0x03)
+        throw Error("CXX_LSDA",
+                    "type table encoding 0x" + hex(header.typeEncoding) + " is not implemented",
+                    header.typeTable);
+    const uint32_t at = header.typeTable - uint32_t(filter) * 4;
+    if (!memory.permits(at, 4, Read))
+        throw Error("CXX_LSDA", "type table entry is outside guest memory", at);
+    return memory.read32(at);
+}
+bool CxxRuntime::typeMatches(uint32_t catchType, uint32_t thrownType) const {
+    if (!catchType) return true;  // a null type_info is `catch (...)`
+    if (!thrownType) return false;
+    if (catchType == thrownType) return true;
+    // Duplicate type_info objects for one type are common when a title links several copies
+    // of a library, so the mangled name is compared as well.
+    if (!memory.permits(catchType + 4, 4, Read) || !memory.permits(thrownType + 4, 4, Read))
+        return false;
+    const uint32_t catchName = memory.read32(catchType + 4);
+    const uint32_t thrownName = memory.read32(thrownType + 4);
+    if (!catchName || !thrownName || !memory.permits(catchName, 1, Read) ||
+        !memory.permits(thrownName, 1, Read))
+        return false;
+    return readString(catchName) == readString(thrownName);
+}
+CxxRuntime::Personality CxxRuntime::personalityFor(uint32_t frame, bool search, bool handlerFrame) {
+    if (!memory.permits(frame, FrameLayout::size, Read))
+        throw Error("CXX_UNWIND", "SjLj frame context is outside guest memory", frame);
+    // Phase 2 shortcut from libstdc++: the frame that will handle keeps the decision phase 1
+    // cached, so its `call_site` (which the landing pad itself rewrote) is never re-read.
+    if (!search && handlerFrame) {
+        pendingLandingPad = thrown.landingPad;
+        pendingFilter = thrown.filter;
+        return thrown.landingPad ? Personality::Install : Personality::Terminate;
+    }
+    const uint32_t lsda = memory.read32(frame + FrameLayout::lsda);
+    if (!lsda) return Personality::Continue;
+    LsdaHeader header;
+    if (!parseLsda(lsda, header)) throw Error("CXX_LSDA", "LSDA is not readable", lsda);
+    const int32_t callSite = int32_t(memory.read32(frame + FrameLayout::callSite));
+    if (callSite < 0) return Personality::Continue;    // this call is outside every region
+    if (callSite == 0) return Personality::Terminate;  // a must-not-throw region
+    uint32_t cursor = header.callSiteTable, landingIndex = 0, action = 0;
+    for (int32_t index = 0; index < callSite; index++) {
+        if (!readUleb(cursor, landingIndex) || !readUleb(cursor, action))
+            throw Error("CXX_LSDA",
+                        "call-site table has no entry " + std::to_string(callSite) + " (LSDA 0x" +
+                            hex(lsda) + ")",
+                        lsda);
+    }
+    // A SjLj landing pad value is an index into the function's own dispatch switch; the
+    // personality stores it minus one because zero means "terminate".
+    const uint32_t landingPad = landingIndex + 1;
+    bool sawCleanup = false, sawHandler = false;
+    int32_t filter = 0;
+    if (!action) {
+        sawCleanup = true;
+    } else {
+        uint32_t record = header.actionTable + action - 1;
+        for (int guard = 0; guard < 64; guard++) {
+            int32_t recordFilter = 0, displacement = 0;
+            if (!readSleb(record, recordFilter)) break;
+            if (!readSleb(record, displacement)) break;
+            if (recordFilter == 0) {
+                sawCleanup = true;
+            } else if (recordFilter > 0) {
+                if (typeMatches(typeEntry(header, recordFilter), thrown.typeInfo)) {
+                    sawHandler = true;
+                    filter = recordFilter;
+                    break;
+                }
+            } else if (verbose) {
+                // A negative filter is an exception specification, not a handler: it limits
+                // what may leave the function. Nothing here claims it caught anything.
+                emit("cxx: frame " + frameDescription(frame) +
+                     " has an exception specification (filter " + std::to_string(recordFilter) +
+                     ") that is not evaluated");
+            }
+            if (!displacement) break;
+            record = record + uint32_t(displacement);
+        }
+    }
+    if (search) {
+        if (!sawHandler) return Personality::Continue;
+        thrown.landingPad = landingPad;
+        thrown.filter = filter;
+        return Personality::HandlerFound;
+    }
+    if (!sawHandler && !sawCleanup) return Personality::Continue;
+    pendingLandingPad = landingPad;
+    pendingFilter = sawHandler ? filter : 0;
+    return Personality::Install;
+}
+void CxxRuntime::rewindChainTo(uint32_t frame) {
+    sjljHead = frame;
+    std::vector<uint32_t> chain;
+    for (uint32_t at = frame, guard = 0; at && guard < 4096; guard++) {
+        chain.push_back(at);
+        at = memory.permits(at, 4, Read) ? memory.read32(at) : 0;
+    }
+    // The chain runs from the innermost frame outwards; the bookkeeping list is ordered the
+    // other way, innermost last, so a later unregister pops what it pushed.
+    sjljFrames.assign(chain.rbegin(), chain.rend());
+}
+bool CxxRuntime::installFrame(uint32_t frame, CpuState& cpu) {
+    if (!memory.permits(frame, FrameLayout::size, Read))
+        throw Error("CXX_UNWIND", "SjLj frame context is outside guest memory", frame);
+    const uint32_t savedFrame = memory.read32(frame + FrameLayout::jumpBuffer);
+    const uint32_t resume = memory.read32(frame + FrameLayout::jumpBuffer + 4);
+    const uint32_t savedStack = memory.read32(frame + FrameLayout::jumpBuffer + 8);
+    if (!resume || !savedStack)
+        throw Error("CXX_UNWIND", "frame has no saved resume context", frame);
+    // What libgcc's `_Unwind_SetGR`/`_Unwind_SetIP` do before the longjmp: the landing pad
+    // reads the exception from data[0], the filter value from data[1] and the dispatch index
+    // from call_site.
+    memory.write32(frame + FrameLayout::callSite, pendingLandingPad - 1);
+    memory.write32(frame + FrameLayout::data, thrown.object);
+    memory.write32(frame + FrameLayout::data + 4, uint32_t(pendingFilter));
+    rewindChainTo(frame);
+    // __builtin_longjmp restores the frame pointer from buffer[0], the stack from buffer[2]
+    // and jumps to buffer[1]; nothing else in the register file survives an unwind.
+    // This toolchain is Apple's ARM gcc, whose hard frame pointer is r7 (the guest's own
+    // prologues use `add r7, sp, #12` and its epilogues `sub sp, r7, #n`), so the frame
+    // pointer word restored by __builtin_longjmp belongs in r7. The guest's landing pads
+    // depend on it: their epilogues address the stack through it.
+    cpu.registers[7] = savedFrame;
+    cpu.registers[13] = savedStack;
+    cpu.registers[15] = resume & ~1u;
+    if (resume & 1)
+        cpu.cpsr |= 0x20;
+    else
+        cpu.cpsr &= ~0x20u;
+    if (verbose)
+        emit("cxx: resumed frame " + frameDescription(frame) + " at 0x" + hex(resume & ~1u) +
+             " sp=0x" + hex(savedStack) + " landing pad " + std::to_string(pendingLandingPad) +
+             " filter " + std::to_string(pendingFilter));
+    return true;
+}
+bool CxxRuntime::unwindPhase2(CpuState& cpu) {
+    uint32_t frame = sjljHead;
+    for (size_t depth = 0; frame && depth < 4096; depth++) {
+        const bool handlerFrame = frame == thrown.handlerFrame;
+        const Personality result = personalityFor(frame, false, handlerFrame);
+        if (result == Personality::Install) return installFrame(frame, cpu);
+        if (result == Personality::Terminate)
+            throw Error("CXX_TERMINATE",
+                        "the exception reached a frame whose call site must not throw: " +
+                            frameDescription(frame),
+                        frame);
+        frame = memory.permits(frame, 4, Read) ? memory.read32(frame) : 0;
+    }
+    throw Error("CXX_UNWIND_END", "the unwinder ran out of SjLj frames without a landing pad");
 }
 bool CxxRuntime::fortified(const std::string& name, CpuState& cpu) {
     auto& r = cpu.registers;
@@ -332,32 +596,79 @@ bool CxxRuntime::abi(const std::string& name, CpuState& cpu) {
         return true;
     }
     if (name == "___cxa_throw") {
-        // __cxa_throw(object, type_info, destructor). The type name lives at type_info+4 in
-        // the Itanium ABI, so the report can say *what* was thrown instead of only that
-        // something was.
-        std::string what = "an unnamed C++ type";
-        if (r[1] && memory.permits(r[1] + 4, 4, Read)) {
-            const uint32_t nameAt = memory.read32(r[1] + 4);
-            if (nameAt && memory.permits(nameAt, 1, Read)) {
-                const std::string mangled = readGuestString(memory, nameAt, 512);
-                if (!mangled.empty()) what = "'" + mangled + "'";
+        // __cxa_throw(object, type_info, destructor): raise, exactly as libstdc++ does, with
+        // this runtime playing the part of libgcc's SjLj unwinder. Phase 1 searches the
+        // guest's own frame chain for a landing pad that catches, phase 2 walks it again
+        // running cleanups, and the frame that catches is installed by rewinding the guest.
+        thrown = ThrowRecord{};
+        thrown.active = true;
+        thrown.object = r[0];
+        thrown.typeInfo = r[1];
+        thrown.destructor = r[2];
+        if (verbose)
+            emit("cxx: throw " + thrownTypeName() + " object=0x" + hex(r[0]) + " over " +
+                 std::to_string(sjljFrames.size()) + " frame(s)");
+        uint32_t frame = sjljHead;
+        bool handlerFound = false;
+        for (size_t depth = 0; frame && depth < 4096; depth++) {
+            if (personalityFor(frame, true, false) == Personality::HandlerFound) {
+                handlerFound = true;
+                thrown.handlerFrame = frame;
+                break;
             }
+            frame = memory.permits(frame, 4, Read) ? memory.read32(frame) : 0;
         }
-        // The frames are the guest's own SjLj chain; reporting its depth and the innermost
-        // LSDA says exactly how far the unwinder would have had to walk, which is what the
-        // next piece of work needs. Nothing is presented as caught.
-        const size_t depth = sjljFrames.size();
-        throw Error("CXX_UNCAUGHT", "the guest threw a C++ exception of type " + what + " with " +
-                                        std::to_string(depth) +
-                                        " SjLj frame(s) registered; C++ unwinding is not "
-                                        "implemented, so the guest's handler cannot run");
+        if (!handlerFound) {
+            const std::string type = thrownTypeName();
+            thrown = ThrowRecord{};
+            throw Error("CXX_UNCAUGHT",
+                        "the guest threw " + type + " and no landing pad in " +
+                            std::to_string(sjljFrames.size()) +
+                            " SjLj frame(s) catches it, so std::terminate would run");
+        }
+        if (verbose)
+            emit("cxx: handler in frame 0x" + hex(thrown.handlerFrame) + " landing pad " +
+                 std::to_string(thrown.landingPad) + " filter " + std::to_string(thrown.filter));
+        return unwindPhase2(cpu);
     }
-    if (name == "___cxa_begin_catch" || name == "___cxa_end_catch" || name == "___cxa_rethrow" ||
-        name == "___cxa_call_unexpected" || name == "___cxa_pure_virtual" ||
+    if (name == "___cxa_begin_catch") {
+        if (!thrown.active)
+            throw Error("CXX_CATCH", "the guest began a catch with no exception in flight");
+        // The landing pad passes the word the unwinder placed in frame->data[0], which is the
+        // thrown object itself; the catch block binds that pointer.
+        if (r[0] != thrown.object)
+            emit("cxx: __cxa_begin_catch was handed 0x" + hex(r[0]) +
+                 " but the exception object is 0x" + hex(thrown.object));
+        thrown.caught = true;
+        r[0] = thrown.object;
+        return true;
+    }
+    if (name == "___cxa_end_catch") {
+        if (thrown.active && thrown.caught) {
+            // libstdc++ would call the exception's destructor here. That destructor is guest
+            // code and this runtime has no way to call into the guest from inside a service
+            // yet, so the object is released without it and the omission is stated instead of
+            // being hidden behind a success.
+            if (thrown.destructor && verbose)
+                emit("cxx: exception destructor 0x" + hex(thrown.destructor) +
+                     " is not called (guest callbacks from a service are not implemented)");
+            if (thrown.object && heap.owns(thrown.object)) heap.release(thrown.object);
+            thrown = ThrowRecord{};
+        }
+        r[0] = 0;
+        return true;
+    }
+    if (name == "___cxa_rethrow") {
+        if (!thrown.active)
+            throw Error("CXX_CATCH", "the guest rethrew with no exception in flight");
+        // A rethrow continues from the frame that is handling, so that frame is skipped.
+        if (sjljHead && memory.permits(sjljHead, 4, Read)) sjljHead = memory.read32(sjljHead);
+        rewindChainTo(sjljHead);
+        return unwindPhase2(cpu);
+    }
+    if (name == "___cxa_call_unexpected" || name == "___cxa_pure_virtual" ||
         name == "___cxa_bad_typeid") {
-        throw Error("CXX_UNWIND",
-                    "the guest entered " + name +
-                        ", which requires C++ exception handling that is not implemented");
+        throw Error("CXX_ABI", "the guest called " + name + ", which ends the process");
     }
     if (name == "___cxa_atexit" || name == "_atexit") {
         if (atExit.size() >= 4096) throw Error("CXX_LIMIT", "too many exit handlers");

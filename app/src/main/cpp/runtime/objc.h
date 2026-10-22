@@ -1,9 +1,12 @@
 #pragma once
 #include <cstdint>
+#include <deque>
 #include <functional>
 #include <map>
 #include <optional>
+#include <set>
 #include <string>
+#include <thread>
 #include <vector>
 
 #include "cpu.h"
@@ -40,6 +43,32 @@ class ObjC final {
     // Names the unimplemented import a call-gate/trap address stands for, so a message sent
     // to a trap says which API is missing instead of "not an object".
     void setTrapName(std::function<std::string(uint32_t)> lookup) { trapName = std::move(lookup); }
+    // How many guest threads are alive, for NSThread's own class methods: -isMultiThreaded
+    // answers with the scheduler's real state instead of a constant.
+    void setLiveThreads(std::function<size_t()> count) { liveThreads = std::move(count); }
+    // Starting an NSThread is a real guest thread: the scheduler creates it and this runtime
+    // enters the target's selector on it. The hook returns false when no scheduler is wired.
+    // A call another guest thread asked the main thread to run. The run loop drains the
+    // queue; a waiting caller stays blocked until the main thread has run its entry.
+    struct MainThreadTask {
+        uint32_t target = 0;
+        uint32_t argument = 0;
+        uint32_t eventId = 0;
+        std::string selector;
+    };
+    void performOnMainThread(uint32_t target, const std::string& selector, uint32_t argument,
+                             bool wait);
+    bool nextMainThreadTask(MainThreadTask& task);
+    void finishMainThreadTask(uint32_t eventId);
+    void setMainThreadHooks(std::function<void(uint32_t)> block, std::function<void(uint32_t)> wake,
+                            std::function<void()> signal) {
+        blockOnEvent = std::move(block);
+        wakeEvent = std::move(wake);
+        signalRunLoop = std::move(signal);
+    }
+    void setThreadSpawn(std::function<bool(uint32_t, const std::string&, uint32_t)> spawn) {
+        spawnThread = std::move(spawn);
+    }
     // The GL bridge backing EAGL. EAGLContext drawable/present calls run real EGL/GLES;
     // without a driver they fail by name instead of pretending a frame exists.
     void setGraphics(GLES* graphics) { gles = graphics; }
@@ -112,6 +141,11 @@ class ObjC final {
         // (CAEAGLLayer for an OpenGL ES view), so the drawable properties reach the layer
         // kind the title asked for.
         uint32_t layer = 0;
+        // NSThread payload: what -initWithTarget:selector:object: was given and whether
+        // -start has already created the guest thread for it.
+        uint32_t threadTarget = 0, threadArgument = 0;
+        std::string threadSelector;
+        bool threadStarted = false, threadCancelled = false, threadFinished = false;
     };
     Memory& memory;
     std::vector<std::string> entries;
@@ -148,6 +182,7 @@ class ObjC final {
     // image is first registered (dyld has not run yet). Read it from guest memory on use so
     // a class defined by the image inherits from UIView once fixups are applied.
     uint32_t superclassOf(const GuestClass& info) const;
+    void traceSend(const std::string& receiver, const std::string& method);
     // Name of the nearest runtime-modelled class in an image-defined class's superclass
     // chain, or an empty string when the chain has none. Inherited methods such as
     // -[UIView setMultipleTouchEnabled:] live there, not in the guest's own method lists.
@@ -183,8 +218,19 @@ class ObjC final {
     std::string bundlePath = "/var/mobile", documentsPath = "/var/mobile/Documents";
     std::function<bool(const std::string&)> fileExists;
     std::function<std::string(uint32_t)> trapName;
+    std::function<size_t()> liveThreads;
+    std::function<bool(uint32_t, const std::string&, uint32_t)> spawnThread;
+    uint32_t currentThreadObject = 0;
     GLES* gles = nullptr;
     std::function<void(const std::string&)> logSink;
+    // Unique receiver/selector pairs already logged: the trace then reads as the call graph
+    // the guest built, without pushing the interesting lines out of the log ring.
+    std::set<std::string> tracedSends;
+    std::deque<MainThreadTask> mainThreadTasks;
+    uint32_t nextEventId = 1;
+    std::function<void(uint32_t)> blockOnEvent;
+    std::function<void(uint32_t)> wakeEvent;
+    std::function<void()> signalRunLoop;
     uint32_t makeString(const std::string& text);
     uint32_t makeArray(const std::vector<uint32_t>& elements);
     void emitLog(const std::string& text) const;
@@ -199,6 +245,8 @@ class ObjC final {
     std::string classNameOf(uint32_t object) const;
     std::string describe(uint32_t object) const;
     std::string readText(uint32_t address) const;
+    // Selector bytes as a guest string; shared by the NSThread entry points.
+    std::string selectorText(uint32_t address) const;
     std::string selector(uint32_t address) const;
     uint32_t classObject(const std::string& name);
     void invoke(const std::string& entry, CpuState& state);

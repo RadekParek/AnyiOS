@@ -3,6 +3,8 @@
 #include <dlfcn.h>
 
 #include <algorithm>
+#include <array>
+#include <cstdio>
 #include <cstring>
 #include <sstream>
 
@@ -269,8 +271,9 @@ void GLES::setError(const std::string& text) { lastError = text; }
 bool GLES::bindClientArrays(size_t count, std::vector<std::vector<uint8_t>>& storage) {
     auto upload = [&](ClientArray& array, const char* entry, bool hasSize) -> bool {
         if (!array.enabled) return true;
-        const bool buffered = array.buffered;
-        if (buffered) return true;  // the driver already holds this array in a buffer object
+        // Whether the pointer is an offset or a guest address follows the binding *now*, not
+        // the binding at pointer-set time: a title may set arrays and then bind or unbind.
+        if (arrayBufferBound) return true;  // the driver holds this array in a buffer object
         const size_t element = typeSize(array.type);
         if (!element || count == 0) return false;
         const size_t components = hasSize ? size_t(array.size) : 3;
@@ -305,6 +308,51 @@ bool GLES::bindClientArrays(size_t count, std::vector<std::vector<uint8_t>>& sto
 bool GLES::invoke(const std::string& symbol, CpuState& state) {
     if (symbol.rfind("_gl", 0) != 0) return false;
     if (!available()) return false;
+    if (!verbose) return invokeEntry(symbol, state);
+    const std::array<uint32_t, 4> before{state.registers[0], state.registers[1], state.registers[2],
+                                         state.registers[3]};
+    const bool handled = invokeEntry(symbol, state);
+    if (!handled) return false;
+    const std::string error = takeError();
+    if (logSink) {
+        char call[128];
+        std::snprintf(call, sizeof(call), "%s(0x%08x, 0x%08x, 0x%08x, 0x%08x)", symbol.c_str() + 1,
+                      before[0], before[1], before[2], before[3]);
+        // A GL error is only meaningful once it has been read; nothing here clears state
+        // behind the guest's back beyond the glGetError this trace performs.
+        logSink("gl: " + std::string(call) + (error.empty() ? "" : " -> " + error));
+    }
+    return true;
+}
+std::string GLES::takeError() {
+    using GetError = uint32_t (*)();
+    const auto getError = fn<GetError>("glGetError");
+    // glGetError is only valid with a current context; without one the driver would report
+    // an error that this call invented, so it is not asked.
+    if (!getError || !context) return {};
+    const uint32_t code = getError();
+    switch (code) {
+        case 0:
+            return {};
+        case 0x0500:
+            return "GL_INVALID_ENUM (0x0500)";
+        case 0x0501:
+            return "GL_INVALID_VALUE (0x0501)";
+        case 0x0502:
+            return "GL_INVALID_OPERATION (0x0502)";
+        case 0x0503:
+            return "GL_STACK_OVERFLOW (0x0503)";
+        case 0x0504:
+            return "GL_STACK_UNDERFLOW (0x0504)";
+        case 0x0505:
+            return "GL_OUT_OF_MEMORY (0x0505)";
+        case 0x0506:
+            return "GL_INVALID_FRAMEBUFFER_OPERATION (0x0506)";
+        default:
+            return "GL error 0x" + std::to_string(code);
+    }
+}
+bool GLES::invokeEntry(const std::string& symbol, CpuState& state) {
     Marshal m{state, memory};
     const std::string name = symbol.substr(1);
     calls++;
@@ -378,10 +426,13 @@ bool GLES::invoke(const std::string& symbol, CpuState& state) {
         array.type = m.word();
         array.stride = int(m.word());
         array.pointer = m.word();
-        // A buffer object's data was already uploaded; its pointer is an offset, so the
-        // driver is told directly and the draw-time copy is skipped.
+        // With a buffer object bound the pointer is an offset into that object, which the
+        // driver owns. Without one it is a guest address, and a guest address must never be
+        // handed to the driver as if it were host memory: the data is copied at draw time
+        // (bindClientArrays) and the driver is told null until then.
         array.buffered = arrayBufferBound;
-        const void* pointer = reinterpret_cast<const void*>(uintptr_t(array.pointer));
+        const void* pointer =
+            arrayBufferBound ? reinterpret_cast<const void*>(uintptr_t(array.pointer)) : nullptr;
         if (name == "glNormalPointer") {
             auto f = fn<void (*)(unsigned, int, const void*)>(name.c_str());
             if (!f) return false;
