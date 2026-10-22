@@ -8,6 +8,7 @@
 
 #include "cpu.h"
 #include "exports.h"
+#include "gles.h"
 #include "memory.h"
 
 namespace podnative::runtime {
@@ -39,6 +40,9 @@ class ObjC final {
     // Names the unimplemented import a call-gate/trap address stands for, so a message sent
     // to a trap says which API is missing instead of "not an object".
     void setTrapName(std::function<std::string(uint32_t)> lookup) { trapName = std::move(lookup); }
+    // The GL bridge backing EAGL. EAGLContext drawable/present calls run real EGL/GLES;
+    // without a driver they fail by name instead of pretending a frame exists.
+    void setGraphics(GLES* graphics) { gles = graphics; }
     // Guest log/exit lifecycle: releasing the pool stack at exit is real bookkeeping.
     void drainPools();
     // Classes the image defines itself, from its `__objc_classlist`. Their metadata stays
@@ -179,6 +183,7 @@ class ObjC final {
     std::string bundlePath = "/var/mobile", documentsPath = "/var/mobile/Documents";
     std::function<bool(const std::string&)> fileExists;
     std::function<std::string(uint32_t)> trapName;
+    GLES* gles = nullptr;
     std::function<void(const std::string&)> logSink;
     uint32_t makeString(const std::string& text);
     uint32_t makeArray(const std::vector<uint32_t>& elements);

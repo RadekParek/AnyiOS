@@ -856,7 +856,12 @@ bool ObjC::uiKitMessage(const std::string& className, uint32_t object, const std
     }
     if (className == "EAGLContext") {
         if (method == "initWithAPI:") {
-            value.integer = r[2];  // kEAGLRenderingAPIOpenGLES1/2, kept for -API
+            // kEAGLRenderingAPIOpenGLES1 (1) or OpenGLES2 (2): the guest is telling the
+            // driver which dialect it will speak, and an ES 2.0 context refuses the
+            // fixed-function calls an ES 1.1 title makes. The choice is carried through.
+            value.integer = r[2];
+            if (gles) gles->setClientApi(int(r[2]));
+            r[0] = object;  // an init method returns the receiver
             return true;
         }
         if (method == "API") {
@@ -865,6 +870,7 @@ bool ObjC::uiKitMessage(const std::string& className, uint32_t object, const std
         }
         if (method == "setCurrentContext") {
             currentEaglContext = object;
+            if (gles) gles->makeCurrent();
             return true;
         }
         if (method == "sharegroup") {
@@ -872,16 +878,45 @@ bool ObjC::uiKitMessage(const std::string& className, uint32_t object, const std
             return true;
         }
         if (method == "renderbufferStorage:fromDrawable:") {
-            // This needs the real EGL surface the renderer owns; answering success here
-            // would let the guest believe a framebuffer exists.
-            throw Error("UIKIT_UNSUPPORTED",
-                        "-[EAGLContext renderbufferStorage:fromDrawable:] needs the EAGL "
-                        "drawable, which only the ANGLE-backed renderer can supply");
+            if (!gles || !gles->available())
+                throw Error("EAGL_NO_DRIVER",
+                            "-[EAGLContext renderbufferStorage:fromDrawable:] needs a real "
+                            "OpenGL ES driver, and none is loaded in this build");
+            // The renderbuffer's size comes from the layer this context draws into: the
+            // guest has already set the view's frame, which is the drawable's geometry.
+            int width = 320, height = 480;
+            // -renderbufferStorage:fromDrawable: passes the CAEAGLLayer in r3; its geometry
+            // is the drawable's, and the guest has already set the view frame it mirrors.
+            const uint32_t layer = r[3];
+            if (auto found = objects.find(layer); found != objects.end()) {
+                const float* frame =
+                    found->second.hasFrame ? found->second.frame : found->second.bounds;
+                if (frame[2] >= 1 && frame[3] >= 1) {
+                    width = int(frame[2] + 0.5f);
+                    height = int(frame[3] + 0.5f);
+                }
+            }
+            if (!gles->createDrawable(width, height))
+                throw Error("EAGL_DRAWABLE",
+                            "-[EAGLContext renderbufferStorage:fromDrawable:] could not "
+                            "create a framebuffer: " +
+                                gles->describe());
+            value.integer = (int64_t(height) << 32) | uint32_t(width);
+            value.hasFrame = true;
+            value.frame[0] = value.frame[1] = 0;
+            value.frame[2] = float(width);
+            value.frame[3] = float(height);
+            return true;
         }
         if (method == "presentRenderbuffer:") {
-            throw Error("UIKIT_UNSUPPORTED",
-                        "-[EAGLContext presentRenderbuffer:] needs the EAGL drawable, which "
-                        "only the ANGLE-backed renderer can supply");
+            if (!gles || !gles->available())
+                throw Error("EAGL_NO_DRIVER",
+                            "-[EAGLContext presentRenderbuffer:] needs a real OpenGL ES "
+                            "driver, and none is loaded in this build");
+            if (!gles->present())
+                throw Error("EAGL_PRESENT",
+                            "-[EAGLContext presentRenderbuffer:] failed: " + gles->describe());
+            return true;
         }
         return false;
     }
@@ -1574,6 +1609,7 @@ void ObjC::message(CpuState& state) {
         }
         if (className == "EAGLContext" && method == "setCurrentContext:") {
             currentEaglContext = state.registers[2];
+            if (gles) gles->makeCurrent();
             return;
         }
         if (className == "EAGLContext" && method == "currentContext") {

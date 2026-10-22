@@ -1,5 +1,51 @@
 # Continuation progress — 2026-10-22
 
+## 0.9.4 — the OpenGL ES boundary is a real driver call, not a stub
+
+AngryBirds' 51 GL imports used to stop the run at `_glFrontFace`. They now reach a real
+driver: `runtime/gles.{h,cpp}` is a call gate from guest ARM code to the GLES/EGL entry
+points, and the EAGL objects route into it.
+
+* **51 entry points, marshalled as ARM code actually calls them.** iOS ARM code uses the VFP
+  variant of AAPCS: integers and pointers in `r0-r3` then the stack, `float` arguments in
+  `s0-s15`, numbered independently. The bridge reads both kinds separately, so a
+  `glClearColor` cannot clear to a colour taken out of a pointer register. Argument
+  evaluation is sequenced through locals, because `f(m.f32(), m.f32(), ...)` consumes the
+  float registers in an unspecified order and does reverse `glClearColor` (the recording-driver
+  test caught exactly that).
+* **Client arrays are copied when the draw happens.** AngryBirds draws with
+  `glVertexPointer`/`glColorPointer`/`glNormalPointer`/`glTexCoordPointer` + `glDrawArrays`,
+  and a guest pointer is not host memory. Each enabled array is copied out of guest memory at
+  draw time (stride and component size respected), the entry point is re-issued with the host
+  copy, and no copy is made for an array that lives in a bound buffer object.
+* **Pixel uploads are sized, not guessed.** `glTexImage2D`/`glTexSubImage2D` copy
+  `w*h*texelBytes(format, type)` bytes out of guest memory, `glCompressedTexImage2D` copies its
+  PVRTC size, `glLoadMatrixf`/`glLightfv`/`glMaterialfv` copy their arrays, and `glGetIntegerv`
+  writes back only into memory the guest can write.
+* **ES 1.1 gets an ES 1.1 context.** `-[EAGLContext initWithAPI:]` carries the guest's choice
+  into EGL; a 2.0 context rejects the fixed-function calls this title lives on, so this is the
+  difference between a black screen and a frame. `-renderbufferStorage:fromDrawable:` creates
+  the colour renderbuffer and framebuffer from the drawable's real geometry and reports a
+  driver failure by name, and `-presentRenderbuffer:` reads the drawable back (top row first)
+  for the host frame.
+* **No driver means no success.** With nothing loaded, `GLES` reports itself unavailable, every
+  import keeps its `HLE_UNIMPLEMENTED` trap naming the exact symbol, and the EAGL methods throw
+  `EAGL_NO_DRIVER` instead of returning a drawable that does not exist. `describe()` puts the
+  backend, entry-point count and call/draw counters into the launch report line.
+
+Verified by CI run [39745421769](https://github.com/RadekParek/AnyiOS/actions/runs/39745421769): PC
+host suites green, Android `assembleDebug` green, artifact `AnyiOS.apk` (10,354,572 bytes) built
+from this commit. What CI proves is that the bridge compiles for `arm64-v8a` against the real
+ANGLE libraries and that the host units pass; it does not prove a frame reaches the screen.
+
+Evidence on this host (`scripts/test-host.sh`): a recording GLES/EGL driver
+(`tests/gles_stub_driver.cpp`) is `dlopen`ed exactly as a real driver is, and the unit test
+verifies the register split, the draw-time client-array copy, texel-size uploads, the
+renderbuffer/framebuffer transitions, the ES-version switch (context destroyed, not leaked) and
+the bottom-left → top-row-first flip. The recording driver rasterises nothing, so **no frame,
+FPS or gameplay claim is made**, and the ANGLE-on-device path still has to be exercised on the
+S23 before anything is claimed for it.
+
 ## 0.9.3 — AngryBirds runs its own code into GL
 
 The user's AngryBirds IPA now boots through the real launch path instead of stopping at the
