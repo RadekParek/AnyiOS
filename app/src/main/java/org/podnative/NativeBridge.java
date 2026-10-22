@@ -17,5 +17,9 @@ final class NativeBridge {
     // Settings ▸ "Verbose logging": names every service the guest calls, every unwind
     // decision and every GL error in the launch report. Off by default.
     static native void setVerbose(boolean on);
+    // Settings ▸ "Native OpenGL ES": resolve GL against this device's own driver first and
+    // keep the bundled ANGLE as the fallback. Off by default, so every device gets the same
+    // driver. The driver is resolved once per launch, so this has to be set before it.
+    static native void setNativeGles(boolean on);
     static native long[] arm32Slice(byte[] header, long fileLength);
 }

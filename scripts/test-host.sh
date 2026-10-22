@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 cd "$(dirname "$0")/.."
-mkdir -p .local/tests
+mkdir -p .local/tests .local/tests-es2
 FLAGS=(-std=c++17 -Wall -Wextra -Werror -fsanitize=address,undefined -g -Iapp/src/main/cpp)
 # Every unit is an independent translation/compile, so they are built in parallel;
 # HOST_TEST_JOBS caps the concurrency on small machines.
@@ -31,6 +31,11 @@ plan "${FLAGS[*]}" tests/gles_test.cpp app/src/main/cpp/runtime/{memory,gles}.cp
 # claims marshalling, resource transitions and the frame flip — never a drawn frame.
 plan "${FLAGS[*]} -Itests" tests/gles_stub_driver.cpp -shared -fPIC -o .local/tests/libGLESv2_podnative.so
 plan "${FLAGS[*]} -Itests" tests/gles_driver_test.cpp app/src/main/cpp/runtime/{memory,gles}.cpp -o .local/tests/gles-driver-test
+# A second double, in its own directory so both can carry the bundled soname: this one has no
+# ES 1.1 entry points at all, which is the shape of ANGLE and of most current mobile drivers.
+# It is what makes the fixed-function emulation testable without a GPU.
+plan "${FLAGS[*]} -Itests" tests/gles_es2_stub_driver.cpp -shared -fPIC -o .local/tests-es2/libGLESv2_podnative.so
+plan "${FLAGS[*]} -Itests" tests/gles_emulation_test.cpp app/src/main/cpp/runtime/{memory,gles}.cpp -o .local/tests/gles-emulation-test
 plan "${FLAGS[*]}" tests/audio_test.cpp app/src/main/cpp/runtime/{memory,audio,openal,format,libc,heap}.cpp -o .local/tests/audio-test
 plan "${FLAGS[*]}" tests/fs_test.cpp app/src/main/cpp/runtime/{memory,fs,stdio,audio,libc,format,heap}.cpp -o .local/tests/fs-test
 xargs -a "$PLAN" -d '\n' -P "$JOBS" -n 1 -I {} bash -c '{}'
@@ -48,6 +53,8 @@ find app/src/main/cpp/runtime -maxdepth 1 -name '*.cpp' ! -name 'cpu.cpp' -print
 for test in macho runtime imports fat frameworks coregraphics dyld exports libc cxx audio fs objc uikit gles; do .local/tests/$test-test; done
 LD_LIBRARY_PATH=".local/tests${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" \
   .local/tests/gles-driver-test libGLESv2_podnative.so
+LD_LIBRARY_PATH=".local/tests-es2${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" \
+  .local/tests/gles-emulation-test libGLESv2_podnative.so
 python3 -m unittest discover -s tests -p "test_*.py"
 python3 -m py_compile scripts/*.py tests/*.py
 git diff --check

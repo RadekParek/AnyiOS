@@ -27,6 +27,36 @@ constexpr uint32_t GL_RGB = 0x1907;
 constexpr uint32_t GL_RGBA = 0x1908;
 constexpr uint32_t GL_LUMINANCE = 0x1909;
 constexpr uint32_t GL_LUMINANCE_ALPHA = 0x190a;
+// ES 1.1 state an ES 2.0-only driver cannot hold, so the bridge holds it.
+constexpr uint32_t GL_TEXTURE_2D = 0x0de1;
+constexpr uint32_t GL_LIGHTING = 0x0b50;
+constexpr uint32_t GL_TEXTURE_ENV_MODE = 0x2200;
+constexpr uint32_t GL_ADD_TEXTURE_ENV = 0x0104;
+constexpr uint32_t GL_BLEND_TEXTURE_ENV = 0x0be2;
+constexpr uint32_t GL_REPLACE_TEXTURE_ENV = 0x1e01;
+constexpr uint32_t GL_MODULATE_TEXTURE_ENV = 0x2100;
+constexpr uint32_t GL_DECAL_TEXTURE_ENV = 0x2101;
+constexpr uint32_t GL_MODELVIEW = 0x1700;
+constexpr uint32_t GL_PROJECTION = 0x1701;
+constexpr uint32_t GL_TEXTURE_MATRIX = 0x1702;
+constexpr uint32_t GL_TEXTURE0 = 0x84c0;
+constexpr uint32_t GL_MAX_LIGHTS = 0x0d31;
+// 0x8482, not 0x84e8: that one is GL_MAX_RENDERBUFFER_SIZE, and answering a texture-unit
+// query with a renderbuffer limit is the kind of mistake no driver ever reports.
+constexpr uint32_t GL_MAX_TEXTURE_UNITS = 0x8482;
+constexpr uint32_t GL_MAX_MODELVIEW_STACK_DEPTH = 0x0d36;
+constexpr uint32_t GL_MAX_PROJECTION_STACK_DEPTH = 0x0d38;
+constexpr uint32_t GL_MAX_TEXTURE_STACK_DEPTH = 0x0d39;
+constexpr uint32_t GL_TEXTURE_ENV = 0x1703;
+constexpr uint32_t GL_STREAM_DRAW = 0x88e0;
+// Attribute locations the generated programs bind by name, so a draw never has to ask the
+// driver where an attribute ended up.
+constexpr uint32_t AttributePosition = 0, AttributeColour = 1, AttributeTexCoord = 2,
+                   AttributeNormal = 3;
+constexpr uint32_t GL_VERTEX_SHADER = 0x8b31;
+constexpr uint32_t GL_FRAGMENT_SHADER = 0x8b30;
+constexpr uint32_t GL_COMPILE_STATUS = 0x8b81;
+constexpr uint32_t GL_LINK_STATUS = 0x8b82;
 constexpr uint32_t GL_VERTEX_ARRAY = 0x8074;
 constexpr uint32_t GL_NORMAL_ARRAY = 0x8075;
 constexpr uint32_t GL_COLOR_ARRAY = 0x8076;
@@ -52,6 +82,40 @@ constexpr int32_t EGL_PLATFORM_SURFACELESS_MESA = 0x31dd;
 constexpr uint32_t EGL_OPENGL_ES_API = 0x30a0;
 constexpr int32_t EGL_WIDTH = 0x3057;
 constexpr int32_t EGL_HEIGHT = 0x3056;
+
+// The largest index in a client-side index array, which is how far an indexed draw reaches
+// into the vertex arrays. Guest ARM is little-endian, so the bytes are assembled directly.
+size_t largestIndex(const std::vector<uint8_t>& indices, size_t element) {
+    size_t largest = 0;
+    if (element == 1) {
+        for (uint8_t value : indices) largest = std::max<size_t>(largest, value);
+        return largest;
+    }
+    if (element == 2) {
+        for (size_t at = 0; at + 1 < indices.size(); at += 2)
+            largest =
+                std::max<size_t>(largest, size_t(indices[at]) | (size_t(indices[at + 1]) << 8));
+        return largest;
+    }
+    for (size_t at = 0; at + 3 < indices.size(); at += 4) {
+        uint32_t value = 0;
+        std::memcpy(&value, &indices[at], 4);
+        largest = std::max<size_t>(largest, value);
+    }
+    return largest;
+}
+// Column-major 4x4 product, in the layout ES 1.1 stores its matrices in. A vertex reaches
+// clip space as projection * modelview * v, so that is the order the two are combined.
+void multiplyMatrices(const float* left, const float* right, float* out) {
+    for (int column = 0; column < 4; column++)
+        for (int row = 0; row < 4; row++) {
+            float sum = 0;
+            for (int k = 0; k < 4; k++) sum += left[k * 4 + row] * right[column * 4 + k];
+            out[column * 4 + row] = sum;
+        }
+}
+// A draw is refused rather than allowed to ask for an absurd copy of guest memory.
+constexpr size_t VertexBudget = 8 * 1024 * 1024;
 
 size_t typeSize(uint32_t type) {
     switch (type) {
@@ -180,7 +244,16 @@ void* GLES::lookup(const char* name) const {
     if (preferred) {
         if (void* symbol = dlsym(preferred, name)) return symbol;
     }
-    return fallback ? dlsym(fallback, name) : nullptr;
+    if (fallback) {
+        if (void* symbol = dlsym(fallback, name)) return symbol;
+    }
+    // A device driver's ES 1.1 library is the last place an ES 1.1 entry point can be: the
+    // ES 2.0 library beside it does not re-export them. Consulted only for names neither of
+    // the other two answered, so nothing is taken from a second driver family.
+    if (gles1Library) {
+        if (void* symbol = dlsym(gles1Library, name)) return symbol;
+    }
+    return nullptr;
 }
 
 bool GLES::resolve(const char* name) {
@@ -206,27 +279,49 @@ bool GLES::resolve(const char* name) {
     return true;
 }
 
+void* GLES::openLibrary(const char* name) {
+    // Both ANGLE libraries are linked into this app, so they are already resident: taking a
+    // handle on them must not load a second copy, and RTLD_NOLOAD is how a handle is taken
+    // on what the linker already brought in. RTLD_GLOBAL stays, because the recording driver
+    // the host tests use is reached through the same global table the bridge resolves from.
+    if (void* resident = dlopen(name, RTLD_NOLOAD | RTLD_NOW | RTLD_GLOBAL)) return resident;
+    return dlopen(name, RTLD_NOW | RTLD_GLOBAL);
+}
+
 bool GLES::load() {
     if (driverLoaded) return available();
     driverLoaded = true;
-    // The driver is a real shared library. Android links ANGLE into the app; elsewhere
-    // the system GLES is used. If neither exists the bridge stays empty and every GL
-    // import keeps its unimplemented trap, which is the honest result.
-    const char* candidates[] = {
-#ifdef __ANDROID__
-        "libGLESv2_podnative.so",
-        "libGLESv2.so",
-        "libGLESv2.so.2",
-#else
-        "libGLESv2.so.2",
-        "libGLESv2.so",
-        "libGLESv2_podnative.so",
-#endif
+    // Driver families, each an EGL library plus the GLES library that goes with it. They are
+    // tried as families on purpose: an EGL from one driver and a GLES from another produce a
+    // display the two disagree about, which is a black screen with no error anywhere. The
+    // bundled ANGLE is first, so GL behaves the same on every device instead of depending on
+    // what the GPU vendor shipped; Settings ▸ "Native OpenGL ES" moves the device's own
+    // driver to the front for a title that needs something ANGLE does not provide. A device
+    // driver keeps OpenGL ES 1.1 in a third library, which ANGLE has no equivalent of.
+    struct Family {
+        const char* egl;
+        const char* gles;
+        const char* gles1;
     };
-    for (const char* candidate : candidates) {
-        void* handle = dlopen(candidate, RTLD_NOW | RTLD_GLOBAL);
-        if (!handle) continue;
-        backendName = candidate;
+    const Family bundled{"libEGL_podnative.so", "libGLESv2_podnative.so", nullptr};
+    const Family device{"libEGL.so", "libGLESv2.so", "libGLESv1_CM.so"};
+    const Family deviceSoname{"libEGL.so", "libGLESv2.so.2", nullptr};
+    const std::vector<Family> families = preferNativeDriver
+                                             ? std::vector<Family>{device, deviceSoname, bundled}
+                                             : std::vector<Family>{bundled, device, deviceSoname};
+    for (const Family& family : families) {
+        void* gles = openLibrary(family.gles);
+        if (!gles) continue;
+        glesLibrary = gles;
+        // EGL is optional per family: a driver that ships both in one library (the recording
+        // driver the host tests use) answers EGL names from the GLES handle, which lookup()
+        // already falls back to.
+        if (family.egl) eglLibrary = openLibrary(family.egl);
+        if (family.gles1) gles1Library = openLibrary(family.gles1);
+        backendName = family.gles;
+        driverLibraries = family.gles;
+        if (eglLibrary) driverLibraries = std::string(family.egl) + " + " + driverLibraries;
+        if (gles1Library) driverLibraries += std::string(" + ") + family.gles1;
         break;
     }
     // A statically linked driver still answers through the global symbol table.
@@ -242,6 +337,13 @@ bool GLES::load() {
         backendName.clear();
         return false;
     }
+    // ANGLE is OpenGL ES 2.0 and has no ES 1.1 frontend, so the fixed-function entry points
+    // an ES 1.1 title imports are simply absent from it. Detecting that here, once, is what
+    // lets the bridge answer those calls itself and draw through generated ES 2.0 shaders
+    // instead of falling back to the device vendor's driver and its own set of quirks. A
+    // driver that does have ES 1.1 keeps forwarding everything, and none of the emulation
+    // state below is touched.
+    fixedFunction = function("glDrawArrays") && !function("glVertexPointer");
     return true;
 }
 
@@ -261,6 +363,27 @@ std::string GLES::describe() const {
     }
     out << "GLES_STATE: " << functions.size() << " entry points through " << backendName << ", "
         << calls << " guest GL calls, " << draws << " draws";
+    // "The driver loaded" is not evidence of which driver that was, so the libraries that
+    // actually answered are named, and with them the setting that chose the order.
+    if (!driverLibraries.empty())
+        out << " [" << driverLibraries << ", "
+            << (preferNativeDriver ? "native OpenGL ES preferred" : "bundled ANGLE preferred")
+            << "]";
+    if (fixedFunction) {
+        out << ", OpenGL ES 1.1 fixed function emulated over ES 2.0 (" << programs.size()
+            << " generated program(s))";
+        // An approximation that is not reported is a wrong pixel nobody can trace.
+        if (lightingCalls)
+            out << ", " << lightingCalls
+                << " glLightfv/glMaterialfv call(s) recorded and lighting not emulated";
+        if (approximatedTexEnv)
+            out << ", " << approximatedTexEnv
+                << " draw(s) used a texture environment mode this bridge approximates with "
+                   "modulate";
+        if (extraTextureUnits)
+            out << ", " << extraTextureUnits
+                << " use(s) of a client texture unit beyond the one emulated";
+    }
     if (width && height) out << ", drawable " << width << 'x' << height;
     if (!lastError.empty()) out << ", last error: " << lastError;
     return out.str();
@@ -357,6 +480,12 @@ bool GLES::invokeEntry(const std::string& symbol, CpuState& state) {
     const std::string name = symbol.substr(1);
     calls++;
 
+    // With an ES 2.0-only driver the fixed-function entry points are answered here, from the
+    // state this bridge keeps, before any attempt to forward them to a driver that does not
+    // have them. Names ES 2.0 does have (glEnable, glDrawArrays, glBindBuffer) fall through
+    // to the branches below, which record what the emulation needs and then forward.
+    if (fixedFunction && fixedFunctionEntry(name, m)) return true;
+
     if (name == "glClear") {
         auto f = fn<void (*)(uint32_t)>("glClear");
         if (!f) return false;
@@ -394,9 +523,18 @@ bool GLES::invokeEntry(const std::string& symbol, CpuState& state) {
         return true;
     }
     if (name == "glEnable" || name == "glDisable") {
+        const uint32_t which = m.word();
+        if (fixedFunction) {
+            // Texturing and lighting change what a draw has to compute, so the emulation
+            // tracks the two caps an ES 2.0 driver has no fixed-function meaning for.
+            if (which == GL_TEXTURE_2D)
+                texture2dEnabled = name == "glEnable";
+            else if (which == GL_LIGHTING)
+                lightingEnabled = name == "glEnable";
+        }
         auto f = fn<void (*)(uint32_t)>(name.c_str());
         if (!f) return false;
-        f(m.word());
+        f(which);
         return true;
     }
     if (name == "glEnableClientState" || name == "glDisableClientState") {
@@ -449,15 +587,23 @@ bool GLES::invokeEntry(const std::string& symbol, CpuState& state) {
         return true;
     }
     if (name == "glActiveTexture") {
+        const uint32_t texture = m.word();
+        if (fixedFunction) activeTextureUnit = int(texture) - int(GL_TEXTURE0);
         auto f = fn<void (*)(uint32_t)>(name.c_str());
         if (!f) return false;
-        f(m.word());
+        f(texture);
         return true;
     }
     if (name == "glBindBuffer") {
         const uint32_t target = m.word(), buffer = m.word();
-        if (target == GL_ARRAY_BUFFER) arrayBufferBound = buffer != 0;
-        if (target == GL_ELEMENT_ARRAY_BUFFER) elementBufferBound = buffer != 0;
+        if (target == GL_ARRAY_BUFFER) {
+            arrayBufferBound = buffer != 0;
+            boundArrayBuffer = buffer;
+        }
+        if (target == GL_ELEMENT_ARRAY_BUFFER) {
+            elementBufferBound = buffer != 0;
+            boundElementBuffer = buffer;
+        }
         auto f = fn<void (*)(uint32_t, uint32_t)>(name.c_str());
         if (!f) return false;
         f(target, buffer);
@@ -506,10 +652,22 @@ bool GLES::invokeEntry(const std::string& symbol, CpuState& state) {
     }
     if (name == "glDrawArrays") {
         const int mode = int(m.word()), first = int(m.word()), count = int(m.word());
+        if (count <= 0) return true;
+        if (first < 0) throw Error("GLES_ARGUMENT", "draw starts before the first vertex");
+        if (fixedFunction) {
+            if (!drawFixedFunction(uint32_t(mode), first, count, 0, 0)) return false;
+            draws++;
+            return true;
+        }
         auto f = fn<void (*)(uint32_t, int, int)>("glDrawArrays");
         if (!f) return false;
         std::vector<std::vector<uint8_t>> storage;
-        if (!bindClientArrays(size_t(count), storage))
+        // The copy has to cover the last vertex the draw reaches, which with a non-zero
+        // `first` is first + count: the driver indexes client arrays from the pointer, so a
+        // copy of only `count` vertices has it reading past the end of a host buffer.
+        if (size_t(first) + size_t(count) > VertexBudget)
+            throw Error("GLES_ARRAY", "draw reaches more vertices than the copy budget");
+        if (!bindClientArrays(size_t(first) + size_t(count), storage))
             throw Error("GLES_ARRAY", "client vertex array could not be read");
         f(uint32_t(mode), first, count);
         draws++;
@@ -518,19 +676,35 @@ bool GLES::invokeEntry(const std::string& symbol, CpuState& state) {
     if (name == "glDrawElements") {
         const int mode = int(m.word()), count = int(m.word());
         const uint32_t type = m.word(), indices = m.word();
+        if (count <= 0) return true;
+        if (fixedFunction) {
+            if (!drawFixedFunction(uint32_t(mode), 0, count, type, indices)) return false;
+            draws++;
+            return true;
+        }
         auto f = fn<void (*)(uint32_t, int, uint32_t, const void*)>("glDrawElements");
         if (!f) return false;
-        std::vector<std::vector<uint8_t>> storage;
-        if (!bindClientArrays(size_t(count), storage))
-            throw Error("GLES_ARRAY", "client vertex array could not be read");
         const size_t element = typeSize(type);
         if (!element && !elementBufferBound)
             throw Error("GLES_ARRAY", "index type is not a GL type");
+        std::vector<uint8_t> copy;
+        size_t vertices = size_t(count);
+        if (!elementBufferBound) {
+            copy.resize(size_t(count) * element);
+            if (indices) memory.read(indices, copy.data(), copy.size());
+            // An indexed draw reaches as far as its largest index, not as far as it has
+            // indices: copying `count` vertices has the driver read past the copy whenever an
+            // index is larger than the index count, which is the normal case.
+            vertices = largestIndex(copy, element) + 1;
+            if (vertices > VertexBudget)
+                throw Error("GLES_ARRAY", "an index reaches more vertices than the copy budget");
+        }
+        std::vector<std::vector<uint8_t>> storage;
+        if (!bindClientArrays(vertices, storage))
+            throw Error("GLES_ARRAY", "client vertex array could not be read");
         if (elementBufferBound) {
             f(uint32_t(mode), count, type, reinterpret_cast<const void*>(uintptr_t(indices)));
         } else {
-            std::vector<uint8_t> copy(size_t(count) * element);
-            if (indices) memory.read(indices, copy.data(), copy.size());
             storage.push_back(std::move(copy));
             f(uint32_t(mode), count, type, storage.back().data());
         }
@@ -571,6 +745,35 @@ bool GLES::invokeEntry(const std::string& symbol, CpuState& state) {
             const uint32_t pname = m.word(), out = m.word();
             auto f = fn<void (*)(uint32_t, int32_t*)>("glGetIntegerv");
             if (!f) return false;
+            // An ES 2.0-only driver answers these ES 1.1 limits with GL_INVALID_ENUM and
+            // leaves the guest's word alone. Reading zero texture units out of that is how a
+            // title that asked decides it cannot texture anything, so they are answered here.
+            if (fixedFunction) {
+                int answer = 0;
+                bool known = true;
+                switch (pname) {
+                    case GL_MAX_TEXTURE_UNITS:
+                        answer = 2;
+                        break;
+                    case GL_MAX_LIGHTS:
+                        answer = 8;
+                        break;
+                    case GL_MAX_MODELVIEW_STACK_DEPTH:
+                    case GL_MAX_PROJECTION_STACK_DEPTH:
+                    case GL_MAX_TEXTURE_STACK_DEPTH:
+                        answer = 16;
+                        break;
+                    default:
+                        known = false;
+                        break;
+                }
+                if (known) {
+                    if (!out || !memory.permits(out, 4, Write))
+                        throw Error("GLES_ARGUMENT", "query result is not writable", out);
+                    memory.write32(out, uint32_t(answer));
+                    return true;
+                }
+            }
             f(pname, values.data());
             if (!out || !memory.permits(out, 4, Write))
                 throw Error("GLES_ARGUMENT", "query result is not writable", out);
@@ -698,6 +901,385 @@ bool GLES::invokeEntry(const std::string& symbol, CpuState& state) {
     return false;
 }
 
+// ---- OpenGL ES 1.1 fixed function over an ES 2.0-only driver ----------------------------
+//
+// The titles this runtime runs are ES 1.1: they keep their vertices, colours and texture
+// coordinates in client memory, transform them with a matrix stack, and never name a shader.
+// ANGLE is ES 2.0 and has no ES 1.1 frontend, so those entry points do not exist in it. This
+// is the part of the bridge that holds that state instead and turns a draw into an ES 2.0
+// draw: the matrices the guest loaded become one model-view-projection uniform, the client
+// arrays become buffer objects bound to attributes, and the colour/texture-environment state
+// selects which of a handful of generated programs is used.
+//
+// What it does not implement is counted and reported by describe() rather than silently
+// approximated: the ES 1.1 lighting model, texture environment modes other than modulate and
+// replace, and client texture units beyond the first.
+
+bool GLES::fixedFunctionEntry(const std::string& name, Marshal& m) {
+    if (name == "glVertexPointer" || name == "glColorPointer" || name == "glTexCoordPointer") {
+        ClientArray& array = name == "glVertexPointer"  ? vertex
+                             : name == "glColorPointer" ? colour
+                                                        : texCoord[clientTextureUnit];
+        array.size = int(m.word());
+        array.type = m.word();
+        array.stride = int(m.word());
+        array.pointer = m.word();
+        // Whether the pointer is an offset into a bound buffer object or a guest address
+        // follows the binding at the time the pointer was set, exactly as in ES 1.1.
+        array.buffered = arrayBufferBound;
+        return true;
+    }
+    if (name == "glNormalPointer") {
+        normal.size = 3;  // a normal is always three components; ES 1.1 has no size argument
+        normal.type = m.word();
+        normal.stride = int(m.word());
+        normal.pointer = m.word();
+        normal.buffered = arrayBufferBound;
+        return true;
+    }
+    if (name == "glEnableClientState" || name == "glDisableClientState") {
+        const uint32_t which = m.word();
+        const bool enable = name == "glEnableClientState";
+        if (which == GL_VERTEX_ARRAY)
+            vertex.enabled = enable;
+        else if (which == GL_COLOR_ARRAY)
+            colour.enabled = enable;
+        else if (which == GL_NORMAL_ARRAY)
+            normal.enabled = enable;
+        else if (which == GL_TEXTURE_COORD_ARRAY)
+            texCoord[clientTextureUnit].enabled = enable;
+        return true;
+    }
+    if (name == "glMatrixMode") {
+        matrixMode = m.word();
+        matrix = matrixMode == GL_PROJECTION       ? &projection
+                 : matrixMode == GL_TEXTURE_MATRIX ? &textureMatrix
+                                                   : &modelview;
+        return true;
+    }
+    if (name == "glLoadMatrixf") {
+        const uint32_t source = m.word();
+        float values[16] = {};
+        if (source) {
+            if (!memory.permits(source, sizeof(values), Read))
+                throw Error("GLES_ARGUMENT", "matrix is not readable", source);
+            memory.read(source, values, sizeof(values));
+        }
+        std::memcpy(matrix->data(), values, sizeof(values));
+        return true;
+    }
+    if (name == "glColor4f") {
+        // Read into locals first: the order the arguments are evaluated in is unspecified,
+        // and `f(m.f32(), ...)` can consume s0-s3 right-to-left and reverse the colour.
+        const float red = m.f32(), green = m.f32(), blue = m.f32(), alpha = m.f32();
+        currentColour[0] = red;
+        currentColour[1] = green;
+        currentColour[2] = blue;
+        currentColour[3] = alpha;
+        return true;
+    }
+    if (name == "glClientActiveTexture") {
+        clientTextureUnit = int(m.word());
+        if (clientTextureUnit != int(GL_TEXTURE0)) extraTextureUnits++;
+        return true;
+    }
+    if (name == "glTexEnvi") {
+        const uint32_t target = m.word(), pname = m.word();
+        const int value = int(m.word());
+        if (target == GL_TEXTURE_ENV && pname == GL_TEXTURE_ENV_MODE) textureEnvMode = value;
+        return true;
+    }
+    if (name == "glLightfv" || name == "glMaterialfv") {
+        const uint32_t first = m.word(), pname = m.word(), source = m.word();
+        float values[16] = {};
+        if (source) {
+            if (!memory.permits(source, 16, Read))
+                throw Error("GLES_ARGUMENT", "light/material values are not readable", source);
+            memory.read(source, values, 16);
+        }
+        // Recorded, not implemented. The values are read so a bogus pointer is reported as
+        // the guest error it is, and the call is counted so describe() says lighting was
+        // asked for and is not emulated, instead of drawing flat and claiming success.
+        lightingCalls++;
+        (void)first;
+        (void)pname;
+        return true;
+    }
+    return false;
+}
+
+const GLES::Program& GLES::fixedFunctionProgram() {
+    static const Program none{};
+    const auto tex = texCoord.find(clientTextureUnit);
+    const bool texArray = tex != texCoord.end() && tex->second.enabled;
+    // 0 = not textured, 1 = texture coordinates from an array, 2 = from the ES 1.1 current
+    // texture coordinate, whose default is (0, 0, 0, 1).
+    const int texSource = !texture2dEnabled ? 0 : texArray ? 1 : 2;
+    const bool replace = textureEnvMode == GL_REPLACE_TEXTURE_ENV;
+    const uint32_t key =
+        (colour.enabled ? 1u : 0u) | (uint32_t(texSource) << 1) | (replace ? 8u : 0u);
+    if (auto found = programs.find(key); found != programs.end()) return found->second;
+
+    auto createShader = glFn<uint32_t (*)(uint32_t)>("glCreateShader");
+    auto shaderSource =
+        glFn<void (*)(uint32_t, int, const char* const*, const int*)>("glShaderSource");
+    auto compileShader = glFn<void (*)(uint32_t)>("glCompileShader");
+    auto getShaderiv = glFn<void (*)(uint32_t, uint32_t, int*)>("glGetShaderiv");
+    auto createProgram = glFn<uint32_t (*)()>("glCreateProgram");
+    auto attachShader = glFn<void (*)(uint32_t, uint32_t)>("glAttachShader");
+    auto bindAttrib = glFn<void (*)(uint32_t, uint32_t, const char*)>("glBindAttribLocation");
+    auto linkProgram = glFn<void (*)(uint32_t)>("glLinkProgram");
+    auto getProgramiv = glFn<void (*)(uint32_t, uint32_t, int*)>("glGetProgramiv");
+    auto uniformLocation = glFn<int (*)(uint32_t, const char*)>("glGetUniformLocation");
+    if (!createShader || !shaderSource || !compileShader || !getShaderiv || !createProgram ||
+        !attachShader || !bindAttrib || !linkProgram || !getProgramiv || !uniformLocation) {
+        setError(
+            "the driver has no OpenGL ES 2.0 shader support, so ES 1.1 fixed function "
+            "cannot be emulated over it");
+        return none;
+    }
+    // A shader that fails to compile is reported with the driver's own info log: this runs on
+    // devices nobody can attach a debugger to, so the message is the only evidence there is.
+    auto infoLog = glFn<void (*)(uint32_t, int, int*, char*)>("glGetShaderInfoLog");
+    const auto compile = [&](uint32_t type, const std::string& source) -> uint32_t {
+        const uint32_t shader = createShader(type);
+        if (!shader) return 0;
+        const char* text = source.c_str();
+        shaderSource(shader, 1, &text, nullptr);
+        compileShader(shader);
+        int ok = 0;
+        getShaderiv(shader, GL_COMPILE_STATUS, &ok);
+        if (ok) return shader;
+        std::string detail = "a generated shader did not compile";
+        if (infoLog) {
+            char buffer[1024] = {};
+            infoLog(shader, int(sizeof(buffer)), nullptr, buffer);
+            detail += ": ";
+            detail += buffer;
+        }
+        setError(detail);
+        return 0;
+    };
+
+    std::string vertexSource = "precision highp float;\nattribute vec4 aPosition;\n";
+    if (colour.enabled) vertexSource += "attribute vec4 aColor;\n";
+    if (texSource == 1) vertexSource += "attribute vec2 aTexCoord;\n";
+    vertexSource += "uniform mat4 uMvp;\nuniform vec4 uColor;\n";
+    if (texSource) vertexSource += "uniform mat4 uTexMatrix;\n";
+    vertexSource += "varying vec4 vColor;\n";
+    if (texSource) vertexSource += "varying vec2 vTexCoord;\n";
+    vertexSource += "void main() {\n  gl_Position = uMvp * aPosition;\n  vColor = ";
+    vertexSource += colour.enabled ? "aColor;\n" : "uColor;\n";
+    if (texSource == 1)
+        vertexSource += "  vTexCoord = (uTexMatrix * vec4(aTexCoord, 0.0, 1.0)).st;\n";
+    else if (texSource == 2)
+        vertexSource += "  vTexCoord = (uTexMatrix * vec4(0.0, 0.0, 0.0, 1.0)).st;\n";
+    vertexSource += "}\n";
+
+    std::string fragmentSource = "precision highp float;\nvarying vec4 vColor;\n";
+    if (texSource) {
+        fragmentSource += "varying vec2 vTexCoord;\nuniform sampler2D uTexture;\n";
+        fragmentSource += "void main() {\n  gl_FragColor = texture2D(uTexture, vTexCoord)";
+        // ES 1.1 texture environment: replace ignores the incoming colour entirely, modulate
+        // multiplies. Anything else is approximated by modulate and counted.
+        fragmentSource += replace ? ";\n}\n" : " * vColor;\n}\n";
+    } else {
+        fragmentSource += "void main() {\n  gl_FragColor = vColor;\n}\n";
+    }
+
+    const uint32_t vertexShader = compile(GL_VERTEX_SHADER, vertexSource);
+    const uint32_t fragmentShader = vertexShader ? compile(GL_FRAGMENT_SHADER, fragmentSource) : 0;
+    if (!vertexShader || !fragmentShader) return none;
+    const uint32_t id = createProgram();
+    if (!id) return none;
+    attachShader(id, vertexShader);
+    attachShader(id, fragmentShader);
+    // Bound by name before linking, so a draw never has to ask where an attribute landed.
+    bindAttrib(id, AttributePosition, "aPosition");
+    if (colour.enabled) bindAttrib(id, AttributeColour, "aColor");
+    if (texSource == 1) bindAttrib(id, AttributeTexCoord, "aTexCoord");
+    linkProgram(id);
+    int linked = 0;
+    getProgramiv(id, GL_LINK_STATUS, &linked);
+    auto deleteShader = glFn<void (*)(uint32_t)>("glDeleteShader");
+    if (deleteShader) {
+        deleteShader(vertexShader);
+        deleteShader(fragmentShader);
+    }
+    if (!linked) {
+        setError("a generated program did not link");
+        return none;
+    }
+    Program program;
+    program.id = id;
+    program.mvp = uniformLocation(id, "uMvp");
+    program.colour = uniformLocation(id, "uColor");
+    program.textureMatrix = uniformLocation(id, "uTexMatrix");
+    program.texture = uniformLocation(id, "uTexture");
+    auto inserted = programs.emplace(key, program);
+    return inserted.first->second;
+}
+
+void GLES::useFixedFunctionProgram(uint32_t program) {
+    if (activeProgram == program) return;
+    auto useProgram = glFn<void (*)(uint32_t)>("glUseProgram");
+    if (useProgram) useProgram(program);
+    activeProgram = program;
+}
+
+bool GLES::bindFixedFunctionArray(const ClientArray& array, uint32_t location, uint32_t& buffer,
+                                  bool normalise, size_t count) {
+    auto bindBuffer = glFn<void (*)(uint32_t, uint32_t)>("glBindBuffer");
+    auto attrib = glFn<void (*)(uint32_t, int, uint32_t, uint32_t, int, const void*)>(
+        "glVertexAttribPointer");
+    auto enableAttrib = glFn<void (*)(uint32_t)>("glEnableVertexAttribArray");
+    if (!bindBuffer || !attrib || !enableAttrib) return false;
+    if (array.buffered && boundArrayBuffer) {
+        // The guest's own buffer object holds the array and the pointer is an offset into it,
+        // so nothing is copied: the driver already has the bytes.
+        bindBuffer(GL_ARRAY_BUFFER, boundArrayBuffer);
+        attrib(location, array.size, array.type, normalise ? 1u : 0u, array.stride,
+               reinterpret_cast<const void*>(uintptr_t(array.pointer)));
+        enableAttrib(location);
+        return true;
+    }
+    const size_t element = typeSize(array.type);
+    if (!element || !count || array.size < 1 || array.size > 4) return false;
+    const size_t components = size_t(array.size);
+    const size_t stride = array.stride ? size_t(array.stride) : components * element;
+    if (stride < components * element) return false;
+    const size_t bytes = stride * (count - 1) + components * element;
+    if (bytes > 256 * 1024 * 1024) return false;
+    std::vector<uint8_t> copy(bytes, 0);
+    if (array.pointer) memory.read(array.pointer, copy.data(), bytes);
+    uint32_t type = array.type;
+    if (type == GL_FIXED) {
+        // ES 1.1's 16.16 fixed point has no ES 2.0 attribute type, so it is widened here
+        // rather than handed to a driver that would reject it.
+        std::vector<float> widened(bytes / 4);
+        for (size_t at = 0; at < widened.size(); at++) {
+            int32_t fixed = 0;
+            std::memcpy(&fixed, &copy[at * 4], 4);
+            widened[at] = float(fixed) / 65536.0f;
+        }
+        std::memcpy(copy.data(), widened.data(), widened.size() * 4);
+        type = GL_FLOAT;
+    }
+    if (!buffer) {
+        auto gen = glFn<void (*)(int, uint32_t*)>("glGenBuffers");
+        if (!gen) return false;
+        gen(1, &buffer);
+    }
+    auto bufferData = glFn<void (*)(uint32_t, size_t, const void*, uint32_t)>("glBufferData");
+    if (!bufferData || !buffer) return false;
+    bindBuffer(GL_ARRAY_BUFFER, buffer);
+    bufferData(GL_ARRAY_BUFFER, copy.size(), copy.data(), GL_STREAM_DRAW);
+    attrib(location, array.size, type, normalise ? 1u : 0u, int(stride), nullptr);
+    enableAttrib(location);
+    return true;
+}
+
+bool GLES::drawFixedFunction(uint32_t mode, int first, int count, uint32_t indexType,
+                             uint32_t indices) {
+    const Program& program = fixedFunctionProgram();
+    if (!program.id) return false;
+    useFixedFunctionProgram(program.id);
+    auto uniformMatrix = glFn<void (*)(int, int, uint32_t, const float*)>("glUniformMatrix4fv");
+    auto uniform4f = glFn<void (*)(int, float, float, float, float)>("glUniform4f");
+    auto uniform1i = glFn<void (*)(int, int)>("glUniform1i");
+    auto disableAttrib = glFn<void (*)(uint32_t)>("glDisableVertexAttribArray");
+    auto bindBuffer = glFn<void (*)(uint32_t, uint32_t)>("glBindBuffer");
+    if (!uniformMatrix || !uniform4f || !disableAttrib || !bindBuffer) return false;
+
+    float mvp[16];
+    multiplyMatrices(projection.data(), modelview.data(), mvp);
+    if (program.mvp >= 0) uniformMatrix(program.mvp, 1, 0, mvp);
+    if (program.colour >= 0)
+        uniform4f(program.colour, currentColour[0], currentColour[1], currentColour[2],
+                  currentColour[3]);
+    if (program.textureMatrix >= 0)
+        uniformMatrix(program.textureMatrix, 1, 0, textureMatrix.data());
+    if (program.texture >= 0 && uniform1i) uniform1i(program.texture, activeTextureUnit);
+    if (activeTextureUnit != 0) extraTextureUnits++;
+    if (textureEnvMode != GL_MODULATE_TEXTURE_ENV && textureEnvMode != GL_REPLACE_TEXTURE_ENV)
+        approximatedTexEnv++;
+
+    // An indexed draw reaches as far as its largest index; a non-indexed one to first + count.
+    std::vector<uint8_t> indexCopy;
+    size_t vertices = size_t(first) + size_t(count);
+    if (indexType) {
+        const size_t element = typeSize(indexType);
+        if (!element) {
+            setError("index type is not a GL type");
+            return false;
+        }
+        if (boundElementBuffer) {
+            // The driver holds the indices and, with a buffer bound, the arrays too: nothing
+            // is copied on this path, so the vertex count is not needed.
+            vertices = 0;
+        } else {
+            indexCopy.resize(size_t(count) * element);
+            if (indices) memory.read(indices, indexCopy.data(), indexCopy.size());
+            vertices = largestIndex(indexCopy, element) + 1;
+            if (vertices > VertexBudget) {
+                setError("an index reaches more vertices than the copy budget");
+                return false;
+            }
+        }
+    }
+    if (!vertex.enabled) {
+        setError("a draw was issued with no vertex array enabled");
+        return false;
+    }
+    if (!bindFixedFunctionArray(vertex, AttributePosition, streamBuffers[0], false,
+                                vertices ? vertices : 1))
+        return false;
+    if (colour.enabled && !bindFixedFunctionArray(colour, AttributeColour, streamBuffers[1], true,
+                                                  vertices ? vertices : 1))
+        return false;
+    const auto tex = texCoord.find(clientTextureUnit);
+    if (texture2dEnabled && tex != texCoord.end() && tex->second.enabled &&
+        !bindFixedFunctionArray(tex->second, AttributeTexCoord, streamBuffers[2], false,
+                                vertices ? vertices : 1))
+        return false;
+    // Anything the chosen program does not read must not be left enabled from a previous draw
+    // with a different variant: an enabled attribute with no array behind it is a driver
+    // error, not a harmless leftover.
+    if (!colour.enabled) disableAttrib(AttributeColour);
+    if (!(texture2dEnabled && tex != texCoord.end() && tex->second.enabled))
+        disableAttrib(AttributeTexCoord);
+    disableAttrib(AttributeNormal);
+
+    if (indexType) {
+        auto draw = glFn<void (*)(uint32_t, int, uint32_t, const void*)>("glDrawElements");
+        if (!draw) return false;
+        if (boundElementBuffer) {
+            bindBuffer(GL_ELEMENT_ARRAY_BUFFER, boundElementBuffer);
+            draw(mode, count, indexType, reinterpret_cast<const void*>(uintptr_t(indices)));
+        } else {
+            auto bufferData =
+                glFn<void (*)(uint32_t, size_t, const void*, uint32_t)>("glBufferData");
+            if (!bufferData) return false;
+            if (!indexBuffer) {
+                auto gen = glFn<void (*)(int, uint32_t*)>("glGenBuffers");
+                if (!gen) return false;
+                gen(1, &indexBuffer);
+            }
+            bindBuffer(GL_ELEMENT_ARRAY_BUFFER, indexBuffer);
+            bufferData(GL_ELEMENT_ARRAY_BUFFER, indexCopy.size(), indexCopy.data(), GL_STREAM_DRAW);
+            draw(mode, count, indexType, nullptr);
+        }
+    } else {
+        // No element array is read by a non-indexed draw, and a stale binding would make the
+        // driver look for one.
+        bindBuffer(GL_ELEMENT_ARRAY_BUFFER, 0);
+        auto draw = glFn<void (*)(uint32_t, int, int)>("glDrawArrays");
+        if (!draw) return false;
+        draw(mode, first, count);
+    }
+    return true;
+}
+
 void GLES::setClientApi(int api) {
     api = api == 2 ? 2 : 1;
     if (api == clientApi) return;
@@ -744,6 +1326,9 @@ bool GLES::makeCurrent() {
             return false;
         }
     }
+    // With no ES 1.1 frontend to hand over, the context is ES 2.0 and the fixed-function
+    // state lives in this bridge; otherwise the title gets the API it was written for.
+    const int contextApi = fixedFunction ? 2 : clientApi;
     if (!context) {
         // ES 1.1 and ES 2.0 are separate client APIs in EGL; a 1.1 title draws through
         // fixed-function state, so it must be given the API it was written for.
@@ -762,7 +1347,7 @@ bool GLES::makeCurrent() {
             const Int attributes[] = {EGL_SURFACE_TYPE,
                                       EGL_PBUFFER_BIT,
                                       EGL_RENDERABLE_TYPE,
-                                      clientApi == 2 ? EGL_OPENGL_ES2_BIT : EGL_OPENGL_ES_BIT,
+                                      contextApi == 2 ? EGL_OPENGL_ES2_BIT : EGL_OPENGL_ES_BIT,
                                       EGL_RED_SIZE,
                                       8,
                                       EGL_GREEN_SIZE,
@@ -778,7 +1363,7 @@ bool GLES::makeCurrent() {
             chooseConfig(display, attributes, &config, 1, &count);
             if (!count) config = nullptr;
         }
-        const Int contextAttributes[] = {EGL_CONTEXT_CLIENT_VERSION, clientApi, EGL_NONE};
+        const Int contextAttributes[] = {EGL_CONTEXT_CLIENT_VERSION, contextApi, EGL_NONE};
         context = createContext(display, config, nullptr, contextAttributes);
         if (!context) {
             setError("eglCreateContext failed");
@@ -802,9 +1387,9 @@ bool GLES::makeCurrent() {
         auto createPbuffer =
             egl<Surface (*)(Display, Config, const Int*)>("eglCreatePbufferSurface");
         if (chooseConfig && createPbuffer) {
-            const Int configAttributes[] = {EGL_SURFACE_TYPE, EGL_PBUFFER_BIT, EGL_RENDERABLE_TYPE,
-                                            clientApi == 2 ? EGL_OPENGL_ES2_BIT : EGL_OPENGL_ES_BIT,
-                                            EGL_NONE};
+            const Int configAttributes[] = {
+                EGL_SURFACE_TYPE, EGL_PBUFFER_BIT, EGL_RENDERABLE_TYPE,
+                contextApi == 2 ? EGL_OPENGL_ES2_BIT : EGL_OPENGL_ES_BIT, EGL_NONE};
             Config config = nullptr;
             Int count = 0;
             chooseConfig(display, configAttributes, &config, 1, &count);

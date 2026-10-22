@@ -30,7 +30,12 @@ The PC artifact is a Linux CPU diagnostic build, not a desktop emulator GUI.
 
 * Native Android library/inspection flow, settings, diagnostics and log export.
 * PodNative-owned graphics backend; source-pinned upstream ANGLE embedded Vulkan
-  integration, with explicit failure and no disguised native-GLES fallback.
+  integration, with explicit failure. Bundled ANGLE is the default driver and
+  Settings ▸ "Native OpenGL ES" prefers the device's own driver instead; the launch
+  report names the libraries that answered, so the choice is never silent. Titles
+  written for OpenGL ES 1.1 are served by fixed-function emulation over ES 2.0,
+  because ANGLE has no ES 1.1 frontend — see
+  [ANGLE integration](docs/ANGLE_INTEGRATION.md).
 * Shader-based animated textured cube with depth testing and reusable resources.
 * Bounded ARM32 Mach-O inspection and temporary validated guest-memory mapping that accepts
   **ARMv6, ARMv7 and ARMv7s** slices and PIE images, and runs each image with instruction

@@ -86,6 +86,7 @@ std::string attemptLaunch(const uint8_t* data, size_t size, const std::string& b
         if (options.logLines >= 0) services.setLogCapacity(options.verbose ? 20000 : 512);
         services.setVerbose(options.verbose);
         services.setPrecise(options.precise);
+        services.setNativeGles(options.nativeGles);
         services.setEnvironment({{"HOME", "/var/mobile"},
                                  {"TMPDIR", "/var/mobile/Documents"},
                                  {"PATH", "/usr/bin:/bin:/usr/sbin:/sbin"}});

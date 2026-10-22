@@ -63,6 +63,9 @@ public final class MainActivity extends Activity {
         // Verbose logging is a persisted developer switch; applying it before the first
         // launch attempt is what makes it take effect for the game that needs diagnosing.
         NativeBridge.setVerbose(prefs.getBoolean("verboseLogging", false));
+        // Same rule for the GL driver choice: it is read once, when the driver is resolved,
+        // so a switch flipped in Settings has to reach the runtime before the next launch.
+        NativeBridge.setNativeGles(prefs.getBoolean("nativeGles", false));
         dark =
             !getSharedPreferences("radek_settings", MODE_PRIVATE).getBoolean("light_theme", false);
         setTheme(dark ? R.style.AppThemeDark : R.style.AppTheme);
@@ -701,6 +704,13 @@ public final class MainActivity extends Activity {
         graphics.addView(text(
             "Real upstream ANGLE is included. AnyiOS asks for the Vulkan backend first and only uses ANGLE's OpenGL ES backend when the driver refuses Vulkan; the backend in use is always named, never swapped silently. No root access, developer options or system driver changes are involved.",
             13, muted, false));
+        gap(graphics, 7);
+        // The bundled driver is the default because one implementation on every device is what
+        // makes a game behave the same everywhere. Turning this on asks for the device's own
+        // driver first, for a game that needs something the bundled one does not provide.
+        settingRow(graphics, "Native OpenGL ES",
+            "Use this device's GPU driver first; bundled ANGLE stays the fallback",
+            prefs.getBoolean("nativeGles", false) ? "On" : "Off", this::toggleNativeGles);
         button(graphics, "Run ANGLE surface test", true, this::launch);
         LinearLayout storage = card(parent);
         storage.addView(text("ON THIS DEVICE", 11, muted, true));
@@ -805,6 +815,23 @@ public final class MainActivity extends Activity {
         Diagnostics.record("Settings",
             on ? "Verbose logging enabled; the next launch report carries the deep trace."
                : "Verbose logging disabled.");
+        home();
+    }
+    /**
+     * Native OpenGL ES asks for this device's own GPU driver before the bundled ANGLE. It is
+     * off by default: one driver implementation on every device is the reason ANGLE is bundled
+     * at all. Either way, a game written for OpenGL ES 1.1 whose fixed-function entry points no
+     * loaded driver exports is served by the runtime emulating them over ES 2.0, and the launch
+     * report names the libraries that answered. Applies to the next launch, because a driver is
+     * resolved once and is not swapped underneath a running game.
+     */
+    private void toggleNativeGles() {
+        boolean on = !prefs.getBoolean("nativeGles", false);
+        prefs.edit().putBoolean("nativeGles", on).apply();
+        NativeBridge.setNativeGles(on);
+        Diagnostics.record("Settings",
+            on ? "Native OpenGL ES enabled; the next launch resolves the device driver first."
+               : "Native OpenGL ES disabled; the next launch uses the bundled ANGLE first.");
         home();
     }
     private void diagnostics(LinearLayout parent) {

@@ -6,6 +6,7 @@
 // artifact ships it so a report can be reproduced without a phone.
 //
 //   guest-runner [--seconds N] [--instructions N] [--verbose] [--precise] [--log-lines N]
+//                [--native-gles]
 //                <bundle.app|executable> [container dir]
 //
 // Without --seconds/--instructions the guest runs until it stops on its own, which is what a
@@ -83,6 +84,10 @@ int main(int argc, char** argv) {
             // Exact PCs in the instruction trace, at roughly a tenth of the execution rate.
             options.precise = true;
             options.verbose = true;
+        } else if (argument == "--native-gles") {
+            // The Settings ▸ "Native OpenGL ES" switch, reproducible on a host: resolve GL
+            // against the machine's own driver first instead of the bundled ANGLE.
+            options.nativeGles = true;
         } else if (argument == "--verbose") {
             // Deep trace: every service call, every unwind decision, every GL error. The
             // report then carries the tail of it, which is what a compatibility report needs.
@@ -97,7 +102,7 @@ int main(int argc, char** argv) {
     }
     if (positional.empty() || positional.size() > 2) {
         std::cerr << "usage: guest-runner [--seconds N] [--instructions N] [--verbose] "
-                     "<bundle.app|executable> [container directory]\n"
+                     "[--native-gles] <bundle.app|executable> [container directory]\n"
                      "  no --seconds/--instructions: run until the guest stops by itself\n";
         return 2;
     }

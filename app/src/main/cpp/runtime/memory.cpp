@@ -268,8 +268,7 @@ void Memory::copyOut(uint32_t address, void* destination, size_t size, uint8_t p
     while (done < size) {
         const uint32_t current = uint32_t(uint64_t(address) + done);
         const auto& s = at(current, permission);
-        const size_t count =
-            std::min(size - done, size_t(s.region.base) + s.region.size - current);
+        const size_t count = std::min(size - done, size_t(s.region.base) + s.region.size - current);
         std::memcpy(out + done, hostAt(s, current), count);
         done += count;
     }
@@ -288,8 +287,8 @@ void Memory::write(uint32_t address, const void* source, size_t size) {
     while (done < size) {
         const uint32_t current = uint32_t(uint64_t(address) + done);
         auto it = std::prev(storage_.upper_bound(current));
-        const size_t count =
-            std::min(size - done, size_t(it->second.region.base) + it->second.region.size - current);
+        const size_t count = std::min(
+            size - done, size_t(it->second.region.base) + it->second.region.size - current);
         std::memcpy(hostAt(it->second, current), input + done, count);
         if (it->second.region.permissions & Execute) {
             if (!touchedCode) {
@@ -311,8 +310,8 @@ void Memory::patch(uint32_t address, const void* source, size_t size) {
     while (done < size) {
         const uint32_t current = uint32_t(uint64_t(address) + done);
         auto it = std::prev(storage_.upper_bound(current));
-        const size_t count =
-            std::min(size - done, size_t(it->second.region.base) + it->second.region.size - current);
+        const size_t count = std::min(
+            size - done, size_t(it->second.region.base) + it->second.region.size - current);
 #ifdef PODNATIVE_MEMORY_ARENA
         // A loader patch of a read-only (usually executable) region has to open the host
         // pages it touches and no others: an image binds hundreds of stubs, and reopening

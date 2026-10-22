@@ -271,12 +271,11 @@ std::string describeRun(GuestRun& run) {
                                          : "direct (flat arena, checked page table)")
                 : "checked callbacks")
         << ", exclusive monitor " << (run.engine.exclusiveMonitor ? "on" : "off") << ", "
-        << run.engine.fullCacheClears << " full code-cache clears, "
-        << run.engine.invalidatedRanges << " invalidated code range(s), "
-        << run.engine.exclusiveStores << " exclusive store(s), " << run.engine.hintInstructions
-        << " hint instruction(s) of which " << run.engine.waitInstructions << " wait(s), "
-        << run.engine.callbackReads << " checked read(s) and " << run.engine.callbackWrites
-        << " checked write(s)";
+        << run.engine.fullCacheClears << " full code-cache clears, " << run.engine.invalidatedRanges
+        << " invalidated code range(s), " << run.engine.exclusiveStores << " exclusive store(s), "
+        << run.engine.hintInstructions << " hint instruction(s) of which "
+        << run.engine.waitInstructions << " wait(s), " << run.engine.callbackReads
+        << " checked read(s) and " << run.engine.callbackWrites << " checked write(s)";
     // "pc=0x47054" alone does not tell anyone what the guest was doing; the nearest
     // preceding function symbol does.
     if (!run.pcSymbol.empty()) out << " symbol=" << run.pcSymbol;

@@ -47,37 +47,37 @@ constexpr uint32_t GuestEntry = 0x1100;
 std::vector<uint8_t> buildPrograms(uint32_t gate) {
     std::vector<uint8_t> code(4096, 0);
     auto movAddress = [&code](size_t at, uint32_t registerIndex, uint32_t value) {
-        put(code, at, 0xe3000000u | ((value & 0xf000u) << 4) | (value & 0xfffu) |
-                        (registerIndex << 12));
+        put(code, at,
+            0xe3000000u | ((value & 0xf000u) << 4) | (value & 0xfffu) | (registerIndex << 12));
         put(code, at + 4,
             0xe3400000u | (((value >> 16) & 0xf000u) << 4) | ((value >> 16) & 0xfffu) |
                 (registerIndex << 12));
     };
-    movAddress(0x000, 12, gate);        // r12 = host memcpy gate
-    movAddress(0x008, 8, WalkBase);     // r8 = walk base
-    movAddress(0x010, 0, CopyTarget);   // r0 = memcpy destination
-    movAddress(0x018, 1, CopySource);   // r1 = memcpy source
-    put(code, 0x020, 0xe3a02008u);      // mov r2, #8
-    put(code, 0x024, 0xe3a04000u);      // mov r4, #0
-    put(code, 0x028, 0xe1a06008u);      // mov r6, r8            <- outer loop
-    put(code, 0x02c, 0xe30053e8u);      // movw r5, #1000
-    put(code, 0x030, 0xe4963004u);      // ldr r3, [r6], #4      <- inner loop
-    put(code, 0x034, 0xe0844003u);      // add r4, r4, r3
-    put(code, 0x038, 0xe5064008u);      // str r4, [r6, #-8]
-    put(code, 0x03c, 0xe2555001u);      // subs r5, r5, #1
-    put(code, 0x040, 0x1afffffau);      // bne inner
-    put(code, 0x044, 0xe12fff3cu);      // blx r12               <- one host service call
-    put(code, 0x048, 0xeafffff6u);      // b outer
-    movAddress(0x100, 8, WalkBase);     // r8 = walk base
-    put(code, 0x108, 0xe3a04000u);      // mov r4, #0
-    put(code, 0x10c, 0xe1a06008u);      // mov r6, r8            <- outer loop
-    put(code, 0x110, 0xe30053e8u);      // movw r5, #1000
-    put(code, 0x114, 0xe4963004u);      // ldr r3, [r6], #4      <- inner loop
-    put(code, 0x118, 0xe0844003u);      // add r4, r4, r3
-    put(code, 0x11c, 0xe5064008u);      // str r4, [r6, #-8]
-    put(code, 0x120, 0xe2555001u);      // subs r5, r5, #1
-    put(code, 0x124, 0x1afffffau);      // bne inner
-    put(code, 0x128, 0xeafffff7u);      // b outer
+    movAddress(0x000, 12, gate);       // r12 = host memcpy gate
+    movAddress(0x008, 8, WalkBase);    // r8 = walk base
+    movAddress(0x010, 0, CopyTarget);  // r0 = memcpy destination
+    movAddress(0x018, 1, CopySource);  // r1 = memcpy source
+    put(code, 0x020, 0xe3a02008u);     // mov r2, #8
+    put(code, 0x024, 0xe3a04000u);     // mov r4, #0
+    put(code, 0x028, 0xe1a06008u);     // mov r6, r8            <- outer loop
+    put(code, 0x02c, 0xe30053e8u);     // movw r5, #1000
+    put(code, 0x030, 0xe4963004u);     // ldr r3, [r6], #4      <- inner loop
+    put(code, 0x034, 0xe0844003u);     // add r4, r4, r3
+    put(code, 0x038, 0xe5064008u);     // str r4, [r6, #-8]
+    put(code, 0x03c, 0xe2555001u);     // subs r5, r5, #1
+    put(code, 0x040, 0x1afffffau);     // bne inner
+    put(code, 0x044, 0xe12fff3cu);     // blx r12               <- one host service call
+    put(code, 0x048, 0xeafffff6u);     // b outer
+    movAddress(0x100, 8, WalkBase);    // r8 = walk base
+    put(code, 0x108, 0xe3a04000u);     // mov r4, #0
+    put(code, 0x10c, 0xe1a06008u);     // mov r6, r8            <- outer loop
+    put(code, 0x110, 0xe30053e8u);     // movw r5, #1000
+    put(code, 0x114, 0xe4963004u);     // ldr r3, [r6], #4      <- inner loop
+    put(code, 0x118, 0xe0844003u);     // add r4, r4, r3
+    put(code, 0x11c, 0xe5064008u);     // str r4, [r6, #-8]
+    put(code, 0x120, 0xe2555001u);     // subs r5, r5, #1
+    put(code, 0x124, 0x1afffffau);     // bne inner
+    put(code, 0x128, 0xeafffff7u);     // b outer
     return code;
 }
 
@@ -132,8 +132,7 @@ int runProbe(const char* name, uint32_t entry, double seconds, uint64_t slice) {
         }
         cpu.setState(current);
         hostNanoseconds +=
-            std::chrono::duration<double, std::nano>(std::chrono::steady_clock::now() -
-                                                     callStarted)
+            std::chrono::duration<double, std::nano>(std::chrono::steady_clock::now() - callStarted)
                 .count();
     }
     const double wall = elapsed(started);

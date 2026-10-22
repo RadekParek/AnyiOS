@@ -169,7 +169,7 @@ class Cpu::Impl final : public Dynarmic::A32::UserCallbacks {
     struct sigaction previousSegv{}, previousBus{};
     void installCrashReporter() {
         active = this;
-        struct sigaction action {};
+        struct sigaction action{};
         action.sa_sigaction = &Impl::reportCrash;
         action.sa_flags = SA_SIGINFO;
         sigemptyset(&action.sa_mask);
@@ -182,12 +182,12 @@ class Cpu::Impl final : public Dynarmic::A32::UserCallbacks {
         // memory it recovers guest faults itself. Installing in the other order would let
         // this reporter turn a recovered guest access into a host crash.
         installCrashReporter();
-        Dynarmic::A32::UserConfig config {};
+        Dynarmic::A32::UserConfig config{};
         config.callbacks = this;
         // iOS "armv6" devices are ARM11 cores, i.e. ARMv6K. Dynarmic has no plain v6
         // selector, and v6K is the superset those binaries were built against.
-        config.arch_version =
-            arch == IsaArch::ArmV6 ? Dynarmic::A32::ArchVersion::v6K : Dynarmic::A32::ArchVersion::v7;
+        config.arch_version = arch == IsaArch::ArmV6 ? Dynarmic::A32::ArchVersion::v6K
+                                                     : Dynarmic::A32::ArchVersion::v7;
         config.check_halt_on_memory_access = true;
         config.code_cache_size = CodeCacheBytes;
         // LDREX/STREX are how iOS 3-era libSystem builds every atomic and spin lock. They
@@ -223,7 +223,8 @@ class Cpu::Impl final : public Dynarmic::A32::UserCallbacks {
             // and it cannot be used at all while a page is both writable and executable:
             // a guest store into such a page has to reach the callback that invalidates the
             // translated code for it.
-            counters.fastMemory = memory.directProtectionIsExact() && !memory.hasWritableExecutable();
+            counters.fastMemory =
+                memory.directProtectionIsExact() && !memory.hasWritableExecutable();
             if (counters.fastMemory)
                 config.fastmem_pointer = reinterpret_cast<uintptr_t>(memory.directBase());
         }
@@ -262,7 +263,7 @@ class Cpu::Impl final : public Dynarmic::A32::UserCallbacks {
     T read(uint32_t address) {
         if (stopped) return 0;
         counters.callbackReads++;
-        uint8_t bytes[sizeof(T)] {};
+        uint8_t bytes[sizeof(T)]{};
         try {
             memory.read(address, bytes, sizeof(T));
         } catch (const Error& e) {
@@ -376,40 +377,40 @@ class Cpu::Impl final : public Dynarmic::A32::UserCallbacks {
     void ExceptionRaised(uint32_t pc, Dynarmic::A32::Exception exception) override {
         using Dynarmic::A32::Exception;
         switch (exception) {
-        case Exception::WaitForEvent:
-        case Exception::WaitForInterrupt:
-            // A wait hint says the guest has nothing to do until an event or interrupt this
-            // runtime does not deliver. Counted separately because a title that parks a
-            // thread here is idle, not stuck, and the scheduler already switches away from
-            // it at the next slice boundary.
-            counters.waitInstructions++;
-            counters.hintInstructions++;
-            return;
-        case Exception::Yield:
-        case Exception::SendEvent:
-        case Exception::SendEventLocal:
-        case Exception::PreloadData:
-        case Exception::PreloadDataWithIntentToWrite:
-        case Exception::PreloadInstruction:
-            // Hints. On the device these are low-power or scheduling hints, never faults,
-            // and the engine has already moved the PC past them: a spin loop that yields
-            // must keep spinning, not stop the run. Counted so a report can show how often
-            // the guest asked to yield.
-            counters.hintInstructions++;
-            return;
-        case Exception::NoExecuteFault:
-            // The instruction fetch already reported the exact reason (unmapped, null or a
-            // page without execute permission); this only makes sure the run stops.
-            fault("MEMORY_ACCESS", "instruction fetch from a page that cannot be executed", pc);
-            return;
-        case Exception::Breakpoint:
-        case Exception::UndefinedInstruction:
-        case Exception::UnpredictableInstruction:
-        case Exception::DecodeError:
-        default:
-            fault("CPU_EXCEPTION", "Dynarmic exception " + std::to_string(static_cast<int>(exception)),
-                  pc);
-            return;
+            case Exception::WaitForEvent:
+            case Exception::WaitForInterrupt:
+                // A wait hint says the guest has nothing to do until an event or interrupt this
+                // runtime does not deliver. Counted separately because a title that parks a
+                // thread here is idle, not stuck, and the scheduler already switches away from
+                // it at the next slice boundary.
+                counters.waitInstructions++;
+                counters.hintInstructions++;
+                return;
+            case Exception::Yield:
+            case Exception::SendEvent:
+            case Exception::SendEventLocal:
+            case Exception::PreloadData:
+            case Exception::PreloadDataWithIntentToWrite:
+            case Exception::PreloadInstruction:
+                // Hints. On the device these are low-power or scheduling hints, never faults,
+                // and the engine has already moved the PC past them: a spin loop that yields
+                // must keep spinning, not stop the run. Counted so a report can show how often
+                // the guest asked to yield.
+                counters.hintInstructions++;
+                return;
+            case Exception::NoExecuteFault:
+                // The instruction fetch already reported the exact reason (unmapped, null or a
+                // page without execute permission); this only makes sure the run stops.
+                fault("MEMORY_ACCESS", "instruction fetch from a page that cannot be executed", pc);
+                return;
+            case Exception::Breakpoint:
+            case Exception::UndefinedInstruction:
+            case Exception::UnpredictableInstruction:
+            case Exception::DecodeError:
+            default:
+                fault("CPU_EXCEPTION",
+                      "Dynarmic exception " + std::to_string(static_cast<int>(exception)), pc);
+                return;
         }
     }
     void AddTicks(uint64_t ticks) override {

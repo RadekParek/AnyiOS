@@ -65,6 +65,10 @@ class Services final {
             if (objcTrace.size() < objcTraceCapacity) objcTrace.push_back(line);
         } : std::function<void(const std::string&)>());
     }
+    // Settings ▸ "Native OpenGL ES": the device's own driver is tried before the bundled
+    // ANGLE. Off by default, because one driver on every device is the point of bundling it.
+    // Read before the driver is resolved; a loaded driver is not swapped under a running guest.
+    void setNativeGles(bool on) { gles.setPreferNativeDriver(on); }
     bool isVerbose() const { return verbose; }
     const std::vector<std::string>& objectiveCTrace() const { return objcTrace; }
     void setPrecise(bool on) { precise = on; }
