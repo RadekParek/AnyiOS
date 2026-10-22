@@ -17,8 +17,43 @@ jobs:
       - uses: actions/setup-python@v6
         with:
           python-version: '3.12'
+          cache: pip
       - name: Install host test tools
         run: python3 -m pip install 'capstone==5.0.7' 'unicorn==2.1.4' pyyaml
+      # Both suites below compile the pinned dynarmic tree from scratch on every run.
+      # ccache is content-addressed, so a wide restore key still only ever returns an
+      # object file that was produced from identical preprocessed input.
+      - name: Restore ccache
+        uses: actions/cache@v4
+        with:
+          path: ~/.ccache
+          key: ${{ runner.os }}-ccache-${{ hashFiles('third_party/dynarmic/revision.txt', 'third_party/converter-runtime/dynarmic-revision.txt') }}-${{ github.sha }}
+          restore-keys: |
+            ${{ runner.os }}-ccache-${{ hashFiles('third_party/dynarmic/revision.txt', 'third_party/converter-runtime/dynarmic-revision.txt') }}-
+            ${{ runner.os }}-ccache-
+      - name: Enable ccache for the pinned CPU builds
+        run: |
+          if ! command -v ccache >/dev/null; then
+            echo 'ccache is not available on this runner; compiling without it.' >&2
+            exit 0
+          fi
+          mkdir -p ~/.ccache "$RUNNER_TEMP/ccache-bin"
+          for name in cc gcc g++ c++ clang clang++; do
+            ln -sf "$(command -v ccache)" "$RUNNER_TEMP/ccache-bin/$name"
+          done
+          echo "$RUNNER_TEMP/ccache-bin" >> "$GITHUB_PATH"
+          echo "CCACHE_DIR=$HOME/.ccache" >> "$GITHUB_ENV"
+          echo 'CCACHE_COMPILERCHECK=content' >> "$GITHUB_ENV"
+          echo 'CCACHE_NOHASHDIR=1' >> "$GITHUB_ENV"
+          ccache --max-size=2G >/dev/null
+      - name: Cache pinned CPU sources
+        uses: actions/cache@v4
+        with:
+          path: |
+            .local/deps
+            .local/boost-headers
+            .local/converter-dynarmic
+          key: ${{ runner.os }}-cpu-sources-${{ hashFiles('third_party/dynarmic/revision.txt', 'third_party/dynarmic/boost-revision.txt', 'third_party/dynarmic/patches/*', 'third_party/converter-runtime/dynarmic-revision.txt') }}
       - name: Host runtime suites (sanitizers, strict warnings)
         run: |
           mkdir -p .local/logs

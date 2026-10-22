@@ -47,6 +47,22 @@ Display work: games request landscape (`SCREEN_ORIENTATION_LANDSCAPE`, the lands
 holding position an iPhone title expects) instead of starting whichever way the phone
 happened to lie, and the debug console starts hidden — it is opt-in from Settings.
 
+### Faster pipeline
+
+The same checks now take much less wall clock:
+
+* The PC job restores the pinned dynarmic/Boost/converter source trees (~1 min each run)
+  and compiles both suites through a content-addressed ccache, so unchanged objects are
+  never rebuilt.
+* The Android job reuses those sources, keeps the existing verified ANGLE cache, and runs
+  Gradle with the build cache and parallel module execution instead of re-running task
+  outputs it already produced.
+* `scripts/test-host.sh` builds its fourteen sanitizer binaries and its strict-warning
+  sweep in parallel (`HOST_TEST_JOBS` caps it), which took the suite from ~110 s to ~57 s
+  here, and both workflows no longer run the same host suite twice.
+* Branch pushes no longer trigger a second full run of the same two jobs that their pull
+  request already starts.
+
 Evidence: `scripts/test-host.sh` is green end to end (loader/Mach-O fuzz, dyld, export graph,
 libc, C++, audio, fs, Objective-C, UIKit bootstrap); both test games the user added to
 `tests/` load through the same path the app uses (fat slice selection included): AngryBirds
