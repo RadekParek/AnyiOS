@@ -729,7 +729,29 @@ bool GLES::makeCurrent() {
         return false;
     }
     if (getCurrentContext && getCurrentContext() == context) return true;
-    if (!makeCurrentFn(display, nullptr, nullptr, context)) {
+    if (makeCurrentFn(display, nullptr, nullptr, context)) return true;
+    // Not every driver accepts a surfaceless context (ANGLE's Android backend included).
+    // The guest renders into a framebuffer object, so a one-pixel pbuffer is enough to make
+    // the context current; -presentRenderbuffer: still reads pixels back from the drawable.
+    if (!surface) {
+        auto chooseConfig =
+            egl<Boolean (*)(Display, const Int*, Config*, Int, Int*)>("eglChooseConfig");
+        auto createPbuffer =
+            egl<Surface (*)(Display, Config, const Int*)>("eglCreatePbufferSurface");
+        if (chooseConfig && createPbuffer) {
+            const Int configAttributes[] = {EGL_SURFACE_TYPE, EGL_PBUFFER_BIT, EGL_RENDERABLE_TYPE,
+                                            clientApi == 2 ? EGL_OPENGL_ES2_BIT : EGL_OPENGL_ES_BIT,
+                                            EGL_NONE};
+            Config config = nullptr;
+            Int count = 0;
+            chooseConfig(display, configAttributes, &config, 1, &count);
+            if (count) {
+                const Int surfaceAttributes[] = {EGL_WIDTH, 1, EGL_HEIGHT, 1, EGL_NONE};
+                surface = createPbuffer(display, config, surfaceAttributes);
+            }
+        }
+    }
+    if (!surface || !makeCurrentFn(display, surface, surface, context)) {
         setError("eglMakeCurrent failed");
         return false;
     }

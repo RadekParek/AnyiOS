@@ -194,6 +194,18 @@ void drawable(const std::string& driver) {
     check(gles.createDrawable(8, 4), "the ES 2.0 drawable is created");
     check(recorded->contextVersion == 2, "the EGL context is OpenGL ES 2.0 after -initWithAPI:2");
     check(recorded->destroyContextCalls == 1, "the ES 1.1 context is destroyed, not leaked");
+
+    // A driver that refuses a surfaceless context still gets one, through a pbuffer; the
+    // guest draws into a framebuffer object, so a one-pixel surface is all that is needed.
+    gles.setClientApi(1);
+    using Refuse = void (*)(int);
+    auto refuse = reinterpret_cast<Refuse>(dlsym(RTLD_DEFAULT, "stub_refuse_surfaceless"));
+    check(refuse != nullptr, "the recording driver can refuse a surfaceless context");
+    refuse(1);
+    check(gles.makeCurrent(), "makeCurrent falls back to a pbuffer surface: " + gles.describe());
+    check(recorded->surfacelessRefusals >= 1, "the surfaceless attempt was made first");
+    check(recorded->pbufferCreated == 1 && recorded->surfaceMadeCurrent >= 1,
+          "a pbuffer surface was created and made current");
 }
 }  // namespace
 

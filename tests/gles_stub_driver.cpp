@@ -16,9 +16,13 @@ static StubState state;
 
 extern "C" StubState* stub_state() { return &state; }
 
+static int refuseSurfaceless = 0;
+extern "C" void stub_refuse_surfaceless(int refuse) { refuseSurfaceless = refuse; }
+
 extern "C" void stub_reset() {
     std::memset(&state, 0, sizeof(state));
     state.getIntegerValue = 0;
+    refuseSurfaceless = 0;
 }
 
 extern "C" {
@@ -46,9 +50,19 @@ void* eglCreateContext(void*, void*, void*, const int* attributes) {
     return ++contextToken ? &contextToken : nullptr;
 }
 void* eglGetCurrentContext() { return currentContext ? &contextToken : nullptr; }
-uint32_t eglMakeCurrent(void*, void*, void*, void* context) {
+uint32_t eglMakeCurrent(void*, void* draw, void*, void* context) {
+    if (!draw && refuseSurfaceless) {
+        state.surfacelessRefusals++;
+        return 0;
+    }
+    if (draw) state.surfaceMadeCurrent++;
     currentContext = context ? 1 : 0;
     return 1;
+}
+void* eglCreatePbufferSurface(void*, void*, const int*) {
+    static int surfaceToken = 1;
+    state.pbufferCreated++;
+    return &surfaceToken;
 }
 uint32_t eglDestroyContext(void*, void*) {
     state.destroyContextCalls++;

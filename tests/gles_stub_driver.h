@@ -25,7 +25,10 @@ struct StubState {
     uint32_t contextVersion;
     int readPixelsCalls, readPixelsWidth, readPixelsHeight;
     int swapCalls, finishCalls;
+    int pbufferCreated, surfaceMadeCurrent, surfacelessRefusals;
     uint32_t getIntegerValue;
 };
 extern "C" StubState* stub_state();
 extern "C" void stub_reset();
+// Makes eglMakeCurrent refuse a surfaceless context, the way ANGLE's Android backend does.
+extern "C" void stub_refuse_surfaceless(int refuse);
