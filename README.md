@@ -44,16 +44,21 @@ The PC artifact is a Linux CPU diagnostic build, not a desktop emulator GUI.
   colour-space lifetime, plus real `printf`/`snprintf` formatting and the core Foundation
   collections, plus the C++ ABI and compiler-runtime entry points that `libstdc++.6` and
   `libgcc_s.1` export, plus real guest stdio over explicitly mounted directories
-  (156 of the reported 438 unique imports); UIKit, EAGL rendering and exception unwinding
-  stay explicit blockers rather than fabricated successes.
+  (the launch report states exact coverage per image; the last recorded device report was
+  156 of 438 unique imports), plus the `UIApplicationMain` bootstrap: argv parsing, the
+  guest delegate instantiated from its own class metadata and its launch callback entered
+  through an owned lifecycle gate. EAGL rendering, the window server and exception
+  unwinding stay explicit blockers rather than fabricated successes.
 * Objective-C runtime core: guest class objects, selectors, `objc_msgSend` dispatch,
   NSObject/NSString/NSAutoreleasePool semantics, and real message dispatch tests.
-* The emulator takes the whole screen while a game boots, keeps the display awake, and
-  resizes in place when the device is rotated (the activity handles the configuration change
-  instead of being rebuilt).
+* The emulator takes the whole screen in landscape while a game boots, keeps the display
+  awake, and resizes in place when the device is rotated (the activity handles the
+  configuration change instead of being rebuilt). The debug console starts hidden and is
+  opt-in from Settings.
 * Launches now run guest code: dyld fixups and legacy symbol stubs are applied, unimplemented imports bind to
   faulting gates, and a launch reports instructions retired plus the first missing API — shown in
-  an Android-style crash screen that names the blocker and the guest PC.
+  an Android-style crash screen that names the blocker, the guest PC and the guest function
+  that PC belongs to.
 * GitHub Actions debug/tagged-release build recipes with artifacts and provenance.
 
 No inherited TouchHLE/HyperHLE renderer. No proprietary game files. No universal

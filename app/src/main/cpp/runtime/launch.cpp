@@ -79,6 +79,9 @@ std::string attemptLaunch(const uint8_t* data, size_t size, const std::string& b
                                  {"PATH", "/usr/bin:/bin:/usr/sbin:/sbin"}});
         if (!bundleHost.empty() && !containerHost.empty())
             services.mountSandbox(bundleHost, containerHost);
+        // The image's own Objective-C classes are registered before the first message is
+        // sent, so a title's delegate and view classes are the objects its own code finds.
+        services.registerGuestClasses(image.objcClasses);
         ExportGraph graph;
         services.install(graph, image.dependencies);
         auto main = graph.addImage("<executable>");
@@ -115,7 +118,8 @@ std::string attemptLaunch(const uint8_t* data, size_t size, const std::string& b
                 ? "LAUNCH_BLOCKED: HLE_GAP: the guest started and stopped at an API that is not "
                   "implemented yet."
                 : "LAUNCH_ATTEMPT: the guest image actually executed.";
-        return header + "\n" + describeRun(run) + "\nDYLD_EXPORT_AUDIT: " + report +
+        return header + "\n" + describeRun(run) + "\nDYLD_EXPORT_AUDIT: " + report + "\n" +
+               services.uiSummary() + "\n" + services.guestClassSummary() +
                "\nGUEST_STORAGE: " + services.storageSummary() + "\n" + image.summary() +
                "\nThis is bounded execution of a validated image, not evidence of gameplay, "
                "rendering or a working app.";

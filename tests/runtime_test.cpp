@@ -64,7 +64,15 @@ int main() {
     fault("MEMORY_ACCESS", [&] { m.fetch32(0x1000); });
     fault("CPU_ALIGNMENT", [&] { m.fetch32(0x3002); });
     fault("CPU_ALIGNMENT", [&] { m.fetch16(0x3001); });
-    fault("MEMORY_UNMAPPED", [&] { m.read32(0); });
+    // A null access is named as a null dereference: "unmapped at 0x0" leaves the reader
+    // guessing whether a missing object, a nil message result or a bad index caused it.
+    try {
+        m.read32(0);
+        assert(false);
+    } catch (const Error& e) {
+        assert(e.code == "MEMORY_NULL" && e.address == 0 &&
+               std::string(e.what()).find("null pointer") != std::string::npos);
+    }
     fault("MEMORY_OVERFLOW", [&] { m.read32(0xffffffff); });
     fault("MEMORY_ALIGNMENT", [&] { m.map({1, 4096, Read, "bad"}); });
     fault("MEMORY_OVERLAP", [&] { m.map({0x1000, 4096, Read, "bad"}); });
@@ -298,6 +306,51 @@ int main() {
             unmapped.stubs = {{0x9000, 16, "_resolved", 1, false}};
             bindLegacyStubs(unmapped, stubGraph, exe, {});
         });
+    }
+    // A stop report says which guest function was running, so the loader keeps the image's
+    // defined code symbols. Local compiler labels are not functions and are dropped.
+    {
+        auto symbolImage = executable();
+        put(symbolImage, 16, 3);
+        put(symbolImage, 20, 104);
+        put(symbolImage, 108, 2);  // LC_SYMTAB
+        put(symbolImage, 112, 24);
+        put(symbolImage, 116, 0x800);  // symoff
+        put(symbolImage, 120, 4);      // nsyms: two functions, one label, one thumb function
+        put(symbolImage, 124, 0x880);  // stroff
+        put(symbolImage, 128, 64);
+        const char* strings = "\0_main\0-[View draw]\0ltmp0\0_thumb_fn\0";
+        std::memcpy(symbolImage.data() + 0x880, strings, 36);
+        size_t record = 0x800;
+        put(symbolImage, record, 1);
+        symbolImage[record + 4] = 0x0f;  // N_SECT | N_EXT
+        symbolImage[record + 5] = 1;
+        put(symbolImage, record + 8, 0x1100);
+        record += 12;
+        put(symbolImage, record, 7);
+        symbolImage[record + 4] = 0x0f;
+        symbolImage[record + 5] = 1;
+        put(symbolImage, record + 8, 0x1200);
+        record += 12;
+        put(symbolImage, record, 20);  // "ltmp0": a branch target, not a function
+        symbolImage[record + 4] = 0x0f;
+        symbolImage[record + 5] = 1;
+        put(symbolImage, record + 8, 0x1300);
+        record += 12;
+        put(symbolImage, record, 26);  // "_thumb_fn", stored with its interworking bit set
+        symbolImage[record + 4] = 0x0f;
+        symbolImage[record + 5] = 1;
+        put(symbolImage, record + 8, 0x1401);
+        auto named = loadMachO(symbolImage.data(), symbolImage.size());
+        assert(named.symbols.size() == 3);
+        assert(named.nearestSymbol(0x1150) == "main");
+        assert(named.nearestSymbol(0x1204) == "-[View draw]");
+        assert(named.nearestSymbol(0x1402) == "thumb_fn");
+        // Before the first symbol, or implausibly far past the last one, no name is invented.
+        assert(named.nearestSymbol(0x1000).empty());
+        assert(named.nearestSymbol(0x200000).empty());
+        auto stripped = executable();
+        assert(loadMachO(stripped.data(), stripped.size()).nearestSymbol(0x1000).empty());
     }
     // Mutate valid headers and command bytes with a low allocation budget. Never execute fuzz data.
     std::mt19937 random(9032);

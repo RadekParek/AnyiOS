@@ -38,11 +38,22 @@ void Memory::map(Region region, const uint8_t* initial, size_t initialSize) {
     ++revision_;
 }
 const Memory::Storage& Memory::at(uint32_t address, uint8_t permission) const {
+    // A null access is reported as such: the guest dereferenced a pointer that a missing
+    // object or a nil message result left at zero. Naming it removes the guesswork a plain
+    // "unmapped at 0x0" leaves behind.
+    auto unmapped = [&](uint32_t fault) -> const Storage& {
+        if (fault < PageSize)
+            throw Error("MEMORY_NULL",
+                        "null pointer dereference: the guest read or wrote address " +
+                            std::to_string(fault) +
+                            ", which no object, allocation or mapped image region owns",
+                        fault);
+        throw Error("MEMORY_UNMAPPED", "unmapped guest access", fault);
+    };
     auto it = storage_.upper_bound(address);
-    if (it == storage_.begin()) throw Error("MEMORY_UNMAPPED", "unmapped guest access", address);
+    if (it == storage_.begin()) unmapped(address);
     --it;
-    if (uint64_t(address) >= uint64_t(it->first) + it->second.region.size)
-        throw Error("MEMORY_UNMAPPED", "unmapped guest access", address);
+    if (uint64_t(address) >= uint64_t(it->first) + it->second.region.size) unmapped(address);
     if ((it->second.region.permissions & permission) != permission)
         throw Error("MEMORY_ACCESS", "guest permission violation", address);
     return it->second;

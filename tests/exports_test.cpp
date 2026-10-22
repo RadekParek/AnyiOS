@@ -154,16 +154,23 @@ int main() {
     assert(pages.read32(0x2000) == 0x2222 && pages.read32(0x2004) == 0x2222);
     assert(pages.read32(0x2008) == 0xdeadbeef);
 
+    // A slot that is both rebased and bound is a lazy pointer, not a conflict: dyld rebases
+    // first and binds second, so the binding is the value the slot must end up with.
+    DyldPlan rebasedAndBound;
+    rebasedAndBound.fixups.push_back({0x2008, true, false, false, 0, 0, ""});
+    rebasedAndBound.fixups.push_back({0x2008, false, false, false, -3, 0, "_mostlyEqual"});
+    rebasedAndBound.applyWithGraph(pages, 0, weakGraph, requester);
+    assert(pages.read32(0x2008) == 0x2222);
     DyldPlan conflict;
-    conflict.fixups.push_back({0x2008, true, false, false, 0, 0, ""});
     conflict.fixups.push_back({0x2008, false, false, false, -2, 0, "_mostlyEqual"});
+    conflict.fixups.push_back({0x2008, false, false, false, -2, 0, "_onlyWeak"});
     fault("DYLD_TARGET", [&] { conflict.applyWithGraph(pages, 0, weakGraph, requester); });
     DyldPlan addendConflict;
     addendConflict.needsCoalescing = true;
     addendConflict.fixups.push_back({0x2008, false, false, false, -3, 0, "_mostlyEqual"});
     addendConflict.fixups.push_back({0x2008, false, false, false, -3, 4, "_mostlyEqual"});
     fault("DYLD_TARGET", [&] { addendConflict.applyWithGraph(pages, 0, weakGraph, requester); });
-    assert(pages.read32(0x2008) == 0xdeadbeef);
+    assert(pages.read32(0x2008) == 0x2222);  // the earlier merge already wrote that slot
 
     DyldPlan missing;
     missing.fixups.push_back({0x200c, false, false, false, -2, 0, "_notImplemented"});

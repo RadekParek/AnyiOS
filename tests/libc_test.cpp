@@ -210,6 +210,31 @@ int main() {
         fault("FORMAT_CONVERSION", [&] { libc.invoke("_printf", call.state); });
         libc.setLogSink(nullptr);
     }
+    // vsnprintf reads the guest's saved-argument area rather than r0-r3: an ARM va_list is
+    // the address of the spilled anonymous arguments.
+    {
+        CpuState call;
+        const char* format = "%s-%d-%0.2f";
+        memory.write(0x4000, format, std::strlen(format) + 1);
+        memory.write(0x4100, "word", 5);
+        // The va_list itself points at a run of argument words (8-byte aligned for the double).
+        memory.write32(0x4200, 0x4100);  // %s
+        memory.write32(0x4204, 41);      // %d
+        // Two words in, the cursor is already eight-byte aligned, so the double starts here.
+        const double value = 2.5;
+        const uint64_t bits = doubleBits(value);
+        memory.write32(0x4208, uint32_t(bits));
+        memory.write32(0x420c, uint32_t(bits >> 32));
+        call.registers[0] = 0x4300;  // destination
+        call.registers[1] = 64;
+        call.registers[2] = 0x4000;
+        call.registers[3] = 0x4200;  // va_list
+        assert(libc.invoke("_vsnprintf", call));
+        char buffer[64]{};
+        memory.read(0x4300, buffer, 15);
+        assert(std::string(buffer) == "word-41-2.50");
+        assert(call.registers[0] == 12);
+    }
     // Unimplemented APIs stay unimplemented instead of returning invented success.
     CpuState unknown;
     assert(!libc.invoke("_UIApplicationMain", unknown));

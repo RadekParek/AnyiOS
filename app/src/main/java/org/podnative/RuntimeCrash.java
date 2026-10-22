@@ -25,20 +25,21 @@ final class RuntimeCrash {
     private RuntimeCrash() {}
     /** Structured form of the native GUEST_BLOCKER / LAUNCH_BLOCKED report. */
     static final class Report {
-        final String kind, subject, pc, detail, full;
+        final String kind, subject, pc, detail, full, symbol;
         final boolean blocked;
-        Report(
-            String kind, String subject, String pc, String detail, boolean blocked, String full) {
+        Report(String kind, String subject, String pc, String detail, boolean blocked,
+            String symbol, String full) {
             this.kind = kind;
             this.subject = subject;
             this.pc = pc;
             this.detail = detail;
             this.blocked = blocked;
+            this.symbol = symbol;
             this.full = full;
         }
     }
     static Report parse(String outcome) {
-        String kind = "", subject = "", pc = "", detail = "";
+        String kind = "", subject = "", pc = "", detail = "", symbol = "";
         boolean blocked = outcome.startsWith("LAUNCH_BLOCKED");
         for (String line : outcome.split("\n")) {
             if (line.startsWith("GUEST_BLOCKER: ")) {
@@ -46,6 +47,7 @@ final class RuntimeCrash {
                 kind = between(rest, "kind=", " subject=");
                 subject = between(rest, "subject=", " pc=");
                 pc = between(rest, "pc=", " instructions=");
+                symbol = between(rest, " symbol=", "\n");
             } else if (line.startsWith("GUEST_STOP: ")) {
                 detail = line.substring("GUEST_STOP: ".length());
             } else if (detail.isEmpty() && line.startsWith("LAUNCH_BLOCKED: ")) {
@@ -59,7 +61,7 @@ final class RuntimeCrash {
             if (subject.isEmpty())
                 subject = detail;
         }
-        return new Report(kind, subject, pc, detail, blocked, outcome);
+        return new Report(kind, subject, pc, detail, blocked, symbol, outcome);
     }
     private static String between(String text, String start, String end) {
         int at = text.indexOf(start);
@@ -131,7 +133,9 @@ final class RuntimeCrash {
         if (!report.subject.isEmpty())
             row(activity, card, "Details", report.subject, ink, muted, accent);
         if (!report.pc.isEmpty())
-            row(activity, card, "Guest PC", report.pc, ink, muted, accent);
+            row(activity, card,
+                report.symbol.isEmpty() ? "Guest PC" : "Guest PC in " + report.symbol, report.pc,
+                ink, muted, accent);
         body.addView(card);
         if (!report.detail.isEmpty() && !report.detail.equals(report.subject)) {
             TextView detail = new TextView(activity);

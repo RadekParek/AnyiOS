@@ -41,6 +41,7 @@ add_library(podnative_hle STATIC
     "${RUNTIME}/runtime/heap.cpp"
     "${RUNTIME}/runtime/execution.cpp"
     "${RUNTIME}/runtime/objc.cpp"
+    "${RUNTIME}/runtime/uikit.cpp"
     "${RUNTIME}/runtime/frameworks.cpp"
     "${RUNTIME}/runtime/coregraphics.cpp")
 target_include_directories(podnative_hle PUBLIC "${RUNTIME}")
@@ -59,6 +60,11 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux" OR ANDROID)
     target_compile_options(oaknut_wx_test PRIVATE -Wall -Wextra -Werror -UNDEBUG)
     add_test(NAME allocator_wx_permissions COMMAND oaknut_wx_test)
 endif()
+add_executable(uikit_test uikit_test.cpp)
+target_link_libraries(uikit_test PRIVATE podnative_hle)
+target_compile_options(uikit_test PRIVATE -Wall -Wextra -Werror -UNDEBUG)
+add_test(NAME uikit_bootstrap COMMAND uikit_test)
+
 add_executable(audio_test audio_test.cpp)
 target_link_libraries(audio_test PRIVATE podnative_hle)
 target_compile_options(audio_test PRIVATE -Wall -Wextra -Werror -UNDEBUG)

@@ -5,6 +5,7 @@
 #include <random>
 
 #include "runtime/error.h"
+#include "runtime/exports.h"
 using namespace podnative::runtime;
 int main() {
     std::vector<DyldSegment> segments = {{0x1000, 4096, uint8_t(Read | Write)}};
@@ -112,18 +113,24 @@ int main() {
         uint8_t trailingStride[] = {0x11, 0x20, 0, 0x51, 0x30, 0x80, 0x01, 0};
         auto trailing = decodeDyld(trailingStride, sizeof(trailingStride), segments, true);
         assert(trailing.fixups.size() == 1);
-        // A real overflow still fails, and names the arithmetic itself: UINT64_MAX then +1.
+        // Cursor arithmetic wraps, like dyld's own uint64 address. A wrapped cursor is only
+        // an error when a fixup is actually emitted from it, and then it is a target error.
         std::vector<uint8_t> overflow = {0x11, 0x30};
         for (int n = 0; n < 9; n++) overflow.push_back(0xff);
         overflow.push_back(0x01);
         overflow.push_back(0x30);
         overflow.push_back(0x01);
         overflow.push_back(0x00);
+        auto wrapped = decodeDyld(overflow.data(), overflow.size(), segments, true);
+        assert(wrapped.fixups.empty());
+        // Emitting from a wrapped cursor names the real problem: the segment selector was
+        // reset by the wrap, so the fixup has no anchor at all.
+        overflow.back() = 0x51;  // DO_REBASE with the cursor somewhere nonsensical
         try {
             decodeDyld(overflow.data(), overflow.size(), segments, true);
             assert(false);
         } catch (const Error& e) {
-            assert(e.code == "DYLD_ADDRESS");
+            assert(e.code == "DYLD_SEGMENT");
         }
     }
     uint8_t weakOrdinal[] = {0x11, 0x00};
@@ -166,13 +173,50 @@ int main() {
     } catch (const Error& e) {
         assert(e.code == "DYLD_TARGET");
     }
-    uint8_t arithmeticOverflow[] = {0x11, 0x20, 4,    0x30, 0xff, 0xff, 0xff, 0xff,
-                                    0xff, 0xff, 0xff, 0xff, 0xff, 1,    0};
-    try {
-        decodeDyld(arithmeticOverflow, sizeof(arithmeticOverflow), tiny, true);
-        assert(false);
-    } catch (const Error& e) {
-        assert(e.code == "DYLD_ADDRESS");
+    // A negative skip is a ten-byte ULEB, exactly how clang encodes "go back 1656 bytes".
+    // dyld adds it to a uint64 cursor and lets it wrap; treating that as an error rejected
+    // real Minecraft PE streams before a single fixup was emitted.
+    {
+        Memory wrap;
+        wrap.map({0x1000, 4096, uint8_t(Read | Write), "wrap"});
+        std::vector<DyldSegment> one = {{0x1000, 4096, uint8_t(Read | Write)}};
+        // SET_SEGMENT(0, 4000) then ADD_ADDR_ULEB(-1656) then DO_REBASE.
+        uint8_t negativeSkip[] = {0x20, 0xa0, 0x1f, 0x30, 0x88, 0xf3, 0xff, 0xff,
+                                  0xff, 0xff, 0xff, 0xff, 0xff, 0x01, 0x51, 0x00};
+        auto plan = decodeDyld(negativeSkip, sizeof(negativeSkip), one, true);
+        assert(plan.fixups.size() == 1);
+        assert(plan.fixups[0].address == 0x1000 + 4000 - 1656);
+    }
+    // A stream that ends on an opcode boundary without DONE is what several link editors
+    // produce; dyld loops `while (p < end)` and never demands it.
+    {
+        std::vector<DyldSegment> one = {{0x1000, 4096, uint8_t(Read | Write)}};
+        uint8_t noDone[] = {0x20, 0, 0x51};
+        auto plan = decodeDyld(noDone, sizeof(noDone), one, true);
+        assert(plan.fixups.size() == 1);
+        // A stream that stops inside an operand is still truncated.
+        uint8_t chopped[] = {0x20, 0x80};
+        try {
+            decodeDyld(chopped, sizeof(chopped), one, true);
+            assert(false);
+        } catch (const Error& e) {
+            assert(e.code == "DYLD_TRUNCATED");
+        }
+    }
+    // A lazy pointer slot is rebased by the rebase stream and bound by the lazy stream. The
+    // binding is what the slot must contain, so the duplicate is merged, not rejected.
+    {
+        Memory slots;
+        slots.map({0x1000, 4096, uint8_t(Read | Write), "slots"});
+        std::vector<DyldSegment> one = {{0x1000, 4096, uint8_t(Read | Write)}};
+        DyldPlan plan;
+        plan.fixups.push_back({0x1000, true, false, false, 0, 0, ""});
+        plan.fixups.push_back({0x1000, false, false, true, 0, 0, "_symbol"});
+        ExportGraph graph;
+        auto image = graph.addImage("/usr/lib/libSystem.B.dylib");
+        graph.define(image, "_symbol", {0x3000});
+        plan.applyWithGraph(slots, 0, graph, image);
+        assert(slots.read32(0x1000) == 0x3000);
     }
     std::mt19937 random(197);
     for (int i = 0; i < 10000; i++) {

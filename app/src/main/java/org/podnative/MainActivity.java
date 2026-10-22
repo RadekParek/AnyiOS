@@ -5,6 +5,7 @@ import android.app.AlertDialog;
 import android.app.Dialog;
 import android.content.Intent;
 import android.content.SharedPreferences;
+import android.content.pm.ActivityInfo;
 import android.content.res.ColorStateList;
 import android.content.res.Configuration;
 import android.graphics.Color;
@@ -36,6 +37,7 @@ public final class MainActivity extends Activity {
     private static final int IMPORT_FILE = 10, EXPORT = 11, IMPORT_FOLDER = 12,
                              IMPORT_APP_FOLDER = 13;
     private SharedPreferences prefs;
+    private boolean landscapeRequested = false;
     private GameLibrary library;
     private PrototypeView prototype;
     private TextView liveStatus, progressLabel;
@@ -675,6 +677,8 @@ public final class MainActivity extends Activity {
                 -> choose("Frame limit",
                     new String[] {"30 FPS", "60 FPS", "120 FPS · experimental"},
                     new int[] {30, 60, 120}, "fps", 60));
+        settingRow(display, "On-screen console", "Debug overlay while a game boots",
+            prefs.getBoolean("showConsole", false) ? "Shown" : "Hidden", this::toggleConsole);
         String[] appearances = {"Light", "Dark"};
         settingRow(display, "Appearance", "Choose your preferred look", dark ? "Dark" : "Light",
             () -> choose("Appearance", appearances, new int[] {1, 2}, "theme", dark ? 2 : 1));
@@ -759,6 +763,27 @@ public final class MainActivity extends Activity {
             .setNegativeButton("Cancel", null)
             .show();
     }
+    /**
+     * Debug output is off by default: a launched game shows only its own display. Turning
+     * this on brings back the boot bar, the live status line and tap-to-reveal chrome.
+     */
+    private void toggleConsole() {
+        new AlertDialog.Builder(this)
+            .setTitle("On-screen console")
+            .setMessage(
+                "Show the boot progress bar and runtime status over the game? Off keeps the display clean; crash reports are always shown.")
+            .setNegativeButton("Hidden",
+                (dialog, which) -> {
+                    prefs.edit().putBoolean("showConsole", false).apply();
+                    home();
+                })
+            .setPositiveButton("Shown",
+                (dialog, which) -> {
+                    prefs.edit().putBoolean("showConsole", true).apply();
+                    home();
+                })
+            .show();
+    }
     private void diagnostics(LinearLayout parent) {
         heading(parent, "Diagnostics", "Useful evidence, without uploading your games.");
         operationState(parent);
@@ -802,6 +827,14 @@ public final class MainActivity extends Activity {
      * ANGLE surface is resized in place instead of the emulator being torn down.
      */
     private void enterEmulatorDisplay() {
+        // Games take the whole screen in landscape, defaulting to landscape-left: the same
+        // holding position an iPhone title expects (home button to the right). SENSOR_LANDSCAPE
+        // would start whichever way the phone happens to be lying at launch, which made an
+        // iPhone game boot upside down on a perfectly normal grip.
+        if (!landscapeRequested) {
+            setRequestedOrientation(ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE);
+            landscapeRequested = true;
+        }
         android.view.Window window = getWindow();
         window.addFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
         if (android.os.Build.VERSION.SDK_INT >= 30) {
@@ -819,6 +852,10 @@ public final class MainActivity extends Activity {
         }
     }
     private void leaveEmulatorDisplay() {
+        if (landscapeRequested) {
+            setRequestedOrientation(ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED);
+            landscapeRequested = false;
+        }
         android.view.Window window = getWindow();
         window.clearFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
         if (android.os.Build.VERSION.SDK_INT >= 30) {
@@ -899,8 +936,12 @@ public final class MainActivity extends Activity {
                     attempt(game);
                 }
             });
-        // The display fills the window; the console chrome floats above it and fades away.
+        // The display fills the window; the console chrome is opt-in from Settings.
         frame.addView(prototype, new FrameLayout.LayoutParams(-1, -1));
+        if (!prefs.getBoolean("showConsole", false)) {
+            setContentView(frame);
+            return;
+        }
         LinearLayout chrome = column();
         chrome.setClipChildren(false);
         LinearLayout bar = row();

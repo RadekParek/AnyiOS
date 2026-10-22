@@ -8,6 +8,7 @@
 #include "libc.h"
 #include "objc.h"
 #include "stdio.h"
+#include "uikit.h"
 
 namespace podnative::runtime {
 // ARM code gates contain SVC + BX LR. Guest Thumb callers use BLX interworking.
@@ -25,7 +26,16 @@ class Services final {
         cxx.setLogSink(sink);
         stdio.setLogSink(sink);
         objc.setLogSink(sink);
+        uikit.setLogSink(sink);
     }
+    // The image's own Objective-C classes, registered before guest code runs.
+    void registerGuestClasses(const std::vector<uint32_t>& classList) {
+        objc.registerGuestClasses(classList);
+    }
+    std::string guestClassSummary() const { return objc.guestClassSummary(); }
+    std::string uiSummary() const { return uikit.describe(); }
+    // True when a service stop was the lifecycle gate rather than an import call.
+    bool lifecycleGate(uint32_t pc) const { return uikit.atLifecycleGate(pc); }
     void setEnvironment(const std::map<std::string, std::string>& values);
     // Guest-visible description of the sandbox for the launch report.
     std::string storageSummary() const { return stdio.describe(); }
@@ -54,10 +64,12 @@ class Services final {
     Stdio stdio;
     AudioSession audio;
     ObjC objc;
+    UIKit uikit;
     std::vector<std::string> symbols;
     std::vector<std::string> traps;
     std::map<std::string, uint32_t> trapIndex;
     void mapTrapPage(size_t index) const;
+    void resumeLifecycle(CpuState& state);
     // Which iOS library exports a symbol; two-level ordinals are checked against it.
     const std::string& libraryOf(const std::string& symbol) const;
     void invoke(const std::string& symbol, CpuState& state);

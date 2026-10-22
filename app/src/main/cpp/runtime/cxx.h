@@ -36,6 +36,8 @@ class CxxRuntime final {
         uint32_t function, argument;
     };
     std::vector<ExitHandler> atExit;
+    // Stack of live `__Unwind_SjLj_Register` frames (innermost last).
+    std::vector<uint32_t> sjljFrames;
     uint32_t errnoCell = 0;
     uint32_t allocate(uint32_t bytes, const char* what);
     uint32_t errnoAddress();

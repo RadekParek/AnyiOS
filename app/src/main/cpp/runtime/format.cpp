@@ -135,7 +135,32 @@ std::string readGuestString(Memory& memory, uint32_t address, size_t limit) {
     if (text.size() >= limit) throw Error("FORMAT_STRING", "unterminated guest string", address);
     return text;
 }
-std::string formatGuest(const std::string& format, Arguments& args, const ObjectDescriber& object) {
+namespace {
+// Cursor over a guest va_list: the saved argument area is a run of words, and an 8-byte
+// value starts on an 8-byte boundary there.
+class VaCursor {
+   public:
+    VaCursor(Memory& memory, uint32_t address) : memory(memory), address(address) {}
+    uint32_t word() {
+        const uint32_t value = memory.read32(address);
+        address += 4;
+        return value;
+    }
+    double f64() {
+        if (address % 8) address += 4;
+        const uint64_t low = word();
+        return bitsDouble(low | uint64_t(word()) << 32);
+    }
+    Memory& memoryRef() const { return memory; }
+
+   private:
+    Memory& memory;
+    uint32_t address;
+};
+}  // namespace
+template <typename Cursor>
+std::string formatGuestFrom(const std::string& format, Cursor& args,
+                            const ObjectDescriber& object) {
     std::string out;
     for (size_t at = 0; at < format.size();) {
         if (format[at] != '%') {
@@ -218,5 +243,13 @@ std::string formatGuest(const std::string& format, Arguments& args, const Object
         if (out.size() > 1024 * 1024) throw Error("FORMAT_SIZE", "formatted text exceeds limit");
     }
     return out;
+}
+std::string formatGuest(const std::string& format, Arguments& args, const ObjectDescriber& object) {
+    return formatGuestFrom(format, args, object);
+}
+std::string formatGuestVarargs(const std::string& format, Memory& memory, uint32_t vaList,
+                               const ObjectDescriber& object) {
+    VaCursor cursor(memory, vaList);
+    return formatGuestFrom(format, cursor, object);
 }
 }  // namespace podnative::runtime

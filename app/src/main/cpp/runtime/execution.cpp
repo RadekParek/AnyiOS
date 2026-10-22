@@ -22,8 +22,9 @@ std::string pointer(uint32_t value) {
     return out.str();
 }
 }  // namespace
-GuestRun runGuest(LoadedImage& image, Services& services, const ExportGraph& graph,
-                  size_t requester, uint64_t instructionBudget, double seconds) {
+namespace {
+GuestRun execute(LoadedImage& image, Services& services, const ExportGraph& graph, size_t requester,
+                 uint64_t instructionBudget, double seconds) {
     GuestRun run;
     if (!image.memory) throw Error("GUEST_MEMORY", "image has no mapped memory");
     // Unimplemented required imports bind to a faulting gate, so the guest starts and
@@ -86,6 +87,13 @@ GuestRun runGuest(LoadedImage& image, Services& services, const ExportGraph& gra
     run.detail = "instruction budget reached";
     return run;
 }
+}  // namespace
+GuestRun runGuest(LoadedImage& image, Services& services, const ExportGraph& graph,
+                  size_t requester, uint64_t instructionBudget, double seconds) {
+    GuestRun run = execute(image, services, graph, requester, instructionBudget, seconds);
+    run.pcSymbol = image.nearestSymbol(run.pc);
+    return run;
+}
 namespace {
 // Classifies a stopped run into the three things a crash screen must state: what kind
 // of stop it was, what exactly is missing or wrong, and the guest PC.
@@ -130,6 +138,9 @@ std::string describeRun(GuestRun& run) {
     if (!run.detail.empty()) out << " — " << run.detail;
     out << "\nGUEST_BLOCKER: kind=" << run.blockerKind << " subject=" << run.blockerSubject
         << " pc=" << pointer(run.pc) << " instructions=" << run.instructions;
+    // "pc=0x47054" alone does not tell anyone what the guest was doing; the nearest
+    // preceding function symbol does.
+    if (!run.pcSymbol.empty()) out << " symbol=" << run.pcSymbol;
     if (!run.called.empty()) {
         out << "\nHOST_CALLS: ";
         for (size_t n = 0; n < run.called.size(); n++) out << (n ? " " : "") << run.called[n];

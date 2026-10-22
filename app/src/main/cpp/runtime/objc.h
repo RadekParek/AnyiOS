@@ -2,6 +2,7 @@
 #include <cstdint>
 #include <functional>
 #include <map>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -34,6 +35,45 @@ class ObjC final {
     void setLogSink(std::function<void(const std::string&)> sink) { logSink = std::move(sink); }
     // Guest log/exit lifecycle: releasing the pool stack at exit is real bookkeeping.
     void drainPools();
+    // Classes the image defines itself, from its `__objc_classlist`. Their metadata stays
+    // guest-owned; the runtime reads it in place, so a class the title looks up by name is
+    // the same object its own code uses.
+    void registerGuestClasses(const std::vector<uint32_t>& classList);
+    std::string guestClassSummary() const;
+    // Instantiates a guest class the way +alloc does: a zeroed object of the class's own
+    // instance size whose isa points at the class object.
+    uint32_t allocateGuestInstance(uint32_t classAddress);
+    // Sends a message to a guest receiver from host code (the UIApplicationMain bootstrap).
+    // Returns true when guest code was entered: registers[15] then holds the entry point and
+    // registers[0..3] the arguments, so the caller must not overwrite the PC.
+    bool sendGuestMessage(uint32_t receiver, const std::string& selectorName, CpuState& state,
+                          const std::vector<uint32_t>& arguments, uint32_t returnAddress);
+    // Guest selectors are their own C strings; this interns one for host-initiated sends.
+    uint32_t selectorString(const std::string& name);
+    // Resolves a class name for the host bootstrap (guest class first, then runtime class).
+    uint32_t classAddress(const std::string& name, bool required) {
+        return resolveClass(name, required);
+    }
+    bool guestClassDefined(uint32_t address) const { return guestClassAt(address) != nullptr; }
+    // Whether a guest instance (or class object) implements a selector, as -respondsToSelector:
+    // answers and as UIKit checks before calling an optional delegate method.
+    bool respondsTo(uint32_t receiver, const std::string& selectorName) const {
+        const GuestClass* cls = guestClassAt(receiver);
+        const bool instance = guestInstances.count(receiver) != 0;
+        if (!cls && !instance) return false;
+        const uint32_t target = instance ? guestInstances.at(receiver) : receiver;
+        return guestMethod(target, cls != nullptr, selectorName) != 0;
+    }
+    // Super dispatch for a guest receiver: lookup starts at the superclass of the class
+    // that contained the `super` call, then continues into the runtime's own classes.
+    bool guestSuperMessage(uint32_t receiver, uint32_t classOfMethod, uint32_t selectorAddress,
+                           CpuState& state);
+    // Name of a runtime-owned class object, or empty when the address is not one.
+    std::string hostClassName(uint32_t address) const;
+    // Instantiates one of the runtime's own classes (UIApplication and friends).
+    uint32_t makeHostObject(const std::string& className) { return makeObject(className); }
+    // Reads a string object or string literal; refused by name when it is neither.
+    std::string stringValue(uint32_t object) { return stringOf(object); }
     static constexpr uint32_t GateBase = 0x6f200000;
 
    private:
@@ -48,6 +88,16 @@ class ObjC final {
         std::vector<uint8_t> bytes;                        // NSData
         int64_t integer = 0;                               // NSNumber
         double real = 0;
+        // UIKit payload. A view's frame and bounds are guest-visible state, so they are
+        // stored and reported back rather than invented on each read.
+        bool hasFrame = false;
+        float frame[4] = {0, 0, 0, 0};
+        float bounds[4] = {0, 0, 0, 0};
+        float alpha = 1;
+        float contentScale = 1;
+        bool hidden = false, userInteraction = true, multipleTouch = false;
+        uint32_t superview = 0, window = 0, backgroundColor = 0;
+        uint32_t rootViewController = 0, delegate = 0, keyWindow = 0;
     };
     Memory& memory;
     std::vector<std::string> entries;
@@ -61,8 +111,48 @@ class ObjC final {
     uint32_t nextText = 0x6f480000;
     uint32_t nextBytes = 0x6f4c0000;
     uint32_t userDefaults = 0;
+    uint32_t applicationObject = 0;  // +[UIApplication sharedApplication]
+    uint32_t mainScreen = 0;         // +[UIScreen mainScreen]
     uint32_t mainBundle = 0;
     std::map<uint32_t, uint32_t> syncDepth;  // @synchronized nesting per object
+    struct GuestClass {
+        uint32_t address = 0, meta = 0, superclass = 0, instanceSize = 0;
+        std::string name;
+        bool modern = true;  // class_ro_t metadata rather than the legacy class layout
+    };
+    std::map<std::string, GuestClass> guestClasses;
+    std::map<uint32_t, uint32_t> guestInstances;  // instance address -> class address
+    std::map<uint32_t, uint32_t> guestRefs;       // instance address -> retain count
+    uint32_t nextGuestObject = 0x6f500000;
+    bool guestArena = false;
+    // Reads the class's method table (only methods, not caches) and walks the superclass
+    // chain. Returns 0 when no class in the guest chain implements the selector.
+    void mapGuestArena();
+    // A __CFConstantString literal in the image, recognised by its own layout.
+    std::optional<std::string> literalString(uint32_t address) const;
+    std::string stringOf(uint32_t object);
+    bool stringMessage(const std::string& text, uint32_t bytes, const std::string& method,
+                       CpuState& state);
+    // UIKit: application, window, view, screen and colour semantics. Each answer is stored
+    // object state or a documented constant, never a fabricated success.
+    bool uiKitMessage(const std::string& className, uint32_t object, const std::string& method,
+                      CpuState& state);
+    // Guest class, then a runtime class, else a named failure (never a silent nil).
+    uint32_t resolveClass(const std::string& name, bool required);
+    uint32_t guestMethod(uint32_t classAddress, bool classMethod, const std::string& name) const;
+    // Enters a guest IMP: r0/r1 are self and _cmd and the PC moves to the implementation.
+    bool enterGuest(uint32_t imp, CpuState& state, uint32_t self, uint32_t cmd);
+    bool guestChainContains(uint32_t classAddress, uint32_t candidate) const;
+    // Finds a guest class by the address of its class object or of its metaclass.
+    const GuestClass* guestClassAt(uint32_t address) const;
+    std::string guestClassName(uint32_t classAddress) const;
+    // Dispatches a message whose receiver is a guest class object or a guest instance.
+    // Returns true when the message was handled (guest code may have been entered).
+    bool guestMessage(uint32_t receiver, uint32_t selectorAddress, CpuState& state);
+    // Fallback for messages a guest object inherits from NSObject: those semantics are the
+    // runtime's, not the image's.
+    bool guestFoundation(uint32_t receiver, const std::string& className, const std::string& method,
+                         CpuState& state);
     std::string bundlePath = "/var/mobile", documentsPath = "/var/mobile/Documents";
     std::function<bool(const std::string&)> fileExists;
     std::function<void(const std::string&)> logSink;

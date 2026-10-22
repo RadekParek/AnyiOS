@@ -28,3 +28,12 @@ Stream cursor strides no longer raise `DYLD_ADDRESS` (only real 64-bit overflow 
 entry repeated across the lazy and plain binding streams is merged when the target matches,
 and the 350 undispatched legacy stubs are now bound by rewriting each stub to
 `ldr r12, [pc] / bx r12 / .word target`.
+
+Fifth increment (2026-10-22): the dyld cursor is now unconditional uint64 wrap-around
+arithmetic, matching Apple's decoder, with the lifetime check kept in the fixup emitter; a
+rebase and a bind on the same slot merge with the bind winning; streams no longer need a
+trailing `DONE`. Four-byte `ldr pc, [pc, #imm]` stubs are dispatched through the pointer slot
+they name (the instruction is validated first) instead of being rejected as unpatchable.
+`LoadedImage::symbols` keeps the image's `N_SECT` functions for stop-report symbolication, so
+`GUEST_BLOCKER` carries `symbol=<nearest function>` and the crash screen names the guest
+function rather than only its PC.

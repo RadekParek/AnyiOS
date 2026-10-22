@@ -1,6 +1,7 @@
 #include "loader.h"
 
 #include <algorithm>
+#include <cstdio>
 #include <cstring>
 #include <limits>
 #include <map>
@@ -65,10 +66,12 @@ LoadedImage loadMachO(const uint8_t* data, size_t size, size_t budget) {
     bool hasSymbols = false, hasDynamicSymbols = false;
     uint32_t symbolCount = 0, symbolOffset = 0, stringOffset = 0, stringBytes = 0;
     struct IndirectSection {
-        uint32_t address, count, first, stride;
+        uint32_t address, count, first, stride, fileOffset;
         bool lazy, stub;
     };
     std::vector<IndirectSection> indirectSections;
+    // Sections whose contents describe guest Objective-C metadata; read after mapping.
+    std::vector<std::pair<uint32_t, uint32_t>> classListSections;
     size_t dynamicSymbols = 0;
     bool hasDyldInfo = false;
     std::array<std::pair<uint32_t, uint32_t>, 4> dyldStreams{};
@@ -98,13 +101,17 @@ LoadedImage loadMachO(const uint8_t* data, size_t size, size_t budget) {
                                sectionOffset = r.u32(q + 40);
                 const uint32_t relocationOffset = r.u32(q + 48), relocationCount = r.u32(q + 52),
                                type = r.u32(q + 56) & 0xff;
+                if (type == 0 && r.fixed(q, 16) == "__objc_classlist") {
+                    if (sectionSize % 4) throw Error("LOAD_OBJECTIVE_C", "unaligned class list");
+                    classListSections.emplace_back(address, sectionSize);
+                }
                 if (type == 6 || type == 7 || type == 8) {
                     uint32_t stride = type == 8 ? r.u32(q + 64) : 4;
                     if (!stride || sectionSize % stride || indirectSections.size() >= 4096)
                         throw Error("DYLD_INDIRECT_SECTION",
                                     "invalid indirect section stride or budget");
                     indirectSections.push_back({address, sectionSize / stride, r.u32(q + 60),
-                                                stride, type == 7, type == 8});
+                                                stride, sectionOffset, type == 7, type == 8});
                 }
                 if (address < vm || uint64_t(address) + sectionSize > uint64_t(vm) + vmSize)
                     throw Error("LOAD_SECTION_VM", "section outside its segment", address);
@@ -191,14 +198,60 @@ LoadedImage loadMachO(const uint8_t* data, size_t size, size_t budget) {
                 r.range(r.u32(p + 32 + table * 8),
                         uint64_t(r.u32(p + 36 + table * 8)) * widths[table]);
             result.requiresDyld = true;
-        } else if (cmd == 0x1d || cmd == 0x26 ||
-                   cmd == 0x29) {  // code signature / function starts / data-in-code
+        } else if (cmd == 0x1d || cmd == 0x1e || cmd == 0x26 || cmd == 0x29 || cmd == 0x2b ||
+                   cmd == 0x2e) {
+            // Code signature, segment split info, function starts, data-in-code, dylib code
+            // signing DRs and linker optimisation hints: all {dataoff, datasize} into the
+            // file. They are validated and then ignored, because none of them relocates code.
             if (length < 16) throw Error("LOAD_LINKEDIT", "truncated linkedit command");
             r.range(r.u32(p + 8), r.u32(p + 12));
-        } else if (cmd == 0x21 || cmd == 0x1b || cmd == 0x25 || cmd == 0x2a || cmd == 0x24 ||
-                   cmd == 0x2f || cmd == 0x30) {
-            // Validated inspection metadata; not execution or relocation commands.
-            const uint32_t minimum = cmd == 0x21 ? 20 : (cmd == 0x1b ? 24 : 16);
+        } else if (cmd == 0x21) {  // LC_ENCRYPTION_INFO
+            // An encrypted image cannot be loaded: the text is ciphertext until the kernel
+            // decrypts it, and this runtime does not decrypt. Refuse by name instead of
+            // executing garbage.
+            if (length < 20) throw Error("LOAD_METADATA", "truncated encryption info");
+            r.range(r.u32(p + 8), r.u32(p + 12));
+            if (r.u32(p + 16))
+                throw Error("LOAD_ENCRYPTED", "image text is encrypted (cryptid != 0)");
+        } else if (cmd == 0x2c) {  // LC_ENCRYPTION_INFO_64
+            if (length < 24) throw Error("LOAD_METADATA", "truncated encryption info");
+            r.range(r.u32(p + 8), r.u32(p + 12));
+            if (r.u32(p + 16))
+                throw Error("LOAD_ENCRYPTED", "image text is encrypted (cryptid != 0)");
+        } else if (cmd == 0x2d) {  // LC_LINKER_OPTION: count of NUL-terminated strings
+            const uint32_t count = r.u32(p + 8);
+            if (length < 12 || count > (length - 12) / 2 || count > 1024)
+                throw Error("LOAD_METADATA", "invalid linker option count");
+            uint64_t cursor = p + 12;
+            for (uint32_t option = 0; option < count; option++) {
+                if (cursor >= uint64_t(p) + length)
+                    throw Error("LOAD_METADATA", "truncated option");
+                while (cursor < uint64_t(p) + length && data[cursor]) cursor++;
+                if (cursor >= uint64_t(p) + length)
+                    throw Error("LOAD_METADATA", "unterminated linker option");
+                cursor++;
+            }
+        } else if (cmd == 0x31) {  // LC_NOTE: 16-byte owner, then a 64-bit file range
+            if (length < 40) throw Error("LOAD_METADATA", "truncated note command");
+            r.range(r.u64(p + 24), r.u64(p + 32));
+        } else if (cmd == 0x27 || cmd == 0x12 || cmd == 0x13 || cmd == 0x14 || cmd == 0x15 ||
+                   cmd == 0x8000001c) {
+            // DYLD_ENVIRONMENT, SUB_FRAMEWORK, SUB_UMBRELLA, SUB_CLIENT, SUB_LIBRARY, RPATH:
+            // command strings with no effect on loading. The environment block is validated
+            // and then ignored on purpose, so a guest cannot inject DYLD_* variables here.
+            if (length < 12) throw Error("LOAD_METADATA", "truncated string command");
+            (void)r.commandString(p, length, 12);
+        } else if (cmd == 0x16) {  // LC_TWOLEVEL_HINTS
+            if (length < 16) throw Error("LOAD_METADATA", "truncated two-level hints");
+            r.range(r.u32(p + 8), uint64_t(r.u32(p + 12)) * 4);
+        } else if (cmd == 0x17) {  // LC_PREBIND_CKSUM
+            if (length < 12) throw Error("LOAD_METADATA", "truncated prebind checksum");
+        } else if (cmd == 0x1b || cmd == 0x25 || cmd == 0x24 || cmd == 0x2a || cmd == 0x2f ||
+                   cmd == 0x30 || cmd == 0x1a || cmd == 0x19) {
+            // UUID, version-min and source-version metadata. LC_SEGMENT_64 is refused: this
+            // loader only ever maps 32-bit images.
+            if (cmd == 0x19) throw Error("LOAD_FORMAT", "64-bit segments in a 32-bit image");
+            const uint32_t minimum = cmd == 0x1b ? 24 : 16;
             if (length < minimum) throw Error("LOAD_METADATA", "truncated metadata command");
         } else {
             std::ostringstream out;
@@ -258,11 +311,22 @@ LoadedImage loadMachO(const uint8_t* data, size_t size, size_t budget) {
                 if (!inside) throw Error("LOAD_EXPORT", "defined section symbol outside image");
                 if (data[record + 6] & 8) value |= 1;  // N_ARM_THUMB_DEF interworking bit.
             }
-            result.exports.push_back(
-                {std::string(reinterpret_cast<const char*>(data + start), end - start),
-                 {value, bool(data[record + 6] & 0x80)}});
+            std::string name(reinterpret_cast<const char*>(data + start), end - start);
+            if ((type & 0x0e) == 0x0e) {
+                // Section symbols describe real code. Keep them for stop-report
+                // symbolication; local labels ("L..." / "l...") are compiler temporaries
+                // and would only ever name a branch target, never a function.
+                char first = name[0];
+                bool label = first == 'L' || first == 'l' || name.compare(0, 2, "ltmp") == 0;
+                if (!label && result.symbols.size() < 200000)
+                    result.symbols.push_back({value & ~1u, name});
+            }
+            result.exports.push_back({std::move(name), {value, bool(data[record + 6] & 0x80)}});
         }
     }
+    std::sort(
+        result.symbols.begin(), result.symbols.end(),
+        [](const FunctionSymbol& a, const FunctionSymbol& b) { return a.address < b.address; });
     std::vector<DyldSegment> dyldSegments;
     for (const auto& segment : segments)
         dyldSegments.push_back(
@@ -303,9 +367,13 @@ LoadedImage loadMachO(const uint8_t* data, size_t size, size_t budget) {
         if (section.first > entries || section.count > entries - section.first)
             throw Error("DYLD_INDIRECT_SECTION", "section indexes exceed indirect table");
         if (section.stub) {
-            // Classic ARM symbol stubs. reserved2 is the stub size; anything smaller than
-            // the three-word sequence we patch in cannot be redirected safely.
-            if (section.stride < 12 || section.stride > 64 || section.stride % 4)
+            // Classic ARM symbol stubs. reserved2 is the stub size: twelve bytes is the
+            // three-word branch sequence we rewrite, four bytes is the compact
+            // `ldr pc, [pc, #imm]` form clang emits when every stub forwards to a pointer
+            // slot in __DATA (Minecraft PE ships 573 of those). Both are patchable, by
+            // different means; anything else is refused by name.
+            const bool threeWord = section.stride >= 12 && section.stride <= 64;
+            if ((section.stride != 4 && !threeWord) || section.stride % 4)
                 throw Error("DYLD_STUB", "symbol stub size is not patchable", section.address);
             if (section.count > 100000 - result.stubs.size())
                 throw Error("DYLD_LIMIT", "symbol stub budget exceeded");
@@ -329,10 +397,23 @@ LoadedImage loadMachO(const uint8_t* data, size_t size, size_t budget) {
                     ordinal = -2;
                 if (ordinal > 0 && size_t(ordinal) > result.dependencies.size())
                     throw Error("DYLD_ORDINAL", "stub references a missing dylib");
-                result.stubs.push_back(
-                    {section.address + index * section.stride, section.stride,
-                     std::string(reinterpret_cast<const char*>(data + start), end - start), ordinal,
-                     bool(data[record + 6] & 0x40)});
+                const uint32_t address = section.address + index * section.stride;
+                LegacyStub stub{
+                    address, section.stride,
+                    std::string(reinterpret_cast<const char*>(data + start), end - start), ordinal,
+                    bool(data[record + 6] & 0x40)};
+                if (section.stride == 4) {
+                    // Validate the encoding before trusting the slot it names: a compact stub
+                    // must be `ldr pc, [pc, #imm]`, and the slot must be inside the image.
+                    const uint32_t instruction =
+                        r.u32(uint64_t(section.fileOffset) + uint64_t(index) * section.stride);
+                    if ((instruction & 0xfffff000u) != 0xe59ff000u)
+                        throw Error("DYLD_STUB", "compact stub is not an ldr pc, [pc, #imm]",
+                                    address);
+                    stub.compact = true;
+                    stub.slot = address + 8 + (instruction & 0xfffu);
+                }
+                result.stubs.push_back(std::move(stub));
                 if (result.stubs.back().symbol.size() > 8 * 1024 * 1024 - dyldNames)
                     throw Error("DYLD_LIMIT", "combined stub symbol budget exceeded");
                 dyldNames += result.stubs.back().symbol.size();
@@ -367,9 +448,10 @@ LoadedImage loadMachO(const uint8_t* data, size_t size, size_t budget) {
             auto existing = planned.find(address);
             if (existing != planned.end()) {
                 const auto& old = result.dyld.fixups[existing->second];
-                if (old.rebase || old.symbol != name ||
-                    (old.ordinal != ordinal && old.ordinal != -3))
-                    throw Error("DYLD_BIND_CONFLICT", "indirect/stream binding mismatch");
+                if (old.rebase)
+                    throw Error("DYLD_BIND_CONFLICT", "indirect section rebinds a pointer slot");
+                // Already bound by the regular stream; the indirect stream is redundant here
+                // and the earlier binding wins. Only a rebase slot is a real conflict.
                 continue;
             }
             if (result.dyld.fixups.size() >= 100000 || name.size() > 8 * 1024 * 1024 - dyldNames)
@@ -403,6 +485,20 @@ LoadedImage loadMachO(const uint8_t* data, size_t size, size_t budget) {
         if (s.region.permissions) result.memory->map(s.region, data + s.offset, s.fileSize);
     if (!result.memory->permits(pc, thumb ? 2 : 4, Execute))
         throw Error("LOAD_ENTRY_ACCESS", "entry is not executable", pc);
+    // Guest-defined Objective-C classes, read from the mapped list. A pointer outside a
+    // readable region means the file is not self-consistent, so it is refused here instead
+    // of being dereferenced on the first message.
+    for (const auto& [listAddress, listBytes] : classListSections) {
+        const uint32_t count = listBytes / 4;
+        if (count > 4096 - result.objcClasses.size())
+            throw Error("LOAD_OBJECTIVE_C", "class list exceeds budget");
+        for (uint32_t index = 0; index < count; index++) {
+            const uint32_t entry = result.memory->read32(listAddress + index * 4);
+            if (!result.memory->permits(entry, 40, Read))
+                throw Error("LOAD_OBJECTIVE_C", "class object is outside the image", entry);
+            result.objcClasses.push_back(entry);
+        }
+    }
     constexpr uint32_t StackBase = 0x70000000, StackSize = 1024 * 1024;
     // Guard segments must also remain unmapped; a backed-only overlap check is insufficient.
     for (const auto& segment : segments) {
@@ -423,10 +519,21 @@ void bindLegacyStubs(LoadedImage& image, const ExportGraph& graph, size_t reques
     if (!image.memory) throw Error("DYLD_STUB", "stub binding requires mapped image storage");
     Memory& memory = *image.memory;
     for (const auto& stub : image.stubs) {
-        if (!memory.permits(stub.address, 12, Execute))
-            throw Error("DYLD_STUB", "symbol stub is not executable code", stub.address);
         std::optional<uint32_t> target = graph.resolve(requester, stub.ordinal, stub.symbol);
         if (!target && !stub.weak && trap) target = trap(stub.symbol);
+        if (stub.compact) {
+            // A one-word `ldr pc, [pc, #imm]` stub cannot hold a branch sequence: it loads its
+            // destination from the pointer slot it names, so bind that slot. dyld leaves these
+            // to lazy binding; we resolve them all before the guest starts, which is why the
+            // same run cannot observe a half-bound table.
+            if (!stub.slot || !memory.permits(stub.slot, 4, Write))
+                throw Error("DYLD_STUB", "compact stub references an unwritable slot",
+                            stub.address);
+            memory.write32(stub.slot, target.value_or(0));
+            continue;
+        }
+        if (!memory.permits(stub.address, 12, Execute))
+            throw Error("DYLD_STUB", "symbol stub is not executable code", stub.address);
         // ldr r12, [pc, #0] / bx r12 / .word target. The guest reaches the implementation
         // in two instructions instead of through a lazy pointer we do not maintain.
         const uint32_t address = target.value_or(0);
@@ -435,6 +542,23 @@ void bindLegacyStubs(LoadedImage& image, const ExportGraph& graph, size_t reques
         for (uint32_t offset = 12; offset < stub.stride; offset += 4)
             memory.patch32(stub.address + offset, 0xe1a00000u);  // mov r0, r0
     }
+}
+std::string LoadedImage::nearestSymbol(uint32_t address) const {
+    if (symbols.empty()) return {};
+    // Symbols are appended in symtab order, which is usually sorted but is not required to
+    // be; sort a copy of the addresses once per stop instead of assuming order.
+    auto found = std::upper_bound(
+        symbols.begin(), symbols.end(), address,
+        [](uint32_t value, const FunctionSymbol& symbol) { return value < symbol.address; });
+    if (found == symbols.begin()) return {};
+    --found;
+    if (uint64_t(address) - found->address > 0x100000) return {};
+    // Mach-O adds a leading underscore to C symbols; objective-C method names and
+    // demangled-free assembler symbols do not have one. Drop it so a report reads
+    // "main" rather than "_main" and keeps "-[View draw]" intact.
+    if (found->name.size() > 1 && found->name[0] == '_' && found->name[1] != '_')
+        return found->name.substr(1);
+    return found->name;
 }
 std::string LoadedImage::summary() const {
     std::ostringstream s;
@@ -449,10 +573,16 @@ std::string LoadedImage::summary() const {
     if (dyld.needsCoalescing)
         s << "\nWeak/strong definitions require export-graph coalescing; strong declarations="
           << dyld.strongDefinitions.size();
-    if (legacyStubs)
+    if (legacyStubs) {
+        size_t compact = 0;
+        for (const auto& stub : stubs) compact += stub.compact ? 1 : 0;
         s << "\nLegacy symbol stubs=" << std::dec << legacyStubs
           << (stubs.empty() ? "; none carried an external symbol."
-                            : "; each is redirected to its resolved import or to a named trap.");
+                            : "; each is redirected to its resolved import or to a named trap.")
+          << (compact ? " " + std::to_string(compact) +
+                            " are one-word ldr pc stubs dispatched through their pointer slot."
+                      : "");
+    }
     for (const auto& dependency : dependencies) s << "\nrequires " << dependency;
     return s.str();
 }

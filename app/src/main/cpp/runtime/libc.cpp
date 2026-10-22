@@ -63,6 +63,19 @@ bool Libc::invoke(const std::string& name, CpuState& cpu) {
         formatted(name, cpu);
         return true;
     }
+    if (name == "_exit" || name == "_Exit" || name == "_exit_group" || name == "exit" ||
+        name == "abort" || name == "__assert_rtn") {
+        // Terminating the guest is real: the run stops with the guest's own exit status, and
+        // the crash screen reports that status rather than pretending the app finished.
+        const uint32_t status =
+            name == "_exit" || name == "_Exit" || name == "_exit_group" || name == "exit"
+                ? r[0]
+                : 134;  // abort() raises SIGABRT
+        r[0] = status;
+        r[15] = 0;  // returning to address zero ends the run with the status above.
+        emit("guest exited with status " + std::to_string(status));
+        return true;
+    }
     if (name == "_malloc") {
         r[0] = heap.allocate(r[0]);
         return true;
@@ -475,7 +488,7 @@ void Libc::formatted(const std::string& name, CpuState& cpu) {
         r[0] = uint32_t(text.size() + 1);
         return;
     }
-    uint32_t formatAddress = r[0], buffer = 0, capacity = 0;
+    uint32_t formatAddress = r[0], buffer = 0, capacity = 0, vaList = r[3];
     size_t firstWord = 1;
     if (name == "_snprintf" || name == "_vsnprintf") {
         buffer = r[0];
@@ -487,11 +500,15 @@ void Libc::formatted(const std::string& name, CpuState& cpu) {
         formatAddress = r[1];
         firstWord = 2;
     }
-    if (name == "_vsnprintf")
-        throw Error("LIBC_VARIADIC",
-                    "va_list forwarding is not implemented; call snprintf directly");
-    Arguments args(cpu, memory, firstWord);
-    const std::string text = formatGuest(readString(formatAddress), args);
+    // vsnprintf(str, size, format, ap): the expected string is written through the same
+    // path as snprintf, but arguments come from the guest's saved-argument area.
+    std::string text;
+    if (name == "_vsnprintf") {
+        text = formatGuestVarargs(readString(formatAddress), memory, vaList);
+    } else {
+        Arguments args(cpu, memory, firstWord);
+        text = formatGuest(readString(formatAddress), args);
+    }
     if (buffer) {
         if (capacity == 0) {
             r[0] = uint32_t(text.size());

@@ -16,6 +16,7 @@ Services::Services(Memory& m)
       stdio(m, libc.guestHeap(), files),
       audio(m),
       objc(m),
+      uikit(m),
       symbols{
           // libSystem: C runtime.
           "_malloc",
@@ -46,6 +47,7 @@ Services::Services(Memory& m)
           "_printf",
           "_snprintf",
           "_sprintf",
+          "_vsnprintf",
           "_puts",
           "_getenv",
           "_mach_absolute_time",
@@ -108,6 +110,11 @@ Services::Services(Memory& m)
           "_CFURLCopyFileSystemPath",
           // libstdc++.6.dylib and libgcc_s.1.dylib: the C++ ABI and the integer
           // helpers the ARM backend calls. Both are serviced by CxxRuntime.
+          "__Znwm",
+          "__Znam",
+          "__ZdlPv",
+          "__ZdaPv",
+          "__ZSt9terminatev",
           "_Znwm",
           "_Znam",
           "_ZdlPv",
@@ -145,6 +152,8 @@ Services::Services(Memory& m)
           "__Unwind_SjLj_Resume",
           // libsystem_c: fortified (object-size aware) entry points.
           "_atexit",
+          "_exit",
+          "_Exit",
           "___assert_rtn",
           "___stack_chk_fail",
           "___memcpy_chk",
@@ -163,6 +172,9 @@ Services::Services(Memory& m)
           // QuartzCore transforms and CoreGraphics' own CA bridge.
           "_CATransform3DMakeRotation",
           "_CATransform3DScale",
+          // UIKit process bootstrap: argv parsing, delegate instantiation and the launch
+          // callback, with a real return path through the lifecycle gate.
+          "_UIApplicationMain",
           // Guest stdio over the mounted sandbox.
           "_fopen",
           "_fclose",
@@ -212,6 +224,7 @@ Services::Services(Memory& m)
     memory.map({Base + Memory::PageSize, Memory::PageSize, Read, "CoreGraphics constants"},
                reinterpret_cast<const uint8_t*>(constants), sizeof(constants));
     objc.installGates();
+    uikit.installGates();
 }
 uint32_t Services::address(const std::string& name) const {
     auto it = std::find(symbols.begin(), symbols.end(), name);
@@ -239,6 +252,8 @@ const std::string& Services::libraryOf(const std::string& symbol) const {
     static const std::string standard = "/usr/lib/libstdc++.6.dylib";
     static const std::string helpers = "/usr/lib/libgcc_s.1.dylib";
     static const std::string objc = "/usr/lib/libobjc.A.dylib";
+    static const std::string uiKit = "/System/Library/Frameworks/UIKit.framework/UIKit";
+    if (symbol.rfind("_UI", 0) == 0) return uiKit;
     if (symbol.rfind("_CF", 0) == 0) return coreFoundation;
     if (symbol.rfind("_CG", 0) == 0) return coreGraphics;
     if (symbol.rfind("_CA", 0) == 0 || symbol.rfind("_kCA", 0) == 0) return quartzCore;
@@ -271,6 +286,7 @@ void Services::install(ExportGraph& graph, const std::vector<std::string>& depen
     for (const auto& dependency : dependencies) imageFor(dependency);
     for (size_t n = 0; n < symbols.size(); n++)
         graph.define(imageFor(libraryOf(symbols[n])), symbols[n], {Base + uint32_t(n) * 8});
+    imageFor("/System/Library/Frameworks/UIKit.framework/UIKit");
     objc.defineSymbols(graph, foundation, objcLibrary, quartzCore);
     graph.define(coreGraphics, "_CGAffineTransformIdentity", {Base + Memory::PageSize});
     graph.define(coreGraphics, "_CGRectNull", {Base + Memory::PageSize + 24});
@@ -336,26 +352,41 @@ void Services::dispatch(const CpuStop& stop, CpuState& state) {
     const bool thumb = lr & 1;
     if ((!thumb && returnAddress % 4) || !memory.permits(returnAddress, thumb ? 2 : 4, Execute))
         throw Error("HLE_RETURN", "invalid guest return address", lr);
+    // A host-initiated guest callback returned into the lifecycle gate: the bootstrap decides
+    // where execution continues.
+    if (uikit.atLifecycleGate(stop.pc)) {
+        uikit.resume(state, objc);
+        return;
+    }
     if (stop.pc >= TrapBase && (stop.pc - TrapBase) % 8 == 0 &&
         (stop.pc - TrapBase) / 8 < traps.size())
         throw Error("HLE_UNIMPLEMENTED",
                     "guest called unimplemented import " + traps[(stop.pc - TrapBase) / 8],
                     stop.pc);
     if (objc.dispatch(stop.pc, state)) {
-        state.registers[15] = returnAddress;
-        state.cpsr = (state.cpsr & ~0x20u) | (thumb ? 0x20 : 0);
+        // A handler may have entered guest code itself (an Objective-C method the image
+        // defines). Its PC is authoritative then; only a plain return is redirected.
+        if (state.registers[15] == stop.pc + 4) {
+            state.registers[15] = returnAddress;
+            state.cpsr = (state.cpsr & ~0x20u) | (thumb ? 0x20 : 0);
+        }
         return;
     }
     if (stop.pc < Base || (stop.pc - Base) % 8 || (stop.pc - Base) / 8 >= symbols.size() ||
         stop.service != (stop.pc - Base) / 8 + 1)
         throw Error("HLE_TRAP", "unregistered guest service trap", stop.pc);
-    invoke(symbols[(stop.pc - Base) / 8], state);
-    state.registers[15] = returnAddress;
-    state.cpsr = (state.cpsr & ~0x20u) | (thumb ? 0x20 : 0);
+    const uint32_t entry = (stop.pc - Base) / 8;
+    invoke(symbols[entry], state);
+    // Same rule as above: a service that starts a guest callback keeps the PC it set.
+    if (state.registers[15] == stop.pc + 4) {
+        state.registers[15] = returnAddress;
+        state.cpsr = (state.cpsr & ~0x20u) | (thumb ? 0x20 : 0);
+    }
 }
 void Services::invoke(const std::string& name, CpuState& state) {
     // Order matters only for diagnostics: every module reports "not mine" without
     // inventing a result, and anything unclaimed is a hard guest-visible failure.
+    if (uikit.invoke(name, state, objc)) return;
     if (libc.invoke(name, state)) return;
     if (stdio.invoke(name, state)) return;
     if (audio.invoke(name, state)) return;

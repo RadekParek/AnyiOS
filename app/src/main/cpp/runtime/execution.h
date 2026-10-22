@@ -11,6 +11,8 @@ namespace podnative::runtime {
 struct GuestRun {
     uint64_t instructions = 0;
     uint32_t pc = 0;
+    // Name of the guest function the PC landed in, when the image still carries symbols.
+    std::string pcSymbol;
     std::string stop = "NOT_STARTED";  // EXITED, BUDGET, FAULT, UNIMPLEMENTED, TRAPPED
     std::string detail;
     size_t serviceCalls = 0;

@@ -1,4 +1,60 @@
-# Continuation progress — 2026-10-20
+# Continuation progress — 2026-10-22
+
+## 0.9.2 — startup-blocker sweep
+
+Every item below was a named blocker in a real launch report. Each one is now a code
+change with a host test behind it; none of them is a stub that returns success.
+
+1. **`DYLD_ADDRESS: cursor arithmetic overflow`** — the dyld cursor is `uint64_t`
+   arithmetic that wraps, exactly like Apple's `address +=`. Link editors encode a
+   backward skip as a ten-byte ULEB (the two's complement of the distance), so rejecting
+   the wrap refused valid streams. `decodeDyld` now advances modulo 2^64 and validates
+   the resulting fixup target against the selected segment (`DYLD_TARGET`/`DYLD_SEGMENT`
+   when it really is outside the image).
+2. **`DYLD_TRUNCATED: stream is missing DONE`** — dyld's own decoder loops `while (p < end)`
+   and never demands a trailing `DONE`. Streams that stop cleanly on an opcode boundary are
+   accepted; only an operand that is cut in half is `DYLD_TRUNCATED`.
+3. **`DYLD_LIMIT: rebase repeat count`** — repeated rebases/binds are bound by the remaining
+   fixup budget rather than by the raw opcode count, and a rebase plus a bind on the same
+   slot is a lazy pointer that merges (bind wins) instead of a conflict.
+4. **`DYLD_STUB: symbol stub size is not patchable`** — real ARM binaries contain 4-byte
+   `ldr pc, [pc, #imm]` stubs (573 of them in the Minecraft build). Those are dispatched
+   through the pointer slot they name, with the instruction validated as an
+   `ldr pc, [pc, #imm]` before the slot is touched; the 12-byte rewrite path is unchanged.
+5. **`HLE_UNIMPLEMENTED: _vsnprintf`** — `vsnprintf`/`_vsnprintf` now format through the
+   existing formatter by walking the guest `va_list` with AAPCS rules (8-byte alignment for
+   `double`/`int64_t`), writing into the caller's buffer and returning the untruncated length.
+6. **`UNIMPLEMENTED _UIApplicationMain`** — a real bootstrap in `runtime/uikit.cpp`: argv is
+   parsed into a guest `argc/argv` pair, the delegate class named in the call's fourth argument is
+   instantiated through the guest's own class metadata, its launch selector is called, and control returns
+   to the caller only at a lifecycle gate the runtime owns. A missing delegate class, an
+   unusable `argv` or a delegate without a launch selector are named faults
+   (`UIKIT_DELEGATE`, `UIKIT_ARGV`), never silent success.
+7. **`FAULT MEMORY_UNMAPPED` at `0x0`** — an access in the first page is now
+   `MEMORY_NULL: null pointer dereference` and names the guest PC, so a nil message result
+   or a null import is distinguishable from a random unmapped address.
+8. **`LOAD_COMMAND_UNSUPPORTED: 0x2b`** — `LC_DYLIB_CODE_SIGN_DRS`, `LC_SEGMENT_SPLIT_INFO`,
+   `LC_ENCRYPTION_INFO_64`, `LC_LINKER_OPTION` and `LC_LINKER_OPTIMIZATION_HINT` are parsed
+   and range-checked. Encrypted images are still refused by name, and `LC_DYLD_ENVIRONMENT`
+   is validated and deliberately ignored so a guest cannot inject `DYLD_*` variables.
+
+Stop reports now also name the guest function: the loader keeps the image's `N_SECT`
+symbols (compiler labels such as `ltmp0` are dropped), and `GUEST_BLOCKER` gains
+`symbol=<nearest function>`. The crash screen shows "Guest PC in &lt;function&gt;" instead of a
+bare hex address.
+
+Display work: games request landscape (`SCREEN_ORIENTATION_LANDSCAPE`, the landscape-left
+holding position an iPhone title expects) instead of starting whichever way the phone
+happened to lie, and the debug console starts hidden — it is opt-in from Settings.
+
+Evidence: `scripts/test-host.sh` is green end to end (loader/Mach-O fuzz, dyld, export graph,
+libc, C++, audio, fs, Objective-C, UIKit bootstrap); both test games the user added to
+`tests/` load through the same path the app uses (fat slice selection included): AngryBirds
+maps 36,564,992 guest bytes, decodes 230 bindings, and reports **143** required imports still
+missing; Minecraft PE maps 37,109,760 guest bytes, decodes 20,585 rebases and 994 bindings,
+and reports **391** missing. Both are loader/dyld results on this host — no device, rendering
+or gameplay claim, and neither title is dumped, patched or redistributed.
+
 
 This supersedes the initial BUILD_REPORT.md where noted. The user reports the
 previous graphics preview working on their S23 Ultra; no screenshot/log was supplied.
