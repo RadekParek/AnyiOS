@@ -6,7 +6,6 @@
 #include <string>
 
 #include "cpu.h"
-#include "heap.h"
 #include "memory.h"
 
 namespace podnative::runtime {
@@ -19,7 +18,9 @@ namespace podnative::runtime {
 // unlock, with normal, error-checking and recursive types behaving as their headers describe.
 class Posix final {
    public:
-    Posix(Memory& memory, GuestHeap& heap) : memory(memory), heap(heap) {}
+    // Thread stacks live in their own guest window, so the scheduler does not allocate from
+    // the guest heap and needs no reference to it.
+    explicit Posix(Memory& memory) : memory(memory) {}
     bool invoke(const std::string& symbol, CpuState& cpu);
     std::string describe() const;
 
@@ -69,7 +70,6 @@ class Posix final {
 
    private:
     Memory& memory;
-    GuestHeap& heap;
     struct Thread {
         CpuState state;
         bool blocked = false, exited = false, main = false, detached = false;

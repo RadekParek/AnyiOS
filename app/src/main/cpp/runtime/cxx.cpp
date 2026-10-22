@@ -260,10 +260,6 @@ bool CxxRuntime::compilerHelper(const std::string& name, CpuState& cpu) {
     }
     return false;
 }
-namespace {
-// Personality return codes, as libgcc defines them.
-constexpr int UnwindContinue = 0;
-}  // namespace
 std::string CxxRuntime::hex(uint32_t value) const {
     char text[16];
     std::snprintf(text, sizeof(text), "%08x", value);

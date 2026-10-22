@@ -319,6 +319,8 @@ bool OpenAL::invoke(const std::string& symbol, CpuState& cpu) {
                 Source& source = sourceAt(memory.read32(at + n * 4));
                 if (source.queued.empty() && !source.looping) continue;
                 source.playing = true;
+                source.paused = false;
+                source.hasPlayed = true;
                 source.started = Clock::now();
             }
             r[0] = 0;
@@ -326,15 +328,27 @@ bool OpenAL::invoke(const std::string& symbol, CpuState& cpu) {
         }
         Source& source = sourceAt(r[0]);
         if (symbol == "_alSourcePlay") {
+            // Play resumes a paused source where it stopped, so the time it already played
+            // is kept and only the running clock is restarted.
             if (!source.queued.empty() || source.looping) {
                 source.playing = true;
+                source.paused = false;
+                source.hasPlayed = true;
                 source.started = Clock::now();
             }
         } else if (symbol == "_alSourcePause") {
-            source.playing = false;
-            source.playedBefore = 0.0;
+            // Pause keeps the offset it reached; the state query then reports AL_PAUSED
+            // instead of pretending the source had stopped.
+            if (source.playing) {
+                source.playedBefore += std::chrono::duration_cast<std::chrono::duration<double>>(
+                                           Clock::now() - source.started)
+                                           .count();
+                source.playing = false;
+                source.paused = true;
+            }
         } else if (symbol == "_alSourceStop") {
             source.playing = false;
+            source.paused = false;
             source.playedBefore = 0.0;
             for (uint32_t name : source.queued) {
                 auto buffer = buffers.find(name);
@@ -345,6 +359,7 @@ bool OpenAL::invoke(const std::string& symbol, CpuState& cpu) {
             source.queued.clear();
         } else {
             source.playing = false;
+            source.paused = false;
             source.playedBefore = 0.0;
         }
         r[0] = 0;
@@ -387,10 +402,12 @@ bool OpenAL::invoke(const std::string& symbol, CpuState& cpu) {
         uint32_t value = 0;
         switch (r[1]) {
             case AL_SOURCE_STATE:
-                value = source.playing
-                            ? AL_PLAYING
-                            : (source.queued.empty() && source.processed.empty() ? AL_INITIAL
-                                                                                 : AL_STOPPED);
+                // A source that has never run is AL_INITIAL even with buffers queued; only a
+                // source that played and then stopped reports AL_STOPPED.
+                value = source.playing      ? AL_PLAYING
+                        : source.paused     ? AL_PAUSED
+                        : !source.hasPlayed ? AL_INITIAL
+                                            : AL_STOPPED;
                 break;
             case AL_BUFFERS_QUEUED:
                 value = uint32_t(source.queued.size());

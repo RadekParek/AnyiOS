@@ -18,7 +18,7 @@ Services::Services(Memory& m)
       cxx(m, libc.guestHeap()),
       stdio(m, libc.guestHeap(), files),
       audio(m),
-      posix(m, libc.guestHeap()),
+      posix(m),
       openal(m),
       objc(m),
       gles(m),

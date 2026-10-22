@@ -8,6 +8,7 @@
 #include "runtime/error.h"
 #include "runtime/libc.h"
 #include "runtime/memory.h"
+#include "runtime/openal.h"
 using namespace podnative::runtime;
 namespace {
 void check(bool condition, const char* message) {
@@ -154,6 +155,55 @@ int main() {
         invalid.registers[2] = 0x90000;
         libc.invoke("_strtok_r", invalid);
     });
+
+    // OpenAL source state. A paused source is not a stopped one: OpenAL reports AL_PAUSED
+    // until it is played again, and playing resumes from the offset it was paused at.
+    {
+        OpenAL al(memory);
+        struct AlCall {
+            OpenAL& al;
+            CpuState state;
+            uint32_t operator()(const std::string& name, uint32_t a = 0, uint32_t b = 0,
+                                uint32_t c = 0, uint32_t d = 0, uint32_t e = 0) {
+                state = {};
+                state.registers[0] = a;
+                state.registers[1] = b;
+                state.registers[2] = c;
+                state.registers[3] = d;
+                state.registers[4] = e;
+                if (!al.invoke(name, state)) throw Error("TEST_SYMBOL", "unimplemented " + name);
+                return state.registers[0];
+            }
+        } call{al, {}};
+        const uint32_t names = 0x8000, pcm = 0x9000, cell = 0x8100;
+        const uint32_t device = call("_alcOpenDevice");
+        check(device != 0, "an OpenAL device opens");
+        const uint32_t context = call("_alcCreateContext", device);
+        check(context != 0, "an OpenAL context is created");
+        check(call("_alcMakeContextCurrent", context) == 1, "the context becomes current");
+        check(call("_alGenSources", 1, names) == 0, "a source name is generated");
+        const uint32_t source = memory.read32(names);
+        check(call("_alGenBuffers", 1, names) == 0, "a buffer name is generated");
+        const uint32_t buffer = memory.read32(names);
+        check(call("_alBufferData", buffer, 0x1100 /*MONO8*/, pcm, 4096, 8000) == 0,
+              "buffer data is accepted");
+        memory.write32(names, buffer);
+        check(call("_alSourceQueueBuffers", source, 1, names) == 0, "the buffer is queued");
+        auto stateOf = [&]() {
+            call("_alGetSourcei", source, 0x1010 /*AL_SOURCE_STATE*/, cell);
+            return memory.read32(cell);
+        };
+        check(stateOf() == 0x1011, "a queued but never played source is AL_INITIAL");
+        check(call("_alSourcePlay", source) == 0, "the source plays");
+        check(stateOf() == 0x1012, "a playing source is AL_PLAYING");
+        check(call("_alSourcePause", source) == 0, "the source pauses");
+        check(stateOf() == 0x1013, "a paused source is AL_PAUSED");
+        check(call("_alSourcePlay", source) == 0, "a paused source resumes");
+        check(stateOf() == 0x1012, "the resumed source is AL_PLAYING again");
+        check(call("_alSourceStop", source) == 0, "the source stops");
+        check(stateOf() == 0x1014, "a source that played and stopped is AL_STOPPED");
+        check(call("_alGetError") == 0, "no OpenAL error was recorded");
+    }
     std::cout << "audio_test: ok\n";
     return 0;
 }

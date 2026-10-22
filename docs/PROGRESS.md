@@ -435,3 +435,29 @@ link or touch source exists), no texture upload path for compressed atlases if t
 title asks for one, and the four Itanium RTTI vtables
 (`__ZTVN10__cxxabiv1*`) are still unbound, so `dynamic_cast`/`typeid` are reported
 as missing rather than approximated.
+
+## The Android build compiles under the NDK's clang
+
+The release job builds `podnative` with the NDK toolchain and `-Wall -Wextra -Werror`. The
+host suites compile the same sources with GCC, and GCC does not report three warnings
+clang does, so a green host run said nothing about the Android binary:
+
+* `cxx.cpp` kept a `UnwindContinue` constant that no code used. Clang reports an unused
+  `constexpr` at namespace scope (`-Wunused-const-variable`); GCC does not diagnose
+  unused constants in C++ at all.
+* `stdio.cpp` captured `input` in the `sscanf` push-back lambda, which only rewinds the
+  cursor. Clang reports unused lambda captures (`-Wunused-lambda-capture`).
+* `posix.h` held a `GuestHeap&` the scheduler never read; the thread stacks live in their
+  own guest window. Clang reports unused private fields (`-Wunused-private-field`).
+
+The fix is a compile of every runtime translation unit with an actual clang front-end
+(`zig c++`, LLVM-based) under the same flags plus those three warnings promoted to errors,
+which is what the host loop now checks before pushing: `runtime/*` and the top-level
+Mach-O sources build clean that way. `bridge.cpp` and `renderer.cpp` need the NDK and ANGLE
+headers, so they stay covered by the CI job only.
+
+While removing the dead OpenAL constant, the pause path was found to be a stop in
+disguise: `-alSourcePause` reported `AL_STOPPED` and a later `-alSourcePlay` restarted the
+buffer from the beginning. It is a real state now — `AL_INITIAL` before the first play,
+`AL_PAUSED` while paused, `AL_PLAYING` again on resume with the elapsed offset kept, and
+`AL_STOPPED` only after a stop. `tests/audio_test.cpp` covers the four transitions.
