@@ -33,6 +33,11 @@ points, and the EAGL objects route into it.
   `EAGL_NO_DRIVER` instead of returning a drawable that does not exist. `describe()` puts the
   backend, entry-point count and call/draw counters into the launch report line.
 
+Verified by CI run [39745421769](https://github.com/RadekParek/AnyiOS/actions/runs/39745421769): PC
+host suites green, Android `assembleDebug` green, artifact `AnyiOS.apk` (10,354,572 bytes) built
+from this commit. What CI proves is that the bridge compiles for `arm64-v8a` against the real
+ANGLE libraries and that the host units pass; it does not prove a frame reaches the screen.
+
 Evidence on this host (`scripts/test-host.sh`): a recording GLES/EGL driver
 (`tests/gles_stub_driver.cpp`) is `dlopen`ed exactly as a real driver is, and the unit test
 verifies the register split, the draw-time client-array copy, texel-size uploads, the
