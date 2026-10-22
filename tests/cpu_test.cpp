@@ -315,5 +315,100 @@ int main() {
         }
         std::cout << "ARMv6 and ARMv7 selectors both execute guest code passed\n";
     }
+    // The engine's fast paths, asserted rather than assumed: guest atomics, the thread-id
+    // register iOS code reads through CP15, hint instructions, and a code cache that
+    // survives the host service calls a running title makes thousands of times a second.
+    {
+        Memory fast;
+        std::vector<uint8_t> code(4096, 0), data(4096, 0);
+        put(code, 0x000, 0xe3a0004d);  // mov r0, #77
+        put(code, 0x004, 0xe1923f9f);  // ldrex r3, [r2]
+        put(code, 0x008, 0xe1821f90);  // strex r1, r0, [r2]
+        put(code, 0x00c, 0xef000000);  // svc #0
+        put(code, 0x010, 0xe3a00063);  // mov r0, #99
+        put(code, 0x014, 0xe1821f90);  // strex r1, r0, [r2] with no reservation
+        put(code, 0x018, 0xef000000);  // svc #0
+        put(code, 0x020, 0xe1923f9f);  // ldrex r3, [r2]
+        put(code, 0x024, 0xea000001);  // b 0x1030, so the pair spans two blocks
+        put(code, 0x030, 0xe1821f90);  // strex r1, r0, [r2] after a context switch
+        put(code, 0x034, 0xef000000);  // svc #0
+        put(code, 0x040, 0xee1d0f70);  // mrc p15, 0, r0, c13, c0, 3
+        put(code, 0x044, 0xef000000);  // svc #0
+        put(code, 0x050, 0xe320f001);  // yield
+        put(code, 0x054, 0xe320f002);  // wfe
+        put(code, 0x058, 0xe320f003);  // wfi
+        put(code, 0x05c, 0xe320f004);  // sev
+        put(code, 0x060, 0xf592f000);  // pld [r2]
+        put(code, 0x064, 0xef000000);  // svc #0
+        fast.map({0x1000, 4096, uint8_t(Read | Execute), "fast-path instructions"}, code.data(),
+                 code.size());
+        fast.map({0x2000, 4096, uint8_t(Read | Write), "fast-path data"}, data.data(), data.size());
+        fast.write32(0x2000, 5);
+        Cpu cpu(fast);
+        cpu.setThreadIdRegister(0x12340000);
+        CpuState state;
+        state.cpsr = 0x10;
+        state.registers[2] = 0x2000;
+        state.registers[13] = 0x2ff0;
+        // A matched LDREX/STREX pair stores and reports success in the status register.
+        state.registers[15] = 0x1000;
+        cpu.setState(state);
+        auto stop = cpu.run(16);
+        if (stop.reason != StopReason::SupervisorCall)
+            std::cerr << "exclusive stop=" << int(stop.reason) << " code=" << stop.code
+                      << " detail=" << stop.detail << " pc=" << std::hex << stop.pc << '\n';
+        assert(stop.reason == StopReason::SupervisorCall);
+        assert(cpu.state().registers[1] == 0 && cpu.state().registers[3] == 5);
+        assert(fast.read32(0x2000) == 77);
+        // An unmatched STREX fails and leaves the guest word alone: this is the guarantee
+        // iOS atomics, spin locks and dispatch_once are written against.
+        state = cpu.state();
+        state.registers[15] = 0x1010;
+        cpu.setState(state);
+        stop = cpu.run(16);
+        assert(stop.reason == StopReason::SupervisorCall);
+        assert(cpu.state().registers[1] == 1);
+        assert(fast.read32(0x2000) == 77);
+        // A reservation belongs to one context: switching threads between the two halves of
+        // the pair must make the store fail rather than corrupt another thread's atomic.
+        state = cpu.state();
+        state.registers[0] = 55;
+        state.registers[15] = 0x1020;
+        cpu.setState(state);
+        stop = cpu.run(2);
+        assert(stop.reason == StopReason::Budget && cpu.state().registers[15] == 0x1030);
+        cpu.setState(cpu.state());
+        stop = cpu.run(16);
+        assert(stop.reason == StopReason::SupervisorCall);
+        assert(cpu.state().registers[1] == 1);
+        assert(fast.read32(0x2000) == 77);
+        // The thread-id register answers with the value this thread was given instead of
+        // raising a coprocessor exception, so inlined TLS access works.
+        state = cpu.state();
+        state.registers[15] = 0x1040;
+        cpu.setState(state);
+        stop = cpu.run(16);
+        assert(stop.reason == StopReason::SupervisorCall);
+        assert(cpu.state().registers[0] == 0x12340000);
+        // Yield/WFE/WFI/SEV/PLD keep the guest running and are counted for the report.
+        state = cpu.state();
+        state.registers[15] = 0x1050;
+        cpu.setState(state);
+        stop = cpu.run(32);
+        assert(stop.reason == StopReason::SupervisorCall);
+        assert(cpu.counters().hintInstructions >= 5);
+        assert(cpu.counters().waitInstructions >= 2);
+        // Translated code survived every state restore above. Discarding the code cache on
+        // each host service call is what made a running title spend its time recompiling.
+        assert(cpu.counters().fullCacheClears == 0);
+#if defined(__unix__) || defined(__APPLE__)
+        if (!cpu.counters().directMemory)
+            std::cerr << "warning: the host refused a flat guest-memory reservation\n";
+        assert(cpu.counters().directMemory);
+#endif
+        std::cout << "Guest atomics, CP15 thread id, hints and code-cache reuse passed ("
+                  << (cpu.counters().fastMemory ? "hardware fastmem" : "checked page table") << ", "
+                  << cpu.counters().callbackReads << " checked reads)\n";
+    }
     std::cout << "Real Dynarmic ARM/Thumb, memory, service-trap, budget and fault tests passed\n";
 }

@@ -91,7 +91,18 @@ class CxxRuntime final {
     std::string thrownTypeName() const;
     std::string hex(uint32_t value) const;
     bool verbose = false;
-    uint32_t allocate(uint32_t bytes, const char* what);
+    // `caller` is the guest state of the call, so an allocation this runtime cannot satisfy
+    // names the guest site that asked for it and the frames that led there.
+    uint32_t allocate(uint32_t bytes, const char* what, const CpuState* caller = nullptr);
+    // The guest's own call stack, walked through the r7 frame chain iOS binaries keep.
+    // Empty when the chain is not usable; never reads a word it has not validated.
+    std::string guestBacktrace(const CpuState& cpu) const;
+    // Traces a guest allocation request above GuestHeap::LargeRequestBytes, naming the guest
+    // site that asked. A request that large is either a genuine pool or a size the guest
+    // computed from something this runtime told it, and telling those apart needs the call
+    // site, not just the number. Verbose-only: the count lives in the heap summary, and the
+    // guest log stays the guest's own output.
+    void noteLargeRequest(const char* what, uint32_t bytes, uint32_t returnAddress) const;
     uint32_t errnoAddress();
     void zero(uint32_t address, size_t bytes);
     std::string readString(uint32_t address) const;

@@ -3,6 +3,22 @@ project(podnative LANGUAGES C CXX)
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_POSITION_INDEPENDENT_CODE ON)
+# Optimization is stated here instead of being left to the build type. The Android plugin builds
+# a debuggable variant at -O0 with the C runtime's asserts live, and for this project that is not
+# a debuggable emulator so much as an unusable one: the JIT backend and the HLE runtime are the
+# hot path a title spends every frame in, and at -O0 they run an order of magnitude slower. So a
+# debug build keeps its symbols (-g, which is what makes a native crash report readable) and gets
+# the same optimization and NDEBUG a release build gets. These are directory-scope options, which
+# CMake places after CMAKE_CXX_FLAGS_<CONFIG> on the command line, so they also cover the pinned
+# CPU backend added below and they win over a toolchain's own -O0.
+if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
+    set(CMAKE_BUILD_TYPE Release CACHE STRING "Native build type" FORCE)
+endif()
+string(TOUPPER "${CMAKE_BUILD_TYPE}" PODNATIVE_BUILD_TYPE)
+if(PODNATIVE_BUILD_TYPE STREQUAL "DEBUG")
+    add_compile_options(-O2 -g)
+    add_compile_definitions(NDEBUG)
+endif()
 set(ANGLE_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/../../../../third_party/angle")
 # AGP packages linked CMake IMPORTED shared libraries. Keep them outside jniLibs
 # to avoid packaging the same native library twice.

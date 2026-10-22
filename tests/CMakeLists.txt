@@ -93,3 +93,14 @@ add_executable(guest_runner "${CMAKE_CURRENT_LIST_DIR}/../tools/guest_runner.cpp
 target_link_libraries(guest_runner PRIVATE podnative_hle podnative_cpu)
 target_compile_definitions(guest_runner PRIVATE PODNATIVE_CPU_IN_APP=1)
 target_compile_options(guest_runner PRIVATE -Wall -Wextra -Werror)
+
+# Throughput probe for the guest execution engine: two synthetic ARM loops, one that never
+# leaves guest code and one that calls a real host service every 1,000 iterations. Registered
+# with a deliberately short run so CI verifies the fast paths structurally (direct guest
+# memory, and no code-cache discards across host calls) without asserting a rate, which
+# depends on the machine it runs on. Use --seconds for a real measurement.
+add_executable(perf_probe perf_probe.cpp)
+target_link_libraries(perf_probe PRIVATE podnative_hle podnative_cpu)
+target_compile_definitions(perf_probe PRIVATE PODNATIVE_CPU_IN_APP=1)
+target_compile_options(perf_probe PRIVATE -Wall -Wextra -Werror)
+add_test(NAME engine_throughput_probe COMMAND perf_probe --seconds 0.25 --mode both)

@@ -99,7 +99,12 @@ class Services final {
         return std::to_string(libc.guestHeap().used()) + " of " +
                std::to_string(libc.guestHeap().committed()) + " mapped byte(s) (" +
                std::to_string(libc.guestHeap().capacity()) + " reserved) held by " +
-               std::to_string(libc.guestHeap().blocks()) + " live allocation(s)";
+               std::to_string(libc.guestHeap().blocks()) + " live allocation(s), largest " +
+               std::to_string(libc.guestHeap().largestFreeBlock()) + " contiguous free byte(s), " +
+               std::to_string(libc.guestHeap().largeRequests()) + " request(s) of " +
+               std::to_string(GuestHeap::LargeRequestBytes / (1024 * 1024)) +
+               " MiB or more, largest " + std::to_string(libc.guestHeap().largestRequest()) +
+               " byte(s)";
     }
     // Flushes and closes every guest-owned file once a run stops.
     void closeGuestFiles() { stdio.closeAll(); }

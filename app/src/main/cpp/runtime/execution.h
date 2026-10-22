@@ -3,6 +3,7 @@
 #include <string>
 #include <vector>
 
+#include "cpu.h"
 #include "exports.h"
 #include "loader.h"
 #include "services.h"
@@ -36,6 +37,9 @@ struct GuestRun {
     // Human-readable blocker for the crash screen: kind, subject and next action.
     std::string blockerKind;     // Startup, Unimplemented API, Guest fault, Trap, Exit
     std::string blockerSubject;  // the exact symbol or fault code
+    // What the CPU engine did to execute it: which guest-memory path translated code used
+    // and how much of its translated code it had to throw away.
+    CpuCounters engine;
 };
 // Real execution. With a zero instruction budget and zero seconds the guest runs until it
 // stops by itself: a fault, an unimplemented import, or its own exit.

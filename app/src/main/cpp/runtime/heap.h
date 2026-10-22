@@ -24,9 +24,21 @@ class GuestHeap final {
     size_t blocks() const { return live.size(); }
     // Bytes the guest currently holds, and the heap's total size, for the launch report.
     uint32_t used() const;
+    // The largest contiguous run of free bytes. A heap can be mostly empty and still be
+    // unable to answer one large request, and a report that shows only totals hides that.
+    uint32_t largestFreeBlock() const;
     uint32_t capacity() const { return size; }
     // Bytes of the heap that are actually mapped in the guest address space.
     uint32_t committed() const { return committedSize; }
+    // Requests at or above LargeRequestBytes, counted rather than logged. A title that asks
+    // for hundreds of megabytes is either building a real pool or computing a size from
+    // something this runtime told it, and the launch report should show which shape the run
+    // had. Counted here rather than in the callers so malloc, realloc and operator new all
+    // land in one figure, and counted once per guest request even when serving it has to map
+    // more of the address space and retry.
+    static constexpr uint32_t LargeRequestBytes = 32 * 1024 * 1024;
+    uint32_t largeRequests() const { return largeRequestCount; }
+    uint32_t largestRequest() const { return largestRequestBytes; }
 
    private:
     Memory& memory;
@@ -34,6 +46,10 @@ class GuestHeap final {
     static constexpr uint32_t GrowStep = 8 * 1024 * 1024;
     uint32_t committedSize = 0;
     bool mapped = false;
+    uint32_t largeRequestCount = 0, largestRequestBytes = 0;
+    // allocate() without the request accounting, so growing the heap and retrying does not
+    // count one guest request once per growth step.
+    uint32_t allocateFrom(uint32_t bytes, uint32_t alignment) noexcept;
     std::map<uint32_t, uint32_t> freeBlocks, live;
     bool ensureMapped() noexcept;
     // Maps the next GrowStep of the heap. Returns false when the whole range is mapped.
