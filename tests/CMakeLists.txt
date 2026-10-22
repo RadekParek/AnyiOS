@@ -31,6 +31,11 @@ target_compile_options(podnative_cpu PRIVATE -Wall -Wextra -Werror)
 add_library(podnative_hle STATIC
     "${RUNTIME}/runtime/exports.cpp"
     "${RUNTIME}/runtime/dyld.cpp"
+    # Stop reports name the guest function through LoadedImage::nearestSymbol, so the
+    # loader (and the header inspection it validates with) belongs to the HLE library
+    # the CPU tests link.
+    "${RUNTIME}/runtime/loader.cpp"
+    "${RUNTIME}/macho.cpp"
     "${RUNTIME}/runtime/services.cpp"
     "${RUNTIME}/runtime/libc.cpp"
     "${RUNTIME}/runtime/cxx.cpp"

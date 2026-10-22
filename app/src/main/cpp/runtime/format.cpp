@@ -101,7 +101,10 @@ std::string floatText(double value, const Spec& spec, char conversion) {
     if (spec.plus) directive += "+";
     if (spec.space) directive += " ";
     if (spec.alternate) directive += "#";
-    if (spec.precision >= 0) directive += "." + std::to_string(precision);
+    if (spec.precision >= 0) {
+        directive += '.';
+        directive += std::to_string(precision);
+    }
     directive += conversion;
     // std::snprintf on the host performs IEEE-754 rounding, which is what the guest libc
     // does; the buffer is fixed and the directive is built from a validated grammar.

@@ -181,8 +181,12 @@ uint32_t ObjC::makeObject(const std::string& className) {
 std::string ObjC::describe(uint32_t object) const {
     if (!object) return "(null)";
     auto found = objects.find(object);
-    if (auto guest = guestInstances.find(object); guest != guestInstances.end())
-        return "<" + guestClassName(guest->second) + ">";
+    if (auto guest = guestInstances.find(object); guest != guestInstances.end()) {
+        std::string out = "<";
+        out += guestClassName(guest->second);
+        out += '>';
+        return out;
+    }
     if (found == objects.end()) {
         for (const auto& [name, address] : classes)
             if (address == object) return name;
@@ -937,7 +941,10 @@ bool ObjC::bundleMessage(const std::string& method, CpuState& state) {
             return true;
         }
         std::string path = readText(name);
-        if (type) path += "." + readText(type);
+        if (type) {
+            path += '.';
+            path += readText(type);
+        }
         const std::string candidate = bundlePath + "/" + path;
         if (fileExists && !fileExists(candidate)) {
             r[0] = 0;

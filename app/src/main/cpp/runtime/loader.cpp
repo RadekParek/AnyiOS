@@ -576,12 +576,13 @@ std::string LoadedImage::summary() const {
     if (legacyStubs) {
         size_t compact = 0;
         for (const auto& stub : stubs) compact += stub.compact ? 1 : 0;
-        s << "\nLegacy symbol stubs=" << std::dec << legacyStubs
-          << (stubs.empty() ? "; none carried an external symbol."
-                            : "; each is redirected to its resolved import or to a named trap.")
-          << (compact ? " " + std::to_string(compact) +
-                            " are one-word ldr pc stubs dispatched through their pointer slot."
-                      : "");
+        s << "\nLegacy symbol stubs=" << std::dec << legacyStubs;
+        if (stubs.empty())
+            s << "; none carried an external symbol.";
+        else
+            s << "; each is redirected to its resolved import or to a named trap.";
+        if (compact)
+            s << ' ' << compact << " are one-word ldr pc stubs dispatched through their slot.";
     }
     for (const auto& dependency : dependencies) s << "\nrequires " << dependency;
     return s.str();
