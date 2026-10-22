@@ -1,5 +1,6 @@
 #include "dyld.h"
 
+#include <cstdio>
 #include <limits>
 #include <set>
 #include <sstream>
@@ -57,16 +58,13 @@ DyldPlan decodeDyld(const uint8_t* bytes, size_t size, const std::vector<DyldSeg
     bool weak = false;
     int64_t addend = 0;
     size_t operations = 0, nameBytes = 0;
-    bool done = false;
-    // Strides are pure cursor arithmetic. A stream may legitimately advance before it
-    // selects a segment (the cursor is simply not anchored yet) and may run past the end
-    // of the last fixup, because only emit() dereferences the cursor. Failing here rejected
-    // valid streams from this binary; the precise complaint now comes from emit(), and the
-    // only remaining hard failure is real 64-bit arithmetic overflow.
-    auto advance = [&](uint64_t amount) {
-        if (amount > UINT64_MAX - offset) throw Error("DYLD_ADDRESS", "cursor arithmetic overflow");
-        offset += amount;
-    };
+    // The cursor is uint64 arithmetic that wraps, exactly like dyld's own `address +=`.
+    // Real link editors emit negative skips as a ten-byte ULEB (the two's complement of the
+    // distance), so a stream that walks backwards is not corrupt: 0x80 followed by such a
+    // value is how clang says "go back 1656 bytes". Treating the wrap as an error rejected
+    // those streams with DYLD_ADDRESS before a single fixup was emitted; the lifetime check
+    // belongs to emit(), which rejects a cursor that is not inside the selected segment.
+    auto advance = [&](uint64_t amount) { offset += amount; };
     auto emit = [&] {
         if (type != 1)
             throw Error("DYLD_TYPE_UNSUPPORTED", "only ARM32 pointer fixups are implemented");
@@ -88,7 +86,6 @@ DyldPlan decodeDyld(const uint8_t* bytes, size_t size, const std::vector<DyldSeg
         if (++operations > 1000000) throw Error("DYLD_LIMIT", "opcode work budget exceeded");
         uint8_t b = s.byte(), op = b & 0xf0, imm = b & 15;
         if (op == 0) {
-            done = true;
             if (imm) throw Error("DYLD_OPCODE", "invalid DONE immediate");
             if (!lazy) {
                 while (s.p < s.n)
@@ -104,7 +101,6 @@ DyldPlan decodeDyld(const uint8_t* bytes, size_t size, const std::vector<DyldSeg
             addend = 0;
             continue;
         }
-        done = false;
         if (rebasing) {
             switch (op) {
                 case 0x10:
@@ -227,7 +223,10 @@ DyldPlan decodeDyld(const uint8_t* bytes, size_t size, const std::vector<DyldSeg
             }
         }
     }
-    if (size && !done) throw Error("DYLD_TRUNCATED", "stream is missing DONE");
+    // dyld's own decoder loops `while (p < end)` and never demands a trailing DONE: several
+    // link editors end the stream after the last fixup. A stream that stops in the middle of
+    // an operand has already failed in byte()/leb() with DYLD_TRUNCATED, so a clean stop on an
+    // opcode boundary is accepted here instead of rejecting a usable plan.
     return plan;
 }
 void DyldPlan::apply(
@@ -274,6 +273,20 @@ void DyldPlan::applyWithGraph(Memory& memory, uint32_t slide, const ExportGraph&
             continue;
         }
         auto& previous = normalized.fixups[old->second];
+        // A lazy pointer slot is rebound by the lazy binding stream *and* rebased by the
+        // rebase stream: link editors emit a rebase for the zero slot it starts as and a
+        // bind for the symbol it will resolve to. dyld rebases first and binds second, so
+        // the binding is what the slot must contain. Keeping the rebase would add a slide
+        // to a value that is about to be replaced, so the bind wins and the rebase is
+        // dropped rather than reported as a conflict.
+        if (previous.rebase != fixup.rebase) {
+            if (previous.rebase) {
+                previous = fixup;
+            } else if (fixup.lazy && !previous.lazy) {
+                previous.lazy = true;
+            }
+            continue;
+        }
         // Two streams that name the same slot with the same target are not a conflict:
         // a link editor may list a lazy pointer in both the lazy and the plain binding
         // stream. Writing the same value twice is idempotent, so merge and keep the

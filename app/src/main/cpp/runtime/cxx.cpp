@@ -11,7 +11,15 @@
 namespace podnative::runtime {
 namespace {
 constexpr size_t CopyLimit = 16 * 1024 * 1024;
+// Mach-O prefixes every C symbol with an underscore, and an Itanium mangled name already
+// starts with `_Z`, so the guest's import is `__Znwm`, not `_Znwm`. Both spellings are
+// accepted so a hand-written test and a real image resolve to the same implementation.
 const char* const CxxSymbols[] = {
+    "__Znwm",
+    "__Znam",
+    "__ZdlPv",
+    "__ZdaPv",
+    "__ZSt9terminatev",
     "_Znwm",
     "_Znam",
     "_ZdlPv",
@@ -176,11 +184,32 @@ bool CxxRuntime::compilerHelper(const std::string& name, CpuState& cpu) {
         split(unsignedResult ? uint64_t(clamped) : uint64_t(int64_t(clamped)), cpu);
         return true;
     }
-    if (name == "__Unwind_SjLj_Register" || name == "__Unwind_SjLj_Unregister" ||
-        name == "__Unwind_SjLj_Resume" || name == "___gxx_personality_sj0" ||
+    if (name == "__Unwind_SjLj_Register" || name == "__Unwind_SjLj_Unregister") {
+        // Setjmp/longjmp unwinding tables. Registering and unregistering a frame is pure
+        // bookkeeping around a `__builtin_setjmp` the guest already performed; refusing them
+        // rejected every GCC-era Objective-C method that contains a @try, including normal
+        // code paths that never throw. The frames are recorded so a resume can name the
+        // innermost one instead of guessing.
+        const uint32_t context = r[0];
+        if (name == "__Unwind_SjLj_Register") {
+            if (!context || !memory.permits(context, 40, Read))
+                throw Error("CXX_UNWIND", "SjLj register without a valid function context",
+                            context);
+            if (sjljFrames.size() >= 4096) throw Error("CXX_LIMIT", "too many SjLj frames");
+            sjljFrames.push_back(context);
+        } else {
+            auto found = std::find(sjljFrames.rbegin(), sjljFrames.rend(), context);
+            if (found != sjljFrames.rend()) sjljFrames.erase(std::next(found).base());
+        }
+        r[0] = 0;
+        return true;
+    }
+    if (name == "__Unwind_SjLj_Resume" || name == "___gxx_personality_sj0" ||
         name == "___objc_personality_v0") {
-        throw Error("CXX_UNWIND", "guest SjLj unwinding (" + name +
-                                      ") is not emulated; exceptions cannot be caught yet");
+        throw Error("CXX_UNWIND", "guest threw a C++ exception: " + name +
+                                      " requires SjLj resumption, which is not emulated yet "
+                                      "(frames registered: " +
+                                      std::to_string(sjljFrames.size()) + ")");
     }
     return false;
 }
@@ -260,15 +289,15 @@ bool CxxRuntime::fortified(const std::string& name, CpuState& cpu) {
 }
 bool CxxRuntime::abi(const std::string& name, CpuState& cpu) {
     auto& r = cpu.registers;
-    if (name == "_Znwm" || name == "_Znam") {
+    if (name == "__Znwm" || name == "_Znwm" || name == "__Znam" || name == "_Znam") {
         r[0] = allocate(r[0], "operator new");
         return true;
     }
-    if (name == "_ZdlPv" || name == "_ZdaPv") {
+    if (name == "__ZdlPv" || name == "_ZdlPv" || name == "__ZdaPv" || name == "_ZdaPv") {
         if (r[0] && heap.owns(r[0])) heap.release(r[0]);
         return true;
     }
-    if (name == "_ZSt9terminatev") {
+    if (name == "__ZSt9terminatev" || name == "_ZSt9terminatev") {
         throw Error("CXX_TERMINATE", "the guest called std::terminate");
     }
     if (name == "___cxa_allocate_exception") {

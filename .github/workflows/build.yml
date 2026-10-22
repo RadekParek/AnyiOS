@@ -50,8 +50,6 @@ jobs:
       - uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: '8.11.1'
-      # No Rust runtime is used yet, but provision the planned CPU integration toolchain.
-      - uses: dtolnay/rust-toolchain@stable
       - name: Install application SDK
         run: |
           set -o pipefail
@@ -62,11 +60,17 @@ jobs:
           pipx install ruff==0.11.13
           scripts/check-format.sh
           for script in scripts/*.sh; do bash -n "$script"; done
-      - name: Host regression tests
-        run: |
-          mkdir -p .local/logs
-          set -o pipefail
-          scripts/test-host.sh 2>&1 | tee .local/logs/host-tests.log
+      # Cloning dynarmic and assembling Boost's header tree takes over a minute per run
+      # and is identical for identical pins. prepare-cpu.sh re-verifies the revision and
+      # the reviewed patch, so a restored tree is still proven to be the pinned one.
+      - name: Cache pinned CPU sources
+        uses: actions/cache@v4
+        with:
+          path: |
+            .local/deps
+            .local/boost-headers
+            .local/converter-dynarmic
+          key: ${{ runner.os }}-cpu-sources-${{ hashFiles('third_party/dynarmic/revision.txt', 'third_party/dynarmic/boost-revision.txt', 'third_party/dynarmic/patches/*', 'third_party/converter-runtime/dynarmic-revision.txt') }}
       - name: Prepare pinned application CPU engine
         run: |
           set -o pipefail
@@ -148,9 +152,9 @@ jobs:
         run: |
           set -o pipefail
           if [ "$VARIANT" = debug ]; then
-            gradle --no-daemon :app:lintDebug :app:testDebugUnitTest :converter:lintDebug :converter:testDebugUnitTest :gameruntime-template:testDebugUnitTest :app:assembleDebug 2>&1 | tee .local/logs/android-build.log
+            gradle --no-daemon --build-cache --parallel :app:lintDebug :app:testDebugUnitTest :converter:lintDebug :converter:testDebugUnitTest :gameruntime-template:testDebugUnitTest :app:assembleDebug 2>&1 | tee .local/logs/android-build.log
           else
-            gradle --no-daemon :app:lintRelease :app:testReleaseUnitTest :converter:lintRelease :converter:testReleaseUnitTest :app:assembleRelease 2>&1 | tee .local/logs/android-build.log
+            gradle --no-daemon --build-cache --parallel :app:lintRelease :app:testReleaseUnitTest :converter:lintRelease :converter:testReleaseUnitTest :app:assembleRelease 2>&1 | tee .local/logs/android-build.log
           fi
       - name: Prepare APK and provenance
         env:

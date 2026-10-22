@@ -20,6 +20,17 @@ struct LegacyStub {
     std::string symbol;
     int ordinal = 0;
     bool weak = false;
+    // A four-byte ARM "compact" stub is a single `ldr pc, [pc, #imm]` that reads its target
+    // from a lazy/non-lazy pointer slot. It cannot hold a branch sequence, so it is
+    // dispatched by binding the slot it names instead of being rewritten in place.
+    bool compact = false;
+    uint32_t slot = 0;
+};
+// A function symbol the image defines, kept only so a stop report can name the guest
+// function that was executing. This is diagnosis, not a symbol table used by dyld.
+struct FunctionSymbol {
+    uint32_t address = 0;
+    std::string name;
 };
 struct LoadedImage {
     std::unique_ptr<Memory> memory;
@@ -30,9 +41,18 @@ struct LoadedImage {
     DyldPlan dyld;
     size_t legacyStubs = 0;
     std::vector<LegacyStub> stubs;
+    // Classes the image itself defines, taken from its `__objc_classlist` section. Their
+    // metadata stays guest-owned: the runtime reads it in place instead of copying it, so
+    // a class a title looks up by name is the same object its own code uses.
+    std::vector<uint32_t> objcClasses;
     std::vector<std::pair<std::string, ExportDefinition>> exports;
     uint32_t cpuSubtype = 9;  // CPU_SUBTYPE_ARM_V7 unless the header says otherwise.
     IsaArch arch = IsaArch::ArmV7;
+    // Defined function symbols, sorted by address. Empty for stripped titles.
+    std::vector<FunctionSymbol> symbols;
+    // Nearest preceding function for a guest PC, or an empty string when the image is
+    // stripped or the PC is further than 1 MiB past the last symbol.
+    std::string nearestSymbol(uint32_t address) const;
     std::string summary() const;
 };
 // Fixed-address mapping at the un-slid vmaddrs. PIE images are accepted because every

@@ -1,4 +1,119 @@
-# Continuation progress — 2026-10-20
+# Continuation progress — 2026-10-22
+
+## 0.9.3 — AngryBirds runs its own code into GL
+
+The user's AngryBirds IPA now boots through the real launch path instead of stopping at the
+first dozen instructions. Each step below was a genuine defect, not a stub:
+
+* **Every guest was cut off at 200,000 instructions.** The run loop treated the end of a
+  200,000-instruction CPU slice as the end of the run, so a title could never get past its
+  startup. It now continues until the caller's total budget or the wall clock stops it.
+* **Classic external relocations were ignored.** This binary predates `LC_DYLD_INFO`: all 348
+  of its Objective-C binds (`_OBJC_CLASS_$_UIView`, `_OBJC_METACLASS_$_NSObject`,
+  `__objc_empty_cache`, `__objc_empty_vtable`, the class refs) live in `LC_DYSYMTAB`'s
+  `extreloff/nextrel` table. Without them every superclass and class-ref slot stayed zero, so
+  an image-defined class had no superclass at all. `loadMachO` decodes the table into ordinary
+  fixups (4-byte absolute pointers only; anything else is `DYLD_RELOCATION`), and the whole
+  table is range-checked like every other linkedit table.
+* **A superclass is a bind, not a rebase.** Guest classes are registered before dyld runs, so
+  their `superclass` field was read as zero once and cached. It is now read from guest memory
+  when the chain is walked, so `[MyEAGLView -initWithFrame:]` and its siblings are found.
+* **Class symbols belong to the framework that exports them.** Every class was defined under
+  Foundation, so a UIKit-ordinal bind (and the CoreFoundation-ordinal bind of `NSDictionary`)
+  resolved to the unimplemented-import trap instead. Class and metaclass symbols are now
+  defined in the owning framework, the toll-free bridged Foundation classes in CoreFoundation
+  as well, and `__objc_empty_cache`/`__objc_empty_vtable` in libobjc.
+* **Method lookup missed the metaclass and the host superclass.** `+layerClass` and friends
+  arrive with a metaclass address that is not in `__objc_classlist`; lookups now map it back to
+  its class. Methods inherited from a modelled framework class (`-layer`,
+  `-setMultipleTouchEnabled:`, `-initWithFrame:`) now reach the host implementation.
+* **Struct returns.** `objc_msgSend_stret` now writes the four returned words through the
+  caller's buffer instead of refusing, which is what `[UIScreen bounds]` needs. A `CGRect`
+  argument is accepted either as a pointer or as four words in `r2-r5`.
+* View state is kept for instances whose class the image defines, layer objects follow the
+  image's own `+layerClass` override, `UIAccelerometer`/`EAGLContext`/`CAEAGLLayer` are real
+  objects with real properties, and `+dictionaryWithObjectsAndKeys:` builds a real dictionary.
+
+Result on this host: AngryBirds runs **340,304 instructions** of its own ARMv6 code (from 86
+before this round), through `UIApplicationMain`, the `AppController` delegate, window and
+`MyEAGLView` creation and EAGL context setup, and stops at `_glFrontFace` — the first OpenGL ES
+call. That is the honest boundary: the host probe links no GL, and the next step is the
+EAGL/ANGLE bridge that forwards these calls to the real ANGLE libraries the app already ships.
+`-[EAGLContext renderbufferStorage:fromDrawable:]` and `-presentRenderbuffer:` refuse by name
+rather than pretending a drawable exists. No gameplay, rendering or device claim is made.
+
+
+## 0.9.2 — startup-blocker sweep
+
+Every item below was a named blocker in a real launch report. Each one is now a code
+change with a host test behind it; none of them is a stub that returns success.
+
+1. **`DYLD_ADDRESS: cursor arithmetic overflow`** — the dyld cursor is `uint64_t`
+   arithmetic that wraps, exactly like Apple's `address +=`. Link editors encode a
+   backward skip as a ten-byte ULEB (the two's complement of the distance), so rejecting
+   the wrap refused valid streams. `decodeDyld` now advances modulo 2^64 and validates
+   the resulting fixup target against the selected segment (`DYLD_TARGET`/`DYLD_SEGMENT`
+   when it really is outside the image).
+2. **`DYLD_TRUNCATED: stream is missing DONE`** — dyld's own decoder loops `while (p < end)`
+   and never demands a trailing `DONE`. Streams that stop cleanly on an opcode boundary are
+   accepted; only an operand that is cut in half is `DYLD_TRUNCATED`.
+3. **`DYLD_LIMIT: rebase repeat count`** — repeated rebases/binds are bound by the remaining
+   fixup budget rather than by the raw opcode count, and a rebase plus a bind on the same
+   slot is a lazy pointer that merges (bind wins) instead of a conflict.
+4. **`DYLD_STUB: symbol stub size is not patchable`** — real ARM binaries contain 4-byte
+   `ldr pc, [pc, #imm]` stubs (573 of them in the Minecraft build). Those are dispatched
+   through the pointer slot they name, with the instruction validated as an
+   `ldr pc, [pc, #imm]` before the slot is touched; the 12-byte rewrite path is unchanged.
+5. **`HLE_UNIMPLEMENTED: _vsnprintf`** — `vsnprintf`/`_vsnprintf` now format through the
+   existing formatter by walking the guest `va_list` with AAPCS rules (8-byte alignment for
+   `double`/`int64_t`), writing into the caller's buffer and returning the untruncated length.
+6. **`UNIMPLEMENTED _UIApplicationMain`** — a real bootstrap in `runtime/uikit.cpp`: argv is
+   parsed into a guest `argc/argv` pair, the delegate class named in the call's fourth argument is
+   instantiated through the guest's own class metadata, its launch selector is called, and control returns
+   to the caller only at a lifecycle gate the runtime owns. A missing delegate class, an
+   unusable `argv` or a delegate without a launch selector are named faults
+   (`UIKIT_DELEGATE`, `UIKIT_ARGV`), never silent success.
+7. **`FAULT MEMORY_UNMAPPED` at `0x0`** — an access in the first page is now
+   `MEMORY_NULL: null pointer dereference` and names the guest PC, so a nil message result
+   or a null import is distinguishable from a random unmapped address.
+8. **`LOAD_COMMAND_UNSUPPORTED: 0x2b`** — `LC_DYLIB_CODE_SIGN_DRS`, `LC_SEGMENT_SPLIT_INFO`,
+   `LC_ENCRYPTION_INFO_64`, `LC_LINKER_OPTION` and `LC_LINKER_OPTIMIZATION_HINT` are parsed
+   and range-checked. Encrypted images are still refused by name, and `LC_DYLD_ENVIRONMENT`
+   is validated and deliberately ignored so a guest cannot inject `DYLD_*` variables.
+
+Stop reports now also name the guest function: the loader keeps the image's `N_SECT`
+symbols (compiler labels such as `ltmp0` are dropped), and `GUEST_BLOCKER` gains
+`symbol=<nearest function>`. The crash screen shows "Guest PC in &lt;function&gt;" instead of a
+bare hex address.
+
+Display work: games request landscape (`SCREEN_ORIENTATION_LANDSCAPE`, the landscape-left
+holding position an iPhone title expects) instead of starting whichever way the phone
+happened to lie, and the debug console starts hidden — it is opt-in from Settings.
+
+### Faster pipeline
+
+The same checks now take much less wall clock:
+
+* The PC job restores the pinned dynarmic/Boost/converter source trees (~1 min each run)
+  and compiles both suites through a content-addressed ccache, so unchanged objects are
+  never rebuilt.
+* The Android job reuses those sources, keeps the existing verified ANGLE cache, and runs
+  Gradle with the build cache and parallel module execution instead of re-running task
+  outputs it already produced.
+* `scripts/test-host.sh` builds its fourteen sanitizer binaries and its strict-warning
+  sweep in parallel (`HOST_TEST_JOBS` caps it), which took the suite from ~110 s to ~57 s
+  here, and both workflows no longer run the same host suite twice.
+* Branch pushes no longer trigger a second full run of the same two jobs that their pull
+  request already starts.
+
+Evidence: `scripts/test-host.sh` is green end to end (loader/Mach-O fuzz, dyld, export graph,
+libc, C++, audio, fs, Objective-C, UIKit bootstrap); both test games the user added to
+`tests/` load through the same path the app uses (fat slice selection included): AngryBirds
+maps 36,564,992 guest bytes, decodes 230 bindings, and reports **143** required imports still
+missing; Minecraft PE maps 37,109,760 guest bytes, decodes 20,585 rebases and 994 bindings,
+and reports **391** missing. Both are loader/dyld results on this host — no device, rendering
+or gameplay claim, and neither title is dumped, patched or redistributed.
+
 
 This supersedes the initial BUILD_REPORT.md where noted. The user reports the
 previous graphics preview working on their S23 Ultra; no screenshot/log was supplied.

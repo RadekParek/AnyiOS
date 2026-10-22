@@ -75,7 +75,8 @@ int main() {
     const uint32_t nsstring = harness.call(getClass, harness.text("NSString"), 0);
     const uint32_t nsobject = harness.call(getClass, harness.text("NSObject"), 0);
     assert(nsstring && nsobject && nsstring != nsobject);
-    assert(harness.call(getClass, harness.text("NoSuchClass"), 0) == 0);
+    // Unknown class names are refused, not answered with nil (see the NSClassFromString case).
+    fault("OBJC_CLASS_MISSING", [&] { harness.call(getClass, harness.text("NoSuchClass"), 0); });
     // A selector is just its interned guest string.
     const uint32_t lengthSelector = harness.text("length");
     assert(harness.call(registerName, lengthSelector, 0) == lengthSelector);
@@ -317,15 +318,71 @@ int main() {
         state.registers[0] = harness.text("NSString");
         assert(harness.objc.dispatch(harness.objc.gateAddress("_NSClassFromString"), state));
         assert(state.registers[0] == nsstring);
+        // A class the runtime does not model is named, not turned into nil: a nil here
+        // becomes a null dereference hundreds of instructions later.
         state.registers[0] = harness.text("NoSuchClass");
-        assert(harness.objc.dispatch(harness.objc.gateAddress("_NSClassFromString"), state));
-        assert(state.registers[0] == 0);
+        fault("OBJC_CLASS_MISSING", [&] {
+            harness.objc.dispatch(harness.objc.gateAddress("_NSClassFromString"), state);
+        });
     }
 
     // Unimplemented selectors and bogus receivers must fail, never return a fake success.
     fault("OBJC_UNIMPLEMENTED",
           [&] { harness.call(msgSend, hello, harness.text("drawInRect:"), 0); });
     fault("OBJC_RECEIVER", [&] { harness.call(msgSend, 0x1234, harness.text("length")); });
+    // Guest-defined classes: the image's own metadata is read in place, messages to its
+    // instances enter its own code, and its launch callback is reachable by name.
+    {
+        Harness guest;
+        // A modern-layout class: class object -> class_ro_t -> method list.
+        guest.memory.map({0x100000, 0x1000, uint8_t(Read | Write), "guest class"});
+        guest.memory.map({0x101000, 4096, uint8_t(Read | Execute), "guest code"});
+        guest.memory.write32(0x100000, 0x100040);  // isa (metaclass)
+        guest.memory.write32(0x100004, 0);         // superclass: NSObject binds here at load
+        guest.memory.write32(0x100010, 0x100100);  // class_data_bits_t -> class_ro_t
+        guest.memory.write32(0x100040, 0x100040);  // the metaclass is its own isa
+        guest.memory.write32(0x100044, 0);
+        guest.memory.write32(0x100050, 0x100180);                  // metaclass ro
+        guest.memory.write32(0x100100, 0x10);                      // flags
+        guest.memory.write32(0x100104, 4);                         // instanceStart
+        guest.memory.write32(0x100108, 16);                        // instanceSize
+        guest.memory.write32(0x100110, guest.text("GuestThing"));  // name
+        guest.memory.write32(0x100114, 0x100200);                  // baseMethods
+        guest.memory.write32(0x100200, 12);                        // entsizeAndFlags
+        guest.memory.write32(0x100204, 1);                         // count
+        guest.memory.write32(0x100208, guest.text("launch:"));
+        guest.memory.write32(0x10020c, 0);         // types
+        guest.memory.write32(0x100210, 0x101001);  // Thumb implementation
+        guest.memory.write32(0x100180, 0x10);
+        guest.memory.write32(0x100184, 4);
+        guest.memory.write32(0x100188, 16);
+        guest.memory.write32(0x100190, guest.text("GuestThing"));
+        guest.memory.write32(0x100194, 0);
+        guest.objc.registerGuestClasses({0x100000});
+        assert(guest.objc.classAddress("GuestThing", true) == 0x100000);
+        const uint32_t instance = guest.objc.allocateGuestInstance(0x100000);
+        assert(guest.memory.read32(instance) == 0x100000);
+        assert(guest.objc.respondsTo(instance, "launch:"));
+        assert(!guest.objc.respondsTo(instance, "drawInRect:"));
+        CpuState state;
+        state.registers[0] = instance;
+        state.registers[1] = guest.text("launch:");
+        assert(guest.objc.sendGuestMessage(instance, "launch:", state, {0}, 0x5000));
+        assert(state.registers[15] == 0x101000);  // Thumb bit stripped, CPSR carries it
+        assert((state.cpsr & 0x20) != 0);
+        assert(state.registers[14] == 0x5000);
+        // An instance of a guest class still answers NSObject-level messages.
+        CpuState release;
+        release.registers[0] = instance;
+        release.registers[1] = guest.text("retain");
+        guest.memory.write32(0x100000 + 16, 0x100100);
+        assert(guest.objc.dispatch(guest.objc.gateAddress("_objc_msgSend"), release));
+        assert(release.registers[0] == instance);
+        // A message the class does not implement is refused by name.
+        fault("OBJC_UNIMPLEMENTED",
+              [&] { guest.objc.sendGuestMessage(instance, "drawInRect:", state, {0}, 0x5000); });
+    }
+
     std::cout << "Objective-C classes, collections, formatting, dispatch, strings and pools "
                  "passed\n";
 }

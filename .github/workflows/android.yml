@@ -2,8 +2,10 @@ name: AnyiOS builds
 # Two artifacts only: the Android APK and the Linux PC build. Host tests run inside
 # the PC job so a red build still means something without producing extra artifacts.
 on:
+  # A branch push and its pull request run the same two jobs; validating the pull
+  # request and main is enough, and it stops every change being built twice.
   push:
-    branches: ['**']
+    branches: [main]
   pull_request:
   workflow_dispatch:
 concurrency:

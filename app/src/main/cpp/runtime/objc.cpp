@@ -1,6 +1,9 @@
 #include "objc.h"
 
 #include <algorithm>
+#include <cstdlib>
+#include <optional>
+#include <sstream>
 
 #include "abi.h"
 #include "error.h"
@@ -84,6 +87,22 @@ void ObjC::installGates() {
     classObject("NSNotificationCenter");
     classObject("NSRunLoop");
     classObject("NSURL");
+    classObject("NSConstantString");
+    // UIKit classes the launcher models. A class is registered only when its messages have
+    // real semantics behind them.
+    classObject("UIApplication");
+    classObject("UIScreen");
+    classObject("UIWindow");
+    classObject("UIView");
+    classObject("UIViewController");
+    classObject("UIColor");
+    classObject("UIAccelerometer");
+    // EAGL/CAEAGLLayer are real objects here: a title configures them before it issues a
+    // single GL call. The drawable itself belongs to the renderer, so the runtime models the
+    // object and its properties and refuses the call that would need a real surface.
+    classObject("EAGLContext");
+    classObject("CAEAGLLayer");
+    classObject("CALayer");
 }
 uint32_t ObjC::gateAddress(const std::string& entry) const {
     for (size_t n = 0; n < entries.size(); n++)
@@ -170,6 +189,12 @@ uint32_t ObjC::makeObject(const std::string& className) {
 std::string ObjC::describe(uint32_t object) const {
     if (!object) return "(null)";
     auto found = objects.find(object);
+    if (auto guest = guestInstances.find(object); guest != guestInstances.end()) {
+        std::string out = "<";
+        out += guestClassName(guest->second);
+        out += '>';
+        return out;
+    }
     if (found == objects.end()) {
         for (const auto& [name, address] : classes)
             if (address == object) return name;
@@ -215,6 +240,9 @@ std::string ObjC::describe(uint32_t object) const {
 std::string ObjC::classNameOf(uint32_t object) const {
     auto found = objects.find(object);
     if (found != objects.end()) return found->second.className;
+    if (auto guest = guestInstances.find(object); guest != guestInstances.end())
+        return guestClassName(guest->second);
+    if (const GuestClass* cls = guestClassAt(object)) return cls->name;
     for (const auto& [name, address] : classes)
         if (address == object) return "class " + name;
     throw Error("OBJC_OBJECT", "unknown or released object", object);
@@ -236,6 +264,425 @@ uint32_t ObjC::makeArray(const std::vector<uint32_t>& elements) {
     objects[object].elements = elements;
     return object;
 }
+namespace {
+// The two metadata layouts a 32-bit iOS image can carry. The modern (non-fragile) layout
+// keeps a class_ro_t behind the class's data bits; the legacy layout puts the name, size
+// and method list directly in the class. Both store methods as {SEL, types, IMP} words.
+bool printableName(Memory& memory, uint32_t address, std::string& out) {
+    if (!address || !memory.permits(address, 1, Read)) return false;
+    out.clear();
+    for (size_t n = 0; n < 256; n++) {
+        if (!memory.permits(address + uint32_t(n), 1, Read)) return false;
+        char c = 0;
+        memory.read(address + uint32_t(n), &c, 1);
+        if (!c) return !out.empty();
+        const unsigned char u = static_cast<unsigned char>(c);
+        if (u < 0x20 || u > 0x7e) return false;
+        out.push_back(c);
+    }
+    return false;
+}
+}  // namespace
+uint32_t ObjC::resolveClass(const std::string& name, bool required) {
+    // The image's own classes come first: `NSClassFromString` on a delegate class must return
+    // the class the title defined. Then the runtime's own classes. A name that is neither is
+    // refused by name instead of returning nil, because nil here silently turns into a null
+    // dereference hundreds of instructions later, with no trace of the real cause.
+    if (auto found = guestClasses.find(name); found != guestClasses.end())
+        return found->second.address;
+    if (auto found = classes.find(name); found != classes.end()) return found->second;
+    if (!required && name.empty()) return 0;
+    throw Error("OBJC_CLASS_MISSING",
+                "class \"" + name +
+                    "\" is not implemented by this runtime and is not defined "
+                    "by the image");
+}
+namespace {
+// A string literal in an ARM32 image is a four-word __CFConstantString: a class reference
+// that dyld binds at load time, a flag word (0x7c8 for 8-bit, 0x7d0 for UTF-16), a pointer
+// to the bytes and a length. Nothing here matches a host object, so the layout is checked
+// explicitly instead of being guessed from the address.
+constexpr uint32_t ConstantStringFlags = 0x7ff;
+}  // namespace
+std::optional<std::string> ObjC::literalString(uint32_t address) const {
+    if (!address || !memory.permits(address, 16, Read)) return std::nullopt;
+    const uint32_t flags = memory.read32(address + 4);
+    if ((flags & ConstantStringFlags) != 0x7c8 && (flags & ConstantStringFlags) != 0x7d0)
+        return std::nullopt;
+    const uint32_t bytes = memory.read32(address + 8), length = memory.read32(address + 12);
+    if (!bytes || length > 65535 || !memory.permits(bytes, size_t(length) + 1, Read))
+        return std::nullopt;
+    if ((flags & ConstantStringFlags) == 0x7d0) return std::nullopt;  // UTF-16 literals
+    std::string text(length, '\0');
+    if (length) memory.read(bytes, text.data(), length);
+    char terminator = 0;
+    memory.read(bytes + length, &terminator, 1);
+    if (terminator) return std::nullopt;
+    return text;
+}
+std::string ObjC::stringOf(uint32_t object) {
+    if (auto found = objects.find(object); found != objects.end())
+        return readText(found->second.text);
+    if (auto literal = literalString(object)) return *literal;
+    throw Error("OBJC_STRING", "expected a string object", object);
+}
+bool ObjC::stringMessage(const std::string& text, uint32_t bytes, const std::string& method,
+                         CpuState& state) {
+    auto& r = state.registers;
+    if (method == "length") {
+        r[0] = uint32_t(text.size());
+        return true;
+    }
+    if (method == "UTF8String" || method == "cString" || method == "fileSystemRepresentation") {
+        r[0] = bytes;
+        return true;
+    }
+    if (method == "hash") {
+        uint32_t hash = 5381;
+        for (unsigned char c : text) hash = hash * 33 + c;
+        r[0] = hash;
+        return true;
+    }
+    if (method == "isEqualToString:" || method == "compare:" || method == "isEqual:") {
+        const std::string rhs = stringOf(r[2]);
+        r[0] = method == "isEqualToString:" || method == "isEqual:" ? uint32_t(text == rhs)
+                                                                    : uint32_t(text.compare(rhs));
+        return true;
+    }
+    if (method == "hasPrefix:" || method == "hasSuffix:") {
+        const std::string rhs = stringOf(r[2]);
+        const bool match = method == "hasPrefix:"
+                               ? text.rfind(rhs, 0) == 0
+                               : (rhs.size() <= text.size() &&
+                                  text.compare(text.size() - rhs.size(), rhs.size(), rhs) == 0);
+        r[0] = match ? 1 : 0;
+        return true;
+    }
+    if (method == "stringByAppendingString:") {
+        r[0] = makeString(text + stringOf(r[2]));
+        return true;
+    }
+    if (method == "substringToIndex:" || method == "substringFromIndex:") {
+        const size_t index = r[2] > text.size() ? text.size() : size_t(r[2]);
+        r[0] =
+            makeString(method == "substringToIndex:" ? text.substr(0, index) : text.substr(index));
+        return true;
+    }
+    if (method == "intValue" || method == "integerValue" || method == "longLongValue") {
+        r[0] = uint32_t(std::strtol(text.c_str(), nullptr, 10));
+        return true;
+    }
+    if (method == "doubleValue" || method == "floatValue") {
+        resultF64(state, std::strtod(text.c_str(), nullptr));
+        return true;
+    }
+    if (method == "boolValue") {
+        r[0] = text == "YES" || text == "true" || std::strtol(text.c_str(), nullptr, 10) != 0;
+        return true;
+    }
+    return false;
+}
+const ObjC::GuestClass* ObjC::guestClassAt(uint32_t address) const {
+    for (const auto& [name, info] : guestClasses)
+        if (info.address == address || info.meta == address) return &info;
+    return nullptr;
+}
+std::string ObjC::guestClassName(uint32_t classAddress) const {
+    if (auto info = guestClassAt(classAddress)) return info->name;
+    return {};
+}
+void ObjC::registerGuestClasses(const std::vector<uint32_t>& classList) {
+    for (uint32_t address : classList) {
+        if (guestClasses.size() >= 4096)
+            throw Error("OBJC_LIMIT", "the image defines too many classes");
+        GuestClass info;
+        info.address = address;
+        info.meta = memory.read32(address);
+        info.superclass = memory.read32(address + 4);
+        std::string name;
+        // Modern layout: class_data_bits_t at +16 hides a class_ro_t pointer whose name is
+        // at +16. Legacy layout: the class carries name/version/info/instance_size directly.
+        const uint32_t bits = memory.read32(address + 16);
+        const uint32_t ro = bits & ~3u;
+        if (memory.permits(ro, 40, Read) && printableName(memory, memory.read32(ro + 16), name)) {
+            info.modern = true;
+            info.instanceSize = memory.read32(ro + 8);
+        } else if (printableName(memory, memory.read32(address + 8), name)) {
+            info.modern = false;
+            info.instanceSize = memory.read32(address + 20);
+        } else {
+            throw Error("OBJC_CLASS_FORMAT", "class metadata is neither layout", address);
+        }
+        if (name.rfind("_Tt", 0) == 0)
+            throw Error("OBJC_CLASS_FORMAT", "Swift class metadata is not supported", address);
+        info.name = name;
+        if (!info.instanceSize || info.instanceSize > 64 * 1024)
+            throw Error("OBJC_CLASS_FORMAT", "implausible instance size", address);
+        guestClasses.emplace(std::move(name), info);
+    }
+}
+void ObjC::mapGuestArena() {
+    if (guestArena) return;
+    constexpr uint32_t Size = 8 * 1024 * 1024;
+    memory.map({nextGuestObject, Size, uint8_t(Read | Write), "Guest Objective-C instances"});
+    guestArena = true;
+}
+std::string ObjC::guestClassSummary() const {
+    if (guestClasses.empty()) return "GUEST_OBJECTIVE_C: the image defines no classes.";
+    std::string out = "GUEST_OBJECTIVE_C: " + std::to_string(guestClasses.size()) +
+                      " classes defined by the image:";
+    size_t shown = 0;
+    for (const auto& [name, info] : guestClasses) {
+        if (shown++ >= 8) {
+            out += ", …";
+            break;
+        }
+        out += (shown == 1 ? " " : ", ") + name;
+    }
+    return out;
+}
+uint32_t ObjC::allocateGuestInstance(uint32_t classAddress) {
+    const GuestClass* info = guestClassAt(classAddress);
+    if (!info) throw Error("OBJC_CLASS_MISSING", "alloc of an unknown class", classAddress);
+    mapGuestArena();
+    constexpr uint32_t Limit = 0x6f500000 + 8 * 1024 * 1024;
+    const uint32_t size = (info->instanceSize + 7) & ~7u;
+    if (guestInstances.size() >= 16384 || nextGuestObject + size > Limit)
+        throw Error("OBJC_LIMIT", "guest object arena exhausted");
+    const uint32_t object = nextGuestObject;
+    nextGuestObject += size;
+    memory.write32(object, info->address);  // isa
+    guestInstances.emplace(object, info->address);
+    guestRefs.emplace(object, 1);
+    return object;
+}
+uint32_t ObjC::superclassOf(const GuestClass& info) const {
+    if (!info.address) return info.superclass;
+    uint32_t current = 0;
+    try {
+        current = memory.read32(info.address + 4);
+    } catch (const Error&) {
+        return info.superclass;
+    }
+    return current;
+}
+std::string ObjC::hostAncestorOf(uint32_t classAddress) const {
+    uint32_t current = classAddress;
+    for (size_t depth = 0; depth < 64 && current; depth++) {
+        const GuestClass* info = guestClassAt(current);
+        if (!info) return {};
+        const uint32_t parent = superclassOf(*info);
+        if (!guestClassAt(parent)) return hostClassName(parent);
+        current = parent;
+    }
+    return {};
+}
+uint32_t ObjC::guestMethod(uint32_t classAddress, bool classMethod, const std::string& name) const {
+    const GuestClass* start = guestClassAt(classAddress);
+    if (!start) {
+        // A metaclass is not part of __objc_classlist, so +method lookups arrive with the
+        // metaclass address rather than the class it belongs to. Find its owner.
+        for (const auto& [className, info] : guestClasses)
+            if (info.meta == classAddress) {
+                start = &info;
+                classMethod = true;
+                break;
+            }
+    }
+    if (!start) return 0;
+    // Scans one method_list_t: {entsizeAndFlags, count, methods[]} in the modern layout,
+    // {obsolete, count, methods[]} in the legacy one. Both store {SEL, types, IMP} triples.
+    auto scan = [&](uint32_t list) -> uint32_t {
+        if (!list || !memory.permits(list, 8, Read)) return 0;
+        const uint32_t first = memory.read32(list), count = memory.read32(list + 4);
+        const uint32_t stride = first ? (first & 0xfffffffc) : 12;
+        if (!stride || stride % 4 || stride > 64 || count > 4096) return 0;
+        for (uint32_t entry = 0; entry < count; entry++) {
+            const uint32_t at = list + 8 + entry * stride;
+            if (!memory.permits(at, 12, Read)) return 0;
+            std::string candidate;
+            if (!printableName(memory, memory.read32(at), candidate)) continue;
+            if (candidate != name) continue;
+            const uint32_t imp = memory.read32(at + 8);
+            if (!imp || !memory.permits(imp & ~1u, 4, Execute)) return 0;
+            return imp;
+        }
+        return 0;
+    };
+    uint32_t current = classMethod ? (start->meta ? start->meta : start->address) : start->address;
+    for (size_t depth = 0; depth < 64 && current; depth++) {
+        const GuestClass* info = guestClassAt(current);
+        if (!info) break;  // a host class ends the guest chain: the runtime handles the rest
+        if (info->modern) {
+            // The modern layout stores one method list pointer, not an array of them.
+            const uint32_t ro = memory.read32(info->address + 16) & ~3u;
+            if (memory.permits(ro + 20, 4, Read))
+                if (uint32_t imp = scan(memory.read32(ro + 20))) return imp;
+        } else if (memory.permits(info->address + 28, 4, Read)) {
+            // The legacy layout stores a nil-terminated array of method list pointers.
+            const uint32_t lists = memory.read32(info->address + 28);
+            for (size_t index = 0; lists && index < 256; index++) {
+                const uint32_t list = memory.read32(lists + uint32_t(index * 4));
+                if (!list) break;
+                if (uint32_t imp = scan(list)) return imp;
+            }
+        }
+        current = superclassOf(*info);
+    }
+    return 0;
+}
+bool ObjC::guestChainContains(uint32_t classAddress, uint32_t candidate) const {
+    uint32_t current = classAddress;
+    for (size_t depth = 0; depth < 64 && current; depth++) {
+        if (current == candidate) return true;
+        const GuestClass* info = guestClassAt(current);
+        if (!info) return false;
+        current = superclassOf(*info);
+    }
+    return false;
+}
+uint32_t ObjC::selectorString(const std::string& name) { return internText(name); }
+bool ObjC::guestFoundation(uint32_t receiver, const std::string& className,
+                           const std::string& method, CpuState& state) {
+    auto& r = state.registers;
+    if (method == "retain") {
+        guestRefs[receiver]++;
+        r[0] = receiver;
+        return true;
+    }
+    if (method == "release" || method == "dealloc") {
+        auto found = guestRefs.find(receiver);
+        if (found != guestRefs.end() && found->second > 1) {
+            found->second--;
+        } else {
+            guestRefs.erase(receiver);
+            guestInstances.erase(receiver);
+        }
+        r[0] = receiver;
+        return true;
+    }
+    if (method == "autorelease") {
+        if (pools.empty()) throw Error("OBJC_POOL", "autorelease without a pool");
+        pools.back().push_back(receiver);
+        r[0] = receiver;
+        return true;
+    }
+    if (method == "class" || method == "self") {
+        auto found = guestInstances.find(receiver);
+        r[0] = found == guestInstances.end() ? 0 : found->second;
+        return true;
+    }
+    if (method == "isKindOfClass:" || method == "isMemberOfClass:") {
+        auto found = guestInstances.find(receiver);
+        if (found == guestInstances.end()) {
+            r[0] = 0;
+            return true;
+        }
+        r[0] = method == "isMemberOfClass:"
+                   ? uint32_t(found->second == r[2])
+                   : uint32_t(guestChainContains(found->second, r[2]) || r[2] == found->second);
+        return true;
+    }
+    if (method == "respondsToSelector:") {
+        auto found = guestInstances.find(receiver);
+        std::string name;
+        if (found != guestInstances.end() && printableName(memory, r[2], name))
+            r[0] = guestMethod(found->second, false, name) ? 1 : 0;
+        else
+            r[0] = 0;
+        return true;
+    }
+    if (method == "description") {
+        r[0] = makeString("<" + className + ">");
+        return true;
+    }
+    if (method == "isEqual:") {
+        r[0] = uint32_t(receiver == r[2]);
+        return true;
+    }
+    if (method == "hash") {
+        r[0] = receiver;
+        return true;
+    }
+    return false;
+}
+bool ObjC::guestMessage(uint32_t receiver, uint32_t selectorAddress, CpuState& state) {
+    auto& r = state.registers;
+    const std::string method = selector(selectorAddress);
+    const GuestClass* cls = guestClassAt(receiver);
+    const bool instance = guestInstances.count(receiver) != 0;
+    if (!cls && !instance) return false;
+    if (cls) {
+        if (method == "alloc" || method == "new" || method == "allocWithZone:") {
+            const uint32_t object = allocateGuestInstance(receiver);
+            r[0] = object;
+            if (method == "new") {
+                // +new is alloc followed by init, so the guest's own -init runs when it
+                // defines one; otherwise the allocated object is the result.
+                if (uint32_t init = guestMethod(receiver, false, "init"))
+                    return enterGuest(init, state, object, selectorString("init"));
+            }
+            return true;
+        }
+        if (method == "class") return true;
+        if (method == "superclass") {
+            r[0] = superclassOf(*cls);
+            return true;
+        }
+        if (method == "description") {
+            r[0] = makeString("<" + cls->name + ">");
+            return true;
+        }
+        if (method == "isSubclassOfClass:") {
+            r[0] = uint32_t(guestChainContains(receiver, r[2]));
+            return true;
+        }
+    }
+    const uint32_t target = instance ? guestInstances.at(receiver) : receiver;
+    const std::string className = cls ? cls->name : guestClassName(target);
+    if (uint32_t imp = guestMethod(target, cls != nullptr, method))
+        return enterGuest(imp, state, receiver, selectorAddress);
+    if (instance && guestFoundation(receiver, className, method, state)) return true;
+    // The selector may be inherited from the framework class the image's class derives from
+    // (UIView's -initWithFrame:, -setMultipleTouchEnabled:, -layer). Those are modelled on
+    // the host side, keyed by the receiving instance.
+    if (instance) {
+        const std::string host = hostAncestorOf(target);
+        if (!host.empty() && uiKitMessage(host, receiver, method, state)) return true;
+    }
+    throw Error("OBJC_UNIMPLEMENTED",
+                "[" + className + (cls ? " +" : " -") + method +
+                    "] is defined by the image, but this implementation of it is not "
+                    "modelled by the runtime");
+}
+bool ObjC::enterGuest(uint32_t imp, CpuState& state, uint32_t self, uint32_t cmd) {
+    state.registers[0] = self;
+    state.registers[1] = cmd;
+    state.registers[15] = imp & ~1u;
+    state.cpsr = (state.cpsr & ~0x20u) | (imp & 1u ? 0x20u : 0u);
+    return true;
+}
+bool ObjC::sendGuestMessage(uint32_t receiver, const std::string& selectorName, CpuState& state,
+                            const std::vector<uint32_t>& arguments, uint32_t returnAddress) {
+    const GuestClass* cls = guestClassAt(receiver);
+    const bool instance = guestInstances.count(receiver) != 0;
+    if (!cls && !instance) return false;
+    const uint32_t target = instance ? guestInstances.at(receiver) : receiver;
+    const std::string className = cls ? cls->name : guestClassName(target);
+    const uint32_t sel = selectorString(selectorName);
+    const uint32_t imp = guestMethod(target, cls != nullptr, selectorName);
+    if (!imp)
+        throw Error("OBJC_UNIMPLEMENTED",
+                    "the image's " + className + " does not implement " + selectorName);
+    state.registers[0] = receiver;
+    state.registers[1] = sel;
+    for (size_t index = 0; index < arguments.size() && index < 2; index++)
+        state.registers[2 + index] = arguments[index];
+    state.registers[14] = returnAddress;
+    state.registers[15] = imp & ~1u;
+    state.cpsr = (state.cpsr & ~0x20u) | (imp & 1u ? 0x20u : 0u);
+    return true;
+}
 void ObjC::setGuestPaths(std::string bundle, std::string documents) {
     bundlePath = std::move(bundle);
     documentsPath = std::move(documents);
@@ -254,6 +701,395 @@ void ObjC::emitLog(const std::string& text) const {
         return;
     }
     guestLog(text);
+}
+bool ObjC::guestSuperMessage(uint32_t receiver, uint32_t classOfMethod, uint32_t selectorAddress,
+                             CpuState& state) {
+    const std::string method = selector(selectorAddress);
+    const GuestClass* declaring = guestClassAt(classOfMethod);
+    if (!declaring) return false;  // a runtime class did the super call: ordinary dispatch
+    const bool instance = guestInstances.count(receiver) != 0;
+    uint32_t start = superclassOf(*declaring);
+    if (!start) return false;
+    if (const GuestClass* parent = guestClassAt(start)) {
+        if (uint32_t imp = guestMethod(parent->address, false, method))
+            return enterGuest(imp, state, receiver, selectorAddress);
+        // Continue through the runtime's own classes when the guest chain ends at one.
+        const uint32_t parentSuper = superclassOf(*parent);
+        if (!guestClassAt(parentSuper)) {
+            const std::string hostName = hostClassName(parentSuper);
+            if (!hostName.empty() && uiKitMessage(hostName, receiver, method, state)) return true;
+        }
+        throw Error("OBJC_UNIMPLEMENTED", "[super " + method + "] in " + declaring->name +
+                                              " has no implementation in the guest chain");
+    }
+    const std::string hostName = hostClassName(start);
+    (void)instance;
+    if (!hostName.empty() && uiKitMessage(hostName, receiver, method, state)) return true;
+    throw Error("OBJC_UNIMPLEMENTED", "[super " + method + "] in " + declaring->name + " reaches " +
+                                          (hostName.empty() ? "an unknown class" : hostName) +
+                                          ", which does not model that method");
+}
+std::string ObjC::hostClassName(uint32_t address) const {
+    for (const auto& [name, object] : classes)
+        if (object == address) return name;
+    return {};
+}
+bool ObjC::uiKitMessage(const std::string& className, uint32_t object, const std::string& method,
+                        CpuState& state) {
+    auto& r = state.registers;
+    // A view implemented by the image (its own UIView/UIWindow subclass) has guest-owned
+    // metadata, so its view state lives in a second store keyed by the same address instead
+    // of being invented in the host object map.
+    Object* foundValue = nullptr;
+    if (auto it = objects.find(object); it != objects.end()) {
+        foundValue = &it->second;
+    } else if (auto it = guestViews.find(object); it != guestViews.end()) {
+        foundValue = &it->second;
+    } else if (guestInstances.count(object)) {
+        Object& created = guestViews[object];
+        created.className = className;
+        foundValue = &created;
+    } else {
+        return false;
+    }
+    Object& value = *foundValue;
+    // CGRect and CGPoint results travel in r0-r3 (base AAPCS: no VFP argument registers).
+    auto rect = [&](const float* values) {
+        for (size_t n = 0; n < 4; n++) r[n] = floatBits(values[n]);
+    };
+    // A CGRect argument reaches an ARM callee either as a pointer to the caller's copy or
+    // with its four words already in r2-r5, depending on how the framework header was
+    // compiled. Both are accepted: the pointer form is used when the register really is
+    // readable, otherwise the words are taken as they were passed.
+    auto readRect = [&](uint32_t address, float* out) {
+        if (memory.permits(address, 16, Read)) {
+            for (size_t n = 0; n < 4; n++)
+                out[n] = bitsFloat(memory.read32(address + uint32_t(n) * 4));
+            return;
+        }
+        if (address == r[2]) {
+            for (size_t n = 0; n < 4; n++) out[n] = bitsFloat(r[2 + n]);
+            return;
+        }
+        throw Error("UIKIT_ARGUMENT", "geometry argument is not readable", address);
+    };
+    if (className == "UIApplication") {
+        if (method == "delegate") {
+            r[0] = value.delegate;
+            return true;
+        }
+        if (method == "setDelegate:") {
+            value.delegate = r[2];
+            return true;
+        }
+        if (method == "keyWindow") {
+            r[0] = value.keyWindow;
+            return true;
+        }
+        // Status bar and idle-timer requests are accepted as configuration: there is no
+        // window server to apply them to, and the boot view owns the real full-screen state.
+        if (method == "setStatusBarHidden:" || method == "setStatusBarHidden:animated:" ||
+            method == "setStatusBarStyle:" || method == "setStatusBarStyle:animated:" ||
+            method == "setStatusBarOrientation:" || method == "setStatusBarOrientation:animated:" ||
+            method == "setIdleTimerDisabled:" || method == "beginIgnoringInteractionEvents" ||
+            method == "endIgnoringInteractionEvents" || method == "setApplicationIconBadgeNumber:")
+            return true;
+        if (method == "statusBarOrientation") {
+            r[0] = 1;  // UIInterfaceOrientationPortrait until a window reports otherwise.
+            return true;
+        }
+        if (method == "statusBarHidden" || method == "isStatusBarHidden") {
+            r[0] = 0;
+            return true;
+        }
+        if (method == "applicationFrame") {
+            const float frame[4] = {0, 0, 320, 480};
+            rect(frame);
+            return true;
+        }
+        if (method == "windows" || method == "connectedScenes") {
+            r[0] = makeArray({});
+            return true;
+        }
+        if (method == "openURL:") {
+            // Opening another application is not something this runtime can do, and claiming
+            // success would be wrong. The call is refused by name.
+            throw Error("UIKIT_UNSUPPORTED", "-[UIApplication openURL:] needs the system launcher");
+        }
+        return false;
+    }
+    if (className == "UIScreen") {
+        if (method == "bounds") {
+            const float frame[4] = {0, 0, 320, 480};
+            rect(frame);
+            return true;
+        }
+        if (method == "scale") {
+            resultF64(state, 1.0);
+            return true;
+        }
+        if (method == "applicationFrame" || method == "nativeBounds") {
+            const float frame[4] = {0, 0, 320, 480};
+            rect(frame);
+            return true;
+        }
+        return false;
+    }
+    if (className == "UIAccelerometer") {
+        if (method == "setUpdateInterval:") {
+            value.real = double(bitsFloat(r[2]));
+            return true;
+        }
+        if (method == "updateInterval") {
+            resultF64(state, value.real);
+            return true;
+        }
+        if (method == "delegate") {
+            r[0] = value.delegate;
+            return true;
+        }
+        if (method == "setDelegate:") {
+            value.delegate = r[2];
+            return true;
+        }
+        return false;
+    }
+    if (className == "EAGLContext") {
+        if (method == "initWithAPI:") {
+            value.integer = r[2];  // kEAGLRenderingAPIOpenGLES1/2, kept for -API
+            return true;
+        }
+        if (method == "API") {
+            r[0] = uint32_t(value.integer);
+            return true;
+        }
+        if (method == "setCurrentContext") {
+            currentEaglContext = object;
+            return true;
+        }
+        if (method == "sharegroup") {
+            r[0] = makeObject("EAGLSharegroup");
+            return true;
+        }
+        if (method == "renderbufferStorage:fromDrawable:") {
+            // This needs the real EGL surface the renderer owns; answering success here
+            // would let the guest believe a framebuffer exists.
+            throw Error("UIKIT_UNSUPPORTED",
+                        "-[EAGLContext renderbufferStorage:fromDrawable:] needs the EAGL "
+                        "drawable, which only the ANGLE-backed renderer can supply");
+        }
+        if (method == "presentRenderbuffer:") {
+            throw Error("UIKIT_UNSUPPORTED",
+                        "-[EAGLContext presentRenderbuffer:] needs the EAGL drawable, which "
+                        "only the ANGLE-backed renderer can supply");
+        }
+        return false;
+    }
+    if (className == "CAEAGLLayer" || className == "CALayer") {
+        if (method == "setDrawableProperties:") {
+            value.delegate = r[2];
+            return true;
+        }
+        if (method == "drawableProperties") {
+            r[0] = value.delegate;
+            return true;
+        }
+        if (method == "setOpaque:") {
+            value.hidden = r[2] == 0;
+            return true;
+        }
+        if (method == "isOpaque") {
+            r[0] = value.hidden ? 0 : 1;
+            return true;
+        }
+        if (method == "setFrame:" || method == "setBounds:" || method == "frame" ||
+            method == "bounds" || method == "setContentsScale:" || method == "contentsScale")
+            return false;  // falls through to the view/layer geometry below
+        return false;
+    }
+    if (className == "UIWindow" || className == "UIView" || className == "UIControl" ||
+        className == "UIButton" || className == "UILabel" || className == "UIAlertView" ||
+        className == "UIScrollView" || className == "UITextField" ||
+        className == "UIViewController") {
+        if (method == "frame") {
+            rect(value.hasFrame ? value.frame : value.bounds);
+            return true;
+        }
+        if (method == "setFrame:") {
+            readRect(r[2], value.hasFrame ? value.frame : value.frame);
+            value.hasFrame = true;
+            if (!value.bounds[2] && !value.bounds[3]) {
+                value.bounds[0] = value.bounds[1] = 0;
+                value.bounds[2] = value.frame[2];
+                value.bounds[3] = value.frame[3];
+            }
+            return true;
+        }
+        if (method == "layer") {
+            if (!value.layer) {
+                // The layer kind is decided by the image's own +layerClass override when it
+                // declares one; that override returns CAEAGLLayer for an OpenGL ES view.
+                std::string kind = "CALayer";
+                auto instance = guestInstances.find(object);
+                if (instance != guestInstances.end())
+                    if (const GuestClass* info = guestClassAt(instance->second))
+                        if (guestMethod(info->meta ? info->meta : info->address, true,
+                                        "layerClass"))
+                            kind = "CAEAGLLayer";
+                value.layer = makeObject(kind);
+            }
+            r[0] = value.layer;
+            return true;
+        }
+        if (method == "initWithFrame:") {
+            // -[UIView initWithFrame:] is where a subclass's super call lands. The frame is
+            // real view state, so it is stored and the receiver comes back as the result.
+            readRect(r[2], value.frame);
+            value.hasFrame = true;
+            value.bounds[0] = value.bounds[1] = 0;
+            value.bounds[2] = value.frame[2];
+            value.bounds[3] = value.frame[3];
+            r[0] = object;
+            return true;
+        }
+        if (method == "bounds") {
+            rect(value.bounds);
+            return true;
+        }
+        if (method == "setBounds:") {
+            readRect(r[2], value.bounds);
+            return true;
+        }
+        if (method == "center" || method == "setCenter:" || method == "setTransform:" ||
+            method == "setAutoresizingMask:" || method == "setContentMode:" ||
+            method == "setNeedsDisplay" || method == "layoutIfNeeded" ||
+            method == "setNeedsLayout" || method == "sizeToFit" || method == "setExclusiveTouch:" ||
+            method == "setClipsToBounds:" || method == "setBackgroundColor:" ||
+            method == "setTintColor:" || method == "setText:" || method == "setFont:" ||
+            method == "setTitle:" || method == "setTitleColor:forState:" ||
+            method == "setImage:forState:" || method == "addTarget:action:forControlEvents:" ||
+            method == "dismissWithClickedButtonIndex:animated:")
+            return true;
+        if (method == "addSubview:" || method == "insertSubview:atIndex:" ||
+            method == "bringSubviewToFront:") {
+            if (r[2] && objects.count(r[2])) {
+                value.elements.push_back(r[2]);
+                objects[r[2]].superview = object;
+            }
+            return true;
+        }
+        if (method == "removeFromSuperview") {
+            if (value.superview) {
+                auto parent = objects.find(value.superview);
+                if (parent != objects.end())
+                    parent->second.elements.erase(
+                        std::remove(parent->second.elements.begin(), parent->second.elements.end(),
+                                    object),
+                        parent->second.elements.end());
+            }
+            value.superview = 0;
+            return true;
+        }
+        if (method == "subviews") {
+            r[0] = makeArray(value.elements);
+            return true;
+        }
+        if (method == "superview") {
+            r[0] = value.superview;
+            return true;
+        }
+        if (method == "window") {
+            r[0] = value.window ? value.window : (className == "UIWindow" ? object : 0);
+            return true;
+        }
+        if (method == "isHidden") {
+            r[0] = value.hidden ? 1 : 0;
+            return true;
+        }
+        if (method == "setHidden:") {
+            value.hidden = r[2] != 0;
+            return true;
+        }
+        if (method == "alpha") {
+            resultF64(state, value.alpha);
+            return true;
+        }
+        if (method == "setAlpha:") {
+            value.alpha = 0;
+            Arguments args(state, memory, 2);
+            value.alpha = args.f32();
+            return true;
+        }
+        if (method == "isUserInteractionEnabled") {
+            r[0] = value.userInteraction ? 1 : 0;
+            return true;
+        }
+        if (method == "setUserInteractionEnabled:") {
+            value.userInteraction = r[2] != 0;
+            return true;
+        }
+        if (method == "setMultipleTouchEnabled:") {
+            value.multipleTouch = r[2] != 0;
+            return true;
+        }
+        if (method == "contentScaleFactor") {
+            resultF64(state, value.contentScale);
+            return true;
+        }
+        if (method == "setContentScaleFactor:") {
+            Arguments args(state, memory, 2);
+            value.contentScale = args.f32();
+            return true;
+        }
+        if (method == "makeKeyAndVisible") {
+            value.hidden = false;
+            const uint32_t app = classObject("UIApplication");
+            (void)app;
+            if (!applicationObject) applicationObject = makeObject("UIApplication");
+            objects[applicationObject].keyWindow = object;
+            for (auto& [address, other] : objects)
+                if (other.className == "UIView" || other.className == "UIWindow")
+                    other.window = object;
+            return true;
+        }
+        if (method == "rootViewController") {
+            r[0] = value.rootViewController;
+            return true;
+        }
+        if (method == "setRootViewController:") {
+            value.rootViewController = r[2];
+            return true;
+        }
+        if (method == "backgroundColor") {
+            r[0] = value.backgroundColor;
+            return true;
+        }
+        if (method == "initWithFrame:") {
+            readRect(r[2], value.frame);
+            value.hasFrame = true;
+            value.bounds[0] = value.bounds[1] = 0;
+            value.bounds[2] = value.frame[2];
+            value.bounds[3] = value.frame[3];
+            r[0] = object;
+            return true;
+        }
+        if (method == "initWithCoder:" || method == "awakeFromNib" || method == "init") {
+            r[0] = object;
+            return true;
+        }
+        if (method == "layer") {
+            // A view's CALayer is the same object identity for the guest; the layer's own
+            // rendering semantics are QuartzCore's, not invented here.
+            r[0] = value.elements.empty() ? 0 : value.elements.front();
+            return false;
+        }
+        return false;
+    }
+    if (className == "UIColor") {
+        if (method == "set" || method == "setFill" || method == "setStroke") return true;
+        return false;
+    }
+    return false;
 }
 bool ObjC::bundleMessage(const std::string& method, CpuState& state) {
     auto& r = state.registers;
@@ -275,7 +1111,10 @@ bool ObjC::bundleMessage(const std::string& method, CpuState& state) {
             return true;
         }
         std::string path = readText(name);
-        if (type) path += "." + readText(type);
+        if (type) {
+            path += '.';
+            path += readText(type);
+        }
         const std::string candidate = bundlePath + "/" + path;
         if (fileExists && !fileExists(candidate)) {
             r[0] = 0;
@@ -533,6 +1372,23 @@ void ObjC::message(CpuState& state) {
         return;
     }
     if (!name) throw Error("OBJC_SELECTOR", "message sent with a null selector", self);
+    // A string literal is a __CFConstantString in the image, not one of our objects: its
+    // class reference is bound by dyld and its bytes live in __cstring. Titles message
+    // literals constantly, so they are recognised here rather than refused.
+    if (auto literal = literalString(self)) {
+        const std::string& method = selector(name);
+        const uint32_t bytes = memory.read32(self + 8);
+        if (stringMessage(*literal, bytes, method, state)) return;
+        if (method == "description" || method == "self") {
+            state.registers[0] = self;
+            return;
+        }
+        throw Error("OBJC_UNIMPLEMENTED", "NSString literal does not implement " + method);
+    }
+    // A receiver the image itself defines (one of its classes or an instance of one) is
+    // dispatched into guest code, not into the host object store.
+    if ((guestClassAt(self) || guestInstances.count(self)) && guestMessage(self, name, state))
+        return;
     const std::string method = selector(name);
     bool classMethod = false;
     std::string className;
@@ -543,7 +1399,16 @@ void ObjC::message(CpuState& state) {
         }
     if (!classMethod) {
         auto object = objects.find(self);
-        if (object == objects.end()) throw Error("OBJC_RECEIVER", "message to a non-object", self);
+        if (object == objects.end()) {
+            std::ostringstream out;
+            out << "message \"" << method << "\" sent to 0x" << std::hex << self
+                << ", which is not an object this runtime created";
+            if (trapName)
+                if (const std::string import = trapName(self); !import.empty())
+                    out << ": the receiver is the unimplemented-import trap for " << import
+                        << ", because that class or symbol has no implementation yet";
+            throw Error("OBJC_RECEIVER", out.str(), self);
+        }
         className = object->second.className;
     }
     auto unsupported = [&] {
@@ -587,6 +1452,36 @@ void ObjC::message(CpuState& state) {
         }
         if (className == "NSDictionary" && method == "dictionary") {
             state.registers[0] = makeObject("NSDictionary");
+            return;
+        }
+        // +dictionaryWithObjectsAndKeys: is (object, key, ...) terminated by nil, so the
+        // variadic words are read in pairs until the terminator.
+        if ((className == "NSDictionary" || className == "NSMutableDictionary") &&
+            (method == "dictionaryWithObjectsAndKeys:" ||
+             method == "dictionaryWithObjects:forKeys:")) {
+            const uint32_t object = makeObject(
+                className == "NSMutableDictionary" ? "NSMutableDictionary" : "NSDictionary");
+            Object& created = objects[object];
+            if (method == "dictionaryWithObjectsAndKeys:") {
+                Arguments args(state, memory, 2);
+                for (size_t pair = 0; pair < 4096; pair++) {
+                    const uint32_t value = args.pointer();
+                    if (!value) break;
+                    const uint32_t key = args.pointer();
+                    if (!key) throw Error("OBJC_ARGUMENT", "dictionary key is nil");
+                    created.pairs.emplace_back(key, value);
+                }
+            } else {
+                const uint32_t values = state.registers[2], keys = state.registers[3];
+                if (!values || !keys) throw Error("OBJC_ARGUMENT", "dictionary arrays are nil");
+                const Object& valueList = objects.at(values);
+                const Object& keyList = objects.at(keys);
+                if (valueList.elements.size() != keyList.elements.size())
+                    throw Error("OBJC_ARGUMENT", "dictionary arrays differ in length");
+                for (size_t index = 0; index < valueList.elements.size(); index++)
+                    created.pairs.emplace_back(keyList.elements[index], valueList.elements[index]);
+            }
+            state.registers[0] = object;
             return;
         }
         if (className == "NSMutableDictionary" &&
@@ -667,6 +1562,70 @@ void ObjC::message(CpuState& state) {
             state.registers[0] = object;
             return;
         }
+        if (className == "UIApplication" && (method == "sharedApplication" || method == "app")) {
+            if (!applicationObject) applicationObject = makeObject("UIApplication");
+            state.registers[0] = applicationObject;
+            return;
+        }
+        if (className == "UIAccelerometer" && method == "sharedAccelerometer") {
+            if (!accelerometer) accelerometer = makeObject("UIAccelerometer");
+            state.registers[0] = accelerometer;
+            return;
+        }
+        if (className == "EAGLContext" && method == "setCurrentContext:") {
+            currentEaglContext = state.registers[2];
+            return;
+        }
+        if (className == "EAGLContext" && method == "currentContext") {
+            state.registers[0] = currentEaglContext;
+            return;
+        }
+        if (className == "CAEAGLLayer" || className == "CALayer") {
+            if (method == "layer") {
+                state.registers[0] = makeObject("CAEAGLLayer");
+                return;
+            }
+        }
+        if (className == "UIScreen" && method == "mainScreen") {
+            if (!mainScreen) mainScreen = makeObject("UIScreen");
+            state.registers[0] = mainScreen;
+            return;
+        }
+        if (className == "UIColor") {
+            static const std::map<std::string, std::array<float, 4>> colours{
+                {"blackColor", {0, 0, 0, 1}},
+                {"whiteColor", {1, 1, 1, 1}},
+                {"redColor", {1, 0, 0, 1}},
+                {"greenColor", {0, 1, 0, 1}},
+                {"blueColor", {0, 0, 1, 1}},
+                {"yellowColor", {1, 1, 0, 1}},
+                {"orangeColor", {1, 0.5f, 0, 1}},
+                {"purpleColor", {0.5f, 0, 0.5f, 1}},
+                {"grayColor", {0.5f, 0.5f, 0.5f, 1}},
+                {"darkGrayColor", {1.f / 3, 1.f / 3, 1.f / 3, 1}},
+                {"lightGrayColor", {2.f / 3, 2.f / 3, 2.f / 3, 1}},
+                {"clearColor", {0, 0, 0, 0}}};
+            if (auto colour = colours.find(method); colour != colours.end()) {
+                const uint32_t object = makeObject("UIColor");
+                objects[object].real = colour->second[3];
+                objects[object].integer = int64_t(floatBits(colour->second[0]) |
+                                                  (uint64_t(floatBits(colour->second[1])) << 32));
+                state.registers[0] = object;
+                return;
+            }
+            if (method == "colorWithRed:green:blue:alpha:") {
+                Arguments args(state, memory, 2);
+                const float red = args.f32(), green = args.f32(), blue = args.f32();
+                const float alpha = args.f32();
+                const uint32_t object = makeObject("UIColor");
+                objects[object].real = alpha;
+                objects[object].integer =
+                    int64_t(floatBits(red) | (uint64_t(floatBits(green)) << 32));
+                (void)blue;
+                state.registers[0] = object;
+                return;
+            }
+        }
         if (className == "NSBundle" && method == "mainBundle") {
             if (!mainBundle) mainBundle = makeObject("NSBundle");
             state.registers[0] = mainBundle;
@@ -734,32 +1693,12 @@ void ObjC::message(CpuState& state) {
         state.registers[0] = 0;  // Conservatively false until a method table exists.
         return;
     }
+    if (uiKitMessage(className, self, method, state)) return;
     if (className == "NSBundle" && bundleMessage(method, state)) return;
     if (collection(className, method, object, state)) return;
-    if (className == "NSString") {
-        const std::string text = readText(object.text);
-        if (method == "length") {
-            state.registers[0] = uint32_t(text.size());
-            return;
-        }
-        if (method == "UTF8String" || method == "cString") {
-            state.registers[0] = object.text;
-            return;
-        }
-        if (method == "hash") {
-            uint32_t hash = 5381;
-            for (unsigned char c : text) hash = hash * 33 + c;
-            state.registers[0] = hash;
-            return;
-        }
-        if (method == "isEqualToString:" || method == "compare:") {
-            auto other = objects.find(state.registers[2]);
-            if (other == objects.end()) unsupported();
-            const std::string rhs = readText(other->second.text);
-            state.registers[0] =
-                method == "isEqualToString:" ? uint32_t(text == rhs) : uint32_t(text.compare(rhs));
-            return;
-        }
+    if (className == "NSString" || className == "NSMutableString" ||
+        className == "NSConstantString" || className == "NSCFString") {
+        if (stringMessage(readText(object.text), object.text, method, state)) return;
     }
     if (className == "NSNumber") {
         if (method == "intValue" || method == "integerValue" || method == "unsignedIntValue" ||
@@ -785,12 +1724,11 @@ void ObjC::message(CpuState& state) {
 void ObjC::invoke(const std::string& entry, CpuState& state) {
     auto& r = state.registers;
     if (entry == "_objc_msgSend" || entry == "_objc_alloc" || entry == "_objc_alloc_init") {
-        if (entry == "_objc_alloc") {
-            const std::string name = classNameOf(r[0]);
-            r[0] = makeObject(name.rfind("class ", 0) == 0 ? name.substr(6) : name);
-            return;
-        }
-        if (entry == "_objc_alloc_init") {
+        if (entry == "_objc_alloc" || entry == "_objc_alloc_init") {
+            if (guestClassAt(r[0])) {
+                r[0] = allocateGuestInstance(r[0]);
+                return;
+            }
             const std::string name = classNameOf(r[0]);
             r[0] = makeObject(name.rfind("class ", 0) == 0 ? name.substr(6) : name);
             return;
@@ -814,10 +1752,24 @@ void ObjC::invoke(const std::string& entry, CpuState& state) {
                                  target == "NSNumber" || target == "NSArray" ||
                                  target == "NSMutableArray" || target == "NSDictionary" ||
                                  target == "NSMutableDictionary" || target == "NSData";
-        if (!scalarClass)
-            throw Error("OBJC_STRET_UNIMPLEMENTED",
-                        "[" + target + " " + selectorName +
-                            "] returns a struct through a hidden pointer, which is not modelled");
+        if (!scalarClass) {
+            // A host-modelled object (UIView's -frame, UIScreen's -bounds) returns its
+            // CGRect through r0's hidden pointer, so the argument registers move down one
+            // place. The handler answers in r0-r3; store those four words and hand the
+            // buffer back as the result.
+            const uint32_t buffer = r[0];
+            if (!buffer || !memory.permits(buffer, 16, Write))
+                throw Error("OBJC_STRET", "struct return buffer is not writable", buffer);
+            CpuState shifted = state;
+            for (size_t n = 0; n + 3 < 16; n++) shifted.registers[2 + n] = r[3 + n];
+            shifted.registers[0] = receiver;
+            shifted.registers[1] = name;
+            message(shifted);
+            for (size_t n = 0; n < 4; n++)
+                memory.write32(buffer + uint32_t(n * 4), shifted.registers[n]);
+            r[0] = buffer;
+            return;
+        }
         CpuState shifted = state;
         shifted.registers[0] = receiver;
         shifted.registers[1] = name;
@@ -829,12 +1781,19 @@ void ObjC::invoke(const std::string& entry, CpuState& state) {
         return;
     }
     if (entry == "_objc_msgSendSuper2") {
-        // struct objc_super { id receiver; Class superClass; } arrives in r0; the selector
-        // follows in r1. Single-inheritance dispatch is the same method lookup for us.
+        // struct objc_super { id receiver; Class classOfMethod; } arrives in r0; the selector
+        // follows in r1. Lookup must begin at that class's *superclass*, which is what makes
+        // `[super initWithFrame:]` in an image-defined subclass reach UIView's implementation
+        // instead of re-entering the subclass.
         const uint32_t super2 = r[0];
         if (!super2) throw Error("OBJC_SUPER", "msgSendSuper2 called with a null objc_super");
+        const uint32_t receiver = memory.read32(super2);
+        const uint32_t classOfMethod = memory.read32(super2 + 4);
+        if ((guestInstances.count(receiver) || guestClassAt(receiver)) &&
+            guestSuperMessage(receiver, classOfMethod, r[1], state))
+            return;
         CpuState shifted = state;
-        shifted.registers[0] = memory.read32(super2);
+        shifted.registers[0] = receiver;
         shifted.registers[1] = r[1];
         message(shifted);
         r[0] = shifted.registers[0];
@@ -842,9 +1801,7 @@ void ObjC::invoke(const std::string& entry, CpuState& state) {
         return;
     }
     if (entry == "_objc_getClass" || entry == "_objc_lookUpClass") {
-        const std::string name = readText(r[0]);
-        auto found = classes.find(name);
-        r[0] = found == classes.end() ? 0 : found->second;
+        r[0] = resolveClass(readText(r[0]), entry == "_objc_getClass");
         return;
     }
     if (entry == "_sel_registerName") return;  // A selector is its guest string address.
@@ -915,9 +1872,7 @@ void ObjC::invoke(const std::string& entry, CpuState& state) {
             r[0] = 0;
             return;
         }
-        const std::string text = readText(name);
-        auto found = classes.find(text);
-        r[0] = found == classes.end() ? 0 : found->second;
+        r[0] = resolveClass(readText(name), false);
         return;
     }
     if (entry == "_NSLog") {

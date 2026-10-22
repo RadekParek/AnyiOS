@@ -22,8 +22,9 @@ std::string pointer(uint32_t value) {
     return out.str();
 }
 }  // namespace
-GuestRun runGuest(LoadedImage& image, Services& services, const ExportGraph& graph,
-                  size_t requester, uint64_t instructionBudget, double seconds) {
+namespace {
+GuestRun execute(LoadedImage& image, Services& services, const ExportGraph& graph, size_t requester,
+                 uint64_t instructionBudget, double seconds) {
     GuestRun run;
     if (!image.memory) throw Error("GUEST_MEMORY", "image has no mapped memory");
     // Unimplemented required imports bind to a faulting gate, so the guest starts and
@@ -78,12 +79,24 @@ GuestRun runGuest(LoadedImage& image, Services& services, const ExportGraph& gra
             cpu.setState(current);
             continue;
         }
-        run.stop = "BUDGET";
-        run.detail = "instruction budget or wall-clock slice reached";
-        return run;
+        // A slice that simply ran out of instruction budget is not the end of the run:
+        // the loop continues until the caller's total budget or the wall clock stops it.
+        // Returning here used to cut every guest off at the 200,000-instruction slice.
+        if (stop.reason != StopReason::Budget) {
+            run.stop = "BUDGET";
+            run.detail = "the CPU slice ended without a reason the run loop understands";
+            return run;
+        }
     }
     run.stop = "BUDGET";
     run.detail = "instruction budget reached";
+    return run;
+}
+}  // namespace
+GuestRun runGuest(LoadedImage& image, Services& services, const ExportGraph& graph,
+                  size_t requester, uint64_t instructionBudget, double seconds) {
+    GuestRun run = execute(image, services, graph, requester, instructionBudget, seconds);
+    run.pcSymbol = image.nearestSymbol(run.pc);
     return run;
 }
 namespace {
@@ -130,6 +143,9 @@ std::string describeRun(GuestRun& run) {
     if (!run.detail.empty()) out << " — " << run.detail;
     out << "\nGUEST_BLOCKER: kind=" << run.blockerKind << " subject=" << run.blockerSubject
         << " pc=" << pointer(run.pc) << " instructions=" << run.instructions;
+    // "pc=0x47054" alone does not tell anyone what the guest was doing; the nearest
+    // preceding function symbol does.
+    if (!run.pcSymbol.empty()) out << " symbol=" << run.pcSymbol;
     if (!run.called.empty()) {
         out << "\nHOST_CALLS: ";
         for (size_t n = 0; n < run.called.size(); n++) out << (n ? " " : "") << run.called[n];

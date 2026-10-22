@@ -21,9 +21,9 @@ final class LaunchImages {
         if (entries instanceof List)
             for (Object item : (List<?>) entries) {
                 if (item instanceof Map) {
-                Object name = ((Map<?, ?>) item).get("UILaunchImageName");
-                if (name instanceof String)
-                    bases.add((String) name);
+                    Object name = ((Map<?, ?>) item).get("UILaunchImageName");
+                    if (name instanceof String)
+                        bases.add((String) name);
                 }
             }
         List<String> choices = new ArrayList<>();
