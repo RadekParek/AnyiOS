@@ -17,6 +17,7 @@ Services::Services(Memory& m)
       stdio(m, libc.guestHeap(), files),
       audio(m),
       objc(m),
+      gles(m),
       uikit(m),
       symbols{
           // libSystem: C runtime.
@@ -199,6 +200,58 @@ Services::Services(Memory& m)
           "_setvbuf",
           "_remove",
           "_rename",
+          // CoreGraphics/GLES: real calls into the loaded driver, never no-ops.
+          "_glActiveTexture",
+          "_glBindBuffer",
+          "_glBindFramebufferOES",
+          "_glBindRenderbufferOES",
+          "_glBindTexture",
+          "_glBlendFunc",
+          "_glBufferData",
+          "_glCheckFramebufferStatusOES",
+          "_glClear",
+          "_glClearColor",
+          "_glClientActiveTexture",
+          "_glColor4f",
+          "_glColorPointer",
+          "_glCompressedTexImage2D",
+          "_glDeleteBuffers",
+          "_glDeleteFramebuffersOES",
+          "_glDeleteRenderbuffersOES",
+          "_glDeleteTextures",
+          "_glDepthFunc",
+          "_glDepthMask",
+          "_glDisable",
+          "_glDisableClientState",
+          "_glDrawArrays",
+          "_glDrawElements",
+          "_glEnable",
+          "_glEnableClientState",
+          "_glFramebufferRenderbufferOES",
+          "_glFramebufferTexture2DOES",
+          "_glFrontFace",
+          "_glGenBuffers",
+          "_glGenFramebuffersOES",
+          "_glGenRenderbuffersOES",
+          "_glGenTextures",
+          "_glGetIntegerv",
+          "_glGetRenderbufferParameterivOES",
+          "_glLightfv",
+          "_glLineWidth",
+          "_glLoadMatrixf",
+          "_glMaterialfv",
+          "_glMatrixMode",
+          "_glNormalPointer",
+          "_glPixelStorei",
+          "_glRenderbufferStorageOES",
+          "_glScissor",
+          "_glTexCoordPointer",
+          "_glTexEnvi",
+          "_glTexImage2D",
+          "_glTexParameteri",
+          "_glTexSubImage2D",
+          "_glVertexPointer",
+          "_glViewport",
       } {
     std::vector<uint8_t> code(Memory::PageSize);
     auto put = [&](size_t offset, uint32_t word) {
@@ -225,6 +278,7 @@ Services::Services(Memory& m)
     memory.map({Base + Memory::PageSize, Memory::PageSize, Read, "CoreGraphics constants"},
                reinterpret_cast<const uint8_t*>(constants), sizeof(constants));
     objc.setTrapName([this](uint32_t address) { return trapSymbol(address); });
+    objc.setGraphics(&gles);
     objc.installGates();
     uikit.installGates();
 }
@@ -427,6 +481,7 @@ void Services::invoke(const std::string& name, CpuState& state) {
     // Order matters only for diagnostics: every module reports "not mine" without
     // inventing a result, and anything unclaimed is a hard guest-visible failure.
     if (uikit.invoke(name, state, objc)) return;
+    if (gles.invoke(name, state)) return;
     if (libc.invoke(name, state)) return;
     if (stdio.invoke(name, state)) return;
     if (audio.invoke(name, state)) return;

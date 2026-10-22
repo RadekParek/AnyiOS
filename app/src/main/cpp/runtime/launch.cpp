@@ -119,8 +119,9 @@ std::string attemptLaunch(const uint8_t* data, size_t size, const std::string& b
                   "implemented yet."
                 : "LAUNCH_ATTEMPT: the guest image actually executed.";
         return header + "\n" + describeRun(run) + "\nDYLD_EXPORT_AUDIT: " + report + "\n" +
-               services.uiSummary() + "\n" + services.guestClassSummary() +
-               "\nGUEST_STORAGE: " + services.storageSummary() + "\n" + image.summary() +
+               services.uiSummary() + "\n" + services.graphicsSummary() + "\n" +
+               services.guestClassSummary() + "\nGUEST_STORAGE: " + services.storageSummary() +
+               "\n" + image.summary() +
                "\nThis is bounded execution of a validated image, not evidence of gameplay, "
                "rendering or a working app.";
 #else

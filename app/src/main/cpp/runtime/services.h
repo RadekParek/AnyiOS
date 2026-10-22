@@ -5,6 +5,7 @@
 #include "exports.h"
 #include "frameworks.h"
 #include "fs.h"
+#include "gles.h"
 #include "libc.h"
 #include "objc.h"
 #include "stdio.h"
@@ -33,6 +34,9 @@ class Services final {
         objc.registerGuestClasses(classList);
     }
     std::string guestClassSummary() const { return objc.guestClassSummary(); }
+    // Graphics state for the launch report: driver, call counts and drawable size.
+    std::string graphicsSummary() const { return gles.describe(); }
+    GLES& graphics() { return gles; }
     std::string uiSummary() const { return uikit.describe(); }
     // True when a service stop was the lifecycle gate rather than an import call.
     bool lifecycleGate(uint32_t pc) const { return uikit.atLifecycleGate(pc); }
@@ -66,6 +70,7 @@ class Services final {
     Stdio stdio;
     AudioSession audio;
     ObjC objc;
+    GLES gles;
     UIKit uikit;
     std::vector<std::string> symbols;
     std::vector<std::string> traps;
