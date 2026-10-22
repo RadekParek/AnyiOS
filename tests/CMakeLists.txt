@@ -47,6 +47,8 @@ add_library(podnative_hle STATIC
     "${RUNTIME}/runtime/execution.cpp"
     "${RUNTIME}/runtime/objc.cpp"
     "${RUNTIME}/runtime/uikit.cpp"
+    # EAGL routes into the GL bridge, so the HLE library the CPU tests link needs it too.
+    "${RUNTIME}/runtime/gles.cpp"
     "${RUNTIME}/runtime/frameworks.cpp"
     "${RUNTIME}/runtime/coregraphics.cpp")
 target_include_directories(podnative_hle PUBLIC "${RUNTIME}")
