@@ -7,6 +7,7 @@
 #include <set>
 #include <string>
 #include <thread>
+#include <unordered_map>
 #include <utility>
 #include <vector>
 
@@ -37,6 +38,7 @@ class ObjC final {
     // Guest sandbox roots used by NSBundle/NSHomeDirectory/NSSearchPath. They are guest
     // paths; the file probe decides whether a bundle resource actually exists.
     void setGuestPaths(std::string bundle, std::string documents);
+    void setScreenSize(int width, int height);
     void setFileProbe(std::function<bool(const std::string&)> probe) {
         fileExists = std::move(probe);
     }
@@ -157,6 +159,7 @@ class ObjC final {
     std::vector<std::string> entries;
     std::map<std::string, uint32_t> classes;
     std::map<uint32_t, Object> objects;
+    std::unordered_map<std::string, uint32_t> internedTexts;
     std::vector<std::vector<uint32_t>> pools;
     // NSUserDefaults standardUserDefaults: session-scoped store so a title that reads
     // back what it wrote behaves correctly, without inventing a persisted file yet.
@@ -205,6 +208,7 @@ class ObjC final {
     // object state or a documented constant, never a fabricated success.
     bool uiKitMessage(const std::string& className, uint32_t object, const std::string& method,
                       CpuState& state);
+    bool activateEaglContext();
     // Guest class, then a runtime class, else a named failure (never a silent nil).
     uint32_t resolveClass(const std::string& name, bool required);
     uint32_t guestMethod(uint32_t classAddress, bool classMethod, const std::string& name) const;
@@ -222,6 +226,7 @@ class ObjC final {
     bool guestFoundation(uint32_t receiver, const std::string& className, const std::string& method,
                          CpuState& state);
     std::string bundlePath = "/var/mobile", documentsPath = "/var/mobile/Documents";
+    int screenWidth = 320, screenHeight = 480;
     std::function<bool(const std::string&)> fileExists;
     std::function<std::string(uint32_t)> trapName;
     std::function<size_t()> liveThreads;

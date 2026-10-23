@@ -1,5 +1,6 @@
 #include "runtime/cpu.h"
 
+#include <atomic>
 #include <cassert>
 #include <cstring>
 #include <iostream>
@@ -230,7 +231,55 @@ int main() {
         auto call = runGuest(working, workServices, workGraph, workMain, 50000, 2.0);
         assert(call.serviceCalls >= 1);
         assert(call.stop == "BUDGET" || call.stop == "UNIMPLEMENTED");
-        std::cout << "Bounded guest execution, host service dispatch and trap reporting passed\n";
+        std::atomic<bool> cancel{true};
+        auto cancelled = runGuest(working, workServices, workGraph, workMain, 0, 0, &cancel);
+        assert(cancelled.stop == "CANCELLED" && cancelled.instructions == 0);
+        assert(describeRun(cancelled).find("GUEST_BLOCKER: kind=Cancelled") != std::string::npos);
+        std::cout
+            << "Bounded guest execution, host service dispatch, cancellation and trap reporting passed\n";
+    }
+    // Darwin runs __mod_init_func entries before the process entry point. The initializer
+    // writes a flag; main copies it and its incoming r0 to guest memory, proving both order
+    // and that the runtime trampoline preserves the process-entry registers.
+    {
+        LoadedImage initialized;
+        initialized.memory = std::make_unique<Memory>();
+        Services initServices(*initialized.memory);
+        ExportGraph initGraph;
+        initServices.install(initGraph);
+        const size_t initMain = initGraph.addImage("<initializer guest>");
+        initGraph.setMainExecutable(initMain);
+
+        std::vector<uint8_t> program(4096, 0), data(4096, 0), stack(4096, 0);
+        put(program, 0, 0xe59f4018);   // ldr r4, [pc, #0x18] -> 0x9020
+        put(program, 4, 0xe5941000);   // ldr r1, [r4]
+        put(program, 8, 0xe5841004);   // str r1, [r4, #4]
+        put(program, 12, 0xe5840008);  // str r0, [r4, #8]
+        put(program, 16, 0xeafffffe);  // b .
+        put(program, 32, 0x9020);
+        put(program, 0x100, 0xe59f0008);  // initializer: ldr r0, [pc, #8] -> 0x9020
+        put(program, 0x104, 0xe3a01001);  // mov r1, #1
+        put(program, 0x108, 0xe5801000);  // str r1, [r0]
+        put(program, 0x10c, 0xe12fff1e);  // bx lr
+        put(program, 0x110, 0x9020);
+        initialized.memory->map({0x8000, 4096, uint8_t(Read | Execute), "initializer guest"},
+                                program.data(), program.size());
+        initialized.memory->map({0x9000, 4096, uint8_t(Read | Write), "initializer data"},
+                                data.data(), data.size());
+        initialized.memory->map({0xa000, 4096, uint8_t(Read | Write), "initializer stack"},
+                                stack.data(), stack.size());
+        initialized.memory->write32(0x9040, 0x8100);
+        initialized.initializerSections.emplace_back(0x9040, 1);
+        initialized.registers[0] = 0x21;
+        initialized.registers[13] = 0xb000;
+        initialized.registers[15] = 0x8000;
+        initialized.cpsr = 0x10;
+        const auto run = runGuest(initialized, initServices, initGraph, initMain, 1000, 2.0);
+        assert(run.stop == "BUDGET");
+        assert(initialized.memory->read32(0x9020) == 1);
+        assert(initialized.memory->read32(0x9024) == 1);
+        assert(initialized.memory->read32(0x9028) == 0x21);
+        std::cout << "Mach-O static initializer order and entry-register preservation passed\n";
     }
     // CoreGraphics through the iOS ARMv7 core-register call boundary, executed by the
     // real engine: a guest that loads float bit patterns into r0-r3 must observe the

@@ -102,9 +102,8 @@ void ObjC::installGates() {
     classObject("UIViewController");
     classObject("UIColor");
     classObject("UIAccelerometer");
-    // EAGL/CAEAGLLayer are real objects here: a title configures them before it issues a
-    // single GL call. The drawable itself belongs to the renderer, so the runtime models the
-    // object and its properties and refuses the call that would need a real surface.
+    // EAGL/CAEAGLLayer objects and their drawable calls are modeled by the runtime; GLES owns
+    // the real EGL context, renderbuffers, framebuffer and RGBA readback behind them.
     classObject("EAGLContext");
     classObject("CAEAGLLayer");
     classObject("CALayer");
@@ -167,6 +166,7 @@ std::string ObjC::readText(uint32_t address) const {
     throw Error("OBJC_STRING", "unterminated guest string", address);
 }
 uint32_t ObjC::internText(const std::string& text) {
+    if (auto found = internedTexts.find(text); found != internedTexts.end()) return found->second;
     if (text.size() > 4096 || nextText + text.size() + 1 > 0x6f480000 + Memory::PageSize * 4)
         throw Error("OBJC_LIMIT", "guest string pool exhausted");
     const uint32_t address = nextText;
@@ -174,6 +174,7 @@ uint32_t ObjC::internText(const std::string& text) {
     const char terminator = 0;
     memory.write(address + uint32_t(text.size()), &terminator, 1);
     nextText += uint32_t(text.size()) + 1;
+    internedTexts.emplace(text, address);
     return address;
 }
 uint32_t ObjC::internBytes(const std::vector<uint8_t>& bytes) {
@@ -802,6 +803,17 @@ void ObjC::setGuestPaths(std::string bundle, std::string documents) {
     bundlePath = std::move(bundle);
     documentsPath = std::move(documents);
 }
+void ObjC::setScreenSize(int width, int height) {
+    if (width < 1 || height < 1 || width > 8192 || height > 8192)
+        throw Error("UIKIT_SCREEN", "guest screen size is out of range");
+    screenWidth = width;
+    screenHeight = height;
+}
+bool ObjC::activateEaglContext() {
+    if (!gles || !gles->makeCurrent()) return false;
+    if (gles->drawableWidth() > 0 && gles->drawableHeight() > 0) return true;
+    return gles->createDrawable(screenWidth, screenHeight);
+}
 void ObjC::drainPools() {
     while (!pools.empty()) {
         std::vector<uint32_t> owned = pools.back();
@@ -963,14 +975,18 @@ bool ObjC::uiKitMessage(const std::string& className, uint32_t object, const std
             r[0] = 0;
             return true;
         }
+        if (method == "setStatusBarOrientation:" || method == "setStatusBarOrientation:animated:") {
+            value.integer = int32_t(r[2]);
+            return true;
+        }
         if (method == "setStatusBarHidden:" || method == "setStatusBarHidden:animated:" ||
             method == "setStatusBarStyle:" || method == "setStatusBarStyle:animated:" ||
-            method == "setStatusBarOrientation:" || method == "setStatusBarOrientation:animated:" ||
             method == "setIdleTimerDisabled:" || method == "beginIgnoringInteractionEvents" ||
             method == "endIgnoringInteractionEvents")
             return true;
         if (method == "statusBarOrientation") {
-            r[0] = 1;  // UIInterfaceOrientationPortrait until a window reports otherwise.
+            r[0] = value.integer ? uint32_t(value.integer)
+                                 : uint32_t(screenWidth > screenHeight ? 3 : 1);
             return true;
         }
         if (method == "statusBarHidden" || method == "isStatusBarHidden") {
@@ -978,7 +994,7 @@ bool ObjC::uiKitMessage(const std::string& className, uint32_t object, const std
             return true;
         }
         if (method == "applicationFrame") {
-            const float frame[4] = {0, 0, 320, 480};
+            const float frame[4] = {0, 0, float(screenWidth), float(screenHeight)};
             rect(frame);
             return true;
         }
@@ -995,7 +1011,7 @@ bool ObjC::uiKitMessage(const std::string& className, uint32_t object, const std
     }
     if (className == "UIScreen") {
         if (method == "bounds") {
-            const float frame[4] = {0, 0, 320, 480};
+            const float frame[4] = {0, 0, float(screenWidth), float(screenHeight)};
             rect(frame);
             return true;
         }
@@ -1004,7 +1020,7 @@ bool ObjC::uiKitMessage(const std::string& className, uint32_t object, const std
             return true;
         }
         if (method == "applicationFrame" || method == "nativeBounds") {
-            const float frame[4] = {0, 0, 320, 480};
+            const float frame[4] = {0, 0, float(screenWidth), float(screenHeight)};
             rect(frame);
             return true;
         }
@@ -1045,7 +1061,7 @@ bool ObjC::uiKitMessage(const std::string& className, uint32_t object, const std
         }
         if (method == "setCurrentContext") {
             currentEaglContext = object;
-            if (gles) gles->makeCurrent();
+            r[0] = activateEaglContext() ? 1 : 0;
             return true;
         }
         if (method == "sharegroup") {
@@ -1059,7 +1075,7 @@ bool ObjC::uiKitMessage(const std::string& className, uint32_t object, const std
                             "OpenGL ES driver, and none is loaded in this build");
             // The renderbuffer's size comes from the layer this context draws into: the
             // guest has already set the view's frame, which is the drawable's geometry.
-            int width = 320, height = 480;
+            int width = screenWidth, height = screenHeight;
             // -renderbufferStorage:fromDrawable: passes the CAEAGLLayer in r3; its geometry
             // is the drawable's, and the guest has already set the view frame it mirrors.
             const uint32_t layer = r[3];
@@ -1071,12 +1087,13 @@ bool ObjC::uiKitMessage(const std::string& className, uint32_t object, const std
                     height = int(frame[3] + 0.5f);
                 }
             }
-            if (!gles->createDrawable(width, height))
+            if (!gles->renderbufferStorageFromDrawable(width, height))
                 throw Error("EAGL_DRAWABLE",
                             "-[EAGLContext renderbufferStorage:fromDrawable:] could not "
-                            "create a framebuffer: " +
+                            "allocate the bound renderbuffer: " +
                                 gles->describe());
             value.integer = (int64_t(height) << 32) | uint32_t(width);
+            r[0] = 1;
             value.hasFrame = true;
             value.frame[0] = value.frame[1] = 0;
             value.frame[2] = float(width);
@@ -1091,6 +1108,7 @@ bool ObjC::uiKitMessage(const std::string& className, uint32_t object, const std
             if (!gles->present())
                 throw Error("EAGL_PRESENT",
                             "-[EAGLContext presentRenderbuffer:] failed: " + gles->describe());
+            r[0] = 1;
             return true;
         }
         return false;
@@ -1835,7 +1853,7 @@ void ObjC::message(CpuState& state) {
         }
         if (className == "EAGLContext" && method == "setCurrentContext:") {
             currentEaglContext = state.registers[2];
-            if (gles) gles->makeCurrent();
+            state.registers[0] = activateEaglContext() ? 1 : 0;
             return;
         }
         if (className == "EAGLContext" && method == "currentContext") {

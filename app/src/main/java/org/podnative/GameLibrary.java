@@ -36,6 +36,21 @@ final class GameLibrary {
             instance = new GameLibrary(context.getApplicationContext());
         return instance;
     }
+    static final class LaunchResult {
+        final String report;
+        final int frameWidth, frameHeight;
+        final byte[] guestFrame;
+        LaunchResult(String report, int frameWidth, int frameHeight, byte[] guestFrame) {
+            this.report = report;
+            this.frameWidth = frameWidth;
+            this.frameHeight = frameHeight;
+            this.guestFrame = guestFrame;
+        }
+        boolean hasFrame() {
+            return guestFrame != null && frameWidth > 0 && frameHeight > 0
+                && guestFrame.length == frameWidth * frameHeight * 4;
+        }
+    }
     static final class Game {
         final File directory;
         final String id, title, version, bundleId, kind, architecture, status, report, executable;
@@ -69,7 +84,7 @@ final class GameLibrary {
     private final Handler main = new Handler(Looper.getMainLooper());
     private final List<Runnable> observers = new ArrayList<>();
     private List<Game> games = new ArrayList<>();
-    volatile boolean busy, cancelled, cancellable;
+    volatile boolean busy, cancelled, cancellable, launchCancelled;
     volatile long revision;
     volatile String progress = "", notice = "";
     volatile boolean error;
@@ -168,6 +183,10 @@ final class GameLibrary {
         cancelled = true;
         progress = "Cancelling import…";
         changed();
+    }
+    void cancelLaunch() {
+        launchCancelled = true;
+        NativeBridge.cancelGuestLaunch();
     }
     private void checkCancelled() {
         if (cancelled)
@@ -649,35 +668,112 @@ final class GameLibrary {
             }
         });
     }
+    private File ensureIpaBundle(
+        Game game, File source, java.util.function.BooleanSupplier isCancelled) throws IOException {
+        String executable = LibraryRules.fileName(game.executable);
+        File bundle = new File(game.directory, "bundle");
+        File marker = new File(game.directory, "bundle-cache");
+        String fingerprint = source.length() + "\\n" + source.lastModified() + "\\n" + executable;
+        if (isCancelled.getAsBoolean())
+            throw new CancellationException("Guest startup cancelled before IPA extraction");
+        if (bundleCacheValid(bundle, marker, fingerprint, executable))
+            return bundle;
+        File staging = new File(game.directory, ".pending-bundle-" + UUID.randomUUID());
+        File ready = new File(game.directory, ".bundle-ready-" + UUID.randomUUID());
+        try {
+            progress = "Extracting IPA app resources for the guest…";
+            changed();
+            File extracted =
+                GameInspector.extractAppBundle(source, staging, executable, isCancelled);
+            if (isCancelled.getAsBoolean())
+                throw new CancellationException("Guest startup cancelled after IPA extraction");
+            if (!extracted.renameTo(ready))
+                throw new IOException("Could not stage the extracted app bundle");
+            if (bundle.exists())
+                deleteTree(bundle);
+            if (!ready.renameTo(bundle))
+                throw new IOException("Could not publish the extracted app bundle cache");
+            AtomicFile atomic = new AtomicFile(marker);
+            FileOutputStream out = null;
+            try {
+                out = atomic.startWrite();
+                out.write(fingerprint.getBytes(StandardCharsets.UTF_8));
+                atomic.finishWrite(out);
+            } catch (IOException e) {
+                if (out != null)
+                    atomic.failWrite(out);
+                throw e;
+            }
+            Diagnostics.record("IPA_RESOURCES", "extracted app bundle into the private game cache");
+            return bundle;
+        } finally {
+            try {
+                if (staging.exists())
+                    deleteTree(staging);
+                if (ready.exists())
+                    deleteTree(ready);
+            } catch (IOException e) {
+                Diagnostics.record("IPA_EXTRACTION_CLEANUP", e.toString());
+            }
+        }
+    }
+    private static boolean bundleCacheValid(
+        File bundle, File marker, String fingerprint, String executable) {
+        try {
+            if (!bundle.isDirectory() || !new File(bundle, "Info.plist").isFile()
+                || !new File(bundle, executable).isFile()
+                || !bundle.getCanonicalFile().getParentFile().equals(
+                    bundle.getParentFile().getCanonicalFile()))
+                return false;
+            try (InputStream in = new AtomicFile(marker).openRead()) {
+                return fingerprint.equals(
+                    new String(GameInspector.bounded(in, 4096), StandardCharsets.UTF_8));
+            }
+        } catch (Exception e) {
+            return false;
+        }
+    }
     void attemptLaunch(Game game) {
         attemptLaunch(game, null);
     }
-    /** Runs a bounded launch attempt; {@code onOutcome} receives the report on the UI thread. */
-    void attemptLaunch(Game game, java.util.function.Consumer<String> onOutcome) {
+    /** Runs a bounded launch attempt; {@code onOutcome} receives the result on the UI thread. */
+    boolean attemptLaunch(Game game, java.util.function.Consumer<LaunchResult> onOutcome) {
         if (!begin("Opening the game with the native loader…"))
-            return;
+            return false;
+        launchCancelled = false;
         worker.execute(() -> {
             File scratch = new File(root, ".pending-launch-" + UUID.randomUUID());
             String outcome;
+            byte[] guestFrame = null;
+            int frameWidth = 0, frameHeight = 0;
             try {
                 if (!game.directory.getCanonicalFile().getParentFile().equals(
                         root.getCanonicalFile()))
                     throw new IOException("Invalid library entry");
                 mkdir(scratch);
+                if (launchCancelled)
+                    throw new CancellationException("Guest startup cancelled before analysis");
                 File source =
                     new File(game.directory, game.kind.equals("Folder") ? "bundle" : "source.bin");
-                // Only an extracted .app is a persistent tree we can hand to the guest as a
-                // read-only bundle; an IPA is inspected from its archive, so its launcher
-                // mount stays empty and file calls are refused by name.
-                File bundleRoot = game.kind.equals("Folder") ? source : null;
+                File bundleRoot = game.kind.equals("Folder") ? source
+                    : game.kind.equals("IPA") ? ensureIpaBundle(game, source, () -> launchCancelled)
+                                              : null;
                 File containerRoot = new File(game.directory, "container");
                 if (bundleRoot != null && !containerRoot.isDirectory() && !containerRoot.mkdirs())
                     throw new IOException("Could not create the writable guest container");
+                if (launchCancelled)
+                    throw new CancellationException(
+                        "Guest startup cancelled before guest analysis");
                 GameInspector.Result result = GameInspector.analyze(
                     source, game.title, scratch, true, bundleRoot, containerRoot);
                 outcome = result.launchOutcome;
+                guestFrame = result.guestFrame;
+                frameWidth = result.guestFrameWidth;
+                frameHeight = result.guestFrameHeight;
                 if (outcome.isEmpty())
                     throw new IOException("No native launch result was returned");
+            } catch (CancellationException e) {
+                outcome = "LAUNCH_CANCELLED: " + e.getMessage() + "\nGuest code was not executed.";
             } catch (Exception | LinkageError e) {
                 outcome = "LAUNCH_BLOCKED: " + e.toString() + "\nGuest code was not executed.";
             }
@@ -691,10 +787,19 @@ final class GameLibrary {
                 data.put("lastLaunchReport", outcome);
                 writeMetadata(game.directory, data);
                 refresh();
-                error = true;
-                notice = "Startup stopped safely. The crash screen names the exact blocker.";
+                boolean captured = guestFrame != null && frameWidth > 0 && frameHeight > 0
+                    && guestFrame.length == frameWidth * frameHeight * 4;
+                boolean wasCancelled =
+                    outcome.toLowerCase(java.util.Locale.ROOT).contains("cancel");
+                error = !captured && !wasCancelled;
+                notice = captured
+                    ? "Guest framebuffer captured; check the displayed frame. Device appearance still needs visual review."
+                    : wasCancelled
+                    ? "Guest startup cancelled; temporary launch files were removed."
+                    : "Startup stopped safely. The diagnostic report names the exact blocker.";
                 if (onOutcome != null) {
-                    final String delivered = outcome;
+                    LaunchResult delivered =
+                        new LaunchResult(outcome, frameWidth, frameHeight, guestFrame);
                     main.post(() -> onOutcome.accept(delivered));
                 }
             } catch (Exception e) {
@@ -713,6 +818,7 @@ final class GameLibrary {
                 changed();
             }
         });
+        return true;
     }
     void rename(Game game, String title) {
         if (!begin("Updating game…"))

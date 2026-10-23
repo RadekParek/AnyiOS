@@ -1,7 +1,10 @@
 #pragma once
+#include <atomic>
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <string>
+#include <vector>
 
 namespace podnative::runtime {
 // How long the guest is allowed to run, and how much of its console output the report
@@ -26,6 +29,14 @@ struct LaunchOptions {
     // Either way an ES 1.1 title whose fixed-function entry points no loaded driver exports
     // is served by the bridge emulating them over ES 2.0.
     bool nativeGles = false;
+    // UIKit's design-space bounds are supplied by the Android launcher; legacy landscape titles
+    // generally expect 480x320 points even when the physical panel has a different resolution.
+    int screenWidth = 320;
+    int screenHeight = 480;
+    // Optional host cancellation and rendered-frame delivery used by the Android game view. A
+    // null callback keeps command-line/host diagnostics unchanged and avoids pixel readback.
+    const std::atomic<bool>* cancelRequested = nullptr;
+    std::function<void(int, int, const std::vector<uint8_t>&)> frameSink;
 };
 // Real, bounded loader attempt. Never jump into guest code with unresolved services.
 // `bundleHost` and `containerHost` are the host directories that back the guest sandbox

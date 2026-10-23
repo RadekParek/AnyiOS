@@ -9,6 +9,7 @@
 #include <sstream>
 
 #include "error.h"
+#include "pvrtc.h"
 
 namespace podnative::runtime {
 namespace {
@@ -40,6 +41,7 @@ constexpr uint32_t GL_MODELVIEW = 0x1700;
 constexpr uint32_t GL_PROJECTION = 0x1701;
 constexpr uint32_t GL_TEXTURE_MATRIX = 0x1702;
 constexpr uint32_t GL_TEXTURE0 = 0x84c0;
+constexpr uint32_t FixedFunctionTextureUnits = 2;
 constexpr uint32_t GL_MAX_LIGHTS = 0x0d31;
 // 0x8482, not 0x84e8: that one is GL_MAX_RENDERBUFFER_SIZE, and answering a texture-unit
 // query with a renderbuffer limit is the kind of mistake no driver ever reports.
@@ -63,6 +65,9 @@ constexpr uint32_t GL_COLOR_ARRAY = 0x8076;
 constexpr uint32_t GL_TEXTURE_COORD_ARRAY = 0x8078;
 constexpr uint32_t GL_ARRAY_BUFFER = 0x8892;
 constexpr uint32_t GL_ELEMENT_ARRAY_BUFFER = 0x8893;
+constexpr uint32_t GL_FRAMEBUFFER = 0x8d40;
+constexpr uint32_t GL_FRAMEBUFFER_BINDING = 0x8ca6;
+constexpr uint32_t GL_RGBA4 = 0x8056;
 constexpr uint32_t GL_RGBA8 = 0x8058;
 // EGL bits used by the drawable path; spelled out so this file needs no EGL headers and
 // still compiles where the driver is loaded at run time.
@@ -79,6 +84,9 @@ constexpr int32_t EGL_BLUE_SIZE = 0x3022;
 constexpr int32_t EGL_ALPHA_SIZE = 0x3021;
 constexpr int32_t EGL_DEPTH_SIZE = 0x3025;
 constexpr int32_t EGL_PLATFORM_SURFACELESS_MESA = 0x31dd;
+constexpr int32_t EGL_PLATFORM_ANGLE_ANGLE = 0x3202;
+constexpr int32_t EGL_PLATFORM_ANGLE_TYPE_ANGLE = 0x3203;
+constexpr int32_t EGL_PLATFORM_ANGLE_TYPE_VULKAN_ANGLE = 0x3450;
 constexpr uint32_t EGL_OPENGL_ES_API = 0x30a0;
 constexpr int32_t EGL_WIDTH = 0x3057;
 constexpr int32_t EGL_HEIGHT = 0x3056;
@@ -228,7 +236,30 @@ float GLES::Marshal::f32() {
 }
 
 GLES::GLES(Memory& memory) : memory(memory) {}
-GLES::~GLES() = default;
+GLES::~GLES() {
+    if (display) {
+        using Display = void*;
+        using Surface = void*;
+        using Context = void*;
+        using Boolean = uint32_t;
+        if (auto makeCurrentFn =
+                egl<Boolean (*)(Display, Surface, Surface, Context)>("eglMakeCurrent"))
+            makeCurrentFn(display, nullptr, nullptr, nullptr);
+        if (surface) {
+            if (auto destroySurface = egl<Boolean (*)(Display, Surface)>("eglDestroySurface"))
+                destroySurface(display, surface);
+        }
+        if (context) {
+            if (auto destroyContext = egl<Boolean (*)(Display, Context)>("eglDestroyContext"))
+                destroyContext(display, context);
+        }
+        if (auto terminate = egl<Boolean (*)(Display)>("eglTerminate")) terminate(display);
+        if (auto releaseThread = egl<Boolean (*)()>("eglReleaseThread")) releaseThread();
+    }
+    if (gles1Library) dlclose(gles1Library);
+    if (glesLibrary) dlclose(glesLibrary);
+    if (eglLibrary) dlclose(eglLibrary);
+}
 
 GLES::Entry GLES::function(const char* name) const {
     auto found = functions.find(name);
@@ -380,10 +411,20 @@ std::string GLES::describe() const {
             out << ", " << approximatedTexEnv
                 << " draw(s) used a texture environment mode this bridge approximates with "
                    "modulate";
-        if (extraTextureUnits)
-            out << ", " << extraTextureUnits
-                << " use(s) of a client texture unit beyond the one emulated";
+        if (clientTextureUnitUses)
+            out << ", " << clientTextureUnitUses << " non-default client texture-unit selection(s)";
+        if (nonDefaultTextureUnitDraws)
+            out << ", " << nonDefaultTextureUnitDraws
+                << " draw(s) used a non-default active texture unit; simultaneous texture stages "
+                   "are not emulated";
+        if (simultaneousTextureStageDraws)
+            out << ", " << simultaneousTextureStageDraws
+                << " draw(s) had both fixed-function texture units enabled (only the active unit "
+                   "is sampled)";
     }
+    if (pvrtcDecodedUploads)
+        out << ", PVRTC1 software-decoded uploads=" << pvrtcDecodedUploads << " ("
+            << pvrtcDecodedPixels << " texels)";
     if (width && height) out << ", drawable " << width << 'x' << height;
     if (!lastError.empty()) out << ", last error: " << lastError;
     return out.str();
@@ -525,12 +566,21 @@ bool GLES::invokeEntry(const std::string& symbol, CpuState& state) {
     if (name == "glEnable" || name == "glDisable") {
         const uint32_t which = m.word();
         if (fixedFunction) {
-            // Texturing and lighting change what a draw has to compute, so the emulation
-            // tracks the two caps an ES 2.0 driver has no fixed-function meaning for.
-            if (which == GL_TEXTURE_2D)
-                texture2dEnabled = name == "glEnable";
-            else if (which == GL_LIGHTING)
+            // Texturing and lighting are ES 1.1 capabilities with no ES 2.0 equivalent.
+            // Keep them in the emulation state and do not forward those enums: a strict ES 2.0
+            // implementation (including ANGLE) must reject GL_TEXTURE_2D/GL_LIGHTING.
+            if (which == GL_TEXTURE_2D) {
+                const bool enabled = name == "glEnable";
+                if (activeTextureUnit == 0)
+                    texture2dEnabled = enabled;
+                else
+                    texture2dUnits[activeTextureUnit] = enabled;
+                return true;
+            }
+            if (which == GL_LIGHTING) {
                 lightingEnabled = name == "glEnable";
+                return true;
+            }
         }
         auto f = fn<void (*)(uint32_t)>(name.c_str());
         if (!f) return false;
@@ -588,7 +638,11 @@ bool GLES::invokeEntry(const std::string& symbol, CpuState& state) {
     }
     if (name == "glActiveTexture") {
         const uint32_t texture = m.word();
-        if (fixedFunction) activeTextureUnit = int(texture) - int(GL_TEXTURE0);
+        if (fixedFunction && texture >= GL_TEXTURE0 &&
+            texture - GL_TEXTURE0 < FixedFunctionTextureUnits) {
+            activeTextureUnit = int(texture - GL_TEXTURE0);
+            if (matrixMode == GL_TEXTURE_MATRIX) matrix = &textureMatrixForUnit(activeTextureUnit);
+        }
         auto f = fn<void (*)(uint32_t)>(name.c_str());
         if (!f) return false;
         f(texture);
@@ -622,12 +676,29 @@ bool GLES::invokeEntry(const std::string& symbol, CpuState& state) {
         f(target, size, copy.data(), usage);
         return true;
     }
-    if (name == "glBindTexture" || name == "glBindFramebufferOES" ||
-        name == "glBindRenderbufferOES") {
+    if (name == "glBindFramebufferOES") {
         auto f = fn<void (*)(uint32_t, uint32_t)>(name.c_str());
         if (!f) return false;
-        const uint32_t first = m.word(), second = m.word();
-        f(first, second);
+        const uint32_t target = m.word(), guestName = m.word();
+        // EAGL's default framebuffer is a private FBO because this runtime has no Android
+        // EGL window surface on the guest context. Preserve the guest's name (zero) while
+        // binding the actual colour target the guest draws into.
+        f(target, guestName == 0 && target == GL_FRAMEBUFFER ? framebuffer : guestName);
+        if (target == GL_FRAMEBUFFER) boundGuestFramebuffer = guestName;
+        return true;
+    }
+    if (name == "glBindRenderbufferOES") {
+        auto f = fn<void (*)(uint32_t, uint32_t)>(name.c_str());
+        if (!f) return false;
+        const uint32_t target = m.word(), guestName = m.word();
+        f(target, guestName);
+        if (target == 0x8d41) boundGuestRenderbuffer = guestName;
+        return true;
+    }
+    if (name == "glBindTexture") {
+        auto f = fn<void (*)(uint32_t, uint32_t)>(name.c_str());
+        if (!f) return false;
+        f(m.word(), m.word());
         return true;
     }
     if (name == "glBlendFunc" || name == "glPixelStorei" || name == "glTexEnvi" ||
@@ -737,6 +808,25 @@ bool GLES::invokeEntry(const std::string& symbol, CpuState& state) {
         std::vector<uint32_t> names(static_cast<size_t>(count));
         memory.read(in, names.data(), names.size() * sizeof(uint32_t));
         f(count, names.data());
+        if (name == "glDeleteFramebuffersOES") {
+            bool reboundDefault = false;
+            for (uint32_t deleted : names) {
+                if (deleted == boundGuestFramebuffer) {
+                    boundGuestFramebuffer = 0;
+                    reboundDefault = true;
+                }
+                if (deleted == drawableFramebuffer) drawableFramebuffer = 0;
+            }
+            if (reboundDefault && framebuffer) {
+                auto bind = glFn<void (*)(uint32_t, uint32_t)>("glBindFramebuffer");
+                if (bind) bind(GL_FRAMEBUFFER, framebuffer);
+            }
+        } else if (name == "glDeleteRenderbuffersOES") {
+            for (uint32_t deleted : names) {
+                if (deleted == boundGuestRenderbuffer) boundGuestRenderbuffer = 0;
+                if (deleted == drawableRenderbuffer) drawableRenderbuffer = 0;
+            }
+        }
         return true;
     }
     if (name == "glGetIntegerv" || name == "glGetRenderbufferParameterivOES") {
@@ -745,6 +835,12 @@ bool GLES::invokeEntry(const std::string& symbol, CpuState& state) {
             const uint32_t pname = m.word(), out = m.word();
             auto f = fn<void (*)(uint32_t, int32_t*)>("glGetIntegerv");
             if (!f) return false;
+            if (pname == GL_FRAMEBUFFER_BINDING) {
+                if (!out || !memory.permits(out, 4, Write))
+                    throw Error("GLES_ARGUMENT", "query result is not writable", out);
+                memory.write32(out, boundGuestFramebuffer);
+                return true;
+            }
             // An ES 2.0-only driver answers these ES 1.1 limits with GL_INVALID_ENUM and
             // leaves the guest's word alone. Reading zero texture units out of that is how a
             // title that asked decides it cannot texture anything, so they are answered here.
@@ -753,7 +849,7 @@ bool GLES::invokeEntry(const std::string& symbol, CpuState& state) {
                 bool known = true;
                 switch (pname) {
                     case GL_MAX_TEXTURE_UNITS:
-                        answer = 2;
+                        answer = int(FixedFunctionTextureUnits);
                         break;
                     case GL_MAX_LIGHTS:
                         answer = 8;
@@ -801,6 +897,10 @@ bool GLES::invokeEntry(const std::string& symbol, CpuState& state) {
         const uint32_t target = m.word(), format = m.word();
         const int w = int(m.word()), h = int(m.word());
         f(target, format, w, h);
+        if (target == 0x8d41 && boundGuestRenderbuffer == drawableRenderbuffer && w > 0 && h > 0) {
+            width = w;
+            height = h;
+        }
         return true;
     }
     if (name == "glFramebufferRenderbufferOES") {
@@ -810,6 +910,10 @@ bool GLES::invokeEntry(const std::string& symbol, CpuState& state) {
         const uint32_t target = m.word(), attachment = m.word();
         const uint32_t renderbuffertarget = m.word(), renderbuffer = m.word();
         f(target, attachment, renderbuffertarget, renderbuffer);
+        if (attachment == 0x8ce0 && renderbuffertarget == 0x8d41 &&
+            renderbuffer == drawableRenderbuffer && boundGuestFramebuffer) {
+            drawableFramebuffer = boundGuestFramebuffer;
+        }
         return true;
     }
     if (name == "glFramebufferTexture2DOES") {
@@ -851,15 +955,49 @@ bool GLES::invokeEntry(const std::string& symbol, CpuState& state) {
         const uint32_t target = m.word(), level = m.word(), format = m.word();
         const int w = int(m.word()), h = int(m.word()), border = int(m.word());
         const uint32_t imageSize = m.word(), source = m.word();
-        auto f = fn<void (*)(uint32_t, int, uint32_t, int, int, int, int, const void*)>(
-            "glCompressedTexImage2D");
-        if (!f) return false;
         if (imageSize > 64 * 1024 * 1024)
             throw Error("GLES_ARGUMENT", "compressed texture exceeds budget", source);
-        std::vector<uint8_t> copy(imageSize);
-        if (source && imageSize) memory.read(source, copy.data(), copy.size());
-        f(target, int(level), format, w, h, border, int(imageSize),
-          copy.empty() ? nullptr : copy.data());
+        if (isPvrtcV1Format(format)) {
+            if (border != 0)
+                throw Error("GLES_PVRTC", "PVRTC1 textures require a zero border", source);
+            size_t expectedSize = 0;
+            std::string decodeError;
+            if (!pvrtcV1ImageSize(format, w, h, expectedSize, decodeError))
+                throw Error("GLES_PVRTC", decodeError, source);
+            if (expectedSize != imageSize)
+                throw Error("GLES_PVRTC",
+                            "PVRTC1 compressed byte count does not match the texture dimensions",
+                            source);
+            auto upload = fn<void (*)(uint32_t, int, uint32_t, int, int, int, uint32_t, uint32_t,
+                                      const void*)>("glTexImage2D");
+            if (!upload) return false;
+            if (!source || !imageSize) {
+                upload(target, int(level), GL_RGBA, w, h, border, GL_RGBA, GL_UNSIGNED_BYTE,
+                       nullptr);
+                return true;
+            }
+            std::vector<uint8_t> compressed(imageSize);
+            memory.read(source, compressed.data(), compressed.size());
+            std::vector<uint8_t> rgba;
+            if (!decodePvrtcV1(format, w, h, compressed.data(), compressed.size(), rgba,
+                               decodeError))
+                throw Error("GLES_PVRTC", decodeError, source);
+            upload(target, int(level), GL_RGBA, w, h, border, GL_RGBA, GL_UNSIGNED_BYTE,
+                   rgba.data());
+            pvrtcDecodedUploads++;
+            pvrtcDecodedPixels += size_t(w) * size_t(h);
+            return true;
+        }
+        auto upload = fn<void (*)(uint32_t, int, uint32_t, int, int, int, int, const void*)>(
+            "glCompressedTexImage2D");
+        if (!upload) return false;
+        std::vector<uint8_t> compressed;
+        if (source && imageSize) {
+            compressed.resize(imageSize);
+            memory.read(source, compressed.data(), compressed.size());
+        }
+        upload(target, int(level), format, w, h, border, int(imageSize),
+               compressed.empty() ? nullptr : compressed.data());
         return true;
     }
     if (name == "glTexImage2D" || name == "glTexSubImage2D") {
@@ -913,7 +1051,8 @@ bool GLES::invokeEntry(const std::string& symbol, CpuState& state) {
 //
 // What it does not implement is counted and reported by describe() rather than silently
 // approximated: the ES 1.1 lighting model, texture environment modes other than modulate and
-// replace, and client texture units beyond the first.
+// replace, and simultaneous texture stages. Texture state and coordinates are tracked per unit,
+// so a draw can select a nonzero unit, but this program still samples only that one unit.
 
 bool GLES::fixedFunctionEntry(const std::string& name, Marshal& m) {
     if (name == "glVertexPointer" || name == "glColorPointer" || name == "glTexCoordPointer") {
@@ -962,7 +1101,7 @@ bool GLES::fixedFunctionEntry(const std::string& name, Marshal& m) {
         }
         matrixMode = mode;
         matrix = mode == GL_PROJECTION       ? &projection
-                 : mode == GL_TEXTURE_MATRIX ? &textureMatrix
+                 : mode == GL_TEXTURE_MATRIX ? &textureMatrixForUnit(activeTextureUnit)
                                              : &modelview;
         return true;
     }
@@ -988,8 +1127,13 @@ bool GLES::fixedFunctionEntry(const std::string& name, Marshal& m) {
         return true;
     }
     if (name == "glClientActiveTexture") {
-        clientTextureUnit = int(m.word());
-        if (clientTextureUnit != int(GL_TEXTURE0)) extraTextureUnits++;
+        const uint32_t texture = m.word();
+        if (texture < GL_TEXTURE0 || texture - GL_TEXTURE0 >= FixedFunctionTextureUnits) {
+            setError("glClientActiveTexture selected a unit outside the advertised limit");
+            return true;
+        }
+        clientTextureUnit = int(texture);
+        if (clientTextureUnit != int(GL_TEXTURE0)) clientTextureUnitUses++;
         return true;
     }
     if (name == "glTexEnvi") {
@@ -1007,10 +1151,16 @@ bool GLES::fixedFunctionEntry(const std::string& name, Marshal& m) {
                 case GL_DECAL_TEXTURE_ENV:
                 case GL_BLEND_TEXTURE_ENV:
                 case GL_ADD_TEXTURE_ENV:
-                    textureEnvMode = int(mode);
+                    if (activeTextureUnit == 0)
+                        textureEnvMode = int(mode);
+                    else
+                        textureEnvModes[activeTextureUnit] = int(mode);
                     break;
                 default:
-                    textureEnvMode = GL_MODULATE_TEXTURE_ENV;
+                    if (activeTextureUnit == 0)
+                        textureEnvMode = GL_MODULATE_TEXTURE_ENV;
+                    else
+                        textureEnvModes[activeTextureUnit] = GL_MODULATE_TEXTURE_ENV;
                     approximatedTexEnv++;
                     setError("an unknown texture environment mode was approximated as modulate");
                     break;
@@ -1037,14 +1187,36 @@ bool GLES::fixedFunctionEntry(const std::string& name, Marshal& m) {
     return false;
 }
 
+std::array<float, 16>& GLES::textureMatrixForUnit(int unit) {
+    if (unit <= 0) return textureMatrix;
+    auto [it, inserted] = textureMatrices.try_emplace(unit, Identity);
+    (void)inserted;
+    return it->second;
+}
+
+int GLES::textureEnvironmentForUnit(int unit) const {
+    if (unit <= 0) return textureEnvMode;
+    const auto found = textureEnvModes.find(unit);
+    return found == textureEnvModes.end() ? int(GL_MODULATE_TEXTURE_ENV) : found->second;
+}
+
+bool GLES::textureEnabledForUnit(int unit) const {
+    if (unit <= 0) return texture2dEnabled;
+    const auto found = texture2dUnits.find(unit);
+    return found != texture2dUnits.end() && found->second;
+}
+
 const GLES::Program& GLES::fixedFunctionProgram() {
     static const Program none{};
-    const auto tex = texCoord.find(clientTextureUnit);
+    const int textureUnitEnum = int(GL_TEXTURE0) + activeTextureUnit;
+    const auto tex = texCoord.find(textureUnitEnum);
     const bool texArray = tex != texCoord.end() && tex->second.enabled;
+    const bool textureEnabled = textureEnabledForUnit(activeTextureUnit);
+    const int textureEnvironment = textureEnvironmentForUnit(activeTextureUnit);
     // 0 = not textured, 1 = texture coordinates from an array, 2 = from the ES 1.1 current
     // texture coordinate, whose default is (0, 0, 0, 1).
-    const int texSource = !texture2dEnabled ? 0 : texArray ? 1 : 2;
-    const bool replace = textureEnvMode == GL_REPLACE_TEXTURE_ENV;
+    const int texSource = !textureEnabled ? 0 : texArray ? 1 : 2;
+    const bool replace = textureEnvironment == GL_REPLACE_TEXTURE_ENV;
     const uint32_t key =
         (colour.enabled ? 1u : 0u) | (uint32_t(texSource) << 1) | (replace ? 8u : 0u);
     if (auto found = programs.find(key); found != programs.end()) return found->second;
@@ -1227,10 +1399,12 @@ bool GLES::drawFixedFunction(uint32_t mode, int first, int count, uint32_t index
         uniform4f(program.colour, currentColour[0], currentColour[1], currentColour[2],
                   currentColour[3]);
     if (program.textureMatrix >= 0)
-        uniformMatrix(program.textureMatrix, 1, 0, textureMatrix.data());
+        uniformMatrix(program.textureMatrix, 1, 0, textureMatrixForUnit(activeTextureUnit).data());
     if (program.texture >= 0 && uniform1i) uniform1i(program.texture, activeTextureUnit);
-    if (activeTextureUnit != 0) extraTextureUnits++;
-    if (textureEnvMode != GL_MODULATE_TEXTURE_ENV && textureEnvMode != GL_REPLACE_TEXTURE_ENV)
+    if (activeTextureUnit != 0) nonDefaultTextureUnitDraws++;
+    const int textureEnvironment = textureEnvironmentForUnit(activeTextureUnit);
+    if (textureEnvironment != GL_MODULATE_TEXTURE_ENV &&
+        textureEnvironment != GL_REPLACE_TEXTURE_ENV)
         approximatedTexEnv++;
 
     // An indexed draw reaches as far as its largest index; a non-indexed one to first + count.
@@ -1266,8 +1440,11 @@ bool GLES::drawFixedFunction(uint32_t mode, int first, int count, uint32_t index
     if (colour.enabled && !bindFixedFunctionArray(colour, AttributeColour, streamBuffers[1], true,
                                                   vertices ? vertices : 1))
         return false;
-    const auto tex = texCoord.find(clientTextureUnit);
-    if (texture2dEnabled && tex != texCoord.end() && tex->second.enabled &&
+    const int textureUnitEnum = int(GL_TEXTURE0) + activeTextureUnit;
+    const auto tex = texCoord.find(textureUnitEnum);
+    const bool textureEnabled = textureEnabledForUnit(activeTextureUnit);
+    const bool texCoordEnabled = tex != texCoord.end() && tex->second.enabled;
+    if (textureEnabled && texCoordEnabled &&
         !bindFixedFunctionArray(tex->second, AttributeTexCoord, streamBuffers[2], false,
                                 vertices ? vertices : 1))
         return false;
@@ -1275,8 +1452,7 @@ bool GLES::drawFixedFunction(uint32_t mode, int first, int count, uint32_t index
     // with a different variant: an enabled attribute with no array behind it is a driver
     // error, not a harmless leftover.
     if (!colour.enabled) disableAttrib(AttributeColour);
-    if (!(texture2dEnabled && tex != texCoord.end() && tex->second.enabled))
-        disableAttrib(AttributeTexCoord);
+    if (!(textureEnabled && texCoordEnabled)) disableAttrib(AttributeTexCoord);
     disableAttrib(AttributeNormal);
 
     if (indexType) {
@@ -1306,6 +1482,7 @@ bool GLES::drawFixedFunction(uint32_t mode, int first, int count, uint32_t index
         if (!draw) return false;
         draw(mode, first, count);
     }
+    if (textureEnabledForUnit(0) && textureEnabledForUnit(1)) simultaneousTextureStageDraws++;
     return true;
 }
 
@@ -1313,14 +1490,32 @@ void GLES::setClientApi(int api) {
     api = api == 2 ? 2 : 1;
     if (api == clientApi) return;
     clientApi = api;
-    // A context cannot change version; the next EAGL call makes a new one. The drawable
-    // objects belong to the guest, so the ids it holds stay valid names in the new context
-    // only after it recreates them, exactly as on iOS.
-    auto destroyContext = egl<void (*)(void*)>("eglDestroyContext");
-    if (context && destroyContext) destroyContext(context);
-    context = nullptr;
+    // An EGL context cannot change version. Detach and discard its pbuffer before the next
+    // EAGL call creates a context/config for the newly requested API.
+    if (display) {
+        using Display = void*;
+        using Surface = void*;
+        using Context = void*;
+        using Boolean = uint32_t;
+        if (auto makeCurrentFn =
+                egl<Boolean (*)(Display, Surface, Surface, Context)>("eglMakeCurrent"))
+            makeCurrentFn(display, nullptr, nullptr, nullptr);
+        if (surface) {
+            if (auto destroySurface = egl<Boolean (*)(Display, Surface)>("eglDestroySurface"))
+                destroySurface(display, surface);
+        }
+        if (context) {
+            if (auto destroyContext = egl<Boolean (*)(Display, Context)>("eglDestroyContext"))
+                destroyContext(display, context);
+        }
+    }
+    surface = context = nullptr;
     framebuffer = renderbuffer = 0;
-    width = height = 0;
+    boundGuestFramebuffer = boundGuestRenderbuffer = 0;
+    drawableFramebuffer = drawableRenderbuffer = 0;
+    width = height = fallbackWidth = fallbackHeight = 0;
+    frame.clear();
+    frameCallCount = 0;
 }
 
 bool GLES::makeCurrent() {
@@ -1335,9 +1530,27 @@ bool GLES::makeCurrent() {
         auto getPlatformDisplay =
             egl<Display (*)(uint32_t, void*, const int32_t*)>("eglGetPlatformDisplayEXT");
         auto getDisplay = egl<Display (*)(void*)>("eglGetDisplay");
-        if (getPlatformDisplay)
-            display = getPlatformDisplay(EGL_PLATFORM_SURFACELESS_MESA, nullptr, nullptr);
-        if (!display && getDisplay) display = getDisplay(nullptr);
+        const bool bundledAngle = backendName == "libGLESv2_podnative.so";
+        if (bundledAngle) {
+            // The shipped ANGLE build is Vulkan-only. Match the display selection used by
+            // the Android presentation backend instead of asking ANGLE for Mesa's
+            // surfaceless platform or Android's process-default EGL display.
+            if (getPlatformDisplay) {
+                const Int angleAttributes[] = {EGL_PLATFORM_ANGLE_TYPE_ANGLE,
+                                               EGL_PLATFORM_ANGLE_TYPE_VULKAN_ANGLE, EGL_NONE};
+                display = getPlatformDisplay(EGL_PLATFORM_ANGLE_ANGLE, nullptr, angleAttributes);
+            }
+            if (!display) {
+                setError("bundled ANGLE could not create its Vulkan platform display");
+                return false;
+            }
+        } else {
+            // Device EGL commonly requires a native display on Android; try its default
+            // first. The surfaceless Mesa platform remains useful for host drivers/tests.
+            if (getDisplay) display = getDisplay(nullptr);
+            if (!display && getPlatformDisplay)
+                display = getPlatformDisplay(EGL_PLATFORM_SURFACELESS_MESA, nullptr, nullptr);
+        }
         if (!display) {
             setError("EGL has no display");
             return false;
@@ -1435,6 +1648,26 @@ bool GLES::makeCurrent() {
     return true;
 }
 
+uint32_t GLES::drawableColorFormat() {
+    auto getString = glFn<const uint8_t* (*)(uint32_t)>("glGetString");
+    if (!getString) return GL_RGBA4;
+    const auto* text = getString(0x1f03);  // GL_EXTENSIONS
+    if (!text) return GL_RGBA4;
+    const std::string extensions(reinterpret_cast<const char*>(text));
+    constexpr char name[] = "GL_OES_rgb8_rgba8";
+    size_t at = 0;
+    while ((at = extensions.find(name, at)) != std::string::npos) {
+        const bool left = at == 0 || extensions[at - 1] == ' ';
+        const size_t end = at + sizeof(name) - 1;
+        const bool right = end == extensions.size() || extensions[end] == ' ';
+        if (left && right) return GL_RGBA8;
+        at = end;
+    }
+    // RGBA4 is required by both ES 1.1 and ES 2.0; use RGBA8 only when the driver advertises
+    // the extension that makes it a legal renderbuffer format.
+    return GL_RGBA4;
+}
+
 bool GLES::createDrawable(int w, int h) {
     if (!makeCurrent()) return false;
     if (w <= 0 || h <= 0 || w > 8192 || h > 8192) {
@@ -1457,42 +1690,91 @@ bool GLES::createDrawable(int w, int h) {
     constexpr uint32_t Renderbuffer = 0x8d41, Framebuffer = 0x8d40, ColorAttachment0 = 0x8ce0;
     if (!renderbuffer) genRenderbuffers(1, &renderbuffer);
     bindRenderbuffer(Renderbuffer, renderbuffer);
-    renderbufferStorage(Renderbuffer, GL_RGBA8, w, h);
+    // RGBA8 is core to ES 2.0; an ES 1.1 device driver is only required to accept RGBA4.
+    renderbufferStorage(Renderbuffer, drawableColorFormat(), w, h);
     if (!framebuffer) genFramebuffers(1, &framebuffer);
     bindFramebuffer(Framebuffer, framebuffer);
     framebufferRenderbuffer(Framebuffer, ColorAttachment0, Renderbuffer, renderbuffer);
     auto check = glFn<uint32_t (*)(uint32_t)>("glCheckFramebufferStatus");
     if (check && check(Framebuffer) != 0x8cd5) {
-        setError("the drawable framebuffer is incomplete");
+        setError("the fallback drawable framebuffer is incomplete");
         return false;
     }
+    width = fallbackWidth = w;
+    height = fallbackHeight = h;
+    auto viewport = glFn<void (*)(int, int, int, int)>("glViewport");
+    if (viewport) viewport(0, 0, w, h);
+    return true;
+}
+
+bool GLES::renderbufferStorageFromDrawable(int w, int h) {
+    if (!makeCurrent()) return false;
+    if (w <= 0 || h <= 0 || w > 8192 || h > 8192) {
+        setError("drawable size is out of range");
+        return false;
+    }
+    // UIKit's EAGL method does not create an unrelated private renderbuffer: it allocates the
+    // storage of the renderbuffer the app already generated and bound. Its framebuffer is
+    // attached by the guest immediately afterwards, which lets present() capture the exact
+    // framebuffer the title draws to.
+    if (!boundGuestRenderbuffer) return createDrawable(w, h);
+    auto bindRenderbuffer = glFn<void (*)(uint32_t, uint32_t)>("glBindRenderbuffer");
+    auto storage = glFn<void (*)(uint32_t, uint32_t, int, int)>("glRenderbufferStorage");
+    if (!bindRenderbuffer || !storage) {
+        setError("the driver cannot allocate EAGL renderbuffer storage");
+        return false;
+    }
+    constexpr uint32_t Renderbuffer = 0x8d41;
+    bindRenderbuffer(Renderbuffer, boundGuestRenderbuffer);
+    storage(Renderbuffer, drawableColorFormat(), w, h);
+    drawableRenderbuffer = boundGuestRenderbuffer;
     width = w;
     height = h;
+    frame.clear();
     return true;
 }
 
 bool GLES::present() {
-    if (!makeCurrent() || !framebuffer) {
+    if (!makeCurrent() || !framebuffer || width <= 0 || height <= 0) {
         setError("no drawable to present");
         return false;
     }
+    if (width > 2048 || height > 2048) {
+        setError("drawable exceeds the 2048-pixel host readback limit");
+        return false;
+    }
+    auto bindFramebuffer = glFn<void (*)(uint32_t, uint32_t)>("glBindFramebuffer");
     auto readPixels = glFn<void (*)(int, int, int, int, uint32_t, uint32_t, void*)>("glReadPixels");
+    if (!bindFramebuffer || !readPixels) {
+        setError("the driver cannot bind or read the drawable framebuffer");
+        return false;
+    }
+    const uint32_t restore = boundGuestFramebuffer ? boundGuestFramebuffer : framebuffer;
+    const uint32_t source = drawableFramebuffer     ? drawableFramebuffer
+                            : boundGuestFramebuffer ? boundGuestFramebuffer
+                                                    : framebuffer;
+    bindFramebuffer(GL_FRAMEBUFFER, source);
+    auto check = glFn<uint32_t (*)(uint32_t)>("glCheckFramebufferStatus");
+    if (check && check(GL_FRAMEBUFFER) != 0x8cd5) {
+        bindFramebuffer(GL_FRAMEBUFFER, restore);
+        setError("the active EAGL framebuffer is incomplete at presentation");
+        return false;
+    }
     auto finish = glFn<void (*)()>("glFinish");
     if (finish) finish();
-    if (readPixels) {
-        frame.resize(size_t(width) * size_t(height) * 4);
-        readPixels(0, 0, width, height, GL_RGBA, GL_UNSIGNED_BYTE, frame.data());
-        // GL's origin is bottom-left; keep the host copy top-row-first.
-        std::vector<uint8_t> flipped(frame.size());
-        for (int row = 0; row < height; row++)
-            std::memcpy(&flipped[size_t(row) * size_t(width) * 4],
-                        &frame[size_t(height - 1 - row) * size_t(width) * 4], size_t(width) * 4);
-        frame.swap(flipped);
-    }
-    if (surface) {
-        auto swap = egl<uint32_t (*)(void*, void*)>("eglSwapBuffers");
-        if (swap) swap(display, surface);
-    }
+    frame.resize(size_t(width) * size_t(height) * 4);
+    readPixels(0, 0, width, height, GL_RGBA, GL_UNSIGNED_BYTE, frame.data());
+    bindFramebuffer(GL_FRAMEBUFFER, restore);
+    // GL's origin is bottom-left; keep the host copy top-row-first.
+    std::vector<uint8_t> flipped(frame.size());
+    for (int row = 0; row < height; row++)
+        std::memcpy(&flipped[size_t(row) * size_t(width) * 4],
+                    &frame[size_t(height - 1 - row) * size_t(width) * 4], size_t(width) * 4);
+    frame.swap(flipped);
+    frameCallCount = calls;
+    // The guest owns a surfaceless EGL context (or a one-pixel pbuffer fallback), not an
+    // Android window surface. The host UI consumes this RGBA frame on its own ANGLE surface;
+    // swapping the pbuffer would not present the game and can mask a failed readback.
     return true;
 }
 }  // namespace podnative::runtime

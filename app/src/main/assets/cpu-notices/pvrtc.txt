@@ -1,0 +1,7 @@
+PowerVR PVRTC decoder
+Copyright (c) Imagination Technologies Limited.
+
+The PowerVR Native SDK is licensed under the MIT License. The full license text is
+retained in the source tree at third_party/pvrtc/LICENSE.md. Decoder source provenance
+and the exact upstream revision are recorded in third_party/pvrtc/README.md and
+third_party/pvrtc/revision.txt.

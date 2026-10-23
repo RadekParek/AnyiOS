@@ -15,6 +15,8 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.CancellationException;
+import java.util.function.BooleanSupplier;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipFile;
 
@@ -31,6 +33,8 @@ final class GameInspector {
         final List<byte[]> splashImages = new ArrayList<>();
         boolean launchAttempt;
         String launchOutcome = "";
+        int guestFrameWidth, guestFrameHeight;
+        byte[] guestFrame;
         File bundleRoot, containerRoot;
     }
     private GameInspector() {}
@@ -56,8 +60,9 @@ final class GameInspector {
         return analyze(source, displayName, scratch, launchAttempt, null, null);
     }
     /**
-     * @param bundleRoot extracted .app directory that becomes the guest's read-only /var/mobile,
-     *     or null when the import has no persistent bundle on disk.
+     * @param bundleRoot extracted .app directory mounted at the guest's /var/mobile; legacy
+     *     titles may write first-run caches there, but only inside this private app bundle cache.
+     *     Null when the import has no persistent bundle on disk.
      * @param containerRoot writable directory that becomes the guest's /var/mobile/Documents.
      */
     static Result analyze(File source, String displayName, File scratch, boolean launchAttempt,
@@ -188,11 +193,34 @@ final class GameInspector {
                 result.launchOutcome = NativeBridge.attemptLaunch(bytes,
                     result.bundleRoot == null ? "" : result.bundleRoot.getAbsolutePath(),
                     result.containerRoot == null ? "" : result.containerRoot.getAbsolutePath());
+                takeGuestFrame(result);
                 report += "\n\n" + result.launchOutcome;
             }
             result.report =
                 "Container: " + (slice[3] != 0 ? "universal; selected ARM32 slice" : "thin ARM32")
                 + "\nSlice offset=" + slice[0] + " size=" + slice[1] + " bytes\n\n" + report;
+        }
+    }
+    private static void takeGuestFrame(Result result) {
+        try {
+            byte[] packed = NativeBridge.takeGuestFrame();
+            if (packed == null || packed.length < 8)
+                return;
+            int width = (packed[0] & 255) | (packed[1] & 255) << 8 | (packed[2] & 255) << 16
+                | (packed[3] & 255) << 24;
+            int height = (packed[4] & 255) | (packed[5] & 255) << 8 | (packed[6] & 255) << 16
+                | (packed[7] & 255) << 24;
+            long expected = 8L + (long) width * height * 4;
+            if (width < 1 || height < 1 || width > 2048 || height > 2048
+                || expected != packed.length) {
+                Diagnostics.record("GUEST_FRAME", "ignored invalid frame dimensions/length");
+                return;
+            }
+            result.guestFrameWidth = width;
+            result.guestFrameHeight = height;
+            result.guestFrame = java.util.Arrays.copyOfRange(packed, 8, packed.length);
+        } catch (RuntimeException | LinkageError e) {
+            Diagnostics.record("GUEST_FRAME", "readback transfer failed: " + e);
         }
     }
     private static void analyzeArchive(File archive, File scratch, Result result)
@@ -380,6 +408,115 @@ final class GameInspector {
                 "No Mach-O executable found. Select the extracted .app folder, not a folder of IPA downloads");
         inspectExecutable(executable, result);
         result.executable = folder.toPath().relativize(executable.toPath()).toString();
+    }
+    /**
+     * Materializes the sole top-level Payload/*.app from an IPA for the guest file sandbox.
+     * The source archive is never modified. The caller uses a fresh staging directory and only
+     * publishes the returned bundle after extraction completes.
+     */
+    static File extractAppBundle(File archive, File destination, String executableName)
+        throws IOException {
+        return extractAppBundle(archive, destination, executableName, () -> false);
+    }
+    static File extractAppBundle(File archive, File destination, String executableName,
+        BooleanSupplier isCancelled) throws IOException {
+        if (!archive.isFile() || destination.exists())
+            throw new IOException("IPA extraction needs a source file and a new staging directory");
+        checkExtractionCancelled(isCancelled);
+        if (!destination.mkdirs())
+            throw new IOException("Could not create the temporary IPA extraction directory");
+        Set<String> names = new HashSet<>();
+        Set<String> bundles = new LinkedHashSet<>();
+        try (ZipFile zip = new ZipFile(archive)) {
+            Enumeration<? extends ZipEntry> entries = zip.entries();
+            while (entries.hasMoreElements()) {
+                checkExtractionCancelled(isCancelled);
+                ZipEntry entry = entries.nextElement();
+                String name = entry.getName();
+                if (!names.add(name))
+                    throw new IOException("IPA contains duplicate entry names");
+                if (names.size() > 30000)
+                    throw new IOException("IPA exceeds the 30,000-entry extraction limit");
+                if (!entry.isDirectory() && name.matches("Payload/[^/]+\\.app/[^/]+"))
+                    bundles.add(name.substring(0, name.lastIndexOf('/') + 1));
+            }
+            if (bundles.size() != 1)
+                throw new IOException("IPA must contain exactly one top-level app bundle");
+            String root = bundles.iterator().next();
+            String appName = root.substring("Payload/".length(), root.length() - 1);
+            File appBundle = new File(destination, LibraryRules.fileName(appName));
+            if (!appBundle.mkdirs())
+                throw new IOException("Could not create the extracted app bundle directory");
+            String canonicalRoot = appBundle.getCanonicalPath() + File.separator;
+            long total = 0, nextSpaceCheck = 0;
+            byte[] buffer = new byte[65536];
+            entries = zip.entries();
+            while (entries.hasMoreElements()) {
+                checkExtractionCancelled(isCancelled);
+                ZipEntry entry = entries.nextElement();
+                String name = entry.getName();
+                if (!name.startsWith(root))
+                    continue;
+                String relative = name.substring(root.length());
+                if (relative.isEmpty())
+                    continue;
+                if (relative.startsWith("/") || relative.indexOf('\\') >= 0
+                    || relative.indexOf(0) >= 0)
+                    throw new IOException("IPA contains an unsafe app resource path");
+                String[] components = relative.split("/", -1);
+                for (int index = 0; index < components.length; index++) {
+                    String component = components[index];
+                    boolean trailingDirectorySeparator = entry.isDirectory()
+                        && index == components.length - 1 && component.isEmpty();
+                    if (component.equals(".") || component.equals("..")
+                        || component.isEmpty() && !trailingDirectorySeparator)
+                        throw new IOException("IPA app resource path escapes the bundle");
+                }
+                File output = new File(appBundle, relative);
+                String canonicalOutput = output.getCanonicalPath();
+                if (!canonicalOutput.startsWith(canonicalRoot))
+                    throw new IOException("IPA app resource path escapes the extraction directory");
+                if (entry.isDirectory()) {
+                    if (!output.isDirectory() && !output.mkdirs())
+                        throw new IOException(
+                            "Could not create an extracted app resource directory");
+                    continue;
+                }
+                File parent = output.getParentFile();
+                if (parent == null || (!parent.isDirectory() && !parent.mkdirs()))
+                    throw new IOException("Could not create an extracted app resource parent");
+                try (InputStream in = zip.getInputStream(entry);
+                    FileOutputStream out = new FileOutputStream(output)) {
+                    int read;
+                    while ((read = in.read(buffer)) != -1) {
+                        checkExtractionCancelled(isCancelled);
+                        if (total > 1024L * 1024 * 1024 - read)
+                            throw new IOException(
+                                "Extracted app bundle exceeds the 1 GiB safety limit");
+                        total += read;
+                        if (total >= nextSpaceCheck) {
+                            if (destination.getUsableSpace() < 64L * 1024 * 1024 + read)
+                                throw new IOException(
+                                    "Not enough free storage to extract IPA resources");
+                            nextSpaceCheck = total + 4L * 1024 * 1024;
+                        }
+                        out.write(buffer, 0, read);
+                    }
+                }
+            }
+            checkExtractionCancelled(isCancelled);
+            String executable = LibraryRules.fileName(executableName);
+            if (!new File(appBundle, executable).isFile())
+                throw new IOException(
+                    "The selected executable is missing from the extracted IPA app");
+            if (!new File(appBundle, "Info.plist").isFile())
+                throw new IOException("The extracted app bundle has no Info.plist");
+            return appBundle;
+        }
+    }
+    private static void checkExtractionCancelled(BooleanSupplier isCancelled) {
+        if (isCancelled.getAsBoolean())
+            throw new CancellationException("Guest startup cancelled during IPA extraction");
     }
     @SuppressWarnings("unchecked")
     private static List<String> iconCandidates(Map<String, Object> info) {

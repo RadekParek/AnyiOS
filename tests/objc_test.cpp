@@ -55,6 +55,11 @@ struct Harness {
 int main() {
     Harness harness;
     auto& memory = harness.memory;
+    // UIKit's run loop interns the same selector every frame. It must reuse one guest string,
+    // or a long-running title exhausts the fixed pool after only a few thousand updates.
+    const uint32_t updateSelector = harness.objc.selectorString("update");
+    for (size_t frame = 0; frame < 100000; frame++)
+        assert(harness.objc.selectorString("update") == updateSelector);
     ExportGraph graph;
     size_t foundation = graph.addImage("Foundation");
     size_t objcLibrary = graph.addImage("libobjc.A.dylib");

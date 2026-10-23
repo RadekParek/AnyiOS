@@ -82,6 +82,8 @@ struct Es2StubState {
     int textureUploads = 0;
     int activeTextureCalls = 0;
     unsigned lastActiveTexture = 0;
+    int enableCalls = 0, disableCalls = 0;
+    unsigned lastCapability = 0;
 
     int errors = 0;
     unsigned lastError = 0;

@@ -87,11 +87,16 @@ class GLES final {
     // Creates the colour renderbuffer and the framebuffer an EAGL drawable backs onto.
     // Returns false when the driver refused; the caller then reports the real error.
     bool createDrawable(int width, int height);
-    // Copies the drawable's pixels into guest memory as tightly packed RGBA8 and, when a
-    // window surface exists, swaps it onto the display.
+    // UIKit's renderbufferStorage:fromDrawable: allocates storage on the renderbuffer the
+    // guest already bound. This is distinct from the private fallback drawable created for
+    // guests that issue GL calls without setting one up themselves.
+    bool renderbufferStorageFromDrawable(int width, int height);
+    // Copies the active EAGL drawable (or the private fallback framebuffer) into a tightly
+    // packed RGBA8 host frame. Presentation onto Android's surface is handled by the UI backend.
     bool present();
     // Host-visible copy of the last presented frame (RGBA8, top row first).
     const std::vector<uint8_t>& lastFrame() const { return frame; }
+    bool frameCurrent() const { return !frame.empty() && frameCallCount == calls; }
     int drawableWidth() const { return width; }
     int drawableHeight() const { return height; }
 
@@ -119,6 +124,7 @@ class GLES final {
     std::string backendName;
     std::map<std::string, Entry> functions;
     size_t calls = 0, draws = 0;
+    size_t pvrtcDecodedUploads = 0, pvrtcDecodedPixels = 0;
     bool driverLoaded = false;
     // Display/context/drawable. Opaque so this header stays free of EGL types.
     // Handles of the libraries the entry points were resolved from. Resolving through a
@@ -139,9 +145,15 @@ class GLES final {
     void* context = nullptr;
     void* surface = nullptr;
     uint32_t framebuffer = 0, renderbuffer = 0;
+    // Guest-visible names are kept separate from the private fallback FBO/RBO. Binding guest
+    // framebuffer 0 maps to `framebuffer`; a guest-created EAGL framebuffer stays a real driver
+    // object and is selected when its drawable renderbuffer is attached.
+    uint32_t boundGuestFramebuffer = 0, boundGuestRenderbuffer = 0;
+    uint32_t drawableFramebuffer = 0, drawableRenderbuffer = 0;
     int clientApi = 1;  // kEAGLRenderingAPIOpenGLES1 until the guest asks otherwise
-    int width = 0, height = 0;
+    int width = 0, height = 0, fallbackWidth = 0, fallbackHeight = 0;
     std::vector<uint8_t> frame;
+    size_t frameCallCount = 0;
     // Client-side array state, one set per active client texture unit.
     ClientArray vertex, colour, normal;
     std::map<int, ClientArray> texCoord;
@@ -156,14 +168,18 @@ class GLES final {
     static constexpr std::array<float, 16> Identity = {1, 0, 0, 0, 0, 1, 0, 0,
                                                        0, 0, 1, 0, 0, 0, 0, 1};
     std::array<float, 16> modelview = Identity, projection = Identity, textureMatrix = Identity;
-    std::array<float, 16>* matrix = &modelview;  // the stack glMatrixMode selected
-    uint32_t matrixMode = 0x1700;                // GL_MODELVIEW
-    float currentColour[4] = {1, 1, 1, 1};       // glColor4f, used when no colour array is
+    std::map<int, std::array<float, 16>> textureMatrices;  // nonzero active texture units
+    std::array<float, 16>* matrix = &modelview;            // the stack glMatrixMode selected
+    uint32_t matrixMode = 0x1700;                          // GL_MODELVIEW
+    float currentColour[4] = {1, 1, 1, 1};  // glColor4f, used when no colour array is
     uint32_t boundArrayBuffer = 0, boundElementBuffer = 0;
-    int textureEnvMode = 0x2100;  // GL_MODULATE, the ES 1.1 default
+    int textureEnvMode = 0x2100;  // GL_MODULATE, the ES 1.1 default for unit zero
+    std::map<int, int> textureEnvModes;
     bool texture2dEnabled = false, lightingEnabled = false;
-    // Approximations, counted so describe() can name them instead of hiding them.
-    size_t lightingCalls = 0, approximatedTexEnv = 0, extraTextureUnits = 0;
+    std::map<int, bool> texture2dUnits;
+    // Approximations and non-default texture-unit use are counted for diagnostics.
+    size_t lightingCalls = 0, approximatedTexEnv = 0, clientTextureUnitUses = 0,
+           nonDefaultTextureUnitDraws = 0, simultaneousTextureStageDraws = 0;
     int activeTextureUnit = 0;  // glActiveTexture, as an offset from GL_TEXTURE0
     // A generated program and the uniform locations a draw needs from it, so a draw never
     // asks the driver for a location it already asked for.
@@ -182,6 +198,9 @@ class GLES final {
     bool drawFixedFunction(uint32_t mode, int first, int count, uint32_t indexType,
                            uint32_t indices);
     const Program& fixedFunctionProgram();
+    std::array<float, 16>& textureMatrixForUnit(int unit);
+    int textureEnvironmentForUnit(int unit) const;
+    bool textureEnabledForUnit(int unit) const;
     // Uploads one client array and points an attribute at it. Returns false when the guest
     // memory behind it could not be read.
     bool bindFixedFunctionArray(const ClientArray& array, uint32_t location, uint32_t& buffer,
@@ -190,6 +209,7 @@ class GLES final {
 
     Entry function(const char* name) const;
     bool resolve(const char* name);
+    uint32_t drawableColorFormat();
     // Takes a handle on a driver library, preferring one the linker already loaded.
     static void* openLibrary(const char* name);
     // One lookup in a handle, then through eglGetProcAddress, then the other handle.

@@ -69,6 +69,7 @@ class Services final {
     // ANGLE. Off by default, because one driver on every device is the point of bundling it.
     // Read before the driver is resolved; a loaded driver is not swapped under a running guest.
     void setNativeGles(bool on) { gles.setPreferNativeDriver(on); }
+    void setScreenSize(int width, int height) { objc.setScreenSize(width, height); }
     bool isVerbose() const { return verbose; }
     const std::vector<std::string>& objectiveCTrace() const { return objcTrace; }
     void setPrecise(bool on) { precise = on; }

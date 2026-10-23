@@ -50,8 +50,9 @@ add_library(podnative SHARED
     runtime/memory.cpp runtime/loader.cpp runtime/dyld.cpp runtime/launch.cpp
     runtime/frameworks.cpp runtime/coregraphics.cpp runtime/exports.cpp runtime/services.cpp
     runtime/libc.cpp runtime/cxx.cpp runtime/fs.cpp runtime/stdio.cpp runtime/audio.cpp
-    runtime/posix.cpp runtime/openal.cpp runtime/format.cpp runtime/heap.cpp runtime/execution.cpp runtime/objc.cpp runtime/uikit.cpp runtime/gles.cpp runtime/cpu.cpp runtime/cpu_probe.cpp)
+    runtime/posix.cpp runtime/openal.cpp runtime/format.cpp runtime/heap.cpp runtime/execution.cpp runtime/objc.cpp runtime/uikit.cpp runtime/gles.cpp runtime/pvrtc.cpp ../../../../third_party/pvrtc/PVRTDecompress.cpp runtime/cpu.cpp runtime/cpu_probe.cpp)
 target_compile_options(podnative PRIVATE -Wall -Wextra -Werror)
 target_compile_definitions(podnative PRIVATE PODNATIVE_CPU_IN_APP=1)
-target_include_directories(podnative PRIVATE "${ANGLE_ROOT}/include")
+target_include_directories(podnative PRIVATE "${ANGLE_ROOT}/include"
+    "${CMAKE_CURRENT_SOURCE_DIR}/../../../../third_party/pvrtc")
 target_link_libraries(podnative PRIVATE angle_EGL angle_GLESv2 android log vulkan dynarmic dl)

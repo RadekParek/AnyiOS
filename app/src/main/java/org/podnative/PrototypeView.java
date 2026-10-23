@@ -10,6 +10,8 @@ import java.util.function.Consumer;
 final class PrototypeView extends SurfaceView implements SurfaceHolder.Callback {
     private volatile boolean running;
     private java.util.List<java.io.File> images = java.util.Collections.emptyList();
+    private byte[] guestFrame;
+    private int guestFrameWidth, guestFrameHeight;
     private Runnable completed;
     private Thread worker;
     private final Consumer<String> status;
@@ -28,6 +30,16 @@ final class PrototypeView extends SurfaceView implements SurfaceHolder.Callback 
         this.images = new java.util.ArrayList<>(
             images.subList(0, Math.min(LaunchImages.MAX_IMAGES, images.size())));
         this.completed = completed;
+    }
+    PrototypeView(Context context, int width, int height, byte[] rgba, int fps, int shortEdge,
+        Consumer<String> status) {
+        this(context, fps, shortEdge, status);
+        if (width <= 0 || height <= 0 || width > 2048 || height > 2048 || rgba == null
+            || rgba.length != width * height * 4)
+            throw new IllegalArgumentException("Invalid guest framebuffer pixels");
+        guestFrameWidth = width;
+        guestFrameHeight = height;
+        guestFrame = rgba.clone();
     }
     private void upload(java.io.File file) {
         android.graphics.Bitmap bitmap = android.graphics.BitmapFactory.decodeFile(file.getPath());
@@ -72,7 +84,9 @@ final class PrototypeView extends SurfaceView implements SurfaceHolder.Callback 
                 post(() -> status.accept(info));
                 int imageIndex = 0;
                 long imagePresented = 0;
-                if (!images.isEmpty())
+                if (guestFrame != null)
+                    NativeBridge.image(guestFrame, guestFrameWidth, guestFrameHeight);
+                else if (!images.isEmpty())
                     upload(images.get(0));
                 while (running) {
                     if (!images.isEmpty() && imagePresented != 0
@@ -94,8 +108,13 @@ final class PrototypeView extends SurfaceView implements SurfaceHolder.Callback 
                         imagePresented = System.nanoTime();
                     if (first) {
                         Diagnostics.record("FIRST_PRESENT",
-                            (images.isEmpty() ? "textured cube" : "imported launch artwork")
-                                + " draw and eglSwapBuffers returned successfully; visual confirmation still required; not guest execution");
+                            (guestFrame != null        ? "captured guest framebuffer"
+                                    : images.isEmpty() ? "textured cube"
+                                                       : "imported launch artwork")
+                                + " draw and eglSwapBuffers returned successfully; visual confirmation still required"
+                                + (guestFrame != null
+                                        ? "; bounded guest execution preceded this readback"
+                                        : "; not guest execution"));
                         first = false;
                     }
                     long duration = System.nanoTime() - before;

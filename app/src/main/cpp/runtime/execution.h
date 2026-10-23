@@ -1,4 +1,5 @@
 #pragma once
+#include <atomic>
 #include <cstdint>
 #include <string>
 #include <vector>
@@ -14,7 +15,7 @@ struct GuestRun {
     uint32_t pc = 0;
     // Name of the guest function the PC landed in, when the image still carries symbols.
     std::string pcSymbol;
-    std::string stop = "NOT_STARTED";  // EXITED, BUDGET, FAULT, UNIMPLEMENTED, TRAPPED
+    std::string stop = "NOT_STARTED";  // EXITED, BUDGET, CANCELLED, FAULT, UNIMPLEMENTED, TRAPPED
     std::string detail;
     size_t serviceCalls = 0;
     size_t trappedImports = 0;
@@ -44,6 +45,7 @@ struct GuestRun {
 // Real execution. With a zero instruction budget and zero seconds the guest runs until it
 // stops by itself: a fault, an unimplemented import, or its own exit.
 GuestRun runGuest(LoadedImage& image, Services& services, const ExportGraph& graph,
-                  size_t requester, uint64_t instructionBudget, double seconds);
+                  size_t requester, uint64_t instructionBudget, double seconds,
+                  const std::atomic<bool>* cancelRequested = nullptr);
 std::string describeRun(GuestRun& run);
 }  // namespace podnative::runtime

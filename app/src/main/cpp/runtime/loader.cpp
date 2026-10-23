@@ -70,8 +70,10 @@ LoadedImage loadMachO(const uint8_t* data, size_t size, size_t budget) {
         bool lazy, stub;
     };
     std::vector<IndirectSection> indirectSections;
-    // Sections whose contents describe guest Objective-C metadata; read after mapping.
+    // Sections whose contents describe guest Objective-C metadata or initializer pointers;
+    // read after mapping, and after dyld fixups for the latter.
     std::vector<std::pair<uint32_t, uint32_t>> classListSections;
+    size_t initializerFunctionCount = 0;
     size_t dynamicSymbols = 0;
     bool hasDyldInfo = false;
     std::array<std::pair<uint32_t, uint32_t>, 4> dyldStreams{};
@@ -104,6 +106,16 @@ LoadedImage loadMachO(const uint8_t* data, size_t size, size_t budget) {
                 if (type == 0 && r.fixed(q, 16) == "__objc_classlist") {
                     if (sectionSize % 4) throw Error("LOAD_OBJECTIVE_C", "unaligned class list");
                     classListSections.emplace_back(address, sectionSize);
+                }
+                if (type == 9) {  // S_MOD_INIT_FUNC_POINTERS (`__mod_init_func`).
+                    if (sectionSize % 4)
+                        throw Error("LOAD_INITIALIZER", "unaligned initializer pointer section",
+                                    address);
+                    const size_t count = sectionSize / 4;
+                    if (count > 100000 - initializerFunctionCount)
+                        throw Error("LOAD_LIMIT", "too many static initializer pointers", address);
+                    initializerFunctionCount += count;
+                    if (count) result.initializerSections.emplace_back(address, uint32_t(count));
                 }
                 if (type == 6 || type == 7 || type == 8) {
                     uint32_t stride = type == 8 ? r.u32(q + 64) : 4;
@@ -657,6 +669,11 @@ std::string LoadedImage::summary() const {
     s << "\nInstruction set: " << (arch == IsaArch::ArmV6 ? "ARMv6 (ARM11/v6K)" : "ARMv7")
       << " from CPU subtype " << std::dec << cpuSubtype << ".";
     s << "\nImage mapping is complete; this summary alone does not start the guest.";
+    size_t initializerCount = 0;
+    for (const auto& section : initializerSections) initializerCount += section.second;
+    if (initializerCount)
+        s << "\nMach-O static initializer pointers=" << initializerCount
+          << "; the runtime executes them before the process entry point.";
     s << "\n" << dyld.summary();
     if (!exports.empty()) s << "\nDefined exports=" << exports.size();
     if (dyld.needsCoalescing)

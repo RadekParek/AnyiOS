@@ -1,5 +1,6 @@
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <cassert>
 #include <cstring>
 #include <iostream>
@@ -52,6 +53,30 @@ Bytes executable(bool thumb = false) {
     put(b, 0x104, 0xef000000);
     return b;
 }
+Bytes executableWithInitializer() {
+    Bytes b = executable();
+    // Grow the __TEXT segment command by one section and move LC_MAIN after it.
+    put(b, 20, 148);
+    put(b, 32, 124);
+    put(b, 76, 1);  // one section
+    std::memcpy(b.data() + 84, "__mod_init_func", 15);
+    std::memcpy(b.data() + 100, "__TEXT", 6);
+    put(b, 116, 0x1f00);  // section vm address
+    put(b, 120, 4);       // one function pointer
+    put(b, 124, 0xf00);   // file offset inside __TEXT
+    put(b, 128, 2);       // four-byte alignment
+    put(b, 132, 0);       // no section relocations
+    put(b, 136, 0);
+    put(b, 140, 9);  // S_MOD_INIT_FUNC_POINTERS
+    put(b, 144, 0);
+    put(b, 148, 0);
+    put(b, 152, 0x80000028);
+    put(b, 156, 24);
+    put(b, 160, 0x100);
+    put(b, 168, 0);
+    put(b, 0xf00, 0x1100);
+    return b;
+}
 int main() {
     Memory m(3 * 4096);
     m.map({0x1000, 4096, uint8_t(Read | Write), "data1"});
@@ -99,6 +124,15 @@ int main() {
     assert(image.memory->fetch32(0x1100) == 0xe3a0002a && !image.requiresDyld);
     assert(image.memory->read32(0x70000000) == 0);
     assert(!image.memory->permits(0x6ffff000, 4, Read));
+    b = executableWithInitializer();
+    image = loadMachO(b.data(), b.size());
+    assert(image.initializerSections.size() == 1);
+    assert(image.initializerSections[0].first == 0x1f00);
+    assert(image.initializerSections[0].second == 1);
+    assert(image.memory->read32(0x1f00) == 0x1100);
+    b = executableWithInitializer();
+    put(b, 120, 3);
+    fault("LOAD_INITIALIZER", [&] { loadMachO(b.data(), b.size()); });
     b = executable(true);
     image = loadMachO(b.data(), b.size());
     assert(image.cpsr & 0x20);
@@ -203,6 +237,11 @@ int main() {
     assert(attemptLaunch(b.data(), b.size()).find("DYLD_EXPORT_AUDIT") != std::string::npos);
     b = executable();
     assert(attemptLaunch(b.data(), b.size()).find("GUEST_ABI_UNIMPLEMENTED") != std::string::npos);
+    std::atomic<bool> cancelledBeforeLoad{true};
+    LaunchOptions cancelledOptions;
+    cancelledOptions.cancelRequested = &cancelledBeforeLoad;
+    assert(attemptLaunch(nullptr, 0, "", "", cancelledOptions).find("LAUNCH_CANCELLED") !=
+           std::string::npos);
     b = dynamic();
     put(b, 120, 4);
     fault("LOAD_DYSYMTAB", [&] { loadMachO(b.data(), b.size()); });

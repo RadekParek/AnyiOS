@@ -51,16 +51,22 @@ add_library(podnative_hle STATIC
     "${RUNTIME}/runtime/uikit.cpp"
     # EAGL routes into the GL bridge, so the HLE library the CPU tests link needs it too.
     "${RUNTIME}/runtime/gles.cpp"
+    "${RUNTIME}/runtime/pvrtc.cpp"
+    "${CMAKE_CURRENT_LIST_DIR}/../third_party/pvrtc/PVRTDecompress.cpp"
     "${RUNTIME}/runtime/frameworks.cpp"
     "${RUNTIME}/runtime/coregraphics.cpp")
-target_include_directories(podnative_hle PUBLIC "${RUNTIME}")
+target_include_directories(podnative_hle PUBLIC "${RUNTIME}" "${CMAKE_CURRENT_LIST_DIR}/../third_party/pvrtc")
 target_link_libraries(podnative_hle PUBLIC podnative_cpu)
 target_compile_options(podnative_hle PRIVATE -Wall -Wextra -Werror)
 add_executable(cpu_test cpu_test.cpp)
 target_link_libraries(cpu_test PRIVATE podnative_cpu podnative_hle)
 target_compile_options(cpu_test PRIVATE -Wall -Wextra -Werror -UNDEBUG)
+add_executable(runtime_test runtime_test.cpp "${RUNTIME}/runtime/launch.cpp")
+target_link_libraries(runtime_test PRIVATE podnative_cpu podnative_hle)
+target_compile_options(runtime_test PRIVATE -Wall -Wextra -Werror -UNDEBUG)
 enable_testing()
 add_test(NAME cpu_correctness COMMAND cpu_test)
+add_test(NAME runtime_loader COMMAND runtime_test)
 
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux" OR ANDROID)
     add_executable(oaknut_wx_test oaknut_wx_test.cpp)
@@ -83,6 +89,11 @@ add_executable(cxx_test cxx_test.cpp)
 target_link_libraries(cxx_test PRIVATE podnative_hle)
 target_compile_options(cxx_test PRIVATE -Wall -Wextra -Werror -UNDEBUG)
 add_test(NAME cxx_runtime COMMAND cxx_test)
+
+add_executable(pvrtc_test pvrtc_test.cpp)
+target_link_libraries(pvrtc_test PRIVATE podnative_hle)
+target_compile_options(pvrtc_test PRIVATE -Wall -Wextra -Werror -UNDEBUG)
+add_test(NAME pvrtc_software_decode COMMAND pvrtc_test)
 
 # Host runner for a real .app bundle: the same entry point the Android app calls, so a
 # launch report (and the API the guest stopped at) can be reproduced without a device.
