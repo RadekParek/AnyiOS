@@ -227,6 +227,41 @@ int main() {
         put(fixture, 0x358, 0xc0000000);
         return fixture;
     };
+    auto boundImports = [] {
+        auto fixture = executable();
+        put(fixture, 16, 3);
+        put(fixture, 20, 128);
+        put(fixture, 68, 7);
+        put(fixture, 72, 7);
+        put(fixture, 84, 0x80000022);  // LC_DYLD_INFO_ONLY
+        put(fixture, 88, 48);
+        for (size_t offset = 92; offset < 132; offset += 4) put(fixture, offset, 0);
+
+        std::vector<uint8_t> stream{0x3e, 0x40};  // flat lookup, then symbol
+        const std::string missing = "_missing_api";
+        stream.insert(stream.end(), missing.begin(), missing.end());
+        stream.push_back(0);
+        stream.push_back(0x70);  // segment 0, offset 0x200
+        stream.push_back(0x80);
+        stream.push_back(0x04);
+        stream.push_back(0x90);
+        stream.push_back(0x90);  // two references to the same unresolved import
+        stream.push_back(0x40);
+        const std::string implemented = "__ZTVN10__cxxabiv117__class_type_infoE";
+        stream.insert(stream.end(), implemented.begin(), implemented.end());
+        stream.push_back(0);
+        stream.push_back(0x90);
+        stream.push_back(0x90);  // two resolved references should not appear in the report
+        stream.push_back(0);
+        put(fixture, 100, 0x300);  // bind_off
+        put(fixture, 104, uint32_t(stream.size()));
+        put(fixture, 132, 0x80000028);  // LC_MAIN
+        put(fixture, 136, 24);
+        put(fixture, 140, 0x100);
+        put(fixture, 148, 0);
+        std::copy(stream.begin(), stream.end(), fixture.begin() + 0x300);
+        return fixture;
+    };
     b = dynamic();
     image = loadMachO(b.data(), b.size());
     assert(image.requiresDyld);
@@ -235,6 +270,21 @@ int main() {
     // plain executable reports the un-integrated CPU; neither may claim execution.
     assert(attemptLaunch(b.data(), b.size()).find("GUEST_ABI_UNIMPLEMENTED") != std::string::npos);
     assert(attemptLaunch(b.data(), b.size()).find("DYLD_EXPORT_AUDIT") != std::string::npos);
+    b = boundImports();
+    image = loadMachO(b.data(), b.size());
+    assert(image.dyld.fixups.size() == 4);
+    const std::string importReport = attemptLaunch(b.data(), b.size());
+    assert(importReport.find("CPU_NOT_INTEGRATED") != std::string::npos);
+    assert(importReport.find("registered service gate names=") != std::string::npos);
+    assert(importReport.find("unresolved required imports=2 references across 1 unique "
+                             "symbol/ordinal pairs") != std::string::npos);
+    assert(importReport.find("MISSING_REQUIRED_IMPORTS:\n  _missing_api (2 references; ordinal=-2)") !=
+           std::string::npos);
+    assert(importReport.find("_missing_api") == importReport.rfind("_missing_api"));
+    assert(importReport.find("__ZTVN10__cxxabiv117__class_type_infoE") == std::string::npos);
+    assert(importReport.find("required ordinal=") == std::string::npos);
+    assert(importReport.find("0 pointer rebases, 4 pointer bindings") != std::string::npos);
+    assert(importReport.find("implemented APIs") == std::string::npos);
     b = executable();
     assert(attemptLaunch(b.data(), b.size()).find("GUEST_ABI_UNIMPLEMENTED") != std::string::npos);
     std::atomic<bool> cancelledBeforeLoad{true};

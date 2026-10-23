@@ -44,6 +44,11 @@ int main() {
     // not the block's entry PC.
     put(code, 272, 0xe3a02001);  // mov r2,#1 at 0x1110
     put(code, 276, 0xe5910000);  // ldr r0,[r1] at 0x1114
+    put(code, 512, 0xe3a00000);  // mov r0,#0
+    put(code, 516, 0xe3a08044);  // mov r8,#0x44
+    put(code, 520, 0xe3a06077);  // mov r6,#0x77
+    put(code, 524, 0xe7806008);  // str r6,[r0,r8] at 0x120c
+    put(code, 528, 0xe3a00001);  // mov r0,#1 would expose execution past a fault
     memory.map({0x1000, 4096, uint8_t(Read | Execute), "original test instructions"}, code.data(),
                code.size());
     memory.map({0x2000, 4096, uint8_t(Read | Write), "data"});
@@ -113,6 +118,24 @@ int main() {
     result = cpu.run(8);
     assert(result.reason == StopReason::Fault && result.code == "MEMORY_NULL");
     assert(result.address == 0x44 && result.pc == 0x1140);
+    // Several instructions in one translated block establish the null base and 0x44 offset.
+    // The MEMORY_NULL report must preserve those fault-time operands and stop at the store,
+    // not expose block-entry registers or the following instruction's MOV.
+    state = initial();
+    state.registers[0] = 0x6f500000;
+    state.registers[6] = 0xdeadbeef;
+    state.registers[8] = 0;
+    state.registers[15] = 0x1200;
+    cpu.setState(state);
+    result = cpu.run(8);
+    const CpuState storeFault = cpu.faultState();
+    const CpuState stoppedState = cpu.state();
+    assert(result.reason == StopReason::Fault && result.code == "MEMORY_NULL");
+    assert(result.address == 0x44 && result.pc == 0x120c);
+    assert(storeFault.registers[0] == 0 && storeFault.registers[6] == 0x77 &&
+           storeFault.registers[8] == 0x44);
+    assert(stoppedState.registers[0] == 0 && stoppedState.registers[6] == 0x77 &&
+           stoppedState.registers[8] == 0x44);
     state = initial();
     cpu.setState(state);
     result = cpu.run(0);
@@ -255,6 +278,11 @@ int main() {
         auto cancelled = runGuest(working, workServices, workGraph, workMain, 0, 0, &cancel);
         assert(cancelled.stop == "CANCELLED" && cancelled.instructions == 0);
         assert(describeRun(cancelled).find("GUEST_BLOCKER: kind=Cancelled") != std::string::npos);
+        cancelled.called = {"_malloc", "_malloc", "_free"};
+        assert(describeRun(cancelled).find("HOST_CALLS:") == std::string::npos);
+        assert(describeRun(cancelled, true).find(
+                   "HOST_CALLS: last 3 call(s), 2 distinct service name(s): _malloc (2x) _free") !=
+               std::string::npos);
         LoadedImage faulting;
         faulting.memory = std::make_unique<Memory>();
         Services faultServices(*faulting.memory);
@@ -282,6 +310,7 @@ int main() {
         assert(faultRun.stop == "FAULT" &&
                faultRun.detail.find("MEMORY_NULL") != std::string::npos);
         assert(faultRun.detail.find("at 0xb000") != std::string::npos);
+        assert(faultRun.detail.find("r1=0x00000044") != std::string::npos);
         assert(faultRun.detail.find("r4=0x12345678") != std::string::npos);
         std::cout
             << "Bounded guest execution, host service dispatch, cancellation and trap reporting passed\n";

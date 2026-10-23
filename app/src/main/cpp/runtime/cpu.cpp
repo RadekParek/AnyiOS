@@ -100,6 +100,7 @@ class Cpu::Impl final : public Dynarmic::A32::UserCallbacks {
     std::unique_ptr<Dynarmic::A32::Jit> jit;
     CpuCounters counters;
     std::optional<CpuStop> stopped;
+    std::optional<CpuState> faultSnapshot;
     bool poisoned = false;
     uint32_t instructionPC = 0;
     bool faultPcPending = false;
@@ -254,6 +255,11 @@ class Cpu::Impl final : public Dynarmic::A32::UserCallbacks {
     void fault(const std::string& code, const std::string& detail, uint32_t address = 0,
                std::optional<uint32_t> faultPc = std::nullopt) {
         if (!stopped) {
+            // Capture architectural operands while still inside the callback that observed
+            // the failed access. A later translated-block state may have advanced past the
+            // faulting instruction on some host JIT backends.
+            if (jit)
+                faultSnapshot = CpuState{jit->Regs(), jit->ExtRegs(), jit->Cpsr(), jit->Fpscr()};
             // A memory callback runs inside a translated block, where instructionPC is only
             // the block entry. Dynarmic commits the exact stopped guest PC when Run/Step
             // returns, so defer this part of the report until then instead of guessing from
@@ -464,12 +470,17 @@ void Cpu::setState(const CpuState& state) {
     impl_->jit->SetFpscr(state.fpscr);
     impl_->jit->ClearExclusiveState();
     impl_->stopped.reset();
+    impl_->faultSnapshot.reset();
     impl_->faultPcPending = false;
     impl_->poisoned = false;
     impl_->syncCodeEdits();
 }
 CpuState Cpu::state() const {
     return {impl_->jit->Regs(), impl_->jit->ExtRegs(), impl_->jit->Cpsr(), impl_->jit->Fpscr()};
+}
+CpuState Cpu::faultState() const {
+    if (impl_->faultSnapshot) return *impl_->faultSnapshot;
+    return state();
 }
 std::vector<uint32_t> Cpu::recentPcs(size_t count) const {
     std::vector<uint32_t> result;
@@ -490,6 +501,7 @@ CpuStop Cpu::run(uint64_t budget) {
                 "CPU_BUDGET",
                 "an empty slice retires nothing"};
     impl_->stopped.reset();
+    impl_->faultSnapshot.reset();
     impl_->faultPcPending = false;
     impl_->jit->ClearHalt(Dynarmic::HaltReason::UserDefined1);
     // External host writes between slices must never leave translated instructions stale.

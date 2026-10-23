@@ -97,6 +97,20 @@ foreach(test_name IN ITEMS dyld libc objc)
     add_test(NAME ${test_name}_runtime COMMAND ${test_name}_test)
 endforeach()
 
+# The Objective-C EAGL lifecycle regression needs a recording EGL/GLES entry point set. This
+# driver does not rasterize; it makes context activation and drawable setup observable without
+# a GPU. Use the same soname the bridge loads, and export its C entry points on Windows too.
+add_library(gles_test_driver SHARED "${CMAKE_CURRENT_LIST_DIR}/gles_stub_driver.cpp")
+set_target_properties(gles_test_driver PROPERTIES
+    PREFIX ""
+    OUTPUT_NAME "libGLESv2_podnative"
+    WINDOWS_EXPORT_ALL_SYMBOLS ON)
+add_dependencies(objc_test gles_test_driver)
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    set_tests_properties(objc_runtime PROPERTIES
+        ENVIRONMENT "LD_LIBRARY_PATH=$<TARGET_FILE_DIR:gles_test_driver>")
+endif()
+
 add_executable(pvrtc_test pvrtc_test.cpp)
 target_link_libraries(pvrtc_test PRIVATE podnative_hle)
 target_compile_options(pvrtc_test PRIVATE -Wall -Wextra -Werror -UNDEBUG)

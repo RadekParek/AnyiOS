@@ -47,5 +47,5 @@ struct GuestRun {
 GuestRun runGuest(LoadedImage& image, Services& services, const ExportGraph& graph,
                   size_t requester, uint64_t instructionBudget, double seconds,
                   const std::atomic<bool>* cancelRequested = nullptr);
-std::string describeRun(GuestRun& run);
+std::string describeRun(GuestRun& run, bool includeRecentCalls = false);
 }  // namespace podnative::runtime

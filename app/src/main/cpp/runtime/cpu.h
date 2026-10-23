@@ -59,6 +59,10 @@ class Cpu final {
     // a fault report need.
     void setPrecise(bool on);
     CpuState state() const;
+    // Register snapshot taken inside the first fault callback, before the translated block
+    // returns. Use it for fault diagnostics so operands cannot come from a later block state.
+    // If the stop had no callback snapshot, this falls back to the current state.
+    CpuState faultState() const;
     CpuStop run(uint64_t maxInstructions);
     // The instructions retired immediately before the current PC, newest last. A guest that
     // jumps to an address it read out of corrupted memory cannot be explained from the fault

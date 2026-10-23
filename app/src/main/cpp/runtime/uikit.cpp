@@ -225,8 +225,20 @@ std::string UIKit::describe() const {
     std::ostringstream out;
     out << "UIKIT_STATE: " << outcome;
     if (!events.empty()) {
-        out << "\nUIKIT_EVENTS:";
-        for (const std::string& line : events) out << "\n  " << line;
+        out << "\nUIKIT_EVENTS: last " << events.size()
+            << " event(s), consecutive repeats compressed:";
+        for (size_t index = 0; index < events.size();) {
+            size_t end = index + 1;
+            while (end < events.size() && events[end] == events[index]) ++end;
+            out << "\n  ";
+            if (events[index] == outcome) {
+                out << (end - index) << " event(s) repeat UIKIT_STATE";
+            } else {
+                if (end - index > 1) out << '[' << (end - index) << "x] ";
+                out << events[index];
+            }
+            index = end;
+        }
     }
     if (!runLoopTaskCounts.empty()) {
         size_t total = 0;

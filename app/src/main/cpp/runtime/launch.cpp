@@ -2,7 +2,10 @@
 
 #include <algorithm>
 #include <cstdio>
-#include <set>
+#include <map>
+#include <sstream>
+#include <string>
+#include <utility>
 #include <vector>
 
 #include "error.h"
@@ -16,15 +19,54 @@
 namespace podnative::runtime {
 namespace {
 // Coverage audit over everything that must bind before guest code may run: pointer
-// fixups and classic symbol stubs. Stub symbols are reported too, because a stub that
-// forwards to an unimplemented API is exactly as fatal as an unresolvable pointer.
+// fixups and classic symbol stubs. Resolved imports are intentionally not listed; the
+// audit is about export-graph resolution, not a claim that every registered gate has full
+// runtime semantics.
 struct Coverage {
-    size_t required = 0, weak = 0;
-    std::set<std::string> missingRequired, missingWeak;
-    std::string describe(size_t implemented) const {
-        return std::to_string(implemented) + " implemented APIs; " + std::to_string(required) +
-               " required and " + std::to_string(weak) +
-               " weak imported symbols still lack implementations.";
+    using ImportKey = std::pair<std::string, int>;  // symbol, dylib ordinal
+    size_t requiredReferences = 0, weakReferences = 0;
+    std::map<ImportKey, size_t> missingRequired, missingWeak;
+
+    std::string describe(size_t registeredServices) const {
+        return "registered service gate names=" + std::to_string(registeredServices) +
+               "; unresolved required imports=" + std::to_string(requiredReferences) +
+               " references across " + std::to_string(missingRequired.size()) +
+               " unique symbol/ordinal pairs; unresolved weak imports=" +
+               std::to_string(weakReferences) + " references across " +
+               std::to_string(missingWeak.size()) + " unique symbol/ordinal pairs.";
+    }
+
+    std::string importDetails(bool verbose) const {
+        std::ostringstream out;
+        auto append = [&](const char* heading, const std::map<ImportKey, size_t>& imports,
+                          size_t limit) {
+            out << "\n" << heading << ':';
+            if (imports.empty()) {
+                out << " none.";
+                return;
+            }
+            std::vector<std::pair<ImportKey, size_t>> ordered(imports.begin(), imports.end());
+            std::sort(ordered.begin(), ordered.end(), [](const auto& left, const auto& right) {
+                if (left.second != right.second) return left.second > right.second;
+                return left.first < right.first;
+            });
+            const size_t shown = std::min(limit, ordered.size());
+            for (size_t index = 0; index < shown; index++) {
+                const auto& [key, references] = ordered[index];
+                out << "\n  ";
+                for (unsigned char c : key.first)
+                    out << (c >= 32 && c < 127 ? char(c) : '?');
+                out << " (" << references << (references == 1 ? " reference" : " references")
+                    << "; ordinal=" << key.second << ')';
+            }
+            if (shown < ordered.size())
+                out << "\n  ... " << (ordered.size() - shown)
+                    << " additional unique symbol/ordinal pair(s) omitted.";
+        };
+        append("MISSING_REQUIRED_IMPORTS", missingRequired, verbose ? 512 : 64);
+        if (verbose && !missingWeak.empty())
+            append("MISSING_WEAK_IMPORTS", missingWeak, 512);
+        return out.str();
     }
 };
 
@@ -32,19 +74,42 @@ Coverage audit(const LoadedImage& image, const ExportGraph& graph, size_t main) 
     Coverage coverage;
     auto check = [&](int ordinal, const std::string& symbol, bool weak) {
         if (graph.resolve(main, ordinal, symbol)) return;
-        (weak ? coverage.missingWeak : coverage.missingRequired).insert(symbol);
+        auto& missing = weak ? coverage.missingWeak : coverage.missingRequired;
+        ++missing[{symbol, ordinal}];
+        if (weak)
+            ++coverage.weakReferences;
+        else
+            ++coverage.requiredReferences;
     };
     for (const auto& fixup : image.dyld.fixups) {
         if (fixup.rebase) continue;
         check(fixup.ordinal, fixup.symbol, fixup.weak);
     }
     for (const auto& stub : image.stubs) check(stub.ordinal, stub.symbol, stub.weak);
-    coverage.required = coverage.missingRequired.size();
-    coverage.weak = coverage.missingWeak.size();
     return coverage;
 }
 
 #ifdef PODNATIVE_CPU_IN_APP
+std::string compactGuestLog(size_t captured, const std::vector<std::string>& lines) {
+    if (lines.empty()) return {};
+    std::vector<std::pair<std::string, size_t>> groups;
+    for (const std::string& line : lines) {
+        if (!groups.empty() && groups.back().first == line)
+            ++groups.back().second;
+        else
+            groups.emplace_back(line, 1);
+    }
+    std::ostringstream out;
+    out << "\nGUEST_LOG: " << captured << " captured line(s), tail " << lines.size() << " line(s) in "
+        << groups.size() << " consecutive group(s):";
+    for (const auto& [line, count] : groups) {
+        out << "\n| ";
+        if (count > 1) out << '[' << count << "x] ";
+        out << line;
+    }
+    return out.str();
+}
+
 // Real guest stack: argc/argv/envp plus a null-terminated environment block.
 void prepareStack(LoadedImage& image, Memory& memory) {
     constexpr uint32_t StackBase = 0x70000000;
@@ -107,14 +172,8 @@ std::string attemptLaunch(const uint8_t* data, size_t size, const std::string& b
         for (const auto& [name, definition] : image.exports) graph.define(main, name, definition);
 
         const Coverage coverage = audit(image, graph, main);
-        const std::string report = coverage.describe(services.count());
-        // Verbose logging names every import that still has no implementation: that list is
-        // the compatibility work queue, so it is printed instead of only counted.
-        std::string missing;
-        if (options.verbose) {
-            for (const std::string& name : coverage.missingRequired) missing += "\n  " + name;
-            if (missing.empty()) missing = " (none)";
-        }
+        const std::string report =
+            coverage.describe(services.count()) + coverage.importDetails(options.verbose);
         if (!image.requiresDyld || (image.dyld.fixups.empty() && image.stubs.empty())) {
             return "LAUNCH_BLOCKED: GUEST_ABI_UNIMPLEMENTED: the image needs no dyld work, but "
                    "Darwin process bootstrap is not implemented.\nDYLD_EXPORT_AUDIT: " +
@@ -179,11 +238,8 @@ std::string attemptLaunch(const uint8_t* data, size_t size, const std::string& b
         std::string log;
         if (options.logLines > 0 && services.logSize()) {
             const size_t shown = std::min<size_t>(services.logSize(), size_t(options.logLines));
-            log = "\nGUEST_LOG: " + std::to_string(services.logSize()) + " line(s), last " +
-                  std::to_string(shown) + ":";
-            for (const std::string& line : services.logTail(shown)) log += "\n| " + line;
+            log = compactGuestLog(services.logSize(), services.logTail(shown));
         }
-        const std::string gaps = missing.empty() ? std::string() : "\nMISSING_REQUIRED:" + missing;
         // Verbose runs list every mapping: a guest pointer that is "obviously" wrong is
         // usually a pointer into a mapping whose extent nobody checked.
         // The Objective-C call graph the guest built, once per receiver/selector pair: this
@@ -209,8 +265,8 @@ std::string attemptLaunch(const uint8_t* data, size_t size, const std::string& b
             }
             if (!mappings.empty()) mappings = "\nMAPPED_REGIONS:" + mappings;
         }
-        return header + "\n" + describeRun(run) + "\nDYLD_EXPORT_AUDIT: " + report + gaps +
-               mappings + trace + serviceTrace + log + "\n" + services.uiSummary() + "\n" +
+        return header + "\n" + describeRun(run, options.verbose) + "\nDYLD_EXPORT_AUDIT: " + report + mappings +
+               trace + serviceTrace + log + "\n" + services.uiSummary() + "\n" +
                services.graphicsSummary() + guestFrameStatus + "\n" + services.guestClassSummary() +
                "\nGUEST_THREADS: " + services.threadSummary() +
                "\nGUEST_AUDIO: " + services.audioSummary() +
