@@ -896,7 +896,7 @@ std::string GLES::formatTraceCall(const std::string& symbol, const CpuState& bef
                 return "GL_INVALID_VALUE";
             case 0x0502:
                 return "GL_INVALID_OPERATION";
-            case 0x0505:
+            case GL_OUT_OF_MEMORY:
                 return "GL_OUT_OF_MEMORY";
             case 0x0506:
                 return "GL_INVALID_FRAMEBUFFER_OPERATION";

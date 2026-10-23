@@ -211,7 +211,6 @@ class GLES final {
     bool texture2dEnabled = false, lightingEnabled = false, normalizeNormals = false;
     bool colorMaterialEnabled = false, localViewer = false, twoSidedLighting = false;
     uint32_t colorMaterialFace = 0x0408, colorMaterialMode = 0x1602;
-    float materialShininess = 0;
     std::map<int, bool> texture2dUnits;
     // Approximations and non-default texture-unit use are counted for diagnostics.
     size_t approximatedTexEnv = 0, clientTextureUnitUses = 0, nonDefaultTextureUnitDraws = 0,
