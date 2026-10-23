@@ -36,8 +36,14 @@ int main() {
     // Thumb: movs r0,#3; adds r0,#4; svc #9; b .
     put(code, 128, 0x30042003);
     put(code, 132, 0xe7fedf09);
+    // The analogous Thumb-1 load faults at its own halfword address, not the block entry.
+    put(code, 320, 0xe7fe6808);  // ldr r0,[r1]; b .
     // ARM undefined instruction: must stop, not silently execute as a no-op.
     put(code, 256, 0xe7f000f0);
+    // A batched block that faults on its second instruction must report that instruction,
+    // not the block's entry PC.
+    put(code, 272, 0xe3a02001);  // mov r2,#1 at 0x1110
+    put(code, 276, 0xe5910000);  // ldr r0,[r1] at 0x1114
     memory.map({0x1000, 4096, uint8_t(Read | Execute), "original test instructions"}, code.data(),
                code.size());
     memory.map({0x2000, 4096, uint8_t(Read | Write), "data"});
@@ -93,6 +99,20 @@ int main() {
     cpu.setState(state);
     result = cpu.run(1);
     assert(result.reason == StopReason::Fault && result.code == "MEMORY_ACCESS");
+    state = initial();
+    state.registers[1] = 0x44;
+    state.registers[15] = 0x1110;
+    cpu.setState(state);
+    result = cpu.run(8);
+    assert(result.reason == StopReason::Fault && result.code == "MEMORY_NULL");
+    assert(result.address == 0x44 && result.pc == 0x1114);
+    state = initial(true);
+    state.registers[1] = 0x44;
+    state.registers[15] = 0x1140;
+    cpu.setState(state);
+    result = cpu.run(8);
+    assert(result.reason == StopReason::Fault && result.code == "MEMORY_NULL");
+    assert(result.address == 0x44 && result.pc == 0x1140);
     state = initial();
     cpu.setState(state);
     result = cpu.run(0);
@@ -235,6 +255,34 @@ int main() {
         auto cancelled = runGuest(working, workServices, workGraph, workMain, 0, 0, &cancel);
         assert(cancelled.stop == "CANCELLED" && cancelled.instructions == 0);
         assert(describeRun(cancelled).find("GUEST_BLOCKER: kind=Cancelled") != std::string::npos);
+        LoadedImage faulting;
+        faulting.memory = std::make_unique<Memory>();
+        Services faultServices(*faulting.memory);
+        ExportGraph faultGraph;
+        faultServices.install(faultGraph);
+        const size_t faultMain = faultGraph.addImage("<faulting guest>");
+        faultGraph.setMainExecutable(faultMain);
+        std::vector<uint8_t> badLoad(4096, 0), faultStack(4096, 0), faultWx(4096, 0);
+        put(badLoad, 0, 0xe5910000);  // ldr r0, [r1] -> MEMORY_NULL at 0x44
+        faulting.memory->map({0xB000, 4096, uint8_t(Read | Execute), "faulting guest"},
+                             badLoad.data(), badLoad.size());
+        faulting.memory->map({0xC000, 4096, uint8_t(Read | Write), "faulting stack"},
+                             faultStack.data(), faultStack.size());
+        // Android's 16 KiB host pages use checked memory rather than exact-page fastmem.
+        // Make this report test exercise the same checked null-fault path on 4 KiB hosts.
+        faulting.memory->map(
+            {0xD000, 4096, uint8_t(Read | Write | Execute), "checked-path selector"},
+            faultWx.data(), faultWx.size());
+        faulting.registers[1] = 0x44;
+        faulting.registers[4] = 0x12345678;
+        faulting.registers[13] = 0xCFF0;
+        faulting.registers[15] = 0xB000;
+        faulting.cpsr = 0x10;
+        const auto faultRun = runGuest(faulting, faultServices, faultGraph, faultMain, 8, 2.0);
+        assert(faultRun.stop == "FAULT" &&
+               faultRun.detail.find("MEMORY_NULL") != std::string::npos);
+        assert(faultRun.detail.find("at 0xb000") != std::string::npos);
+        assert(faultRun.detail.find("r4=0x12345678") != std::string::npos);
         std::cout
             << "Bounded guest execution, host service dispatch, cancellation and trap reporting passed\n";
     }

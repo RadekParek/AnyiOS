@@ -18,9 +18,10 @@ The GitHub repository is now **`RadekParek/AnyiOS`**; old `PodNative` links redi
 namespaces, signing/cache names and historical engineering records intentionally keep their
 original names.
 
-[Download the Android APK and the Linux PC build](https://github.com/RadekParek/AnyiOS/actions/workflows/android.yml)
-(one successful run publishes exactly two artifacts: `AnyiOS.apk` and `AnyiOS-PC-linux-x86_64`).
-The PC artifact is a Linux CPU diagnostic build, not a desktop emulator GUI.
+[Download the Android APK and PC builds](https://github.com/RadekParek/AnyiOS/actions/workflows/android.yml)
+(one successful run publishes three artifacts: `AnyiOS.apk`, `AnyiOS-PC-linux-x86_64`, and
+`AnyiOS-PC-windows-x86_64`). The PC artifacts are CPU/HLE diagnostic builds, not desktop
+emulator GUIs or proof of Windows ANGLE rendering.
 [Current implementation boundaries](docs/GRAPHICS_FRAMEWORK_INCREMENT.md) ·
 [Linker/dispatch increment](docs/DYLD_AND_IMPORT_INCREMENT.md).
 [Historical 0.2.1 build evidence](docs/STARTUP_APK_REPORT.md).

@@ -184,6 +184,24 @@ int main() {
     assert(hello);
     assert(memory.read32(hello) == nsstring);  // isa
     assert(harness.call(msgSend, hello, harness.text("length")) == 6);
+    const uint32_t pathSelector = harness.text("stringByAppendingPathComponent:");
+    const uint32_t basePath =
+        harness.call(msgSend, nsstring, selString, harness.text("/var/mobile/"));
+    const uint32_t documents =
+        harness.call(msgSend, nsstring, selString, harness.text("Documents"));
+    const uint32_t appendedPath = harness.call(msgSend, basePath, pathSelector, documents);
+    assert(harness.objc.stringValue(appendedPath) == "/var/mobile/Documents");
+    // Objective-C string literals use a four-word __CFConstantString layout, but share the
+    // same NSString selector implementation as allocated host objects.
+    const uint32_t literalObject = 0x3f00, literalBytes = harness.text("/bundle/");
+    memory.write32(literalObject, nsstring);
+    memory.write32(literalObject + 4, 0x7c8);
+    memory.write32(literalObject + 8, literalBytes);
+    memory.write32(literalObject + 12, 8);
+    const uint32_t assetComponent =
+        harness.call(msgSend, nsstring, selString, harness.text("Assets"));
+    const uint32_t literalPath = harness.call(msgSend, literalObject, pathSelector, assetComponent);
+    assert(harness.objc.stringValue(literalPath) == "/bundle/Assets");
     const uint32_t utf8 = harness.call(msgSend, hello, harness.text("UTF8String"));
     assert(harness.call(msgSend, hello, harness.text("hash")) != 0);
 

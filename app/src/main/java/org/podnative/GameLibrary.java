@@ -681,7 +681,7 @@ final class GameLibrary {
         File staging = new File(game.directory, ".pending-bundle-" + UUID.randomUUID());
         File ready = new File(game.directory, ".bundle-ready-" + UUID.randomUUID());
         try {
-            progress = "Extracting IPA app resources for the guest…";
+            progress = "Unpacking the iOS app bundle for guest launch…";
             changed();
             File extracted =
                 GameInspector.extractAppBundle(source, staging, executable, isCancelled);

@@ -1,6 +1,11 @@
 #include "gles.h"
 
+#if defined(_WIN32)
+#define NOMINMAX
+#include <windows.h>
+#else
 #include <dlfcn.h>
+#endif
 
 #include <algorithm>
 #include <array>
@@ -17,6 +22,31 @@
 
 namespace podnative::runtime {
 namespace {
+#if defined(_WIN32)
+void closeSharedLibrary(void* handle) {
+    if (handle) FreeLibrary(static_cast<HMODULE>(handle));
+}
+void* sharedLibrarySymbol(void* handle, const char* name) {
+    return handle ? reinterpret_cast<void*>(GetProcAddress(static_cast<HMODULE>(handle), name))
+                  : nullptr;
+}
+void* processSymbol(const char*) { return nullptr; }
+void* openSharedLibrary(const char* name) { return reinterpret_cast<void*>(LoadLibraryA(name)); }
+#else
+void closeSharedLibrary(void* handle) {
+    if (handle) dlclose(handle);
+}
+void* sharedLibrarySymbol(void* handle, const char* name) {
+    return handle ? dlsym(handle, name) : nullptr;
+}
+void* processSymbol(const char* name) { return dlsym(RTLD_DEFAULT, name); }
+void* openSharedLibrary(const char* name) {
+    // On Android these ANGLE libraries are already linked into the app. Taking an RTLD_NOLOAD
+    // handle avoids a second copy; desktop builds load the host driver normally.
+    if (void* resident = dlopen(name, RTLD_NOLOAD | RTLD_NOW | RTLD_GLOBAL)) return resident;
+    return dlopen(name, RTLD_NOW | RTLD_GLOBAL);
+}
+#endif
 // GL constants the bridge has to interpret itself (everything else is passed through).
 constexpr uint32_t GL_BYTE = 0x1400;
 constexpr uint32_t GL_UNSIGNED_BYTE = 0x1401;
@@ -527,9 +557,9 @@ GLES::~GLES() {
         if (auto terminate = egl<Boolean (*)(Display)>("eglTerminate")) terminate(display);
         if (auto releaseThread = egl<Boolean (*)()>("eglReleaseThread")) releaseThread();
     }
-    if (gles1Library) dlclose(gles1Library);
-    if (glesLibrary) dlclose(glesLibrary);
-    if (eglLibrary) dlclose(eglLibrary);
+    closeSharedLibrary(gles1Library);
+    closeSharedLibrary(glesLibrary);
+    closeSharedLibrary(eglLibrary);
 }
 
 GLES::Entry GLES::function(const char* name) const {
@@ -544,16 +574,16 @@ void* GLES::lookup(const char* name) const {
     void* preferred = eglName ? eglLibrary : glesLibrary;
     void* fallback = eglName ? glesLibrary : eglLibrary;
     if (preferred) {
-        if (void* symbol = dlsym(preferred, name)) return symbol;
+        if (void* symbol = sharedLibrarySymbol(preferred, name)) return symbol;
     }
     if (fallback) {
-        if (void* symbol = dlsym(fallback, name)) return symbol;
+        if (void* symbol = sharedLibrarySymbol(fallback, name)) return symbol;
     }
     // A device driver's ES 1.1 library is the last place an ES 1.1 entry point can be: the
     // ES 2.0 library beside it does not re-export them. Consulted only for names neither of
     // the other two answered, so nothing is taken from a second driver family.
     if (gles1Library) {
-        if (void* symbol = dlsym(gles1Library, name)) return symbol;
+        if (void* symbol = sharedLibrarySymbol(gles1Library, name)) return symbol;
     }
     return nullptr;
 }
@@ -563,7 +593,7 @@ bool GLES::resolve(const char* name) {
     void* symbol = lookup(name);
     auto getProc = fn<void* (*)(const char*)>("eglGetProcAddress");
     if (!symbol && getProc) symbol = getProc(name);
-    if (!symbol && !eglLibrary && !glesLibrary) symbol = dlsym(RTLD_DEFAULT, name);
+    if (!symbol && !eglLibrary && !glesLibrary) symbol = processSymbol(name);
     if (!symbol) {
         // The framebuffer/renderbuffer entry points exist twice: as the OES extension an
         // ES 1.1 title imports, and as the core ES 2.0 names. The runtime asks for the core
@@ -574,21 +604,14 @@ bool GLES::resolve(const char* name) {
         const std::string alternate = oes ? full.substr(0, full.size() - 3) : full + "OES";
         symbol = lookup(alternate.c_str());
         if (!symbol && getProc) symbol = getProc(alternate.c_str());
-        if (!symbol && !eglLibrary && !glesLibrary) symbol = dlsym(RTLD_DEFAULT, alternate.c_str());
+        if (!symbol && !eglLibrary && !glesLibrary) symbol = processSymbol(alternate.c_str());
     }
     if (!symbol) return false;
     functions.emplace(name, reinterpret_cast<Entry>(symbol));
     return true;
 }
 
-void* GLES::openLibrary(const char* name) {
-    // Both ANGLE libraries are linked into this app, so they are already resident: taking a
-    // handle on them must not load a second copy, and RTLD_NOLOAD is how a handle is taken
-    // on what the linker already brought in. RTLD_GLOBAL stays, because the recording driver
-    // the host tests use is reached through the same global table the bridge resolves from.
-    if (void* resident = dlopen(name, RTLD_NOLOAD | RTLD_NOW | RTLD_GLOBAL)) return resident;
-    return dlopen(name, RTLD_NOW | RTLD_GLOBAL);
-}
+void* GLES::openLibrary(const char* name) { return openSharedLibrary(name); }
 
 bool GLES::load() {
     if (driverLoaded) return available();
@@ -605,9 +628,15 @@ bool GLES::load() {
         const char* gles;
         const char* gles1;
     };
+#if defined(_WIN32)
+    const Family bundled{"libEGL_podnative.dll", "libGLESv2_podnative.dll", nullptr};
+    const Family device{"libEGL.dll", "libGLESv2.dll", "libGLESv1_CM.dll"};
+    const Family deviceSoname = device;
+#else
     const Family bundled{"libEGL_podnative.so", "libGLESv2_podnative.so", nullptr};
     const Family device{"libEGL.so", "libGLESv2.so", "libGLESv1_CM.so"};
     const Family deviceSoname{"libEGL.so", "libGLESv2.so.2", nullptr};
+#endif
     const std::vector<Family> families = preferNativeDriver
                                              ? std::vector<Family>{device, deviceSoname, bundled}
                                              : std::vector<Family>{bundled, device, deviceSoname};

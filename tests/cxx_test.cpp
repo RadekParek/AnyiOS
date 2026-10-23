@@ -71,10 +71,13 @@ int main() {
     cxx.setLogSink([&](const std::string& text) { log.push_back(text); });
     Call call(memory, cxx);
 
-    // libstdc++ emits this guard from translation units that include iostreams. Model its
-    // reference-counted lifetime, but do not claim that formatted stream operations exist.
-    check(cxx.isCxxSymbol("__ZNSt8ios_base4InitC1Ev") && cxx.isCxxSymbol("_ZNSt8ios_base4InitC1Ev"),
-          "Mach-O and unmangled-symbol spellings resolve to the C++ runtime");
+    // Both libstdc++ and libc++ emit this guard from translation units that include
+    // iostreams. Model its reference-counted lifetime, but do not claim formatted streams.
+    check(cxx.isCxxSymbol("__ZNSt8ios_base4InitC1Ev") &&
+              cxx.isCxxSymbol("_ZNSt8ios_base4InitC1Ev") &&
+              cxx.isCxxSymbol("__ZNSt3__18ios_base4InitC1Ev") &&
+              cxx.isCxxSymbol("_ZNSt3__18ios_base4InitC1Ev"),
+          "libstdc++ and versioned libc++ Init symbols resolve with Mach-O spellings");
     call("__ZNSt8ios_base4InitC1Ev");
     check(cxx.iosInitCount() == 1, "ios_base::Init acquires the stream-lifetime guard");
     call("_ZNSt8ios_base4InitC2Ev");
@@ -82,7 +85,79 @@ int main() {
     call("__ZNSt8ios_base4InitD1Ev");
     call("_ZNSt8ios_base4InitD2Ev");
     check(cxx.iosInitCount() == 0, "ios_base::Init destructors release their references");
+    call("__ZNSt3__18ios_base4InitC1Ev");
+    call("_ZNSt3__18ios_base4InitC2Ev");
+    check(cxx.iosInitCount() == 2, "libc++ Init constructors share the same lifetime guard");
+    call("__ZNSt3__18ios_base4InitD1Ev");
+    call("_ZNSt3__18ios_base4InitD2Ev");
+    check(cxx.iosInitCount() == 0, "libc++ Init destructors release their references");
     fault("CXX_IOS_INIT", [&] { call("_ZNSt8ios_base4InitD1Ev"); });
+
+    // libc++ uses inline short-string storage and a tagged {capacity,size,pointer} long form.
+    // The internal __init ABI must preserve both layouts so the guest's inline accessors work.
+    const std::string libcxxInit =
+        "__ZNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEE6__initEPKcj";
+    const std::string libcxxDtor =
+        "__ZNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEED1Ev";
+    check(cxx.isCxxSymbol(libcxxInit) && cxx.isCxxSymbol("_ZNSsC1EPKcj"),
+          "libc++ __init and the libstdc++ std::string constructor resolve to the C++ runtime");
+    const uint32_t shortObject = 0x2000, shortSource = 0x2100;
+    const char shortText[] = "small";
+    memory.write(shortSource, shortText, sizeof(shortText));
+    const size_t heapBeforeShort = heap.used();
+    call(libcxxInit, shortObject, shortSource, sizeof(shortText) - 1);
+    const uint8_t shortTag = uint8_t(read(memory, shortObject, 1)[0]);
+    check(shortTag == (sizeof(shortText) - 1) * 2,
+          "libc++ stores the short-string length in the low tag byte");
+    check(std::string(read(memory, shortObject + 1, sizeof(shortText)).data()) == shortText,
+          "libc++ short strings keep bytes and the terminator inline");
+    check(heap.used() == heapBeforeShort, "libc++ short strings do not allocate");
+
+    const uint32_t longObject = 0x2020, longSource = 0x2120;
+    const std::string longText = "libc++ string beyond SSO";
+    memory.write(longSource, longText.data(), longText.size());
+    call(libcxxInit, longObject, longSource, uint32_t(longText.size()));
+    const uint32_t longTag = memory.read32(longObject);
+    const uint32_t longData = memory.read32(longObject + 8);
+    check((longTag & 1) && (longTag & ~1u) >= longText.size() + 1 &&
+              memory.read32(longObject + 4) == longText.size() && heap.owns(longData),
+          "libc++ long strings publish their tagged capacity, length and guest pointer");
+    check(std::string(read(memory, longData, longText.size() + 1).data()) == longText,
+          "libc++ long-string storage is copied and terminated in guest memory");
+    const size_t heapBeforeLongDestroy = heap.used();
+    call(libcxxDtor, longObject);
+    check(!heap.owns(longData) && heap.used() < heapBeforeLongDestroy,
+          "libc++ long-string destruction releases its guest allocation");
+
+    // The old libstdc++ ABI stores one data pointer in the object, preceded by a
+    // copy-on-write {length,capacity,refcount} header. Explicit lengths preserve embedded NULs.
+    const uint32_t legacyObject = 0x2040, legacySource = 0x2140;
+    const char legacyBytes[] = {'c', 'o', 'w', '\0', 's', 't', 'r'};
+    memory.write(legacySource, legacyBytes, sizeof(legacyBytes));
+    call("__ZNSsC1EPKcj", legacyObject, legacySource, sizeof(legacyBytes));
+    const uint32_t legacyData = memory.read32(legacyObject);
+    const uint32_t legacyHeader = legacyData - 12;
+    check(memory.read32(legacyHeader) == sizeof(legacyBytes) &&
+              memory.read32(legacyHeader + 4) == sizeof(legacyBytes) &&
+              memory.read32(legacyHeader + 8) == 0,
+          "libstdc++ initializes its COW header with length, capacity and one reference");
+    std::vector<char> legacyCopy = read(memory, legacyData, sizeof(legacyBytes));
+    const char legacyTerminator = read(memory, legacyData + sizeof(legacyBytes), 1)[0];
+    check(std::memcmp(legacyCopy.data(), legacyBytes, sizeof(legacyBytes)) == 0 &&
+              legacyTerminator == 0,
+          "libstdc++ copies length-delimited bytes and appends a terminator");
+    call("__ZNSsD1Ev", legacyObject);
+    check(memory.read32(legacyObject) == 0 && !heap.owns(legacyHeader),
+          "libstdc++ destruction releases the COW buffer and clears the object");
+
+    const uint32_t cStringObject = 0x2060, cStringSource = 0x2160;
+    put(memory, cStringSource, "null-terminated legacy string");
+    call("_ZNSsC2EPKc", cStringObject, cStringSource);
+    const uint32_t cStringData = memory.read32(cStringObject);
+    check(memory.read32(cStringData - 12) == std::strlen("null-terminated legacy string") &&
+              std::string(read(memory, cStringData, 30).data()) == "null-terminated legacy string",
+          "libstdc++ null-terminated constructor computes the string length");
+    call("_ZNSsD2Ev", cStringObject);
 
     // operator new/delete route through the guest heap, so guest pointers stay contestable.
     const uint32_t block = call("_Znwm", 64);
@@ -261,6 +336,28 @@ int main() {
         call("___cxa_begin_catch", 0x1800);
         check(call.state.registers[0] == 0x1800,
               "__cxa_begin_catch returns the caught base subobject");
+        call("___cxa_end_catch");
+        call("__Unwind_SjLj_Unregister", 0x5000);
+    }
+    // GCC can encode a catch type as DW_EH_PE_indirect | pcrel | sdata4 (0x9b):
+    // the reverse type-table entry is a signed displacement to a second pointer word.
+    {
+        const uint8_t indirectLsda[] = {0xff, 0x9b, 0x0a, 0xff, 0x02, 0x01, 0x01, 0x01, 0x00};
+        memory.write(0x6300, indirectLsda, sizeof(indirectLsda));
+        memory.write32(0x6110, 0x6140);  // indirect pointer to std::exception type_info
+        const int32_t displacement = int32_t(0x6110) - int32_t(0x6309);
+        memory.write32(0x6309, uint32_t(displacement));
+        memory.write32(0x5000, 0);
+        call("__Unwind_SjLj_Register", 0x5000);
+        memory.write32(0x5004, 1);
+        memory.write32(0x501c, 0x6300);
+        memory.write32(0x5020, 0x7100);
+        memory.write32(0x5024, 0x7201);
+        memory.write32(0x5028, 0x7300);
+        call("___cxa_throw", 0x1800, 0x6100, 0);
+        check(call.state.registers[15] == 0x7200 && (call.state.cpsr & 0x20),
+              "the indirect PC-relative LSDA type entry matches std::exception");
+        call("___cxa_begin_catch", 0x1800);
         call("___cxa_end_catch");
         call("__Unwind_SjLj_Unregister", 0x5000);
     }

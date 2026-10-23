@@ -2,6 +2,7 @@
 
 #include <chrono>
 #include <cstdio>
+#include <iomanip>
 #include <limits>
 #include <sstream>
 
@@ -193,15 +194,19 @@ GuestRun execute(LoadedImage& image, Services& services, const ExportGraph& grap
             // whether the guest branched to a value it read from memory, returned through a
             // corrupted frame, or was handed a bad pointer by a service.
             const CpuState faulted = cpu.state();
-            char registers[192];
-            std::snprintf(registers, sizeof(registers),
-                          " (r0=0x%08x r1=0x%08x r2=0x%08x r3=0x%08x r12=0x%08x sp=0x%08x "
-                          "lr=0x%08x cpsr=0x%08x)",
-                          faulted.registers[0], faulted.registers[1], faulted.registers[2],
-                          faulted.registers[3], faulted.registers[12], faulted.registers[13],
-                          faulted.registers[14], faulted.cpsr);
+            std::ostringstream registers;
+            registers << " (" << std::hex << std::setfill('0');
+            for (size_t index = 0; index <= 12; index++) {
+                if (index) registers << ' ';
+                registers << 'r' << std::dec << index << "=0x" << std::hex << std::setw(8)
+                          << faulted.registers[index];
+            }
+            registers << " sp=0x" << std::setw(8) << faulted.registers[13] << " lr=0x"
+                      << std::setw(8) << faulted.registers[14] << " cpsr=0x" << std::setw(8)
+                      << faulted.cpsr << ')';
             run.stop = "FAULT";
-            run.detail = stop.code + ": " + stop.detail + " at " + pointer(stop.pc) + registers;
+            run.detail =
+                stop.code + ": " + stop.detail + " at " + pointer(stop.pc) + registers.str();
             // The last instructions before the fault: a jump to a value read out of memory is
             // only explainable by the code that produced it.
             std::ostringstream trace;

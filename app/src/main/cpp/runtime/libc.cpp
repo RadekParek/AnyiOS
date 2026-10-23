@@ -1,7 +1,5 @@
 #include "libc.h"
 
-#include <sys/time.h>
-
 #include <algorithm>
 #include <cctype>
 #include <chrono>
@@ -783,11 +781,13 @@ bool Libc::invoke(const std::string& name, CpuState& cpu) {
         return true;
     }
     if (name == "_gettimeofday") {
-        timeval tv{};
-        gettimeofday(&tv, nullptr);
+        const auto now = std::chrono::system_clock::now().time_since_epoch();
+        const auto seconds = std::chrono::duration_cast<std::chrono::seconds>(now);
+        const auto microseconds =
+            std::chrono::duration_cast<std::chrono::microseconds>(now - seconds);
         if (r[0]) {
-            memory.write32(r[0], uint32_t(tv.tv_sec));
-            memory.write32(r[0] + 4, uint32_t(tv.tv_usec));
+            memory.write32(r[0], uint32_t(seconds.count()));
+            memory.write32(r[0] + 4, uint32_t(microseconds.count()));
         }
         r[0] = 0;
         return true;

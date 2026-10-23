@@ -507,7 +507,7 @@ public final class MainActivity extends Activity {
         });
         gap(content, 14);
         content.addView(text(
-            "Import game folder searches subfolders for separate IPAs. Use extracted app folder for .app bundles. Unsupported sources stay visible in both modules.",
+            "Import game folder searches for IPAs. An IPA is a ZIP archive, so AnyiOS unpacks the .app into a private cache before loading its executable and assets, then emulates ARM32 code and selected iOS APIs. This is a partial iOS runtime, not Apple's full iOS Simulator or a native game port. Use Import extracted app folder for an existing .app bundle.",
             12, muted, false));
         sheet.setContentView(content);
         sheet.show();

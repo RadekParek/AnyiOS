@@ -53,8 +53,9 @@ class CxxRuntime final {
         uint32_t function, argument;
     };
     std::vector<ExitHandler> atExit;
-    // libstdc++ emits one ios_base::Init object per translation unit that includes iostreams.
-    // Track that ABI lifetime; actual standard stream objects/formatted I/O remain unsupported.
+    // libstdc++ and versioned libc++ emit one ios_base::Init guard per translation unit that
+    // includes iostreams. Track that ABI lifetime; standard stream objects and formatted I/O
+    // remain unsupported.
     size_t iosInitReferences = 0;
     // Stack of live `__Unwind_SjLj_Register` frames (innermost last).
     std::vector<uint32_t> sjljFrames;
@@ -122,6 +123,10 @@ class CxxRuntime final {
     void noteLargeRequest(const char* what, uint32_t bytes, uint32_t returnAddress) const;
     uint32_t errnoAddress();
     void zero(uint32_t address, size_t bytes);
+    void initializeLibcxxString(uint32_t object, uint32_t source, uint32_t length);
+    void initializeLibstdcxxString(uint32_t object, uint32_t source, uint32_t length);
+    void destroyLibcxxString(uint32_t object);
+    void destroyLibstdcxxString(uint32_t object);
     std::string readString(uint32_t address) const;
     void emit(const std::string& text) const;
     bool compilerHelper(const std::string& name, CpuState& cpu);

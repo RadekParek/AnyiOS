@@ -19,8 +19,8 @@ if(BOOST_ROOT)
     set(Boost_INCLUDE_DIR "${BOOST_ROOT}" CACHE PATH "Pinned Boost headers" FORCE)
 endif()
 add_subdirectory("${DYNARMIC_ROOT}" dynarmic)
-if(ANDROID)
-    # Only the validated single-step path is exposed. Do not re-enable RWX fallbacks.
+if(ANDROID OR WIN32)
+    # JIT storage is writable only while generated code is emitted, never permanently RWX.
     target_compile_definitions(dynarmic PRIVATE OAKNUT_USE_WX=1)
 endif()
 set(RUNTIME "${CMAKE_CURRENT_LIST_DIR}/../app/src/main/cpp")
