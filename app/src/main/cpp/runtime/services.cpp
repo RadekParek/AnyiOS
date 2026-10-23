@@ -17,12 +17,33 @@
 namespace podnative::runtime {
 namespace {
 bool repetitiveServiceTrace(const std::string& name) {
-    static const std::set<std::string> hot = {
-        "_malloc", "_calloc", "_realloc", "_free", "_memcpy", "_memmove", "_memset",
-        "_memcmp", "_memchr", "_bzero", "_strlen", "_strcmp", "_strncmp", "_strcasecmp",
-        "_strncasecmp", "_strcpy", "_strncpy", "_strcat", "_strlcat", "_strchr", "_strrchr",
-        "_strstr", "_strdup", "_mach_absolute_time", "_gettimeofday", "_CFAbsoluteTimeGetCurrent",
-        "_CACurrentMediaTime"};
+    static const std::set<std::string> hot = {"_malloc",
+                                              "_calloc",
+                                              "_realloc",
+                                              "_free",
+                                              "_memcpy",
+                                              "_memmove",
+                                              "_memset",
+                                              "_memcmp",
+                                              "_memchr",
+                                              "_bzero",
+                                              "_strlen",
+                                              "_strcmp",
+                                              "_strncmp",
+                                              "_strcasecmp",
+                                              "_strncasecmp",
+                                              "_strcpy",
+                                              "_strncpy",
+                                              "_strcat",
+                                              "_strlcat",
+                                              "_strchr",
+                                              "_strrchr",
+                                              "_strstr",
+                                              "_strdup",
+                                              "_mach_absolute_time",
+                                              "_gettimeofday",
+                                              "_CFAbsoluteTimeGetCurrent",
+                                              "_CACurrentMediaTime"};
     return hot.count(name) || name.rfind("___mod", 0) == 0 || name.rfind("___div", 0) == 0 ||
            name.rfind("__aeabi_", 0) == 0 || name.rfind("__Unwind_SjLj_", 0) == 0;
 }
@@ -967,8 +988,8 @@ std::string Services::traceSummary() const {
     for (const auto& [name, suppressed] : serviceTraceSuppressed) {
         const auto found = serviceTraceCalls.find(name);
         const size_t total = found == serviceTraceCalls.end() ? suppressed : found->second;
-        out << "\n  " << name << ": " << total << " call(s), " << (total - suppressed)
-            << " shown, " << suppressed << " summarized";
+        out << "\n  " << name << ": " << total << " call(s), " << (total - suppressed) << " shown, "
+            << suppressed << " summarized";
     }
     return out.str();
 }

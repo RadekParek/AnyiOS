@@ -335,7 +335,8 @@ void recordScalarUniform(int components, int integer, const float* values) {
     ++state.scalarUniformCalls;
     state.scalarUniformComponents = components;
     state.scalarUniformInteger = integer;
-    for (int index = 0; index < components; ++index) state.scalarUniformValues[index] = values[index];
+    for (int index = 0; index < components; ++index)
+        state.scalarUniformValues[index] = values[index];
 }
 void glUniform1f(int, float x) { recordScalarUniform(1, 0, &x); }
 void glUniform2f(int, float x, float y) {
@@ -468,8 +469,8 @@ void glVertexAttribPointer(uint32_t index, int size, uint32_t type, uint32_t nor
     if (pointer && uintptr_t(pointer) > 0x100000) {
         ++state.clientAttribPointerCalls;
         state.lastClientAttribIndex = index;
-        state.clientAttribValues[0] = state.clientAttribValues[1] =
-            state.clientAttribValues[2] = state.clientAttribValues[3] = 0.0f;
+        state.clientAttribValues[0] = state.clientAttribValues[1] = state.clientAttribValues[2] =
+            state.clientAttribValues[3] = 0.0f;
         if (type == 0x1406 && size > 0)
             std::memcpy(state.clientAttribValues, pointer,
                         std::min<size_t>(size_t(size), 4) * sizeof(float));
@@ -481,10 +482,18 @@ void recordAttribVector(uint32_t index, int components, const float* values) {
     state.lastAttribVectorComponents = components;
     std::copy_n(values, components, state.lastAttribVector);
 }
-void glVertexAttrib1fv(uint32_t index, const float* values) { recordAttribVector(index, 1, values); }
-void glVertexAttrib2fv(uint32_t index, const float* values) { recordAttribVector(index, 2, values); }
-void glVertexAttrib3fv(uint32_t index, const float* values) { recordAttribVector(index, 3, values); }
-void glVertexAttrib4fv(uint32_t index, const float* values) { recordAttribVector(index, 4, values); }
+void glVertexAttrib1fv(uint32_t index, const float* values) {
+    recordAttribVector(index, 1, values);
+}
+void glVertexAttrib2fv(uint32_t index, const float* values) {
+    recordAttribVector(index, 2, values);
+}
+void glVertexAttrib3fv(uint32_t index, const float* values) {
+    recordAttribVector(index, 3, values);
+}
+void glVertexAttrib4fv(uint32_t index, const float* values) {
+    recordAttribVector(index, 4, values);
+}
 void glVertexAttrib3f(uint32_t, float, float, float) {}
 void glGetVertexAttribfv(uint32_t, uint32_t pname, float* values) {
     if (!values) return;
@@ -559,9 +568,10 @@ void glTexImage2D(uint32_t, int, uint32_t, int width, int height, int, uint32_t 
     state.texImageHeight = height;
     state.texImageFormat = format;
     state.texImageType = type;
-    const size_t bytesPerPixel = type == GL_UNSIGNED_BYTE
-                                     ? (format == GL_RGBA ? 4 : format == GL_RGB ? 3 : 0)
-                                     : 0;
+    const size_t bytesPerPixel = type == GL_UNSIGNED_BYTE ? (format == GL_RGBA  ? 4
+                                                             : format == GL_RGB ? 3
+                                                                                : 0)
+                                                          : 0;
     if (!pixels || !bytesPerPixel || width <= 0 || height <= 0) return;
     const size_t row = size_t(width) * bytesPerPixel;
     const size_t alignment = size_t(state.unpackAlignment);
@@ -687,7 +697,7 @@ void glBindFramebuffer(uint32_t, uint32_t name) {
 }
 void glDeleteFramebuffers(int, const uint32_t*) {}
 void glFramebufferTexture2D(uint32_t target, uint32_t attachment, uint32_t textarget,
-                           uint32_t texture, int level) {
+                            uint32_t texture, int level) {
     ++state.framebufferTextureCalls;
     state.lastFramebufferTarget = target;
     state.lastAttachment = attachment;
@@ -754,9 +764,10 @@ void glReadPixels(int x, int y, int width, int height, uint32_t format, uint32_t
     state.readPixelsHeight = height;
     state.readPixelsFormat = int(format);
     state.readPixelsType = int(type);
-    const size_t bytesPerPixel = type == GL_UNSIGNED_BYTE
-                                     ? (format == GL_RGBA ? 4 : format == GL_RGB ? 3 : 0)
-                                     : 0;
+    const size_t bytesPerPixel = type == GL_UNSIGNED_BYTE ? (format == GL_RGBA  ? 4
+                                                             : format == GL_RGB ? 3
+                                                                                : 0)
+                                                          : 0;
     if (!pixels || !bytesPerPixel || width <= 0 || height <= 0) return;
     const size_t row = size_t(width) * bytesPerPixel;
     const size_t alignment = size_t(state.packAlignment);

@@ -675,8 +675,8 @@ std::string GLES::describe() const {
         out << ", OpenGL ES 1.1 fixed function emulated over ES 2.0 (" << programs.size()
             << " generated program(s))";
         if (lightingEnabled) {
-            const size_t enabledLights = std::count_if(lights.begin(), lights.end(),
-                                                       [](const Light& light) { return light.enabled; });
+            const size_t enabledLights = std::count_if(
+                lights.begin(), lights.end(), [](const Light& light) { return light.enabled; });
             out << ", fixed-function lighting enabled with " << enabledLights << " light(s)";
         }
         if (approximatedTexEnv)
@@ -838,172 +838,330 @@ std::string GLES::formatTraceCall(const std::string& symbol, const CpuState& bef
         if (value >= 0x84c0 && value <= 0x84df)
             return "GL_TEXTURE" + std::to_string(value - 0x84c0);
         switch (value) {
-            case 0x0000: return "GL_POINTS";
-            case 0x0001: return "GL_LINES";
-            case 0x0004: return "GL_TRIANGLES";
-            case 0x0005: return "GL_TRIANGLE_STRIP";
-            case 0x0006: return "GL_TRIANGLE_FAN";
-            case 0x0100: return "GL_DEPTH_BUFFER_BIT";
-            case 0x0200: return "GL_NEVER";
-            case 0x0201: return "GL_LESS";
-            case 0x0202: return "GL_EQUAL";
-            case 0x0203: return "GL_LEQUAL";
-            case 0x0204: return "GL_GREATER";
-            case 0x0205: return "GL_NOTEQUAL";
-            case 0x0206: return "GL_GEQUAL";
-            case 0x0207: return "GL_ALWAYS";
-            case 0x0300: return "GL_SRC_COLOR";
-            case 0x0301: return "GL_ONE_MINUS_SRC_COLOR";
-            case 0x0302: return "GL_SRC_ALPHA";
-            case 0x0303: return "GL_ONE_MINUS_SRC_ALPHA";
-            case 0x0304: return "GL_DST_ALPHA";
-            case 0x0305: return "GL_ONE_MINUS_DST_ALPHA";
-            case 0x0306: return "GL_DST_COLOR";
-            case 0x0307: return "GL_ONE_MINUS_DST_COLOR";
-            case 0x0308: return "GL_SRC_ALPHA_SATURATE";
-            case 0x0404: return "GL_FRONT";
-            case 0x0405: return "GL_BACK";
-            case 0x0408: return "GL_FRONT_AND_BACK";
-            case 0x0500: return "GL_INVALID_ENUM";
-            case 0x0501: return "GL_INVALID_VALUE";
-            case 0x0502: return "GL_INVALID_OPERATION";
-            case 0x0505: return "GL_OUT_OF_MEMORY";
-            case 0x0506: return "GL_INVALID_FRAMEBUFFER_OPERATION";
-            case 0x0900: return "GL_CW";
-            case 0x0901: return "GL_CCW";
-            case 0x0b44: return "GL_CULL_FACE";
-            case 0x0b50: return "GL_LIGHTING";
-            case 0x0b57: return "GL_COLOR_MATERIAL";
-            case 0x0b71: return "GL_DEPTH_TEST";
-            case 0x0ba1: return "GL_NORMALIZE";
-            case 0x0b90: return "GL_STENCIL_TEST";
-            case 0x0b72: return "GL_DEPTH_WRITEMASK";
-            case 0x0b73: return "GL_DEPTH_CLEAR_VALUE";
-            case 0x0b74: return "GL_DEPTH_FUNC";
-            case 0x0ba2: return "GL_VIEWPORT";
-            case 0x0c10: return "GL_SCISSOR_BOX";
-            case 0x0d33: return "GL_MAX_TEXTURE_SIZE";
-            case 0x0d3a: return "GL_MAX_VIEWPORT_DIMS";
-            case 0x0be2: return "GL_BLEND";
-            case 0x0c11: return "GL_SCISSOR_TEST";
-            case 0x0cf5: return "GL_UNPACK_ALIGNMENT";
-            case 0x0d05: return "GL_PACK_ALIGNMENT";
-            case 0x0de1: return "GL_TEXTURE_2D";
-            case 0x1400: return "GL_BYTE";
-            case 0x1401: return "GL_UNSIGNED_BYTE";
-            case 0x1402: return "GL_SHORT";
-            case 0x1403: return "GL_UNSIGNED_SHORT";
-            case 0x1404: return "GL_INT";
-            case 0x1405: return "GL_UNSIGNED_INT";
-            case 0x1406: return "GL_FLOAT";
-            case 0x1700: return "GL_MODELVIEW";
-            case 0x1701: return "GL_PROJECTION";
-            case 0x1702: return "GL_TEXTURE";
-            case 0x0ba0: return "GL_MATRIX_MODE";
-            case 0x0ba3: return "GL_MODELVIEW_STACK_DEPTH";
-            case 0x0ba4: return "GL_PROJECTION_STACK_DEPTH";
-            case 0x0ba5: return "GL_TEXTURE_STACK_DEPTH";
-            case 0x0ba6: return "GL_MODELVIEW_MATRIX";
-            case 0x0ba7: return "GL_PROJECTION_MATRIX";
-            case 0x0ba8: return "GL_TEXTURE_MATRIX";
-            case 0x1903: return "GL_RED";
-            case 0x1906: return "GL_ALPHA";
-            case 0x1907: return "GL_RGB";
-            case 0x1908: return "GL_RGBA";
-            case 0x1909: return "GL_LUMINANCE";
-            case 0x190a: return "GL_LUMINANCE_ALPHA";
-            case 0x1f00: return "GL_VENDOR";
-            case 0x1f01: return "GL_RENDERER";
-            case 0x1f02: return "GL_VERSION";
-            case 0x1f03: return "GL_EXTENSIONS";
-            case 0x2100: return "GL_MODULATE";
-            case 0x2600: return "GL_NEAREST";
-            case 0x2601: return "GL_LINEAR";
-            case 0x2800: return "GL_TEXTURE_MAG_FILTER";
-            case 0x2801: return "GL_TEXTURE_MIN_FILTER";
-            case 0x2802: return "GL_TEXTURE_WRAP_S";
-            case 0x2803: return "GL_TEXTURE_WRAP_T";
-            case 0x1100: return "GL_DONT_CARE";
-            case 0x1101: return "GL_FASTEST";
-            case 0x1102: return "GL_NICEST";
-            case 0x150a: return "GL_INVERT";
-            case 0x1e00: return "GL_KEEP";
-            case 0x1e01: return "GL_REPLACE";
-            case 0x1e02: return "GL_INCR";
-            case 0x1e03: return "GL_DECR";
-            case 0x2101: return "GL_DECAL";
-            case 0x0104: return "GL_ADD";
-            case 0x2602: return "GL_NEAREST_MIPMAP_NEAREST";
-            case 0x2701: return "GL_LINEAR_MIPMAP_NEAREST";
-            case 0x2702: return "GL_NEAREST_MIPMAP_LINEAR";
-            case 0x2703: return "GL_LINEAR_MIPMAP_LINEAR";
-            case 0x2900: return "GL_CLAMP";
-            case 0x2901: return "GL_REPEAT";
-            case 0x812f: return "GL_CLAMP_TO_EDGE";
-            case 0x4000: return "GL_COLOR_BUFFER_BIT";
-            case 0x8074: return "GL_VERTEX_ARRAY";
-            case 0x8075: return "GL_NORMAL_ARRAY";
-            case 0x8076: return "GL_COLOR_ARRAY";
-            case 0x8078: return "GL_TEXTURE_COORD_ARRAY";
-            case 0x2200: return "GL_TEXTURE_ENV_MODE";
-            case 0x0c50: return "GL_PERSPECTIVE_CORRECTION_HINT";
-            case 0x8006: return "GL_FUNC_ADD";
-            case 0x800a: return "GL_FUNC_SUBTRACT";
-            case 0x800b: return "GL_FUNC_REVERSE_SUBTRACT";
-            case 0x84e0: return "GL_ACTIVE_TEXTURE";
-            case 0x8892: return "GL_ARRAY_BUFFER";
-            case 0x8893: return "GL_ELEMENT_ARRAY_BUFFER";
-            case 0x88e0: return "GL_STREAM_DRAW";
-            case 0x88e4: return "GL_STATIC_DRAW";
-            case 0x88e8: return "GL_DYNAMIC_DRAW";
-            case 0x8d40: return "GL_FRAMEBUFFER";
-            case 0x8d41: return "GL_RENDERBUFFER";
-            case 0x8d42: return "GL_RENDERBUFFER_WIDTH";
-            case 0x8d43: return "GL_RENDERBUFFER_HEIGHT";
-            case 0x8b30: return "GL_FRAGMENT_SHADER";
-            case 0x8b31: return "GL_VERTEX_SHADER";
-            case 0x8b81: return "GL_COMPILE_STATUS";
-            case 0x8b82: return "GL_LINK_STATUS";
-            case 0x8b84: return "GL_INFO_LOG_LENGTH";
-            case 0x8b8d: return "GL_CURRENT_PROGRAM";
-            case 0x8ca6: return "GL_FRAMEBUFFER_BINDING";
-            case 0x8cd0: return "GL_FRAMEBUFFER_ATTACHMENT_OBJECT_TYPE";
-            case 0x8cd1: return "GL_FRAMEBUFFER_ATTACHMENT_OBJECT_NAME";
-            case 0x8cd2: return "GL_FRAMEBUFFER_ATTACHMENT_TEXTURE_LEVEL";
-            case 0x8ce0: return "GL_COLOR_ATTACHMENT0";
-            case 0x8cd5: return "GL_FRAMEBUFFER_COMPLETE";
-            case 0x8cd6: return "GL_FRAMEBUFFER_INCOMPLETE_ATTACHMENT";
-            case 0x8cd7: return "GL_FRAMEBUFFER_INCOMPLETE_MISSING_ATTACHMENT";
-            default: return hex(value);
+            case 0x0000:
+                return "GL_POINTS";
+            case 0x0001:
+                return "GL_LINES";
+            case 0x0004:
+                return "GL_TRIANGLES";
+            case 0x0005:
+                return "GL_TRIANGLE_STRIP";
+            case 0x0006:
+                return "GL_TRIANGLE_FAN";
+            case 0x0100:
+                return "GL_DEPTH_BUFFER_BIT";
+            case 0x0200:
+                return "GL_NEVER";
+            case 0x0201:
+                return "GL_LESS";
+            case 0x0202:
+                return "GL_EQUAL";
+            case 0x0203:
+                return "GL_LEQUAL";
+            case 0x0204:
+                return "GL_GREATER";
+            case 0x0205:
+                return "GL_NOTEQUAL";
+            case 0x0206:
+                return "GL_GEQUAL";
+            case 0x0207:
+                return "GL_ALWAYS";
+            case 0x0300:
+                return "GL_SRC_COLOR";
+            case 0x0301:
+                return "GL_ONE_MINUS_SRC_COLOR";
+            case 0x0302:
+                return "GL_SRC_ALPHA";
+            case 0x0303:
+                return "GL_ONE_MINUS_SRC_ALPHA";
+            case 0x0304:
+                return "GL_DST_ALPHA";
+            case 0x0305:
+                return "GL_ONE_MINUS_DST_ALPHA";
+            case 0x0306:
+                return "GL_DST_COLOR";
+            case 0x0307:
+                return "GL_ONE_MINUS_DST_COLOR";
+            case 0x0308:
+                return "GL_SRC_ALPHA_SATURATE";
+            case 0x0404:
+                return "GL_FRONT";
+            case 0x0405:
+                return "GL_BACK";
+            case 0x0408:
+                return "GL_FRONT_AND_BACK";
+            case 0x0500:
+                return "GL_INVALID_ENUM";
+            case 0x0501:
+                return "GL_INVALID_VALUE";
+            case 0x0502:
+                return "GL_INVALID_OPERATION";
+            case 0x0505:
+                return "GL_OUT_OF_MEMORY";
+            case 0x0506:
+                return "GL_INVALID_FRAMEBUFFER_OPERATION";
+            case 0x0900:
+                return "GL_CW";
+            case 0x0901:
+                return "GL_CCW";
+            case 0x0b44:
+                return "GL_CULL_FACE";
+            case 0x0b50:
+                return "GL_LIGHTING";
+            case 0x0b57:
+                return "GL_COLOR_MATERIAL";
+            case 0x0b71:
+                return "GL_DEPTH_TEST";
+            case 0x0ba1:
+                return "GL_NORMALIZE";
+            case 0x0b90:
+                return "GL_STENCIL_TEST";
+            case 0x0b72:
+                return "GL_DEPTH_WRITEMASK";
+            case 0x0b73:
+                return "GL_DEPTH_CLEAR_VALUE";
+            case 0x0b74:
+                return "GL_DEPTH_FUNC";
+            case 0x0ba2:
+                return "GL_VIEWPORT";
+            case 0x0c10:
+                return "GL_SCISSOR_BOX";
+            case 0x0d33:
+                return "GL_MAX_TEXTURE_SIZE";
+            case 0x0d3a:
+                return "GL_MAX_VIEWPORT_DIMS";
+            case 0x0be2:
+                return "GL_BLEND";
+            case 0x0c11:
+                return "GL_SCISSOR_TEST";
+            case 0x0cf5:
+                return "GL_UNPACK_ALIGNMENT";
+            case 0x0d05:
+                return "GL_PACK_ALIGNMENT";
+            case 0x0de1:
+                return "GL_TEXTURE_2D";
+            case 0x1400:
+                return "GL_BYTE";
+            case 0x1401:
+                return "GL_UNSIGNED_BYTE";
+            case 0x1402:
+                return "GL_SHORT";
+            case 0x1403:
+                return "GL_UNSIGNED_SHORT";
+            case 0x1404:
+                return "GL_INT";
+            case 0x1405:
+                return "GL_UNSIGNED_INT";
+            case 0x1406:
+                return "GL_FLOAT";
+            case 0x1700:
+                return "GL_MODELVIEW";
+            case 0x1701:
+                return "GL_PROJECTION";
+            case 0x1702:
+                return "GL_TEXTURE";
+            case 0x0ba0:
+                return "GL_MATRIX_MODE";
+            case 0x0ba3:
+                return "GL_MODELVIEW_STACK_DEPTH";
+            case 0x0ba4:
+                return "GL_PROJECTION_STACK_DEPTH";
+            case 0x0ba5:
+                return "GL_TEXTURE_STACK_DEPTH";
+            case 0x0ba6:
+                return "GL_MODELVIEW_MATRIX";
+            case 0x0ba7:
+                return "GL_PROJECTION_MATRIX";
+            case 0x0ba8:
+                return "GL_TEXTURE_MATRIX";
+            case 0x1903:
+                return "GL_RED";
+            case 0x1906:
+                return "GL_ALPHA";
+            case 0x1907:
+                return "GL_RGB";
+            case 0x1908:
+                return "GL_RGBA";
+            case 0x1909:
+                return "GL_LUMINANCE";
+            case 0x190a:
+                return "GL_LUMINANCE_ALPHA";
+            case 0x1f00:
+                return "GL_VENDOR";
+            case 0x1f01:
+                return "GL_RENDERER";
+            case 0x1f02:
+                return "GL_VERSION";
+            case 0x1f03:
+                return "GL_EXTENSIONS";
+            case 0x2100:
+                return "GL_MODULATE";
+            case 0x2600:
+                return "GL_NEAREST";
+            case 0x2601:
+                return "GL_LINEAR";
+            case 0x2800:
+                return "GL_TEXTURE_MAG_FILTER";
+            case 0x2801:
+                return "GL_TEXTURE_MIN_FILTER";
+            case 0x2802:
+                return "GL_TEXTURE_WRAP_S";
+            case 0x2803:
+                return "GL_TEXTURE_WRAP_T";
+            case 0x1100:
+                return "GL_DONT_CARE";
+            case 0x1101:
+                return "GL_FASTEST";
+            case 0x1102:
+                return "GL_NICEST";
+            case 0x150a:
+                return "GL_INVERT";
+            case 0x1e00:
+                return "GL_KEEP";
+            case 0x1e01:
+                return "GL_REPLACE";
+            case 0x1e02:
+                return "GL_INCR";
+            case 0x1e03:
+                return "GL_DECR";
+            case 0x2101:
+                return "GL_DECAL";
+            case 0x0104:
+                return "GL_ADD";
+            case 0x2602:
+                return "GL_NEAREST_MIPMAP_NEAREST";
+            case 0x2701:
+                return "GL_LINEAR_MIPMAP_NEAREST";
+            case 0x2702:
+                return "GL_NEAREST_MIPMAP_LINEAR";
+            case 0x2703:
+                return "GL_LINEAR_MIPMAP_LINEAR";
+            case 0x2900:
+                return "GL_CLAMP";
+            case 0x2901:
+                return "GL_REPEAT";
+            case 0x812f:
+                return "GL_CLAMP_TO_EDGE";
+            case 0x4000:
+                return "GL_COLOR_BUFFER_BIT";
+            case 0x8074:
+                return "GL_VERTEX_ARRAY";
+            case 0x8075:
+                return "GL_NORMAL_ARRAY";
+            case 0x8076:
+                return "GL_COLOR_ARRAY";
+            case 0x8078:
+                return "GL_TEXTURE_COORD_ARRAY";
+            case 0x2200:
+                return "GL_TEXTURE_ENV_MODE";
+            case 0x0c50:
+                return "GL_PERSPECTIVE_CORRECTION_HINT";
+            case 0x8006:
+                return "GL_FUNC_ADD";
+            case 0x800a:
+                return "GL_FUNC_SUBTRACT";
+            case 0x800b:
+                return "GL_FUNC_REVERSE_SUBTRACT";
+            case 0x84e0:
+                return "GL_ACTIVE_TEXTURE";
+            case 0x8892:
+                return "GL_ARRAY_BUFFER";
+            case 0x8893:
+                return "GL_ELEMENT_ARRAY_BUFFER";
+            case 0x88e0:
+                return "GL_STREAM_DRAW";
+            case 0x88e4:
+                return "GL_STATIC_DRAW";
+            case 0x88e8:
+                return "GL_DYNAMIC_DRAW";
+            case 0x8d40:
+                return "GL_FRAMEBUFFER";
+            case 0x8d41:
+                return "GL_RENDERBUFFER";
+            case 0x8d42:
+                return "GL_RENDERBUFFER_WIDTH";
+            case 0x8d43:
+                return "GL_RENDERBUFFER_HEIGHT";
+            case 0x8b30:
+                return "GL_FRAGMENT_SHADER";
+            case 0x8b31:
+                return "GL_VERTEX_SHADER";
+            case 0x8b81:
+                return "GL_COMPILE_STATUS";
+            case 0x8b82:
+                return "GL_LINK_STATUS";
+            case 0x8b84:
+                return "GL_INFO_LOG_LENGTH";
+            case 0x8b8d:
+                return "GL_CURRENT_PROGRAM";
+            case 0x8ca6:
+                return "GL_FRAMEBUFFER_BINDING";
+            case 0x8cd0:
+                return "GL_FRAMEBUFFER_ATTACHMENT_OBJECT_TYPE";
+            case 0x8cd1:
+                return "GL_FRAMEBUFFER_ATTACHMENT_OBJECT_NAME";
+            case 0x8cd2:
+                return "GL_FRAMEBUFFER_ATTACHMENT_TEXTURE_LEVEL";
+            case 0x8ce0:
+                return "GL_COLOR_ATTACHMENT0";
+            case 0x8cd5:
+                return "GL_FRAMEBUFFER_COMPLETE";
+            case 0x8cd6:
+                return "GL_FRAMEBUFFER_INCOMPLETE_ATTACHMENT";
+            case 0x8cd7:
+                return "GL_FRAMEBUFFER_INCOMPLETE_MISSING_ATTACHMENT";
+            default:
+                return hex(value);
         }
     };
     const auto blendFactor = [&hex](uint32_t value) -> std::string {
         switch (value) {
-            case 0: return "GL_ZERO";
-            case 1: return "GL_ONE";
-            case 0x0300: return "GL_SRC_COLOR";
-            case 0x0301: return "GL_ONE_MINUS_SRC_COLOR";
-            case 0x0302: return "GL_SRC_ALPHA";
-            case 0x0303: return "GL_ONE_MINUS_SRC_ALPHA";
-            case 0x0304: return "GL_DST_ALPHA";
-            case 0x0305: return "GL_ONE_MINUS_DST_ALPHA";
-            case 0x0306: return "GL_DST_COLOR";
-            case 0x0307: return "GL_ONE_MINUS_DST_COLOR";
-            case 0x0308: return "GL_SRC_ALPHA_SATURATE";
-            default: return hex(value);
+            case 0:
+                return "GL_ZERO";
+            case 1:
+                return "GL_ONE";
+            case 0x0300:
+                return "GL_SRC_COLOR";
+            case 0x0301:
+                return "GL_ONE_MINUS_SRC_COLOR";
+            case 0x0302:
+                return "GL_SRC_ALPHA";
+            case 0x0303:
+                return "GL_ONE_MINUS_SRC_ALPHA";
+            case 0x0304:
+                return "GL_DST_ALPHA";
+            case 0x0305:
+                return "GL_ONE_MINUS_DST_ALPHA";
+            case 0x0306:
+                return "GL_DST_COLOR";
+            case 0x0307:
+                return "GL_ONE_MINUS_DST_COLOR";
+            case 0x0308:
+                return "GL_SRC_ALPHA_SATURATE";
+            default:
+                return hex(value);
         }
     };
     const auto stencilOpName = [&hex](uint32_t value) -> std::string {
         switch (value) {
-            case 0: return "GL_ZERO";
-            case 0x1e00: return "GL_KEEP";
-            case 0x1e01: return "GL_REPLACE";
-            case 0x1e02: return "GL_INCR";
-            case 0x1e03: return "GL_DECR";
-            case 0x150a: return "GL_INVERT";
-            case 0x8507: return "GL_INCR_WRAP";
-            case 0x8508: return "GL_DECR_WRAP";
-            default: return hex(value);
+            case 0:
+                return "GL_ZERO";
+            case 0x1e00:
+                return "GL_KEEP";
+            case 0x1e01:
+                return "GL_REPLACE";
+            case 0x1e02:
+                return "GL_INCR";
+            case 0x1e03:
+                return "GL_DECR";
+            case 0x150a:
+                return "GL_INVERT";
+            case 0x8507:
+                return "GL_INCR_WRAP";
+            case 0x8508:
+                return "GL_DECR_WRAP";
+            default:
+                return hex(value);
         }
     };
     const auto clearMask = [&hex](uint32_t mask) {
@@ -1074,18 +1232,18 @@ std::string GLES::formatTraceCall(const std::string& symbol, const CpuState& bef
         const uint32_t mode = args.word();
         const int count = int(args.word());
         const uint32_t type = args.word(), indices = args.word();
-        out << name << "(mode=" << enumName(mode) << ", count=" << count << ", type="
-            << enumName(type) << ", indices=" << hex(indices) << ')';
+        out << name << "(mode=" << enumName(mode) << ", count=" << count
+            << ", type=" << enumName(type) << ", indices=" << hex(indices) << ')';
     } else if (name == "glBufferData") {
         const uint32_t target = args.word(), bytes = args.word(), data = args.word();
         const uint32_t usage = args.word();
-        out << name << "(target=" << enumName(target) << ", bytes=" << bytes << ", data="
-            << hex(data) << ", usage=" << enumName(usage) << ')';
+        out << name << "(target=" << enumName(target) << ", bytes=" << bytes
+            << ", data=" << hex(data) << ", usage=" << enumName(usage) << ')';
     } else if (name == "glBufferSubData") {
         const uint32_t target = args.word(), offset = args.word(), bytes = args.word();
         const uint32_t data = args.word();
-        out << name << "(target=" << enumName(target) << ", offset=" << offset << ", bytes="
-            << bytes << ", data=" << hex(data) << ')';
+        out << name << "(target=" << enumName(target) << ", offset=" << offset
+            << ", bytes=" << bytes << ", data=" << hex(data) << ')';
     } else if (name == "glPixelStorei") {
         out << name << '(' << enumName(args.word()) << ", alignment=" << int(args.word()) << ')';
     } else if (name == "glTexParameteri") {
@@ -1121,8 +1279,8 @@ std::string GLES::formatTraceCall(const std::string& symbol, const CpuState& bef
         const uint32_t function = args.word();
         const int reference = int(args.word());
         const uint32_t mask = args.word();
-        out << name << "(func=" << enumName(function) << ", ref=" << reference << ", mask="
-            << hex(mask) << ')';
+        out << name << "(func=" << enumName(function) << ", ref=" << reference
+            << ", mask=" << hex(mask) << ')';
     } else if (name == "glStencilFuncSeparate") {
         out << name << '(' << enumName(args.word()) << ", func=" << enumName(args.word())
             << ", ref=" << int(args.word()) << ", mask=" << hex(args.word()) << ')';
@@ -1141,7 +1299,8 @@ std::string GLES::formatTraceCall(const std::string& symbol, const CpuState& bef
         out << name << '(' << number(args.f32()) << ", invert=" << args.word() << ')';
     } else if (name == "glGetError") {
         const uint32_t result = after.registers[0];
-        out << name << "() -> " << (result ? enumName(result) + " (" + hex(result) + ')' : "GL_NO_ERROR");
+        out << name << "() -> "
+            << (result ? enumName(result) + " (" + hex(result) + ')' : "GL_NO_ERROR");
     } else if (name == "glGetString") {
         out << name << "(name=" << enumName(args.word()) << ") -> " << hex(after.registers[0]);
     } else if (name == "glGetIntegerv" || name == "glGetFloatv" || name == "glGetBooleanv") {
@@ -1150,13 +1309,13 @@ std::string GLES::formatTraceCall(const std::string& symbol, const CpuState& bef
         const uint32_t shader = args.word();
         const int count = int(args.word());
         const uint32_t strings = args.word(), lengths = args.word();
-        out << name << "(shader=" << shader << ", strings=" << count << ", pointers="
-            << hex(strings) << ", lengths=" << hex(lengths) << ')';
+        out << name << "(shader=" << shader << ", strings=" << count
+            << ", pointers=" << hex(strings) << ", lengths=" << hex(lengths) << ')';
     } else if (name == "glAttachShader") {
         out << name << "(program=" << args.word() << ", shader=" << args.word() << ')';
     } else if (name == "glBindAttribLocation") {
-        out << name << "(program=" << args.word() << ", index=" << args.word() << ", name="
-            << hex(args.word()) << ')';
+        out << name << "(program=" << args.word() << ", index=" << args.word()
+            << ", name=" << hex(args.word()) << ')';
     } else if (name == "glGetAttribLocation" || name == "glGetUniformLocation") {
         const uint32_t program = args.word(), string = args.word();
         out << name << "(program=" << program << ", name=" << hex(string) << ") -> "
@@ -1174,12 +1333,13 @@ std::string GLES::formatTraceCall(const std::string& symbol, const CpuState& bef
     } else if (name == "glGetShaderInfoLog" || name == "glGetProgramInfoLog") {
         const uint32_t object = args.word();
         const int capacity = int(args.word());
-        out << name << "(object=" << object << ", capacity=" << capacity << ", length="
-            << hex(args.word()) << ", log=" << hex(args.word()) << ')';
+        out << name << "(object=" << object << ", capacity=" << capacity
+            << ", length=" << hex(args.word()) << ", log=" << hex(args.word()) << ')';
     } else if (name == "glGetActiveAttrib" || name == "glGetActiveUniform") {
         const uint32_t program = args.word(), index = args.word();
         const int capacity = int(args.word());
-        const uint32_t length = args.word(), size = args.word(), type = args.word(), output = args.word();
+        const uint32_t length = args.word(), size = args.word(), type = args.word(),
+                       output = args.word();
         out << name << "(program=" << program << ", index=" << index << ", capacity=" << capacity
             << ", length=" << hex(length) << ", size=" << hex(size) << ", type=" << hex(type)
             << ", name=" << hex(output) << ')';
@@ -1187,8 +1347,9 @@ std::string GLES::formatTraceCall(const std::string& symbol, const CpuState& bef
         out << name << "(program=" << args.word() << ", capacity=" << int(args.word())
             << ", count=" << hex(args.word()) << ", shaders=" << hex(args.word()) << ')';
     } else if (name == "glGetShaderPrecisionFormat") {
-        out << name << "(shader=" << enumName(args.word()) << ", precision=" << enumName(args.word())
-            << ", range=" << hex(args.word()) << ", value=" << hex(args.word()) << ')';
+        out << name << "(shader=" << enumName(args.word())
+            << ", precision=" << enumName(args.word()) << ", range=" << hex(args.word())
+            << ", value=" << hex(args.word()) << ')';
     } else if (name == "glGetShaderSource") {
         out << name << "(shader=" << args.word() << ", capacity=" << int(args.word())
             << ", length=" << hex(args.word()) << ", source=" << hex(args.word()) << ')';
@@ -1223,8 +1384,8 @@ std::string GLES::formatTraceCall(const std::string& symbol, const CpuState& bef
         const uint32_t type = args.word();
         const int stride = int(args.word());
         const uint32_t pointer = args.word();
-        out << name << "(type=" << enumName(type) << ", stride=" << stride << ", pointer="
-            << hex(pointer) << ')';
+        out << name << "(type=" << enumName(type) << ", stride=" << stride
+            << ", pointer=" << hex(pointer) << ')';
     } else if (name == "glVertexAttribPointer") {
         const uint32_t index = args.word();
         const int size = int(args.word());
@@ -1240,30 +1401,30 @@ std::string GLES::formatTraceCall(const std::string& symbol, const CpuState& bef
         const int height = int(args.word());
         const uint32_t format = args.word(), type = args.word(), pixels = args.word();
         out << name << "(x=" << x << ", y=" << y << ", width=" << width << ", height=" << height
-            << ", format=" << enumName(format) << ", type=" << enumName(type) << ", pixels="
-            << hex(pixels) << ')';
+            << ", format=" << enumName(format) << ", type=" << enumName(type)
+            << ", pixels=" << hex(pixels) << ')';
     } else if (name == "glCopyTexImage2D") {
         const uint32_t target = args.word(), level = args.word(), internal = args.word();
         const int x = int(args.word()), y = int(args.word()), width = int(args.word());
         const int height = int(args.word()), border = int(args.word());
-        out << name << "(target=" << enumName(target) << ", level=" << level << ", internal="
-            << enumName(internal) << ", rect=" << x << ',' << y << ' ' << width << 'x' << height
-            << ", border=" << border << ')';
+        out << name << "(target=" << enumName(target) << ", level=" << level
+            << ", internal=" << enumName(internal) << ", rect=" << x << ',' << y << ' ' << width
+            << 'x' << height << ", border=" << border << ')';
     } else if (name == "glCopyTexSubImage2D") {
         const uint32_t target = args.word(), level = args.word();
         const int xoffset = int(args.word()), yoffset = int(args.word());
         const int x = int(args.word()), y = int(args.word()), width = int(args.word());
         const int height = int(args.word());
-        out << name << "(target=" << enumName(target) << ", level=" << level << ", offset="
-            << xoffset << ',' << yoffset << ", source=" << x << ',' << y << ' ' << width << 'x'
-            << height << ')';
+        out << name << "(target=" << enumName(target) << ", level=" << level
+            << ", offset=" << xoffset << ',' << yoffset << ", source=" << x << ',' << y << ' '
+            << width << 'x' << height << ')';
     } else if (name == "glCompressedTexImage2D") {
         const uint32_t target = args.word(), level = args.word(), format = args.word();
         const int width = int(args.word()), height = int(args.word()), border = int(args.word());
         const uint32_t bytes = args.word(), data = args.word();
-        out << name << "(target=" << enumName(target) << ", level=" << level << ", format="
-            << enumName(format) << ", size=" << width << 'x' << height << ", border=" << border
-            << ", bytes=" << bytes << ", data=" << hex(data) << ')';
+        out << name << "(target=" << enumName(target) << ", level=" << level
+            << ", format=" << enumName(format) << ", size=" << width << 'x' << height
+            << ", border=" << border << ", bytes=" << bytes << ", data=" << hex(data) << ')';
     } else if (name == "glCompressedTexSubImage2D") {
         const uint32_t target = args.word(), level = args.word();
         const int x = int(args.word()), y = int(args.word()), width = int(args.word());
@@ -1276,18 +1437,18 @@ std::string GLES::formatTraceCall(const std::string& symbol, const CpuState& bef
         const uint32_t target = args.word(), level = args.word(), internal = args.word();
         const int width = int(args.word()), height = int(args.word()), border = int(args.word());
         const uint32_t format = args.word(), type = args.word(), pixels = args.word();
-        out << name << "(target=" << enumName(target) << ", level=" << level << ", internal="
-            << enumName(internal) << ", size=" << width << 'x' << height << ", border=" << border
-            << ", format=" << enumName(format) << ", type=" << enumName(type) << ", pixels="
-            << hex(pixels) << ')';
+        out << name << "(target=" << enumName(target) << ", level=" << level
+            << ", internal=" << enumName(internal) << ", size=" << width << 'x' << height
+            << ", border=" << border << ", format=" << enumName(format)
+            << ", type=" << enumName(type) << ", pixels=" << hex(pixels) << ')';
     } else if (name == "glTexSubImage2D") {
         const uint32_t target = args.word(), level = args.word();
         const int x = int(args.word()), y = int(args.word()), width = int(args.word());
         const int height = int(args.word());
         const uint32_t format = args.word(), type = args.word(), pixels = args.word();
-        out << name << "(target=" << enumName(target) << ", level=" << level << ", rect=" << x << ','
-            << y << ' ' << width << 'x' << height << ", format=" << enumName(format) << ", type="
-            << enumName(type) << ", pixels=" << hex(pixels) << ')';
+        out << name << "(target=" << enumName(target) << ", level=" << level << ", rect=" << x
+            << ',' << y << ' ' << width << 'x' << height << ", format=" << enumName(format)
+            << ", type=" << enumName(type) << ", pixels=" << hex(pixels) << ')';
     } else if (name == "glGetFramebufferAttachmentParameteriv" ||
                name == "glGetFramebufferAttachmentParameterivOES") {
         const uint32_t target = args.word(), attachment = args.word(), pname = args.word();
@@ -1299,13 +1460,14 @@ std::string GLES::formatTraceCall(const std::string& symbol, const CpuState& bef
         out << name << "(target=" << enumName(args.word()) << ", pname=" << enumName(args.word())
             << ", out=" << hex(args.word()) << ')';
     } else if (name == "glFramebufferRenderbuffer" || name == "glFramebufferRenderbufferOES") {
-        out << name << "(target=" << enumName(args.word()) << ", attachment=" << enumName(args.word())
+        out << name << "(target=" << enumName(args.word())
+            << ", attachment=" << enumName(args.word())
             << ", renderbufferTarget=" << enumName(args.word()) << ", renderbuffer=" << args.word()
             << ')';
     } else if (name == "glFramebufferTexture2D" || name == "glFramebufferTexture2DOES") {
-        out << name << "(target=" << enumName(args.word()) << ", attachment=" << enumName(args.word())
-            << ", textarget=" << enumName(args.word()) << ", texture=" << args.word() << ", level="
-            << int(args.word()) << ')';
+        out << name << "(target=" << enumName(args.word())
+            << ", attachment=" << enumName(args.word()) << ", textarget=" << enumName(args.word())
+            << ", texture=" << args.word() << ", level=" << int(args.word()) << ')';
     } else if (name == "glCheckFramebufferStatus" || name == "glCheckFramebufferStatusOES") {
         out << name << "(target=" << enumName(args.word()) << ") -> "
             << enumName(after.registers[0]);
@@ -1325,9 +1487,8 @@ bool GLES::invokeEntry(const std::string& symbol, CpuState& state) {
         name == "glDeleteRenderbuffers" || name == "glFramebufferRenderbuffer" ||
         name == "glFramebufferTexture2D" || name == "glGenFramebuffers" ||
         name == "glGenRenderbuffers" || name == "glGetFramebufferAttachmentParameteriv" ||
-        name == "glGetRenderbufferParameteriv" ||
-        name == "glIsFramebuffer" || name == "glIsRenderbuffer" ||
-        name == "glRenderbufferStorage")
+        name == "glGetRenderbufferParameteriv" || name == "glIsFramebuffer" ||
+        name == "glIsRenderbuffer" || name == "glRenderbufferStorage")
         name += "OES";
     else if (name == "glGenerateMipmapOES")
         name = "glGenerateMipmap";
@@ -1541,8 +1702,7 @@ bool GLES::invokeEntry(const std::string& symbol, CpuState& state) {
           size ? static_cast<const void*>(copy.data()) : nullptr);
         if (target == GL_ELEMENT_ARRAY_BUFFER && boundElementBuffer) {
             auto found = elementBufferData.find(boundElementBuffer);
-            if (found != elementBufferData.end() &&
-                size_t(offset) <= found->second.size() &&
+            if (found != elementBufferData.end() && size_t(offset) <= found->second.size() &&
                 size_t(size) <= found->second.size() - size_t(offset))
                 std::copy(copy.begin(), copy.end(), found->second.begin() + offset);
             else
@@ -1618,7 +1778,8 @@ bool GLES::invokeEntry(const std::string& symbol, CpuState& state) {
         }
         const size_t arrayBytes = size_t(count) * sizeof(uint32_t);
         if (!sourceArray || !memory.permits(sourceArray, arrayBytes, Read))
-            throw Error("GLES_ARGUMENT", "shader source pointer array is not readable", sourceArray);
+            throw Error("GLES_ARGUMENT", "shader source pointer array is not readable",
+                        sourceArray);
         std::vector<uint32_t> guestPointers(static_cast<size_t>(count));
         memory.read(sourceArray, guestPointers.data(), arrayBytes);
         std::vector<int32_t> lengths;
@@ -1675,9 +1836,11 @@ bool GLES::invokeEntry(const std::string& symbol, CpuState& state) {
         if (!f) return false;
         const uint32_t program = m.word(), index = m.word();
         const int capacity = int(m.word());
-        const uint32_t lengthOut = m.word(), sizeOut = m.word(), typeOut = m.word(), nameOut = m.word();
+        const uint32_t lengthOut = m.word(), sizeOut = m.word(), typeOut = m.word(),
+                       nameOut = m.word();
         if (capacity < 0 || capacity > 1024 * 1024)
-            throw Error("GLES_ARGUMENT", "active shader name buffer size is outside the supported range");
+            throw Error("GLES_ARGUMENT",
+                        "active shader name buffer size is outside the supported range");
         if (lengthOut && !memory.permits(lengthOut, sizeof(int32_t), Write))
             throw Error("GLES_ARGUMENT", "active shader name length is not writable", lengthOut);
         if (sizeOut && !memory.permits(sizeOut, sizeof(int32_t), Write))
@@ -1731,7 +1894,8 @@ bool GLES::invokeEntry(const std::string& symbol, CpuState& state) {
         if (precisionOut && !memory.permits(precisionOut, sizeof(int32_t), Write))
             throw Error("GLES_ARGUMENT", "shader precision value is not writable", precisionOut);
         int32_t range[2] = {}, precision = 0;
-        f(shaderType, precisionType, rangeOut ? range : nullptr, precisionOut ? &precision : nullptr);
+        f(shaderType, precisionType, rangeOut ? range : nullptr,
+          precisionOut ? &precision : nullptr);
         if (rangeOut) memory.write(rangeOut, range, sizeof(range));
         if (precisionOut) memory.write(precisionOut, &precision, sizeof(precision));
         return true;
@@ -1743,7 +1907,8 @@ bool GLES::invokeEntry(const std::string& symbol, CpuState& state) {
         const int capacity = int(m.word());
         const uint32_t lengthOut = m.word(), sourceOut = m.word();
         if (capacity < 0 || capacity > 1024 * 1024)
-            throw Error("GLES_ARGUMENT", "shader source buffer size is outside the supported range");
+            throw Error("GLES_ARGUMENT",
+                        "shader source buffer size is outside the supported range");
         if (lengthOut && !memory.permits(lengthOut, sizeof(int32_t), Write))
             throw Error("GLES_ARGUMENT", "shader source length is not writable", lengthOut);
         if (capacity && (!sourceOut || !memory.permits(sourceOut, size_t(capacity), Write)))
@@ -1767,12 +1932,13 @@ bool GLES::invokeEntry(const std::string& symbol, CpuState& state) {
             return true;
         }
         auto getProgramiv = fn<void (*)(uint32_t, uint32_t, int32_t*)>("glGetProgramiv");
-        auto getActiveUniform = fn<void (*)(uint32_t, uint32_t, int, int32_t*, int32_t*, uint32_t*, char*)>(
-            "glGetActiveUniform");
+        auto getActiveUniform =
+            fn<void (*)(uint32_t, uint32_t, int, int32_t*, int32_t*, uint32_t*, char*)>(
+                "glGetActiveUniform");
         auto getUniformLocation = fn<int (*)(uint32_t, const char*)>("glGetUniformLocation");
         if (!getProgramiv || !getActiveUniform || !getUniformLocation) return false;
         int32_t activeCount = 0, maxNameLength = 0;
-        getProgramiv(program, 0x8b86, &activeCount);  // GL_ACTIVE_UNIFORMS
+        getProgramiv(program, 0x8b86, &activeCount);    // GL_ACTIVE_UNIFORMS
         getProgramiv(program, 0x8b87, &maxNameLength);  // GL_ACTIVE_UNIFORM_MAX_LENGTH
         if (activeCount < 0 || activeCount > 4096 || maxNameLength < 1 ||
             maxNameLength > 1024 * 1024)
@@ -1817,15 +1983,16 @@ bool GLES::invokeEntry(const std::string& symbol, CpuState& state) {
             if (length < 0 || length >= maxNameLength || arraySize < 1) continue;
             uniformName[size_t(length)] = '\0';
             const std::string reported(uniformName.data(), size_t(length));
-            const bool array = arraySize > 1 ||
-                               (reported.size() >= 3 &&
-                                reported.compare(reported.size() - 3, 3, "[0]") == 0);
+            const bool array =
+                arraySize > 1 ||
+                (reported.size() >= 3 && reported.compare(reported.size() - 3, 3, "[0]") == 0);
             std::string base = reported;
             if (base.size() >= 3 && base.compare(base.size() - 3, 3, "[0]") == 0)
                 base.resize(base.size() - 3);
             const int entries = array ? std::max(arraySize, 1) : 1;
             for (int element = 0; element < entries; ++element) {
-                const std::string candidate = array ? base + "[" + std::to_string(element) + "]" : base;
+                const std::string candidate =
+                    array ? base + "[" + std::to_string(element) + "]" : base;
                 if (getUniformLocation(program, candidate.c_str()) == location) {
                     components = componentCount(type);
                     break;
@@ -1870,7 +2037,8 @@ bool GLES::invokeEntry(const std::string& symbol, CpuState& state) {
         const int capacity = int(m.word());
         const uint32_t lengthOut = m.word(), logOut = m.word();
         if (capacity < 0 || capacity > 1024 * 1024)
-            throw Error("GLES_ARGUMENT", "shader/program log buffer size is outside the supported range");
+            throw Error("GLES_ARGUMENT",
+                        "shader/program log buffer size is outside the supported range");
         if (lengthOut && !memory.permits(lengthOut, sizeof(int32_t), Write))
             throw Error("GLES_ARGUMENT", "shader/program log length is not writable", lengthOut);
         if (capacity && logOut && !memory.permits(logOut, size_t(capacity), Write))
@@ -1963,7 +2131,9 @@ bool GLES::invokeEntry(const std::string& symbol, CpuState& state) {
         const int location = int(m.word()), count = int(m.word());
         const uint8_t transpose = uint8_t(m.word() & 0xff);
         const uint32_t source = m.word();
-        const size_t dimension = name == "glUniformMatrix2fv" ? 2 : name == "glUniformMatrix3fv" ? 3 : 4;
+        const size_t dimension = name == "glUniformMatrix2fv"   ? 2
+                                 : name == "glUniformMatrix3fv" ? 3
+                                                                : 4;
         const size_t elements = dimension * dimension;
         if (count < 0 || size_t(count) > (16 * 1024 * 1024) / (elements * sizeof(float)))
             throw Error("GLES_ARGUMENT", "uniform matrix count is outside the supported range");
@@ -2007,8 +2177,8 @@ bool GLES::invokeEntry(const std::string& symbol, CpuState& state) {
           array.buffered ? reinterpret_cast<const void*>(uintptr_t(pointer)) : nullptr);
         return true;
     }
-    if (name == "glVertexAttrib1f" || name == "glVertexAttrib2f" ||
-        name == "glVertexAttrib3f" || name == "glVertexAttrib4f") {
+    if (name == "glVertexAttrib1f" || name == "glVertexAttrib2f" || name == "glVertexAttrib3f" ||
+        name == "glVertexAttrib4f") {
         const uint32_t index = m.word();
         if (name == "glVertexAttrib1f") {
             auto f = fn<void (*)(uint32_t, float)>(name.c_str());
@@ -2033,13 +2203,14 @@ bool GLES::invokeEntry(const std::string& symbol, CpuState& state) {
         return true;
     }
 
-    if (name == "glVertexAttrib1fv" || name == "glVertexAttrib2fv" ||
-        name == "glVertexAttrib3fv" || name == "glVertexAttrib4fv") {
+    if (name == "glVertexAttrib1fv" || name == "glVertexAttrib2fv" || name == "glVertexAttrib3fv" ||
+        name == "glVertexAttrib4fv") {
         const uint32_t index = m.word(), source = m.word();
         const int components = name[14] - '0';
         if (components < 1 || components > 4 || !source ||
             !memory.permits(source, size_t(components) * sizeof(float), Read))
-            throw Error("GLES_ARGUMENT", "generic vertex attribute values are not readable", source);
+            throw Error("GLES_ARGUMENT", "generic vertex attribute values are not readable",
+                        source);
         auto f = fn<void (*)(uint32_t, const float*)>(name.c_str());
         if (!f) return false;
         float values[4] = {};
@@ -2051,20 +2222,35 @@ bool GLES::invokeEntry(const std::string& symbol, CpuState& state) {
         const uint32_t index = m.word(), pname = m.word(), out = m.word();
         const size_t count = pname == GL_CURRENT_VERTEX_ATTRIB ? 4 : 1;
         if (!out || !memory.permits(out, count * sizeof(uint32_t), Write))
-            throw Error("GLES_ARGUMENT", "generic vertex attribute query result is not writable", out);
+            throw Error("GLES_ARGUMENT", "generic vertex attribute query result is not writable",
+                        out);
         const auto found = genericAttributes.find(index);
         const ClientArray defaults{};
         const ClientArray& array = found == genericAttributes.end() ? defaults : found->second;
         bool known = true;
         int32_t integerValue = 0;
         switch (pname) {
-            case GL_VERTEX_ATTRIB_ARRAY_ENABLED: integerValue = array.enabled; break;
-            case GL_VERTEX_ATTRIB_ARRAY_SIZE: integerValue = array.size ? array.size : 4; break;
-            case GL_VERTEX_ATTRIB_ARRAY_STRIDE: integerValue = array.stride; break;
-            case GL_VERTEX_ATTRIB_ARRAY_TYPE: integerValue = array.type ? int32_t(array.type) : int32_t(GL_FLOAT); break;
-            case GL_VERTEX_ATTRIB_ARRAY_NORMALIZED: integerValue = array.normalized; break;
-            case GL_VERTEX_ATTRIB_ARRAY_BUFFER_BINDING: integerValue = int32_t(array.buffer); break;
-            default: known = false; break;
+            case GL_VERTEX_ATTRIB_ARRAY_ENABLED:
+                integerValue = array.enabled;
+                break;
+            case GL_VERTEX_ATTRIB_ARRAY_SIZE:
+                integerValue = array.size ? array.size : 4;
+                break;
+            case GL_VERTEX_ATTRIB_ARRAY_STRIDE:
+                integerValue = array.stride;
+                break;
+            case GL_VERTEX_ATTRIB_ARRAY_TYPE:
+                integerValue = array.type ? int32_t(array.type) : int32_t(GL_FLOAT);
+                break;
+            case GL_VERTEX_ATTRIB_ARRAY_NORMALIZED:
+                integerValue = array.normalized;
+                break;
+            case GL_VERTEX_ATTRIB_ARRAY_BUFFER_BINDING:
+                integerValue = int32_t(array.buffer);
+                break;
+            default:
+                known = false;
+                break;
         }
         if (known) {
             if (name == "glGetVertexAttribiv") {
@@ -2097,7 +2283,8 @@ bool GLES::invokeEntry(const std::string& symbol, CpuState& state) {
             return true;
         }
         if (!out || !memory.permits(out, sizeof(uint32_t), Write))
-            throw Error("GLES_ARGUMENT", "generic vertex attribute pointer result is not writable", out);
+            throw Error("GLES_ARGUMENT", "generic vertex attribute pointer result is not writable",
+                        out);
         const auto found = genericAttributes.find(index);
         memory.write32(out, found == genericAttributes.end() ? 0 : found->second.pointer);
         return true;
@@ -2191,7 +2378,8 @@ bool GLES::invokeEntry(const std::string& symbol, CpuState& state) {
     if (name == "glBlendFuncSeparate") {
         auto f = fn<void (*)(uint32_t, uint32_t, uint32_t, uint32_t)>(name.c_str());
         if (!f) return false;
-        const uint32_t srcRgb = m.word(), dstRgb = m.word(), srcAlpha = m.word(), dstAlpha = m.word();
+        const uint32_t srcRgb = m.word(), dstRgb = m.word(), srcAlpha = m.word(),
+                       dstAlpha = m.word();
         f(srcRgb, dstRgb, srcAlpha, dstAlpha);
         return true;
     }
@@ -2340,7 +2528,8 @@ bool GLES::invokeEntry(const std::string& symbol, CpuState& state) {
                                 buffer->second.begin() + offset + bytes);
                     vertices = largestIndex(copy, element) + 1;
                     if (vertices > VertexBudget)
-                        throw Error("GLES_ARRAY", "an index reaches more vertices than the copy budget");
+                        throw Error("GLES_ARRAY",
+                                    "an index reaches more vertices than the copy budget");
                 }
             }
         }
@@ -2481,7 +2670,8 @@ bool GLES::invokeEntry(const std::string& symbol, CpuState& state) {
                 throw Error("GLES_QUERY", "driver returned an invalid GL query array length");
             count = size_t(available);
         }
-        if (count > 4096 || (count && (!out || !memory.permits(out, count * sizeof(int32_t), Write))))
+        if (count > 4096 ||
+            (count && (!out || !memory.permits(out, count * sizeof(int32_t), Write))))
             throw Error("GLES_ARGUMENT", "query result array is not writable", out);
         std::vector<int32_t> values(count, 0);
         f(pname, values.data());
@@ -2504,7 +2694,8 @@ bool GLES::invokeEntry(const std::string& symbol, CpuState& state) {
         auto f = fn<void (*)(uint32_t, uint32_t, uint32_t, int32_t*)>(name.c_str());
         if (!f) return false;
         if (!out || !memory.permits(out, sizeof(int32_t), Write))
-            throw Error("GLES_ARGUMENT", "framebuffer attachment query result is not writable", out);
+            throw Error("GLES_ARGUMENT", "framebuffer attachment query result is not writable",
+                        out);
         int32_t value = 0;
         f(target, attachment, pname, &value);
         memory.write(out, &value, sizeof(value));
@@ -2544,9 +2735,8 @@ bool GLES::invokeEntry(const std::string& symbol, CpuState& state) {
     }
     if (name == "glGetFloatv") {
         const uint32_t pname = m.word(), out = m.word();
-        const size_t count = pname == 0x0ba6 || pname == 0x0ba7 || pname == 0x0ba8
-                                 ? 16
-                                 : queryVectorLength(pname);
+        const size_t count =
+            pname == 0x0ba6 || pname == 0x0ba7 || pname == 0x0ba8 ? 16 : queryVectorLength(pname);
         if (!out || !memory.permits(out, count * sizeof(float), Write))
             throw Error("GLES_ARGUMENT", "query result array is not writable", out);
         if (fixedFunction && clientApi == 1 &&
@@ -2765,14 +2955,15 @@ bool GLES::invokeEntry(const std::string& symbol, CpuState& state) {
         return true;
     }
     if (name == "glReadPixels") {
-        const int x = int(m.word()), y = int(m.word()), width = int(m.word()), height = int(m.word());
+        const int x = int(m.word()), y = int(m.word()), width = int(m.word()),
+                  height = int(m.word());
         const uint32_t format = m.word(), type = m.word(), destination = m.word();
         auto f = fn<void (*)(int, int, int, int, uint32_t, uint32_t, void*)>(name.c_str());
         if (!f) return false;
         const size_t bytesPerPixel = texelBytes(format, type);
         size_t rowBytes = 0, totalBytes = 0;
-        if (!bytesPerPixel || !pixelLayout(width, height, bytesPerPixel, packAlignment, rowBytes,
-                                           totalBytes)) {
+        if (!bytesPerPixel ||
+            !pixelLayout(width, height, bytesPerPixel, packAlignment, rowBytes, totalBytes)) {
             // Let the driver set the GL error for an unsupported enum or invalid dimensions;
             // there is no safe host-side copy size for those arguments.
             f(x, y, width, height, format, type, nullptr);
@@ -2911,7 +3102,8 @@ bool GLES::invokeEntry(const std::string& symbol, CpuState& state) {
         if (!f) return false;
         const uint32_t target = m.word(), level = m.word();
         const int xoffset = int(m.word()), yoffset = int(m.word());
-        const int x = int(m.word()), y = int(m.word()), width = int(m.word()), height = int(m.word());
+        const int x = int(m.word()), y = int(m.word()), width = int(m.word()),
+                  height = int(m.word());
         f(target, int(level), xoffset, yoffset, x, y, width, height);
         return true;
     }
@@ -2972,7 +3164,8 @@ bool GLES::invokeEntry(const std::string& symbol, CpuState& state) {
         const int imageSize = int(m.word());
         const uint32_t source = m.word();
         if (imageSize < 0 || size_t(imageSize) > 64 * 1024 * 1024)
-            throw Error("GLES_ARGUMENT", "compressed texture subimage exceeds its copy budget", source);
+            throw Error("GLES_ARGUMENT", "compressed texture subimage exceeds its copy budget",
+                        source);
         auto f = fn<void (*)(uint32_t, int, int, int, int, int, uint32_t, int, const void*)>(
             name.c_str());
         if (!f) return false;
@@ -2997,7 +3190,8 @@ bool GLES::invokeEntry(const std::string& symbol, CpuState& state) {
             if (source && w > 0 && h > 0) {
                 const size_t perTexel = texelBytes(format, type);
                 size_t rowBytes = 0, totalBytes = 0;
-                if (!perTexel || !pixelLayout(w, h, perTexel, unpackAlignment, rowBytes, totalBytes))
+                if (!perTexel ||
+                    !pixelLayout(w, h, perTexel, unpackAlignment, rowBytes, totalBytes))
                     throw Error("GLES_ARGUMENT", "texture upload layout is not supported");
                 copy.resize(totalBytes);
                 memory.read(source, copy.data(), copy.size());
@@ -3186,7 +3380,8 @@ bool GLES::fixedFunctionEntry(const std::string& name, Marshal& m) {
         const float width = right - left, height = top - bottom, depth = farValue - nearValue;
         if (width == 0 || height == 0 || depth == 0 ||
             (name == "glFrustumf" && (nearValue <= 0 || farValue <= 0))) {
-            setGlError(GL_INVALID_VALUE, "projection volume has a zero extent or invalid clipping plane");
+            setGlError(GL_INVALID_VALUE,
+                       "projection volume has a zero extent or invalid clipping plane");
             return true;
         }
         std::array<float, 16> transform{};
@@ -3272,7 +3467,8 @@ bool GLES::fixedFunctionEntry(const std::string& name, Marshal& m) {
         const float value = m.f32();
         if (name == "glLightf") {
             if (first < GL_LIGHT0 || first - GL_LIGHT0 >= lights.size()) {
-                setGlError(GL_INVALID_ENUM, "glLightf received a light outside GL_LIGHT0..GL_LIGHT7");
+                setGlError(GL_INVALID_ENUM,
+                           "glLightf received a light outside GL_LIGHT0..GL_LIGHT7");
                 return true;
             }
             Light& light = lights[first - GL_LIGHT0];
@@ -3364,7 +3560,8 @@ bool GLES::fixedFunctionEntry(const std::string& name, Marshal& m) {
         size_t count = 0;
         if (name == "glLightfv") {
             if (first < GL_LIGHT0 || first - GL_LIGHT0 >= lights.size()) {
-                setGlError(GL_INVALID_ENUM, "glLightfv received a light outside GL_LIGHT0..GL_LIGHT7");
+                setGlError(GL_INVALID_ENUM,
+                           "glLightfv received a light outside GL_LIGHT0..GL_LIGHT7");
                 return true;
             }
             switch (pname) {
@@ -3455,15 +3652,16 @@ bool GLES::fixedFunctionEntry(const std::string& name, Marshal& m) {
                     else if (pname == GL_SPOT_CUTOFF && value != 180 && (value < 0 || value > 90))
                         setGlError(GL_INVALID_VALUE, "light spot cutoff is outside 0..90 or 180");
                     else if ((pname == GL_CONSTANT_ATTENUATION || pname == GL_LINEAR_ATTENUATION ||
-                              pname == GL_QUADRATIC_ATTENUATION) && value < 0)
+                              pname == GL_QUADRATIC_ATTENUATION) &&
+                             value < 0)
                         setGlError(GL_INVALID_VALUE, "light attenuation cannot be negative");
                     else if (pname == GL_SPOT_EXPONENT)
                         light.spotExponent = value;
                     else if (pname == GL_SPOT_CUTOFF) {
                         light.spotCutoff = value;
-                        light.spotCutoffCos = value == 180 ? -1.0f : std::cos(value * DegreesToRadians);
-                    }
-                    else if (pname == GL_CONSTANT_ATTENUATION)
+                        light.spotCutoffCos =
+                            value == 180 ? -1.0f : std::cos(value * DegreesToRadians);
+                    } else if (pname == GL_CONSTANT_ATTENUATION)
                         light.constantAttenuation = value;
                     else if (pname == GL_LINEAR_ATTENUATION)
                         light.linearAttenuation = value;
@@ -3614,8 +3812,9 @@ const GLES::Program& GLES::fixedFunctionProgram() {
     if (lightingEnabled) {
         vertexSource += "  vec4 baseColor = ";
         vertexSource += useColourArray ? "aColor;\n" : "uColor;\n";
-        vertexSource += "  vec4 eyePosition = uModelView * aPosition;\n"
-                        "  vec3 transformedNormal = uNormalMatrix * aNormal;\n";
+        vertexSource +=
+            "  vec4 eyePosition = uModelView * aPosition;\n"
+            "  vec3 transformedNormal = uNormalMatrix * aNormal;\n";
 
         const auto appendSide = [&](int side, const char* suffix, uint32_t faceEnum,
                                     const char* normalExpression) {
@@ -3624,63 +3823,78 @@ const GLES::Program& GLES::fixedFunctionProgram() {
             const std::string face = std::to_string(faceEnum);
             vertexSource += "  vec4 matAmbient" + id + " = uMaterialAmbient[" + sideIndex + "];\n";
             vertexSource += "  vec4 matDiffuse" + id + " = uMaterialDiffuse[" + sideIndex + "];\n";
-            vertexSource += "  vec4 matSpecular" + id + " = uMaterialSpecular[" + sideIndex + "];\n";
-            vertexSource += "  vec4 matEmission" + id + " = uMaterialEmission[" + sideIndex + "];\n";
-            vertexSource += "  float matShininess" + id + " = uMaterialShininess[" + sideIndex + "];\n";
+            vertexSource +=
+                "  vec4 matSpecular" + id + " = uMaterialSpecular[" + sideIndex + "];\n";
+            vertexSource +=
+                "  vec4 matEmission" + id + " = uMaterialEmission[" + sideIndex + "];\n";
+            vertexSource +=
+                "  float matShininess" + id + " = uMaterialShininess[" + sideIndex + "];\n";
             vertexSource += "  if (uColorMaterialEnabled != 0 && (uColorMaterialFace == " + face +
                             " || uColorMaterialFace == " + std::to_string(GL_FRONT_AND_BACK) +
                             ")) {\n";
             vertexSource += "    if (uColorMaterialMode == " + std::to_string(GL_AMBIENT) +
-                            " || uColorMaterialMode == " +
-                            std::to_string(GL_AMBIENT_AND_DIFFUSE) +
+                            " || uColorMaterialMode == " + std::to_string(GL_AMBIENT_AND_DIFFUSE) +
                             ") matAmbient" + id + " = baseColor;\n";
             vertexSource += "    if (uColorMaterialMode == " + std::to_string(GL_DIFFUSE) +
-                            " || uColorMaterialMode == " +
-                            std::to_string(GL_AMBIENT_AND_DIFFUSE) +
+                            " || uColorMaterialMode == " + std::to_string(GL_AMBIENT_AND_DIFFUSE) +
                             ") matDiffuse" + id + " = baseColor;\n";
             vertexSource += "    if (uColorMaterialMode == " + std::to_string(GL_SPECULAR) +
                             ") matSpecular" + id + " = baseColor;\n";
             vertexSource += "    if (uColorMaterialMode == " + std::to_string(GL_EMISSION) +
                             ") matEmission" + id + " = baseColor;\n  }\n";
             vertexSource += "  vec3 N" + id + " = " + normalExpression + ";\n";
-            vertexSource += "  vec3 V" + id + " = uLocalViewer != 0 ? normalize(-eyePosition.xyz) : "
+            vertexSource += "  vec3 V" + id +
+                            " = uLocalViewer != 0 ? normalize(-eyePosition.xyz) : "
                             "vec3(0.0, 0.0, 1.0);\n";
             vertexSource += "  vec4 lit" + id + " = matEmission" + id +
                             " + uGlobalAmbient * matAmbient" + id + ";\n";
             for (int index = 0; index < 8; ++index) {
                 const std::string light = std::to_string(index);
-                vertexSource += "  {\n    vec4 lp = uLightPosition[" + light + "];\n"
+                vertexSource += "  {\n    vec4 lp = uLightPosition[" + light +
+                                "];\n"
                                 "    vec3 delta = lp.xyz - eyePosition.xyz * lp.w;\n"
                                 "    float distanceToLight = lp.w == 0.0 ? 0.0 : length(delta);\n"
                                 "    vec3 L = lp.w == 0.0 ? normalize(lp.xyz) : "
                                 "(distanceToLight > 0.0 ? delta / distanceToLight : "
                                 "vec3(0.0, 0.0, 1.0));\n"
-                                "    vec4 attenuationParams = uLightParameters[" + light + "];\n"
+                                "    vec4 attenuationParams = uLightParameters[" +
+                                light +
+                                "];\n"
                                 "    float attenuation = lp.w == 0.0 ? 1.0 : "
                                 "1.0 / max(attenuationParams.x + attenuationParams.y * "
                                 "distanceToLight + attenuationParams.z * distanceToLight * "
                                 "distanceToLight, 0.000001);\n"
                                 "    float spot = 1.0;\n"
                                 "    if (attenuationParams.w > -0.99999) {\n"
-                                "      float spotCos = dot(-L, normalize(uLightSpotDirection[" + light +
+                                "      float spotCos = dot(-L, normalize(uLightSpotDirection[" +
+                                light +
                                 "].xyz));\n"
                                 "      spot = spotCos < attenuationParams.w ? 0.0 : "
-                                "pow(max(spotCos, 0.0), uLightExponent[" + light + "]);\n"
+                                "pow(max(spotCos, 0.0), uLightExponent[" +
+                                light +
+                                "]);\n"
                                 "    }\n"
-                                "    float diffuseTerm = max(dot(N" + id + ", L), 0.0);\n"
-                                "    vec3 H = normalize(L + V" + id + ");\n"
-                                "    float specularTerm = diffuseTerm > 0.0 && matShininess" + id +
-                                " > 0.0 ? pow(max(dot(N" + id + ", H), 0.0), matShininess" +
-                                id + ") : 0.0;\n"
-                                "    lit" + id + " += attenuation * spot * (matAmbient" + id +
+                                "    float diffuseTerm = max(dot(N" +
+                                id +
+                                ", L), 0.0);\n"
+                                "    vec3 H = normalize(L + V" +
+                                id +
+                                ");\n"
+                                "    float specularTerm = diffuseTerm > 0.0 && matShininess" +
+                                id + " > 0.0 ? pow(max(dot(N" + id + ", H), 0.0), matShininess" +
+                                id +
+                                ") : 0.0;\n"
+                                "    lit" +
+                                id + " += attenuation * spot * (matAmbient" + id +
                                 " * uLightAmbient[" + light + "] + matDiffuse" + id +
-                                " * uLightDiffuse[" + light + "] * diffuseTerm + matSpecular" +
-                                id + " * uLightSpecular[" + light + "] * specularTerm);\n  }\n";
+                                " * uLightDiffuse[" + light + "] * diffuseTerm + matSpecular" + id +
+                                " * uLightSpecular[" + light + "] * specularTerm);\n  }\n";
             }
             vertexSource += "  v" + id + "Color = lit" + id + ";\n";
         };
-        vertexSource += "  vec3 lightNormal = uNormalizeNormals != 0 ? "
-                        "normalize(transformedNormal) : transformedNormal;\n";
+        vertexSource +=
+            "  vec3 lightNormal = uNormalizeNormals != 0 ? "
+            "normalize(transformedNormal) : transformedNormal;\n";
         appendSide(0, "Front", GL_FRONT, "lightNormal");
         vertexSource += "  if (uTwoSided != 0) {\n";
         appendSide(1, "Back", GL_BACK, "-lightNormal");
@@ -3702,9 +3916,10 @@ const GLES::Program& GLES::fixedFunctionProgram() {
     if (texSource) {
         fragmentSource += "varying vec2 vTexCoord;\nuniform sampler2D uTexture;\n";
         if (lightingEnabled) {
-            fragmentSource += "void main() {\n  vec4 surfaceColor = "
-                              "gl_FrontFacing ? vFrontColor : vBackColor;\n"
-                              "  gl_FragColor = texture2D(uTexture, vTexCoord)";
+            fragmentSource +=
+                "void main() {\n  vec4 surfaceColor = "
+                "gl_FrontFacing ? vFrontColor : vBackColor;\n"
+                "  gl_FragColor = texture2D(uTexture, vTexCoord)";
             // ES 1.1 texture environment: replace ignores the incoming colour entirely, modulate
             // multiplies. Anything else is approximated by modulate and counted.
             fragmentSource += replace ? ";\n}\n" : " * surfaceColor;\n}\n";
@@ -3713,8 +3928,9 @@ const GLES::Program& GLES::fixedFunctionProgram() {
             fragmentSource += replace ? ";\n}\n" : " * vColor;\n}\n";
         }
     } else if (lightingEnabled) {
-        fragmentSource += "void main() {\n  gl_FragColor = "
-                          "gl_FrontFacing ? vFrontColor : vBackColor;\n}\n";
+        fragmentSource +=
+            "void main() {\n  gl_FragColor = "
+            "gl_FrontFacing ? vFrontColor : vBackColor;\n}\n";
     } else {
         fragmentSource += "void main() {\n  gl_FragColor = vColor;\n}\n";
     }
@@ -3821,8 +4037,7 @@ bool GLES::bindFixedFunctionArray(const ClientArray& array, uint32_t location, u
     const size_t packed = components * element;
     if (array.stride < 0) return false;
     const size_t stride = array.stride ? size_t(array.stride) : packed;
-    if (stride < packed ||
-        (count > 1 && stride > (256 * 1024 * 1024 - packed) / (count - 1)))
+    if (stride < packed || (count > 1 && stride > (256 * 1024 * 1024 - packed) / (count - 1)))
         return false;
     const size_t bytes = stride * (count - 1) + packed;
     if (!array.pointer) throw Error("GLES_ARRAY", "enabled client array points to null");
@@ -3870,8 +4085,8 @@ bool GLES::drawFixedFunction(uint32_t mode, int first, int count, uint32_t index
     auto disableAttrib = glFn<void (*)(uint32_t)>("glDisableVertexAttribArray");
     auto bindBuffer = glFn<void (*)(uint32_t, uint32_t)>("glBindBuffer");
     if (!uniformMatrix || !uniform4f || !disableAttrib || !bindBuffer) return false;
-    if (lightingEnabled && (!uniformMatrix3 || !uniform4fv || !uniform1fv || !uniform1i ||
-                            !vertexAttrib3f))
+    if (lightingEnabled &&
+        (!uniformMatrix3 || !uniform4fv || !uniform1fv || !uniform1i || !vertexAttrib3f))
         return false;
     struct RestoreBufferBindings {
         decltype(bindBuffer) bind;
@@ -3904,18 +4119,14 @@ bool GLES::drawFixedFunction(uint32_t mode, int first, int count, uint32_t index
                 std::copy_n(select(materials[side]).data(), 4, values + side * 4);
             uniform4fv(location, 2, values);
         };
-        uploadMaterials(program.materialAmbient, [](const Material& material) -> const auto& {
-            return material.ambient;
-        });
-        uploadMaterials(program.materialDiffuse, [](const Material& material) -> const auto& {
-            return material.diffuse;
-        });
-        uploadMaterials(program.materialSpecular, [](const Material& material) -> const auto& {
-            return material.specular;
-        });
-        uploadMaterials(program.materialEmission, [](const Material& material) -> const auto& {
-            return material.emission;
-        });
+        uploadMaterials(program.materialAmbient,
+                        [](const Material& material) -> const auto& { return material.ambient; });
+        uploadMaterials(program.materialDiffuse,
+                        [](const Material& material) -> const auto& { return material.diffuse; });
+        uploadMaterials(program.materialSpecular,
+                        [](const Material& material) -> const auto& { return material.specular; });
+        uploadMaterials(program.materialEmission,
+                        [](const Material& material) -> const auto& { return material.emission; });
         if (program.materialShininess >= 0) {
             const float values[] = {materials[0].shininess, materials[1].shininess};
             uniform1fv(program.materialShininess, 2, values);
@@ -3943,7 +4154,8 @@ bool GLES::drawFixedFunction(uint32_t mode, int first, int count, uint32_t index
                 std::copy(light.specular.begin(), light.specular.end(), specular + offset);
             }
             std::copy(light.position.begin(), light.position.end(), positions + offset);
-            std::copy(light.spotDirection.begin(), light.spotDirection.end(), spotDirections + offset);
+            std::copy(light.spotDirection.begin(), light.spotDirection.end(),
+                      spotDirections + offset);
             parameters[offset] = light.constantAttenuation;
             parameters[offset + 1] = light.linearAttenuation;
             parameters[offset + 2] = light.quadraticAttenuation;
@@ -4009,7 +4221,8 @@ bool GLES::drawFixedFunction(uint32_t mode, int first, int count, uint32_t index
             (lightingEnabled && needsIndexExtent(normal)) ||
             (textureEnabledForUnit(activeTextureUnit) && texArray != texCoord.end() &&
              needsIndexExtent(texArray->second)))
-            throw Error("GLES_ARRAY", "client arrays cannot be bounded without captured element data");
+            throw Error("GLES_ARRAY",
+                        "client arrays cannot be bounded without captured element data");
     }
     if (!vertex.enabled) {
         setError("a draw was issued with no vertex array enabled");
@@ -4019,9 +4232,8 @@ bool GLES::drawFixedFunction(uint32_t mode, int first, int count, uint32_t index
                                 vertices ? vertices : 1))
         return false;
     const bool useColourArray = colour.enabled && (!lightingEnabled || colorMaterialEnabled);
-    if (useColourArray &&
-        !bindFixedFunctionArray(colour, AttributeColour, streamBuffers[1], true,
-                                vertices ? vertices : 1))
+    if (useColourArray && !bindFixedFunctionArray(colour, AttributeColour, streamBuffers[1], true,
+                                                  vertices ? vertices : 1))
         return false;
     if (lightingEnabled) {
         if (normal.enabled) {

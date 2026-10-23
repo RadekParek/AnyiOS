@@ -181,9 +181,9 @@ class GLES final {
     // match the separate matrix stacks OpenGL ES 1.1 exposes for each active texture unit.
     std::vector<std::array<float, 16>> modelviewStack, projectionStack;
     std::map<int, std::vector<std::array<float, 16>>> textureMatrixStacks;
-    std::array<float, 16>* matrix = &modelview;            // the stack glMatrixMode selected
-    uint32_t matrixMode = 0x1700;                          // GL_MODELVIEW
-    float currentColour[4] = {1, 1, 1, 1};  // glColor4f, used when no colour array is
+    std::array<float, 16>* matrix = &modelview;  // the stack glMatrixMode selected
+    uint32_t matrixMode = 0x1700;                // GL_MODELVIEW
+    float currentColour[4] = {1, 1, 1, 1};       // glColor4f, used when no colour array is
     uint32_t boundArrayBuffer = 0, boundElementBuffer = 0;
     int textureEnvMode = 0x2100;  // GL_MODULATE, the ES 1.1 default for unit zero
     std::map<int, int> textureEnvModes;
@@ -214,8 +214,8 @@ class GLES final {
     float materialShininess = 0;
     std::map<int, bool> texture2dUnits;
     // Approximations and non-default texture-unit use are counted for diagnostics.
-    size_t approximatedTexEnv = 0, clientTextureUnitUses = 0,
-           nonDefaultTextureUnitDraws = 0, simultaneousTextureStageDraws = 0;
+    size_t approximatedTexEnv = 0, clientTextureUnitUses = 0, nonDefaultTextureUnitDraws = 0,
+           simultaneousTextureStageDraws = 0;
     int activeTextureUnit = 0;  // glActiveTexture, as an offset from GL_TEXTURE0
     // A generated program and the uniform locations a draw needs from it, so a draw never
     // asks the driver for a location it already asked for.

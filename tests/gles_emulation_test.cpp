@@ -211,8 +211,8 @@ void fixedFunctionMatrixStacks(GLES& gles, Memory& memory) {
     scaledMatrix.must("_glGetFloatv");
     float matrix[16] = {};
     memory.read(0x12210, matrix, sizeof(matrix));
-    check(near(matrix[0], 2) && near(matrix[5], 3) && near(matrix[10], 4) &&
-              near(matrix[12], 1) && near(matrix[13], 2) && near(matrix[14], 3),
+    check(near(matrix[0], 2) && near(matrix[5], 3) && near(matrix[10], 4) && near(matrix[12], 1) &&
+              near(matrix[13], 2) && near(matrix[14], 3),
           "scale multiplies the current column-major matrix without changing translation");
     Call pop(gles, memory);
     pop.must("_glPopMatrix");
@@ -220,8 +220,8 @@ void fixedFunctionMatrixStacks(GLES& gles, Memory& memory) {
     restoredMatrix.ints({GL_MODELVIEW_MATRIX, 0x12210});
     restoredMatrix.must("_glGetFloatv");
     memory.read(0x12210, matrix, sizeof(matrix));
-    check(near(matrix[0], 1) && near(matrix[5], 1) && near(matrix[10], 1) &&
-              near(matrix[12], 1) && near(matrix[13], 2) && near(matrix[14], 3),
+    check(near(matrix[0], 1) && near(matrix[5], 1) && near(matrix[10], 1) && near(matrix[12], 1) &&
+              near(matrix[13], 2) && near(matrix[14], 3),
           "pop restores the saved matrix exactly");
     Call underflow(gles, memory);
     underflow.must("_glPopMatrix");
@@ -620,7 +620,6 @@ void refusesToDrawWithABrokenProgram(GLES& gles, Memory& memory, Es2StubState* r
     check(recorded->drawArraysCalls == 1, "the same draw succeeds once the driver compiles again");
 }
 
-
 void shaderUniformAndGenericAttributeImports() {
     Memory memory(1024 * 1024);
     std::vector<uint8_t> page(65536, 0);
@@ -694,8 +693,7 @@ void shaderUniformAndGenericAttributeImports() {
     programLog.must("_glGetProgramInfoLog");
     uint8_t programLogByte = 1;
     memory.read(0x11510, &programLogByte, sizeof(programLogByte));
-    check(memory.read32(0x1140c) == 0 && programLogByte == 0 &&
-              recorded->programInfoLogCalls == 1,
+    check(memory.read32(0x1140c) == 0 && programLogByte == 0 && recorded->programInfoLogCalls == 1,
           "glGetProgramInfoLog copies a safe, terminated driver log to guest memory");
     Call attributeLocation(gles, memory);
     attributeLocation.ints({program, 0x11600});
@@ -816,8 +814,9 @@ void shaderUniformAndGenericAttributeImports() {
     Call queryAttributePointer(gles, memory);
     queryAttributePointer.ints({5, GL_VERTEX_ATTRIB_ARRAY_POINTER, 0x12604});
     queryAttributePointer.must("_glGetVertexAttribPointerv");
-    check(memory.read32(0x12600) == 2 && memory.read32(0x12604) == 0x12300,
-          "generic attribute queries return the guest's recorded size and pointer, not host memory");
+    check(
+        memory.read32(0x12600) == 2 && memory.read32(0x12604) == 0x12300,
+        "generic attribute queries return the guest's recorded size and pointer, not host memory");
     Call queryCurrentAttribute(gles, memory);
     queryCurrentAttribute.ints({7, 0x8626, 0x12640});
     queryCurrentAttribute.must("_glGetVertexAttribfv");
@@ -850,7 +849,8 @@ void shaderUniformAndGenericAttributeImports() {
     Call subData(gles, memory);
     subData.ints({GL_ELEMENT_ARRAY_BUFFER, 4, 2, 0x12420});
     subData.must("_glBufferSubData");
-    check(recorded->bufferSubDataCalls == 1 && recorded->lastSubDataTarget == GL_ELEMENT_ARRAY_BUFFER &&
+    check(recorded->bufferSubDataCalls == 1 &&
+              recorded->lastSubDataTarget == GL_ELEMENT_ARRAY_BUFFER &&
               recorded->lastSubDataOffset == 4 && recorded->lastSubDataBytes == 2,
           "glBufferSubData preserves signed offsets and copies the guest payload");
     Call bufferSize(gles, memory);
@@ -879,8 +879,9 @@ void shaderUniformAndGenericAttributeImports() {
     } catch (const Error& error) {
         fourthVertexRejected = error.code == "MEMORY_UNMAPPED" && error.address == 0x20000;
     }
-    check(fourthVertexRejected && recorded->drawElementsCalls == 0,
-          "captured element indices make a client-array boundary fault visible before the driver draw");
+    check(
+        fourthVertexRejected && recorded->drawElementsCalls == 0,
+        "captured element indices make a client-array boundary fault visible before the driver draw");
     const float expandedAttributes[] = {0.125f, 0.25f, 0.5f, 0.75f, 1.0f, 1.25f, 1.5f, 1.75f};
     memory.write(0x12300, expandedAttributes, sizeof(expandedAttributes));
     Call safePointer(gles, memory);
@@ -901,7 +902,8 @@ void shaderUniformAndGenericAttributeImports() {
     } catch (const Error& error) {
         badPointerRejected = error.code == "GLES_ARGUMENT" && error.address == 0x1fffe;
     }
-    check(badPointerRejected, "shader source rejects an unreadable guest pointer instead of forwarding it");
+    check(badPointerRejected,
+          "shader source rejects an unreadable guest pointer instead of forwarding it");
     Call invalidCount(gles, memory);
     invalidCount.ints({4, 0xffffffffu, 0x12000});
     bool badCountRejected = false;
@@ -972,8 +974,7 @@ void fixedFunctionLighting() {
     shininess.ints({GL_FRONT_AND_BACK, GL_SHININESS});
     shininess.floats({32});
     shininess.must("_glMaterialf");
-    const float scaledModelview[] = {2, 0, 0, 0, 0, 3, 0, 0,
-                                     0, 0, 4, 0, 0, 0, 0, 1};
+    const float scaledModelview[] = {2, 0, 0, 0, 0, 3, 0, 0, 0, 0, 4, 0, 0, 0, 0, 1};
     memory.write(0x11080, scaledModelview, sizeof(scaledModelview));
     Call modelviewMode(gles, memory);
     modelviewMode.ints({GL_MODELVIEW});
@@ -1013,8 +1014,7 @@ void fixedFunctionLighting() {
               std::string(recorded->vertexSource).find("vBackColor") != std::string::npos,
           "the generated ES 2.0 shader includes light, normal and two-sided material semantics");
     check(recorded->lightAmbientUploads == 1 && recorded->lightDiffuseUploads == 1 &&
-              recorded->lightPositionUploads == 1 &&
-              near(recorded->lightDiffuseValues[0], 0.25f) &&
+              recorded->lightPositionUploads == 1 && near(recorded->lightDiffuseValues[0], 0.25f) &&
               near(recorded->lightDiffuseValues[1], 0.5f) &&
               near(recorded->lightPositionValues[2], 2.0f),
           "GL_LIGHT0 parameters are transformed and uploaded to the generated shader");
@@ -1039,7 +1039,8 @@ void fixedFunctionLighting() {
 void coreAliasesQueriesReadbackAndTracing(const std::string& driver) {
     Memory memory(16 * 1024 * 1024);
     std::vector<uint8_t> page(65536, 0);
-    memory.map({kGuestPage, 65536, uint8_t(Read | Write), "guest GL data"}, page.data(), page.size());
+    memory.map({kGuestPage, 65536, uint8_t(Read | Write), "guest GL data"}, page.data(),
+               page.size());
     GuestHeap heap(memory);
     GLES gles(memory, &heap);
     check(gles.load(), "the ES 2.0 driver resolves the expanded GLES entry-point set");
@@ -1055,7 +1056,8 @@ void coreAliasesQueriesReadbackAndTracing(const std::string& driver) {
     generate.ints({1, 0x10200});
     generate.must("_glGenFramebuffers");
     const uint32_t guestFramebuffer = memory.read32(0x10200);
-    check(guestFramebuffer != 0, "the core glGenFramebuffers alias writes a driver name to guest memory");
+    check(guestFramebuffer != 0,
+          "the core glGenFramebuffers alias writes a driver name to guest memory");
     Call bindGuest(gles, memory);
     bindGuest.ints({GL_FRAMEBUFFER, guestFramebuffer});
     bindGuest.must("_glBindFramebuffer");
@@ -1092,33 +1094,35 @@ void coreAliasesQueriesReadbackAndTracing(const std::string& driver) {
     renderbufferWidth.ints({GL_RENDERBUFFER, GL_RENDERBUFFER_WIDTH, 0x10234});
     renderbufferWidth.must("_glGetRenderbufferParameteriv");
     check(recorded->renderbufferStorageCalls == renderbufferStorageBefore + 1 &&
-              recorded->renderbufferWidth == 8 &&
-              recorded->renderbufferHeight == 4 && memory.read32(0x10234) == 8,
+              recorded->renderbufferWidth == 8 && recorded->renderbufferHeight == 4 &&
+              memory.read32(0x10234) == 8,
           "renderbuffer storage and size queries preserve dimensions across the core/OES bridge");
     const int framebufferRenderbufferBefore = recorded->framebufferRenderbufferCalls;
     const int framebufferTextureBefore = recorded->framebufferTextureCalls;
     Call attachRenderbuffer(gles, memory);
-    attachRenderbuffer.ints({GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_RENDERBUFFER, guestRenderbuffer});
+    attachRenderbuffer.ints(
+        {GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_RENDERBUFFER, guestRenderbuffer});
     attachRenderbuffer.must("_glFramebufferRenderbuffer");
     Call attachTexture(gles, memory);
     attachTexture.ints({GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, 77});
     attachTexture.stack({0});
     attachTexture.must("_glFramebufferTexture2D");
     Call attachmentType(gles, memory);
-    attachmentType.ints({GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_FRAMEBUFFER_ATTACHMENT_OBJECT_TYPE,
-                         0x10238});
+    attachmentType.ints(
+        {GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_FRAMEBUFFER_ATTACHMENT_OBJECT_TYPE, 0x10238});
     attachmentType.must("_glGetFramebufferAttachmentParameteriv");
     Call attachmentName(gles, memory);
-    attachmentName.ints({GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_FRAMEBUFFER_ATTACHMENT_OBJECT_NAME,
-                         0x1023c});
+    attachmentName.ints(
+        {GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_FRAMEBUFFER_ATTACHMENT_OBJECT_NAME, 0x1023c});
     attachmentName.must("_glGetFramebufferAttachmentParameteriv");
-    check(recorded->framebufferRenderbufferCalls == framebufferRenderbufferBefore + 1 &&
-              recorded->framebufferTextureCalls == framebufferTextureBefore + 1 &&
-              recorded->lastFramebufferTarget == GL_FRAMEBUFFER &&
-              recorded->lastAttachment == GL_COLOR_ATTACHMENT0 &&
-              memory.read32(0x10238) == GL_TEXTURE && memory.read32(0x1023c) == 77 &&
-              recorded->framebufferAttachmentQueries == 2,
-          "framebuffer attachments and parameter queries reach the driver with guest values intact");
+    check(
+        recorded->framebufferRenderbufferCalls == framebufferRenderbufferBefore + 1 &&
+            recorded->framebufferTextureCalls == framebufferTextureBefore + 1 &&
+            recorded->lastFramebufferTarget == GL_FRAMEBUFFER &&
+            recorded->lastAttachment == GL_COLOR_ATTACHMENT0 &&
+            memory.read32(0x10238) == GL_TEXTURE && memory.read32(0x1023c) == 77 &&
+            recorded->framebufferAttachmentQueries == 2,
+        "framebuffer attachments and parameter queries reach the driver with guest values intact");
 
     // Multi-value queries copy the full GL result, not only the first word. This is a common
     // startup query for viewport sizing and used to leave the guest's second value stale.
@@ -1134,8 +1138,8 @@ void coreAliasesQueriesReadbackAndTracing(const std::string& driver) {
     viewport.must("_glGetFloatv");
     float viewportValues[4] = {};
     memory.read(0x10220, viewportValues, sizeof(viewportValues));
-    check(viewportValues[0] == 0.0f && viewportValues[1] == 0.0f &&
-              viewportValues[2] == 320.0f && viewportValues[3] == 480.0f,
+    check(viewportValues[0] == 0.0f && viewportValues[1] == 0.0f && viewportValues[2] == 320.0f &&
+              viewportValues[3] == 480.0f,
           "glGetFloatv safely copies all four viewport values to guest memory");
 
     // Driver strings are host pointers and must be copied into the emulated address space.
@@ -1146,10 +1150,11 @@ void coreAliasesQueriesReadbackAndTracing(const std::string& driver) {
     check(extensionPointer && memory.permits(extensionPointer, 1, Read),
           "glGetString returns a readable guest pointer rather than a host address");
     const std::string extensionText = guestString(memory, extensionPointer);
-    check(extensionText.find("GL_TEST_recording") != std::string::npos &&
-              extensionText.find("GL_OES_framebuffer_object") != std::string::npos &&
-              extensionText.find("GL_IMG_texture_compression_pvrtc") != std::string::npos,
-          "the virtual extension list preserves driver features and advertises implemented bridges");
+    check(
+        extensionText.find("GL_TEST_recording") != std::string::npos &&
+            extensionText.find("GL_OES_framebuffer_object") != std::string::npos &&
+            extensionText.find("GL_IMG_texture_compression_pvrtc") != std::string::npos,
+        "the virtual extension list preserves driver features and advertises implemented bridges");
     Call extensionsAgain(gles, memory);
     extensionsAgain.ints({GL_EXTENSIONS});
     extensionsAgain.must("_glGetString");
@@ -1191,8 +1196,7 @@ void coreAliasesQueriesReadbackAndTracing(const std::string& driver) {
     upload.ints({0x0de1, 0, GL_RGB, 1});
     upload.stack({2, 0, GL_RGB, GL_UNSIGNED_BYTE, 0x10400});
     upload.must("_glTexImage2D");
-    check(recorded->texImageBytes == 7 &&
-              std::memcmp(recorded->texImageData, paddedRgb, 7) == 0,
+    check(recorded->texImageBytes == 7 && std::memcmp(recorded->texImageData, paddedRgb, 7) == 0,
           "glTexImage2D preserves aligned row stride but does not read final-row padding");
     const uint8_t edgeRgb[7] = {21, 22, 23, 0xaa, 24, 25, 26};
     memory.write(0x1fff9, edgeRgb, sizeof(edgeRgb));
@@ -1245,8 +1249,7 @@ void coreAliasesQueriesReadbackAndTracing(const std::string& driver) {
               recorded->texParameterVectorCalls == 1 &&
               recorded->lastTexParameterTarget == GL_TEXTURE_2D &&
               recorded->lastTexParameterName == GL_TEXTURE_MIN_FILTER &&
-              recorded->lastTexParameterInt == GL_LINEAR &&
-              memory.read32(0x10254) == GL_LINEAR,
+              recorded->lastTexParameterInt == GL_LINEAR && memory.read32(0x10254) == GL_LINEAR,
           "texture parameter setters preserve all arguments and query results safely");
     Call frontFace(gles, memory);
     frontFace.ints({GL_CW});
@@ -1267,19 +1270,26 @@ void coreAliasesQueriesReadbackAndTracing(const std::string& driver) {
     getError.must("_glGetError");
     check(getError.state.registers[0] == GL_INVALID_ENUM,
           "verbose tracing does not drain the driver's guest-visible GL error");
-    check(std::any_of(trace.begin(), trace.end(), [](const std::string& line) {
-              return line.find("gl: glFrontFace(GL_CW)") != std::string::npos;
-          }) &&
-              std::any_of(trace.begin(), trace.end(), [](const std::string& line) {
-                  return line.find("gl: glActiveTexture(GL_TEXTURE0)") != std::string::npos;
-              }) &&
-              std::any_of(trace.begin(), trace.end(), [](const std::string& line) {
-                  return line.find("gl: glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA)") !=
-                         std::string::npos;
-              }) &&
-              std::any_of(trace.begin(), trace.end(), [](const std::string& line) {
-                  return line.find("glGetError() -> GL_INVALID_ENUM") != std::string::npos;
-              }),
+    check(std::any_of(trace.begin(), trace.end(),
+                      [](const std::string& line) {
+                          return line.find("gl: glFrontFace(GL_CW)") != std::string::npos;
+                      }) &&
+              std::any_of(trace.begin(), trace.end(),
+                          [](const std::string& line) {
+                              return line.find("gl: glActiveTexture(GL_TEXTURE0)") !=
+                                     std::string::npos;
+                          }) &&
+              std::any_of(trace.begin(), trace.end(),
+                          [](const std::string& line) {
+                              return line.find(
+                                         "gl: glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA)") !=
+                                     std::string::npos;
+                          }) &&
+              std::any_of(trace.begin(), trace.end(),
+                          [](const std::string& line) {
+                              return line.find("glGetError() -> GL_INVALID_ENUM") !=
+                                     std::string::npos;
+                          }),
           "verbose GL traces decode state, texture units, blend factors and guest-polled errors");
 
     for (int index = 0; index < 8; ++index) {
@@ -1290,8 +1300,8 @@ void coreAliasesQueriesReadbackAndTracing(const std::string& driver) {
     size_t clearLines = 0;
     for (const std::string& line : trace)
         if (line.find("gl: glClear(") != std::string::npos) ++clearLines;
-    check(clearLines == 4 &&
-              gles.describe().find("glClear: 8 call(s), 4 shown, 4 summarized") != std::string::npos,
+    check(clearLines == 4 && gles.describe().find("glClear: 8 call(s), 4 shown, 4 summarized") !=
+                                 std::string::npos,
           "verbose tracing samples repeated hot GL calls and preserves exact totals");
 }
 

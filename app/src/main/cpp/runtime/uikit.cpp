@@ -235,8 +235,7 @@ std::string UIKit::describe() const {
             total += count;
         }
         out << "\nUIKIT_RUN_LOOP: " << total << " main-thread task dispatch(es)";
-        for (const auto& [task, count] : runLoopTaskCounts)
-            out << "\n  " << task << ": " << count;
+        for (const auto& [task, count] : runLoopTaskCounts) out << "\n  " << task << ": " << count;
     }
     if (!delegateDescription.empty()) out << "\nUIKIT_DELEGATE: " << delegateDescription;
     if (!argv.empty()) {
