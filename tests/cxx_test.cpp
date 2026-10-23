@@ -71,6 +71,19 @@ int main() {
     cxx.setLogSink([&](const std::string& text) { log.push_back(text); });
     Call call(memory, cxx);
 
+    // libstdc++ emits this guard from translation units that include iostreams. Model its
+    // reference-counted lifetime, but do not claim that formatted stream operations exist.
+    check(cxx.isCxxSymbol("__ZNSt8ios_base4InitC1Ev") && cxx.isCxxSymbol("_ZNSt8ios_base4InitC1Ev"),
+          "Mach-O and unmangled-symbol spellings resolve to the C++ runtime");
+    call("__ZNSt8ios_base4InitC1Ev");
+    check(cxx.iosInitCount() == 1, "ios_base::Init acquires the stream-lifetime guard");
+    call("_ZNSt8ios_base4InitC2Ev");
+    check(cxx.iosInitCount() == 2, "C1 and C2 aliases share the same Init lifetime");
+    call("__ZNSt8ios_base4InitD1Ev");
+    call("_ZNSt8ios_base4InitD2Ev");
+    check(cxx.iosInitCount() == 0, "ios_base::Init destructors release their references");
+    fault("CXX_IOS_INIT", [&] { call("_ZNSt8ios_base4InitD1Ev"); });
+
     // operator new/delete route through the guest heap, so guest pointers stay contestable.
     const uint32_t block = call("_Znwm", 64);
     check(block != 0 && heap.owns(block), "operator new must return a live guest block");

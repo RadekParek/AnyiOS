@@ -22,6 +22,7 @@
 #include "gles_es2_stub_driver.h"
 #include "runtime/error.h"
 #include "runtime/gles.h"
+#include "runtime/heap.h"
 #include "runtime/memory.h"
 using namespace podnative::runtime;
 using podnative::testing::Es2StubState;
@@ -45,12 +46,28 @@ void resetStub() {
     check(reset != nullptr, "the ES 2.0 double exposes a reset");
     reset();
 }
+void setStubError(uint32_t error) {
+    using SetError = void (*)(uint32_t);
+    auto set = reinterpret_cast<SetError>(dlsym(RTLD_DEFAULT, "es2_stub_set_error"));
+    check(set != nullptr, "the ES 2.0 double exposes error injection");
+    set(error);
+}
 uint32_t bitsOf(float value) {
     uint32_t bits = 0;
     std::memcpy(&bits, &value, sizeof(bits));
     return bits;
 }
 bool near(float a, float b) { return std::fabs(a - b) < 1e-5f; }
+std::string guestString(const Memory& memory, uint32_t address) {
+    std::string text;
+    for (size_t index = 0; index < 65536; ++index) {
+        char value = 0;
+        memory.read(address + uint32_t(index), &value, sizeof(value));
+        if (!value) break;
+        text.push_back(value);
+    }
+    return text;
+}
 
 // One guest call through the bridge, in the AAPCS-VFP layout: integers in r0-r3 then on the
 // stack at sp, floats in s0-s15 numbered independently of the integers.
@@ -74,22 +91,50 @@ struct Call {
         size_t index = 0;
         for (float value : values) state.extensionRegisters[index++] = bitsOf(value);
     }
+    void stack(std::initializer_list<uint32_t> values) {
+        size_t index = 0;
+        for (uint32_t value : values) memory.write32(kStack + uint32_t(index++ * 4), value);
+    }
     static constexpr uint32_t kStack = 0x10100;
 };
 
 constexpr uint32_t GL_TRIANGLES = 0x0004;
 constexpr uint32_t GL_TEXTURE_2D = 0x0de1;
+constexpr uint32_t GL_TEXTURE_MIN_FILTER = 0x2801, GL_TEXTURE_MAG_FILTER = 0x2800;
+constexpr uint32_t GL_LINEAR = 0x2601;
 constexpr uint32_t GL_UNSIGNED_BYTE = 0x1401, GL_UNSIGNED_SHORT = 0x1403, GL_FLOAT = 0x1406;
 constexpr uint32_t GL_FIXED = 0x140c;
 constexpr uint32_t GL_MODELVIEW = 0x1700, GL_PROJECTION = 0x1701;
 constexpr uint32_t GL_TEXTURE_ENV = 0x1703, GL_TEXTURE_ENV_MODE = 0x2200;
 constexpr uint32_t GL_REPLACE = 0x1e01, GL_MODULATE = 0x2100;
 constexpr uint32_t GL_TEXTURE_MATRIX = 0x1702;
-constexpr uint32_t GL_VERTEX_ARRAY = 0x8074, GL_COLOR_ARRAY = 0x8076;
+constexpr uint32_t GL_VERTEX_ARRAY = 0x8074, GL_NORMAL_ARRAY = 0x8075, GL_COLOR_ARRAY = 0x8076;
 constexpr uint32_t GL_TEXTURE_COORD_ARRAY = 0x8078;
 constexpr uint32_t GL_TEXTURE0 = 0x84c0, GL_TEXTURE1 = 0x84c1;
 constexpr uint32_t GL_MAX_TEXTURE_UNITS = 0x8482;
+constexpr uint32_t GL_MODELVIEW_MATRIX = 0x0ba6, GL_PROJECTION_MATRIX = 0x0ba7;
+constexpr uint32_t GL_MODELVIEW_STACK_DEPTH = 0x0ba3, GL_TEXTURE_STACK_DEPTH = 0x0ba5;
+constexpr uint32_t GL_MAX_VIEWPORT_DIMS = 0x0d3a, GL_VIEWPORT = 0x0ba2;
+constexpr uint32_t GL_PACK_ALIGNMENT = 0x0d05, GL_UNPACK_ALIGNMENT = 0x0cf5;
+constexpr uint32_t GL_RGB = 0x1907, GL_RGBA = 0x1908, GL_EXTENSIONS = 0x1f03;
+constexpr uint32_t GL_CW = 0x0900, GL_BACK = 0x0405, GL_CULL_FACE = 0x0b44;
+constexpr uint32_t GL_LIGHTING = 0x0b50, GL_LIGHT_MODEL_LOCAL_VIEWER = 0x0b51;
+constexpr uint32_t GL_LIGHT_MODEL_TWO_SIDE = 0x0b52, GL_LIGHT0 = 0x4000;
+constexpr uint32_t GL_NORMALIZE = 0x0ba1, GL_COLOR_MATERIAL = 0x0b57;
+constexpr uint32_t GL_AMBIENT = 0x1200, GL_DIFFUSE = 0x1201, GL_POSITION = 0x1203;
+constexpr uint32_t GL_SPOT_EXPONENT = 0x1205, GL_FRONT_AND_BACK = 0x0408;
+constexpr uint32_t GL_AMBIENT_AND_DIFFUSE = 0x1602, GL_SHININESS = 0x1601;
+constexpr uint32_t GL_INVALID_ENUM = 0x0500, GL_INVALID_VALUE = 0x0501,
+                   GL_INVALID_OPERATION = 0x0502;
+constexpr uint32_t GL_FRAMEBUFFER = 0x8d40, GL_FRAMEBUFFER_BINDING = 0x8ca6;
+constexpr uint32_t GL_COLOR_ATTACHMENT0 = 0x8ce0, GL_RENDERBUFFER = 0x8d41;
+constexpr uint32_t GL_TEXTURE = 0x1702, GL_RGBA4 = 0x8056, GL_RENDERBUFFER_WIDTH = 0x8d42;
+constexpr uint32_t GL_FRAMEBUFFER_ATTACHMENT_OBJECT_TYPE = 0x8cd0;
+constexpr uint32_t GL_FRAMEBUFFER_ATTACHMENT_OBJECT_NAME = 0x8cd1;
+constexpr uint32_t GL_BUFFER_SIZE = 0x8764;
 constexpr uint32_t GL_ARRAY_BUFFER = 0x8892, GL_ELEMENT_ARRAY_BUFFER = 0x8893;
+constexpr uint32_t GL_VERTEX_ATTRIB_ARRAY_SIZE = 0x8623, GL_VERTEX_ATTRIB_ARRAY_POINTER = 0x8645;
+constexpr uint32_t GL_VERTEX_SHADER = 0x8b31, GL_COMPILE_STATUS = 0x8b81, GL_LINK_STATUS = 0x8b82;
 constexpr uint32_t kGuestPage = 0x10000;
 
 // The ES 1.1 entry points a driver without an ES 1.1 frontend simply does not have.
@@ -139,6 +184,92 @@ void answeredWithoutAFixedFunctionDriver(GLES& gles, Memory& memory, Es2StubStat
     limit.must("_glGetIntegerv");
     check(memory.read32(0x10200) == 2,
           "GL_MAX_TEXTURE_UNITS is answered for an ES 1.1 guest over an ES 2.0 driver");
+}
+
+// Matrix operations, per-unit stacks and their guest-visible error/query semantics.
+void fixedFunctionMatrixStacks(GLES& gles, Memory& memory) {
+    Call mode(gles, memory);
+    mode.ints({GL_MODELVIEW});
+    mode.must("_glMatrixMode");
+    Call identity(gles, memory);
+    identity.must("_glLoadIdentity");
+    Call translate(gles, memory);
+    translate.floats({1, 2, 3});
+    translate.must("_glTranslatef");
+    Call push(gles, memory);
+    push.must("_glPushMatrix");
+    Call scale(gles, memory);
+    scale.floats({2, 3, 4});
+    scale.must("_glScalef");
+    Call depth(gles, memory);
+    depth.ints({GL_MODELVIEW_STACK_DEPTH, 0x12200});
+    depth.must("_glGetIntegerv");
+    check(memory.read32(0x12200) == 2,
+          "modelview push advances the guest-visible matrix stack depth");
+    Call scaledMatrix(gles, memory);
+    scaledMatrix.ints({GL_MODELVIEW_MATRIX, 0x12210});
+    scaledMatrix.must("_glGetFloatv");
+    float matrix[16] = {};
+    memory.read(0x12210, matrix, sizeof(matrix));
+    check(near(matrix[0], 2) && near(matrix[5], 3) && near(matrix[10], 4) &&
+              near(matrix[12], 1) && near(matrix[13], 2) && near(matrix[14], 3),
+          "scale multiplies the current column-major matrix without changing translation");
+    Call pop(gles, memory);
+    pop.must("_glPopMatrix");
+    Call restoredMatrix(gles, memory);
+    restoredMatrix.ints({GL_MODELVIEW_MATRIX, 0x12210});
+    restoredMatrix.must("_glGetFloatv");
+    memory.read(0x12210, matrix, sizeof(matrix));
+    check(near(matrix[0], 1) && near(matrix[5], 1) && near(matrix[10], 1) &&
+              near(matrix[12], 1) && near(matrix[13], 2) && near(matrix[14], 3),
+          "pop restores the saved matrix exactly");
+    Call underflow(gles, memory);
+    underflow.must("_glPopMatrix");
+    Call getError(gles, memory);
+    getError.must("_glGetError");
+    check(getError.state.registers[0] == GL_INVALID_OPERATION,
+          "matrix stack underflow reports GL_INVALID_OPERATION to the guest");
+
+    Call projection(gles, memory);
+    projection.ints({GL_PROJECTION});
+    projection.must("_glMatrixMode");
+    Call projectionIdentity(gles, memory);
+    projectionIdentity.must("_glLoadIdentity");
+    Call orthographic(gles, memory);
+    orthographic.floats({-2, 2, -1, 3, 1, 11});
+    orthographic.must("_glOrthof");
+    Call projectionMatrix(gles, memory);
+    projectionMatrix.ints({GL_PROJECTION_MATRIX, 0x12210});
+    projectionMatrix.must("_glGetFloatv");
+    memory.read(0x12210, matrix, sizeof(matrix));
+    check(near(matrix[0], 0.5f) && near(matrix[5], 0.5f) && near(matrix[10], -0.2f) &&
+              near(matrix[13], -0.5f) && near(matrix[14], -1.2f) && near(matrix[15], 1),
+          "orthographic projection builds the specified OpenGL transform");
+
+    Call activeTexture(gles, memory);
+    activeTexture.ints({GL_TEXTURE1});
+    activeTexture.must("_glActiveTexture");
+    Call textureMode(gles, memory);
+    textureMode.ints({GL_TEXTURE_MATRIX});
+    textureMode.must("_glMatrixMode");
+    Call texturePush(gles, memory);
+    texturePush.must("_glPushMatrix");
+    Call textureDepth(gles, memory);
+    textureDepth.ints({GL_TEXTURE_STACK_DEPTH, 0x12200});
+    textureDepth.must("_glGetIntegerv");
+    check(memory.read32(0x12200) == 2,
+          "texture matrix stack depth is tracked for the selected texture unit");
+    Call activeTexture0(gles, memory);
+    activeTexture0.ints({GL_TEXTURE0});
+    activeTexture0.must("_glActiveTexture");
+    Call textureDepth0(gles, memory);
+    textureDepth0.ints({GL_TEXTURE_STACK_DEPTH, 0x12200});
+    textureDepth0.must("_glGetIntegerv");
+    check(memory.read32(0x12200) == 1,
+          "each active texture unit owns its own texture matrix stack");
+    Call modelview(gles, memory);
+    modelview.ints({GL_MODELVIEW});
+    modelview.must("_glMatrixMode");
 }
 
 // A complete fixed-function frame: matrices, a colour, a vertex array, one draw.
@@ -489,6 +620,681 @@ void refusesToDrawWithABrokenProgram(GLES& gles, Memory& memory, Es2StubState* r
     check(recorded->drawArraysCalls == 1, "the same draw succeeds once the driver compiles again");
 }
 
+
+void shaderUniformAndGenericAttributeImports() {
+    Memory memory(1024 * 1024);
+    std::vector<uint8_t> page(65536, 0);
+    memory.map({kGuestPage, 65536, uint8_t(Read | Write), "guest shader data"}, page.data(),
+               page.size());
+    GLES gles(memory);
+    check(gles.load(), "the ES 2.0 driver resolves shader and generic-attribute imports");
+    resetStub();
+    Es2StubState* recorded = stub();
+    gles.setClientApi(2);
+    check(gles.makeCurrent(), "guest shader calls run with a real ES 2.0 context");
+
+    const std::string shaderText = "void main() { }";
+    memory.write(0x11200, shaderText.data(), shaderText.size());
+    memory.write32(0x11100, 0x11200);
+    memory.write32(0x11300, uint32_t(shaderText.size()));
+    Call createShader(gles, memory);
+    createShader.ints({GL_VERTEX_SHADER});
+    createShader.must("_glCreateShader");
+    const uint32_t shader = createShader.state.registers[0];
+    check(shader != 0, "glCreateShader returns the driver's shader name");
+    Call source(gles, memory);
+    source.ints({shader, 1, 0x11100, 0x11300});
+    source.must("_glShaderSource");
+    check(recorded->shaderSourceCalls == 1 && std::string(recorded->vertexSource) == shaderText,
+          "glShaderSource copies the guest pointer array and honors explicit source lengths");
+    Call compile(gles, memory);
+    compile.ints({shader});
+    compile.must("_glCompileShader");
+    memory.write32(0x11400, 0xdeadbeef);
+    Call shaderStatus(gles, memory);
+    shaderStatus.ints({shader, GL_COMPILE_STATUS, 0x11400});
+    shaderStatus.must("_glGetShaderiv");
+    check(memory.read32(0x11400) == 1 && recorded->getShaderCalls == 1,
+          "glGetShaderiv writes the driver status into guest memory");
+    memory.write32(0x11404, 0xdeadbeef);
+    memory.write(0x11500, "XXXXXXXX", 8);
+    Call shaderLog(gles, memory);
+    shaderLog.ints({shader, 8, 0x11404, 0x11500});
+    shaderLog.must("_glGetShaderInfoLog");
+    uint8_t shaderLogByte = 1;
+    memory.read(0x11500, &shaderLogByte, sizeof(shaderLogByte));
+    check(memory.read32(0x11404) == 0 && shaderLogByte == 0 && recorded->shaderInfoLogCalls == 1,
+          "glGetShaderInfoLog safely copies both its length and output buffer");
+
+    Call createProgram(gles, memory);
+    createProgram.must("_glCreateProgram");
+    const uint32_t program = createProgram.state.registers[0];
+    check(program != 0, "glCreateProgram returns a driver object name");
+    Call attach(gles, memory);
+    attach.ints({program, shader});
+    attach.must("_glAttachShader");
+    const char attributeName[] = "aPosition";
+    memory.write(0x11600, attributeName, sizeof(attributeName));
+    Call bindAttribute(gles, memory);
+    bindAttribute.ints({program, 5, 0x11600});
+    bindAttribute.must("_glBindAttribLocation");
+    Call link(gles, memory);
+    link.ints({program});
+    link.must("_glLinkProgram");
+    memory.write32(0x11408, 0xdeadbeef);
+    Call programStatus(gles, memory);
+    programStatus.ints({program, GL_LINK_STATUS, 0x11408});
+    programStatus.must("_glGetProgramiv");
+    check(memory.read32(0x11408) == 1 && recorded->getProgramCalls == 1,
+          "glGetProgramiv writes the driver's link status into guest memory");
+    memory.write32(0x1140c, 0xdeadbeef);
+    memory.write(0x11510, "XXXXXXXX", 8);
+    Call programLog(gles, memory);
+    programLog.ints({program, 8, 0x1140c, 0x11510});
+    programLog.must("_glGetProgramInfoLog");
+    uint8_t programLogByte = 1;
+    memory.read(0x11510, &programLogByte, sizeof(programLogByte));
+    check(memory.read32(0x1140c) == 0 && programLogByte == 0 &&
+              recorded->programInfoLogCalls == 1,
+          "glGetProgramInfoLog copies a safe, terminated driver log to guest memory");
+    Call attributeLocation(gles, memory);
+    attributeLocation.ints({program, 0x11600});
+    attributeLocation.must("_glGetAttribLocation");
+    check(int(attributeLocation.state.registers[0]) == 5 && recorded->attribLocationCalls == 1,
+          "glGetAttribLocation marshals a guest C string and returns the driver's location");
+    Call uniformLocation(gles, memory);
+    uniformLocation.ints({program, 0x11620});
+    memory.write(0x11620, "uTest", 6);
+    uniformLocation.must("_glGetUniformLocation");
+    check(int(uniformLocation.state.registers[0]) >= 0,
+          "glGetUniformLocation returns the driver's result for a guest string");
+    Call useProgram(gles, memory);
+    useProgram.ints({program});
+    useProgram.must("_glUseProgram");
+    Call activeAttrib(gles, memory);
+    activeAttrib.ints({program, 0, 16, 0x11720});
+    activeAttrib.stack({0x11724, 0x11728, 0x1172c});
+    activeAttrib.must("_glGetActiveAttrib");
+    Call activeUniform(gles, memory);
+    activeUniform.ints({program, 0, 16, 0x11740});
+    activeUniform.stack({0x11744, 0x11748, 0x1174c});
+    activeUniform.must("_glGetActiveUniform");
+    char activeUniformName[8] = {};
+    memory.read(0x1174c, activeUniformName, sizeof(activeUniformName));
+    check(memory.read32(0x11740) == 7 && memory.read32(0x11744) == 2 &&
+              memory.read32(0x11748) == 0x8b50 && std::strcmp(activeUniformName, "uVec[0]") == 0,
+          "active shader queries safely copy type, size, length and bounded names to guest memory");
+    const char vectorUniformName[] = "uVec[0]";
+    memory.write(0x11630, vectorUniformName, sizeof(vectorUniformName));
+    Call vectorUniformLocation(gles, memory);
+    vectorUniformLocation.ints({program, 0x11630});
+    vectorUniformLocation.must("_glGetUniformLocation");
+    const int queriedLocation = int(vectorUniformLocation.state.registers[0]);
+    Call getUniformFloat(gles, memory);
+    getUniformFloat.ints({program, uint32_t(queriedLocation), 0x11760});
+    getUniformFloat.must("_glGetUniformfv");
+    Call getUniformInt(gles, memory);
+    getUniformInt.ints({program, uint32_t(queriedLocation), 0x11768});
+    getUniformInt.must("_glGetUniformiv");
+    check(memory.read32(0x11760) == bitsOf(1.5f) && memory.read32(0x11764) == bitsOf(2.5f) &&
+              memory.read32(0x11768) == 5 && memory.read32(0x1176c) == 6 &&
+              recorded->uniformQueries == 2,
+          "uniform queries derive the exact vector extent from active-uniform metadata");
+    Call attachedShaders(gles, memory);
+    attachedShaders.ints({program, 2, 0x11780, 0x11784});
+    attachedShaders.must("_glGetAttachedShaders");
+    Call precision(gles, memory);
+    precision.ints({GL_VERTEX_SHADER, 0x8df0, 0x11790, 0x11798});
+    precision.must("_glGetShaderPrecisionFormat");
+    Call shaderSourceQuery(gles, memory);
+    shaderSourceQuery.ints({shader, 16, 0x117a0, 0x117a4});
+    shaderSourceQuery.must("_glGetShaderSource");
+    check(memory.read32(0x11780) == 2 && memory.read32(0x11784) == 100 &&
+              memory.read32(0x11788) == 101 && memory.read32(0x11790) == uint32_t(-126) &&
+              memory.read32(0x11794) == 127 && memory.read32(0x11798) == 23 &&
+              memory.read32(0x117a0) > 0,
+          "shader metadata, precision and attached-object queries preserve output extents");
+
+    Call uniform3f(gles, memory);
+    uniform3f.ints({4});
+    uniform3f.floats({0.25f, 0.5f, 0.75f});
+    uniform3f.must("_glUniform3f");
+    check(recorded->scalarUniformCalls == 1 && recorded->scalarUniformComponents == 3 &&
+              recorded->scalarUniformInteger == 0 && near(recorded->scalarUniformValues[2], 0.75f),
+          "glUniform3f reads independent AAPCS-VFP float registers in order");
+    Call uniform2i(gles, memory);
+    uniform2i.ints({4, 12, 34});
+    uniform2i.must("_glUniform2i");
+    check(recorded->scalarUniformCalls == 2 && recorded->scalarUniformInteger == 1 &&
+              recorded->scalarUniformValues[0] == 12 && recorded->scalarUniformValues[1] == 34,
+          "integer scalar uniforms preserve the location and value registers");
+
+    const float vectorValues[] = {1, 2, 3, 4, 5, 6};
+    memory.write(0x12000, vectorValues, sizeof(vectorValues));
+    Call vectorUniform(gles, memory);
+    vectorUniform.ints({4, 2, 0x12000});
+    vectorUniform.must("_glUniform3fv");
+    check(recorded->vectorUniformCalls == 1 && recorded->vectorUniformComponents == 3 &&
+              recorded->vectorUniformCount == 2 && near(recorded->vectorUniformValues[5], 6.0f),
+          "vector uniform arrays are copied at their full component count from guest memory");
+    const int32_t integerValues[] = {10, 20, 30, 40};
+    memory.write(0x12100, integerValues, sizeof(integerValues));
+    Call integerVector(gles, memory);
+    integerVector.ints({4, 2, 0x12100});
+    integerVector.must("_glUniform2iv");
+    check(recorded->vectorUniformCalls == 2 && recorded->vectorUniformInteger == 1 &&
+              recorded->vectorUniformInts[3] == 40,
+          "integer uniform arrays use signed 32-bit guest values and the exact vector size");
+    const float matrixValues[] = {1, 2, 3, 4, 5, 6, 7, 8, 9};
+    memory.write(0x12200, matrixValues, sizeof(matrixValues));
+    Call matrixUniform(gles, memory);
+    matrixUniform.ints({4, 1, 0, 0x12200});
+    matrixUniform.must("_glUniformMatrix3fv");
+    check(recorded->matrixUniformCalls == 1 && recorded->matrixUniformDimension == 3 &&
+              recorded->matrixUniformTranspose == 0 && near(recorded->matrixUniformValues[8], 9),
+          "matrix uniforms copy count, transpose and all matrix values from guest memory");
+
+    const float attributes[] = {0.125f, 0.25f, 0.5f, 0.75f};
+    memory.write(0x12300, attributes, sizeof(attributes));
+    Call pointer(gles, memory);
+    pointer.ints({5, 2, GL_FLOAT, 0});
+    pointer.stack({0, 0x12300});
+    pointer.must("_glVertexAttribPointer");
+    Call enable(gles, memory);
+    enable.ints({5});
+    enable.must("_glEnableVertexAttribArray");
+    Call draw(gles, memory);
+    draw.ints({GL_TRIANGLES, 0, 2});
+    draw.must("_glDrawArrays");
+    check(recorded->clientAttribPointerCalls == 1 && recorded->lastClientAttribIndex == 5 &&
+              near(recorded->clientAttribValues[0], 0.125f) &&
+              near(recorded->clientAttribValues[1], 0.25f) && recorded->drawArraysCalls == 1,
+          "client generic attributes are captured and copied before the driver draw");
+    Call queryAttributeSize(gles, memory);
+    queryAttributeSize.ints({5, GL_VERTEX_ATTRIB_ARRAY_SIZE, 0x12600});
+    queryAttributeSize.must("_glGetVertexAttribiv");
+    Call queryAttributePointer(gles, memory);
+    queryAttributePointer.ints({5, GL_VERTEX_ATTRIB_ARRAY_POINTER, 0x12604});
+    queryAttributePointer.must("_glGetVertexAttribPointerv");
+    check(memory.read32(0x12600) == 2 && memory.read32(0x12604) == 0x12300,
+          "generic attribute queries return the guest's recorded size and pointer, not host memory");
+    Call queryCurrentAttribute(gles, memory);
+    queryCurrentAttribute.ints({7, 0x8626, 0x12640});
+    queryCurrentAttribute.must("_glGetVertexAttribfv");
+    check(memory.read32(0x1264c) == bitsOf(1.0f),
+          "current generic attribute query copies all four driver values to guest memory");
+    const float currentAttribute[] = {0.25f, 0.5f, 0.75f, 1.0f};
+    memory.write(0x12620, currentAttribute, sizeof(currentAttribute));
+    Call constantAttribute(gles, memory);
+    constantAttribute.ints({7, 0x12620});
+    constantAttribute.must("_glVertexAttrib4fv");
+    check(recorded->attribVectorCalls == 1 && recorded->lastAttribVectorIndex == 7 &&
+              recorded->lastAttribVectorComponents == 4 &&
+              near(recorded->lastAttribVector[3], 1.0f),
+          "vector-form vertex attributes copy guest constants before forwarding");
+
+    uint16_t indices[] = {0, 1, 2};
+    uint16_t replacementIndex = 3;
+    memory.write(0x12400, indices, sizeof(indices));
+    memory.write(0x12420, &replacementIndex, sizeof(replacementIndex));
+    Call generateBuffer(gles, memory);
+    generateBuffer.ints({1, 0x12500});
+    generateBuffer.must("_glGenBuffers");
+    const uint32_t elementBuffer = memory.read32(0x12500);
+    Call bindElement(gles, memory);
+    bindElement.ints({GL_ELEMENT_ARRAY_BUFFER, elementBuffer});
+    bindElement.must("_glBindBuffer");
+    Call data(gles, memory);
+    data.ints({GL_ELEMENT_ARRAY_BUFFER, sizeof(indices), 0x12400, 0x88e4});
+    data.must("_glBufferData");
+    Call subData(gles, memory);
+    subData.ints({GL_ELEMENT_ARRAY_BUFFER, 4, 2, 0x12420});
+    subData.must("_glBufferSubData");
+    check(recorded->bufferSubDataCalls == 1 && recorded->lastSubDataTarget == GL_ELEMENT_ARRAY_BUFFER &&
+              recorded->lastSubDataOffset == 4 && recorded->lastSubDataBytes == 2,
+          "glBufferSubData preserves signed offsets and copies the guest payload");
+    Call bufferSize(gles, memory);
+    bufferSize.ints({GL_ELEMENT_ARRAY_BUFFER, GL_BUFFER_SIZE, 0x12520});
+    bufferSize.must("_glGetBufferParameteriv");
+    check(memory.read32(0x12520) == sizeof(indices) && recorded->bufferParameterQueries == 1 &&
+              recorded->lastBufferParameterTarget == GL_ELEMENT_ARRAY_BUFFER &&
+              recorded->lastBufferParameterPname == GL_BUFFER_SIZE,
+          "glGetBufferParameteriv copies the driver buffer-size result into guest memory");
+
+    // Indices now include vertex 3, so the client attribute copy must cover four vertices.
+    // Three vertices fit before the end of the guest page; the fourth does not. This tests the
+    // bridge's shadow of element-buffer contents rather than letting the driver overread a host
+    // pointer that happens to be adjacent to mapped memory.
+    const float edgeAttributes[6] = {1, 2, 3, 4, 5, 6};
+    memory.write(0x1ffe8, edgeAttributes, sizeof(edgeAttributes));
+    Call edgePointer(gles, memory);
+    edgePointer.ints({5, 2, GL_FLOAT, 0});
+    edgePointer.stack({0, 0x1ffe8});
+    edgePointer.must("_glVertexAttribPointer");
+    Call edgeDraw(gles, memory);
+    edgeDraw.ints({GL_TRIANGLES, 3, GL_UNSIGNED_SHORT, 0});
+    bool fourthVertexRejected = false;
+    try {
+        (void)edgeDraw("_glDrawElements");
+    } catch (const Error& error) {
+        fourthVertexRejected = error.code == "MEMORY_UNMAPPED" && error.address == 0x20000;
+    }
+    check(fourthVertexRejected && recorded->drawElementsCalls == 0,
+          "captured element indices make a client-array boundary fault visible before the driver draw");
+    const float expandedAttributes[] = {0.125f, 0.25f, 0.5f, 0.75f, 1.0f, 1.25f, 1.5f, 1.75f};
+    memory.write(0x12300, expandedAttributes, sizeof(expandedAttributes));
+    Call safePointer(gles, memory);
+    safePointer.ints({5, 2, GL_FLOAT, 0});
+    safePointer.stack({0, 0x12300});
+    safePointer.must("_glVertexAttribPointer");
+    Call indexed(gles, memory);
+    indexed.ints({GL_TRIANGLES, 3, GL_UNSIGNED_SHORT, 0});
+    indexed.must("_glDrawElements");
+    check(recorded->drawElementsCalls == 1 && recorded->drawLog[1].type == GL_UNSIGNED_SHORT,
+          "the captured element-buffer data supports safe indexed client-array draws");
+
+    Call invalidSource(gles, memory);
+    invalidSource.ints({shader, 1, 0x1fffe, 0});
+    bool badPointerRejected = false;
+    try {
+        (void)invalidSource("_glShaderSource");
+    } catch (const Error& error) {
+        badPointerRejected = error.code == "GLES_ARGUMENT" && error.address == 0x1fffe;
+    }
+    check(badPointerRejected, "shader source rejects an unreadable guest pointer instead of forwarding it");
+    Call invalidCount(gles, memory);
+    invalidCount.ints({4, 0xffffffffu, 0x12000});
+    bool badCountRejected = false;
+    try {
+        (void)invalidCount("_glUniform3fv");
+    } catch (const Error& error) {
+        badCountRejected = error.code == "GLES_ARGUMENT";
+    }
+    check(badCountRejected, "uniform vectors reject negative counts before computing a byte size");
+
+    GuestHeap exhaustedHeap(memory, kGuestPage, 65536);
+    GLES noStringHeap(memory, &exhaustedHeap);
+    check(noStringHeap.load(), "glGetString failure handling keeps the real GLES driver");
+    Call unavailableString(noStringHeap, memory);
+    unavailableString.ints({0x1f02});  // GL_VERSION
+    unavailableString.must("_glGetString");
+    check(unavailableString.state.registers[0] == 0 &&
+              noStringHeap.describe().find("guest heap could not hold") != std::string::npos,
+          "glGetString reports a guest allocation failure instead of leaking a host pointer");
+}
+
+void fixedFunctionLighting() {
+    Memory memory(1024 * 1024);
+    std::vector<uint8_t> page(65536, 0);
+    memory.map({kGuestPage, 65536, uint8_t(Read | Write), "guest lighting data"}, page.data(),
+               page.size());
+    GLES gles(memory);
+    check(gles.load(), "fixed-function lighting resolves over an ES 2.0-only driver");
+    resetStub();
+    Es2StubState* recorded = stub();
+    gles.setClientApi(1);
+    check(gles.makeCurrent(), "the ES 1.1 lighting guest receives the ES 2.0 emulation context");
+
+    Call enableLighting(gles, memory);
+    enableLighting.ints({GL_LIGHTING});
+    enableLighting.must("_glEnable");
+    Call enableLight(gles, memory);
+    enableLight.ints({GL_LIGHT0});
+    enableLight.must("_glEnable");
+    Call enableTwoSided(gles, memory);
+    enableTwoSided.ints({GL_LIGHT_MODEL_TWO_SIDE, 1});
+    enableTwoSided.must("_glLightModeli");
+    Call enableLocalViewer(gles, memory);
+    enableLocalViewer.ints({GL_LIGHT_MODEL_LOCAL_VIEWER, 1});
+    enableLocalViewer.must("_glLightModeli");
+
+    const float lightPosition[] = {0, 0, 2, 1};
+    const float lightAmbient[] = {0.1f, 0.2f, 0.3f, 1};
+    const float lightDiffuse[] = {0.25f, 0.5f, 0.75f, 1};
+    const float material[] = {0.8f, 0.7f, 0.6f, 1};
+    memory.write(0x11000, lightPosition, sizeof(lightPosition));
+    memory.write(0x11020, lightAmbient, sizeof(lightAmbient));
+    memory.write(0x11040, lightDiffuse, sizeof(lightDiffuse));
+    memory.write(0x11060, material, sizeof(material));
+    Call position(gles, memory);
+    position.ints({GL_LIGHT0, GL_POSITION, 0x11000});
+    position.must("_glLightfv");
+    Call ambient(gles, memory);
+    ambient.ints({GL_LIGHT0, GL_AMBIENT, 0x11020});
+    ambient.must("_glLightfv");
+    Call diffuse(gles, memory);
+    diffuse.ints({GL_LIGHT0, GL_DIFFUSE, 0x11040});
+    diffuse.must("_glLightfv");
+    Call materialValues(gles, memory);
+    materialValues.ints({GL_FRONT_AND_BACK, GL_AMBIENT_AND_DIFFUSE, 0x11060});
+    materialValues.must("_glMaterialfv");
+    Call shininess(gles, memory);
+    shininess.ints({GL_FRONT_AND_BACK, GL_SHININESS});
+    shininess.floats({32});
+    shininess.must("_glMaterialf");
+    const float scaledModelview[] = {2, 0, 0, 0, 0, 3, 0, 0,
+                                     0, 0, 4, 0, 0, 0, 0, 1};
+    memory.write(0x11080, scaledModelview, sizeof(scaledModelview));
+    Call modelviewMode(gles, memory);
+    modelviewMode.ints({GL_MODELVIEW});
+    modelviewMode.must("_glMatrixMode");
+    Call loadModelview(gles, memory);
+    loadModelview.ints({0x11080});
+    loadModelview.must("_glLoadMatrixf");
+
+    const float vertices[] = {0, 0, 0, 1, 0, 0, 0, 1, 0};
+    const float normals[] = {0, 0, 1, 0, 0, 1, 0, 0, 1};
+    memory.write(0x11100, vertices, sizeof(vertices));
+    memory.write(0x11200, normals, sizeof(normals));
+    Call enableVertex(gles, memory);
+    enableVertex.ints({GL_VERTEX_ARRAY});
+    enableVertex.must("_glEnableClientState");
+    Call vertexPointer(gles, memory);
+    vertexPointer.ints({3, GL_FLOAT, 0, 0x11100});
+    vertexPointer.must("_glVertexPointer");
+    Call enableNormal(gles, memory);
+    enableNormal.ints({GL_NORMAL_ARRAY});
+    enableNormal.must("_glEnableClientState");
+    Call normalPointer(gles, memory);
+    normalPointer.ints({GL_FLOAT, 0, 0x11200});
+    normalPointer.must("_glNormalPointer");
+
+    Call draw(gles, memory);
+    draw.ints({GL_TRIANGLES, 0, 3});
+    draw.must("_glDrawArrays");
+    check(recorded->drawArraysCalls == 1 && recorded->compileCalls == 2 &&
+              recorded->linkCalls == 1 && recorded->matrixUniformDimension == 3 &&
+              near(recorded->matrixUniformValues[0], 0.5f) &&
+              near(recorded->matrixUniformValues[4], 1.0f / 3.0f) &&
+              near(recorded->matrixUniformValues[8], 0.25f),
+          "lighting draws use the modelview inverse-transpose normal matrix");
+    check(std::string(recorded->vertexSource).find("uLightPosition[0]") != std::string::npos &&
+              std::string(recorded->vertexSource).find("uLightDiffuse[7]") != std::string::npos &&
+              std::string(recorded->vertexSource).find("vBackColor") != std::string::npos,
+          "the generated ES 2.0 shader includes light, normal and two-sided material semantics");
+    check(recorded->lightAmbientUploads == 1 && recorded->lightDiffuseUploads == 1 &&
+              recorded->lightPositionUploads == 1 &&
+              near(recorded->lightDiffuseValues[0], 0.25f) &&
+              near(recorded->lightDiffuseValues[1], 0.5f) &&
+              near(recorded->lightPositionValues[2], 2.0f),
+          "GL_LIGHT0 parameters are transformed and uploaded to the generated shader");
+    check(gles.describe().find("fixed-function lighting enabled with 1 light") != std::string::npos,
+          "the launch report says how many ES 1.1 lights the emulation actually enabled");
+
+    Call isEnabled(gles, memory);
+    isEnabled.ints({GL_LIGHT0});
+    isEnabled.must("_glIsEnabled");
+    check(isEnabled.state.registers[0] == 1,
+          "glIsEnabled reports the guest's emulated GL_LIGHT0 state");
+    Call invalidExponent(gles, memory);
+    invalidExponent.ints({GL_LIGHT0, GL_SPOT_EXPONENT});
+    invalidExponent.floats({129});
+    invalidExponent.must("_glLightf");
+    Call getError(gles, memory);
+    getError.must("_glGetError");
+    check(getError.state.registers[0] == GL_INVALID_VALUE,
+          "invalid emulated light parameters reach the guest through glGetError");
+}
+
+void coreAliasesQueriesReadbackAndTracing(const std::string& driver) {
+    Memory memory(16 * 1024 * 1024);
+    std::vector<uint8_t> page(65536, 0);
+    memory.map({kGuestPage, 65536, uint8_t(Read | Write), "guest GL data"}, page.data(), page.size());
+    GuestHeap heap(memory);
+    GLES gles(memory, &heap);
+    check(gles.load(), "the ES 2.0 driver resolves the expanded GLES entry-point set");
+    check(gles.backend() == driver, "the expanded path keeps the selected GLES backend");
+    resetStub();
+    Es2StubState* recorded = stub();
+    gles.setClientApi(2);
+    check(gles.createDrawable(8, 4), "the ES 2.0 context has a real FBO-backed drawable");
+
+    // ES 2.0 games import core framebuffer names; ES 1.1 games import the OES suffixes.
+    // Both must update the same guest-visible binding and preserve private framebuffer zero.
+    Call generate(gles, memory);
+    generate.ints({1, 0x10200});
+    generate.must("_glGenFramebuffers");
+    const uint32_t guestFramebuffer = memory.read32(0x10200);
+    check(guestFramebuffer != 0, "the core glGenFramebuffers alias writes a driver name to guest memory");
+    Call bindGuest(gles, memory);
+    bindGuest.ints({GL_FRAMEBUFFER, guestFramebuffer});
+    bindGuest.must("_glBindFramebuffer");
+    check(recorded->boundFramebuffer == guestFramebuffer,
+          "the core framebuffer bind reaches the ES 2.0 driver");
+    memory.write32(0x10204, 0xdeadbeef);
+    Call queryBinding(gles, memory);
+    queryBinding.ints({GL_FRAMEBUFFER_BINDING, 0x10204});
+    queryBinding.must("_glGetIntegerv");
+    check(memory.read32(0x10204) == guestFramebuffer,
+          "GL_FRAMEBUFFER_BINDING reports the guest name, not the private drawable FBO");
+    Call bindDefault(gles, memory);
+    bindDefault.ints({GL_FRAMEBUFFER, 0});
+    bindDefault.must("_glBindFramebuffer");
+    check(recorded->boundFramebuffer != 0 && recorded->boundFramebuffer != guestFramebuffer,
+          "binding guest framebuffer zero restores the private drawable object");
+    Call status(gles, memory);
+    status.ints({GL_FRAMEBUFFER});
+    status.must("_glCheckFramebufferStatus");
+    check(status.state.registers[0] == 0x8cd5,
+          "the core framebuffer status query returns the driver's complete status");
+    Call generateRenderbuffer(gles, memory);
+    generateRenderbuffer.ints({1, 0x10230});
+    generateRenderbuffer.must("_glGenRenderbuffers");
+    const uint32_t guestRenderbuffer = memory.read32(0x10230);
+    Call bindRenderbuffer(gles, memory);
+    bindRenderbuffer.ints({GL_RENDERBUFFER, guestRenderbuffer});
+    bindRenderbuffer.must("_glBindRenderbuffer");
+    const int renderbufferStorageBefore = recorded->renderbufferStorageCalls;
+    Call storage(gles, memory);
+    storage.ints({GL_RENDERBUFFER, GL_RGBA4, 8, 4});
+    storage.must("_glRenderbufferStorage");
+    Call renderbufferWidth(gles, memory);
+    renderbufferWidth.ints({GL_RENDERBUFFER, GL_RENDERBUFFER_WIDTH, 0x10234});
+    renderbufferWidth.must("_glGetRenderbufferParameteriv");
+    check(recorded->renderbufferStorageCalls == renderbufferStorageBefore + 1 &&
+              recorded->renderbufferWidth == 8 &&
+              recorded->renderbufferHeight == 4 && memory.read32(0x10234) == 8,
+          "renderbuffer storage and size queries preserve dimensions across the core/OES bridge");
+    const int framebufferRenderbufferBefore = recorded->framebufferRenderbufferCalls;
+    const int framebufferTextureBefore = recorded->framebufferTextureCalls;
+    Call attachRenderbuffer(gles, memory);
+    attachRenderbuffer.ints({GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_RENDERBUFFER, guestRenderbuffer});
+    attachRenderbuffer.must("_glFramebufferRenderbuffer");
+    Call attachTexture(gles, memory);
+    attachTexture.ints({GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, 77});
+    attachTexture.stack({0});
+    attachTexture.must("_glFramebufferTexture2D");
+    Call attachmentType(gles, memory);
+    attachmentType.ints({GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_FRAMEBUFFER_ATTACHMENT_OBJECT_TYPE,
+                         0x10238});
+    attachmentType.must("_glGetFramebufferAttachmentParameteriv");
+    Call attachmentName(gles, memory);
+    attachmentName.ints({GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_FRAMEBUFFER_ATTACHMENT_OBJECT_NAME,
+                         0x1023c});
+    attachmentName.must("_glGetFramebufferAttachmentParameteriv");
+    check(recorded->framebufferRenderbufferCalls == framebufferRenderbufferBefore + 1 &&
+              recorded->framebufferTextureCalls == framebufferTextureBefore + 1 &&
+              recorded->lastFramebufferTarget == GL_FRAMEBUFFER &&
+              recorded->lastAttachment == GL_COLOR_ATTACHMENT0 &&
+              memory.read32(0x10238) == GL_TEXTURE && memory.read32(0x1023c) == 77 &&
+              recorded->framebufferAttachmentQueries == 2,
+          "framebuffer attachments and parameter queries reach the driver with guest values intact");
+
+    // Multi-value queries copy the full GL result, not only the first word. This is a common
+    // startup query for viewport sizing and used to leave the guest's second value stale.
+    memory.write32(0x10210, 0xdeadbeef);
+    memory.write32(0x10214, 0xdeadbeef);
+    Call maxViewport(gles, memory);
+    maxViewport.ints({GL_MAX_VIEWPORT_DIMS, 0x10210});
+    maxViewport.must("_glGetIntegerv");
+    check(memory.read32(0x10210) == 4096 && memory.read32(0x10214) == 4096,
+          "glGetIntegerv copies the complete two-element GL_MAX_VIEWPORT_DIMS result");
+    Call viewport(gles, memory);
+    viewport.ints({GL_VIEWPORT, 0x10220});
+    viewport.must("_glGetFloatv");
+    float viewportValues[4] = {};
+    memory.read(0x10220, viewportValues, sizeof(viewportValues));
+    check(viewportValues[0] == 0.0f && viewportValues[1] == 0.0f &&
+              viewportValues[2] == 320.0f && viewportValues[3] == 480.0f,
+          "glGetFloatv safely copies all four viewport values to guest memory");
+
+    // Driver strings are host pointers and must be copied into the emulated address space.
+    Call extensions(gles, memory);
+    extensions.ints({GL_EXTENSIONS});
+    extensions.must("_glGetString");
+    const uint32_t extensionPointer = extensions.state.registers[0];
+    check(extensionPointer && memory.permits(extensionPointer, 1, Read),
+          "glGetString returns a readable guest pointer rather than a host address");
+    const std::string extensionText = guestString(memory, extensionPointer);
+    check(extensionText.find("GL_TEST_recording") != std::string::npos &&
+              extensionText.find("GL_OES_framebuffer_object") != std::string::npos &&
+              extensionText.find("GL_IMG_texture_compression_pvrtc") != std::string::npos,
+          "the virtual extension list preserves driver features and advertises implemented bridges");
+    Call extensionsAgain(gles, memory);
+    extensionsAgain.ints({GL_EXTENSIONS});
+    extensionsAgain.must("_glGetString");
+    check(extensionsAgain.state.registers[0] == extensionPointer,
+          "repeated glGetString calls return the same stable guest string");
+
+    // Pixel rows obey the guest's GL_PACK_ALIGNMENT / GL_UNPACK_ALIGNMENT state. A 1-pixel
+    // RGB row is three bytes, padded to four by default; neither readback nor upload may
+    // compact the rows and shift every pixel after the first.
+    Call read(gles, memory);
+    read.ints({1, 2, 1, 2});
+    read.stack({GL_RGB, GL_UNSIGNED_BYTE, 0x10300});
+    read.must("_glReadPixels");
+    check(recorded->readPixelsCalls == 1 && recorded->readPixelsWidth == 1 &&
+              recorded->readPixelsHeight == 2 && recorded->readPixelsBytes == 7 &&
+              memory.read32(0x10300) == 0x00030201 && memory.read32(0x10304) == 0x00060504,
+          "glReadPixels advances by aligned row stride without requiring final-row padding");
+    Call readAtBoundary(gles, memory);
+    readAtBoundary.ints({0, 0, 1, 2});
+    readAtBoundary.stack({GL_RGB, GL_UNSIGNED_BYTE, 0x1fff9});
+    readAtBoundary.must("_glReadPixels");
+    check(recorded->readPixelsBytes == 7,
+          "a seven-byte readback ending at the guest-page boundary does not overread padding");
+
+    Call packOne(gles, memory);
+    packOne.ints({GL_PACK_ALIGNMENT, 1});
+    packOne.must("_glPixelStorei");
+    Call readPacked(gles, memory);
+    readPacked.ints({1, 2, 1, 2});
+    readPacked.stack({GL_RGB, GL_UNSIGNED_BYTE, 0x10320});
+    readPacked.must("_glReadPixels");
+    check(recorded->readPixelsBytes == 6 && memory.read32(0x10320) == 0x04030201 &&
+              (memory.read32(0x10324) & 0xffff) == 0x0605,
+          "GL_PACK_ALIGNMENT=1 removes row padding in driver and guest memory");
+
+    const uint8_t paddedRgb[8] = {1, 2, 3, 0xee, 4, 5, 6, 0xdd};
+    memory.write(0x10400, paddedRgb, sizeof(paddedRgb));
+    Call upload(gles, memory);
+    upload.ints({0x0de1, 0, GL_RGB, 1});
+    upload.stack({2, 0, GL_RGB, GL_UNSIGNED_BYTE, 0x10400});
+    upload.must("_glTexImage2D");
+    check(recorded->texImageBytes == 7 &&
+              std::memcmp(recorded->texImageData, paddedRgb, 7) == 0,
+          "glTexImage2D preserves aligned row stride but does not read final-row padding");
+    const uint8_t edgeRgb[7] = {21, 22, 23, 0xaa, 24, 25, 26};
+    memory.write(0x1fff9, edgeRgb, sizeof(edgeRgb));
+    Call uploadAtBoundary(gles, memory);
+    uploadAtBoundary.ints({0x0de1, 0, GL_RGB, 1});
+    uploadAtBoundary.stack({2, 0, GL_RGB, GL_UNSIGNED_BYTE, 0x1fff9});
+    uploadAtBoundary.must("_glTexImage2D");
+    check(recorded->texImageBytes == 7 &&
+              std::memcmp(recorded->texImageData, edgeRgb, sizeof(edgeRgb)) == 0,
+          "texture uploads ending at the guest-page boundary do not overread final-row padding");
+    Call unpackOne(gles, memory);
+    unpackOne.ints({GL_UNPACK_ALIGNMENT, 1});
+    unpackOne.must("_glPixelStorei");
+    const uint8_t tightRgb[6] = {7, 8, 9, 10, 11, 12};
+    memory.write(0x10420, tightRgb, sizeof(tightRgb));
+    Call uploadTight(gles, memory);
+    uploadTight.ints({0x0de1, 0, GL_RGB, 1});
+    uploadTight.stack({2, 0, GL_RGB, GL_UNSIGNED_BYTE, 0x10420});
+    uploadTight.must("_glTexImage2D");
+    check(recorded->texImageBytes == 6 &&
+              std::memcmp(recorded->texImageData, tightRgb, sizeof(tightRgb)) == 0,
+          "GL_UNPACK_ALIGNMENT=1 copies tightly packed texture rows");
+
+    // Core OpenGL ES state functions reach the driver with their true enum arguments.
+    std::vector<std::string> trace;
+    gles.setLogSink([&trace](const std::string& line) { trace.push_back(line); });
+    gles.setVerbose(true);
+    Call activeTexture(gles, memory);
+    activeTexture.ints({0x84c0});
+    activeTexture.must("_glActiveTexture");
+    Call blendFunc(gles, memory);
+    blendFunc.ints({0x0302, 0x0303});
+    blendFunc.must("_glBlendFunc");
+    Call texParameter(gles, memory);
+    texParameter.ints({GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR});
+    texParameter.must("_glTexParameteri");
+    Call texParameterFloat(gles, memory);
+    texParameterFloat.ints({GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER});
+    texParameterFloat.floats({0.5f});
+    texParameterFloat.must("_glTexParameterf");
+    const float parameterValues[] = {0.75f};
+    memory.write(0x10250, parameterValues, sizeof(parameterValues));
+    Call texParameterVector(gles, memory);
+    texParameterVector.ints({GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, 0x10250});
+    texParameterVector.must("_glTexParameterfv");
+    Call queryTexParameter(gles, memory);
+    queryTexParameter.ints({GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, 0x10254});
+    queryTexParameter.must("_glGetTexParameteriv");
+    check(recorded->texParameterIntCalls == 1 && recorded->texParameterFloatCalls == 1 &&
+              recorded->texParameterVectorCalls == 1 &&
+              recorded->lastTexParameterTarget == GL_TEXTURE_2D &&
+              recorded->lastTexParameterName == GL_TEXTURE_MIN_FILTER &&
+              recorded->lastTexParameterInt == GL_LINEAR &&
+              memory.read32(0x10254) == GL_LINEAR,
+          "texture parameter setters preserve all arguments and query results safely");
+    Call frontFace(gles, memory);
+    frontFace.ints({GL_CW});
+    frontFace.must("_glFrontFace");
+    Call cullFace(gles, memory);
+    cullFace.ints({GL_BACK});
+    cullFace.must("_glCullFace");
+    Call blendEquation(gles, memory);
+    blendEquation.ints({0x8006});
+    blendEquation.must("_glBlendEquation");
+    check(recorded->frontFaceCalls == 1 && recorded->lastFrontFace == GL_CW &&
+              recorded->cullFaceCalls == 1 && recorded->lastCullFace == GL_BACK &&
+              recorded->blendEquationCalls == 1 && recorded->lastBlendEquation == 0x8006,
+          "front-face, cull-face and blend-equation state is forwarded rather than stubbed");
+
+    setStubError(GL_INVALID_ENUM);
+    Call getError(gles, memory);
+    getError.must("_glGetError");
+    check(getError.state.registers[0] == GL_INVALID_ENUM,
+          "verbose tracing does not drain the driver's guest-visible GL error");
+    check(std::any_of(trace.begin(), trace.end(), [](const std::string& line) {
+              return line.find("gl: glFrontFace(GL_CW)") != std::string::npos;
+          }) &&
+              std::any_of(trace.begin(), trace.end(), [](const std::string& line) {
+                  return line.find("gl: glActiveTexture(GL_TEXTURE0)") != std::string::npos;
+              }) &&
+              std::any_of(trace.begin(), trace.end(), [](const std::string& line) {
+                  return line.find("gl: glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA)") !=
+                         std::string::npos;
+              }) &&
+              std::any_of(trace.begin(), trace.end(), [](const std::string& line) {
+                  return line.find("glGetError() -> GL_INVALID_ENUM") != std::string::npos;
+              }),
+          "verbose GL traces decode state, texture units, blend factors and guest-polled errors");
+
+    for (int index = 0; index < 8; ++index) {
+        Call clear(gles, memory);
+        clear.ints({0x4000});
+        clear.must("_glClear");
+    }
+    size_t clearLines = 0;
+    for (const std::string& line : trace)
+        if (line.find("gl: glClear(") != std::string::npos) ++clearLines;
+    check(clearLines == 4 &&
+              gles.describe().find("glClear: 8 call(s), 4 shown, 4 summarized") != std::string::npos,
+          "verbose tracing samples repeated hot GL calls and preserves exact totals");
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -504,11 +1310,15 @@ int main(int argc, char** argv) {
     Es2StubState* recorded = stub();
 
     answeredWithoutAFixedFunctionDriver(gles, memory, recorded);
+    fixedFunctionMatrixStacks(gles, memory);
     oneTranslatedDraw(gles, memory, recorded);
     textureUnitState(gles, memory, recorded);
     colourArrayAndFixedPoint(gles, memory, recorded);
     indexedDraw(gles, memory, recorded);
     refusesToDrawWithABrokenProgram(gles, memory, recorded);
+    coreAliasesQueriesReadbackAndTracing(driver);
+    shaderUniformAndGenericAttributeImports();
+    fixedFunctionLighting();
 
     std::cout << "gles emulation: an ES 1.1 guest drew through generated ES 2.0 programs over "
               << driver << ", with fixed-point widening, cached variants and a named refusal\n";

@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- Black plate, green anodised-metal engine die: the backend mark, not a phone outline. -->
+<!-- Graphite plate and blue titanium engine die, finished like precision mobile hardware. -->
 <vector xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:aapt="http://schemas.android.com/aapt"
     android:width="108dp"
@@ -15,10 +15,10 @@
                 android:endX="83"
                 android:endY="82"
                 android:type="linear">
-                <item android:offset="0" android:color="#FF6BF0B2" />
-                <item android:offset="0.35" android:color="#FF1F8F62" />
-                <item android:offset="0.7" android:color="#FF0C5038" />
-                <item android:offset="1" android:color="#FF06281C" />
+                <item android:offset="0" android:color="#FFF4F7FC" />
+                <item android:offset="0.35" android:color="#FF8DA0B7" />
+                <item android:offset="0.7" android:color="#FF526B89" />
+                <item android:offset="1" android:color="#FF1B293D" />
             </gradient>
         </aapt:attr>
     </path>
@@ -31,8 +31,8 @@
                 android:endX="79"
                 android:endY="77"
                 android:type="linear">
-                <item android:offset="0" android:color="#FF05140E" />
-                <item android:offset="1" android:color="#FF0B2C1F" />
+                <item android:offset="0" android:color="#FF0A111D" />
+                <item android:offset="1" android:color="#FF15263A" />
             </gradient>
         </aapt:attr>
     </path>
@@ -45,11 +45,11 @@
                 android:endX="74"
                 android:endY="72"
                 android:type="linear">
-                <item android:offset="0" android:color="#FFB6FFD9" />
-                <item android:offset="0.22" android:color="#FF57DDA2" />
-                <item android:offset="0.55" android:color="#FF1DA46F" />
-                <item android:offset="0.85" android:color="#FF0D6142" />
-                <item android:offset="1" android:color="#FF0A3F2C" />
+                <item android:offset="0" android:color="#FFEAF2FD" />
+                <item android:offset="0.22" android:color="#FF8FB1D8" />
+                <item android:offset="0.55" android:color="#FF4E78A7" />
+                <item android:offset="0.85" android:color="#FF294B70" />
+                <item android:offset="1" android:color="#FF1A3452" />
             </gradient>
         </aapt:attr>
     </path>
@@ -61,7 +61,7 @@
         android:strokeLineJoin="round" />
     <path
         android:pathData="M43,41 L54,47.5 L65,41 M54,47.5 L54,59.5"
-        android:strokeColor="#88EFFFFF"
+        android:strokeColor="#88D7EDFF"
         android:strokeWidth="0.9" />
     <!-- Core: the play/engine glyph -->
     <path android:pathData="M50.5,42.5 L62,48.5 L50.5,54.5 Z">
@@ -73,17 +73,17 @@
                 android:endY="55"
                 android:type="linear">
                 <item android:offset="0" android:color="#FFFFFFFF" />
-                <item android:offset="0.55" android:color="#FFD6FFE9" />
-                <item android:offset="1" android:color="#FF8CF2C1" />
+                <item android:offset="0.55" android:color="#FFEAF5FF" />
+                <item android:offset="1" android:color="#FFAACFFA" />
             </gradient>
         </aapt:attr>
     </path>
     <!-- Contact pins around the package -->
     <path
-        android:fillColor="#FF9BF6C8"
+        android:fillColor="#FFD6E8FF"
         android:pathData="M51,10 L57,10 L57,15 L51,15 Z M51,81 L57,81 L57,86 L51,86 Z" />
     <path
-        android:fillColor="#FF4FD39B"
+        android:fillColor="#FF7BA9D6"
         android:pathData="M18,40 L23,37 L25.5,41.5 L20.5,44.5 Z M18,56 L23,59 L25.5,54.5 L20.5,51.5 Z M85,40 L90,43.5 L87.5,48 L82.5,45 Z M85,56 L90,52.5 L87.5,48 L82.5,51 Z" />
     <!-- Specular sweep across the top half -->
     <path android:pathData="M54,24 L74,35.4 L74,42 L34,50 L34,35.4 Z">

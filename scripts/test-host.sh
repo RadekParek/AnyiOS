@@ -25,19 +25,19 @@ plan "${FLAGS[*]}" tests/objc_test.cpp app/src/main/cpp/runtime/{memory,objc,exp
 plan "${FLAGS[*]}" tests/libc_test.cpp app/src/main/cpp/runtime/{memory,libc,format,heap}.cpp -o .local/tests/libc-test
 plan "${FLAGS[*]}" tests/cxx_test.cpp app/src/main/cpp/runtime/{memory,cxx,exports,format,heap}.cpp -o .local/tests/cxx-test
 plan "${FLAGS[*]}" tests/uikit_test.cpp app/src/main/cpp/runtime/{memory,objc,exports,format,libc,heap,uikit,gles,pvrtc}.cpp third_party/pvrtc/PVRTDecompress.cpp -o .local/tests/uikit-test
-plan "${FLAGS[*]}" tests/gles_test.cpp app/src/main/cpp/runtime/{memory,gles,pvrtc}.cpp third_party/pvrtc/PVRTDecompress.cpp -o .local/tests/gles-test
+plan "${FLAGS[*]}" tests/gles_test.cpp app/src/main/cpp/runtime/{memory,heap,gles,pvrtc}.cpp third_party/pvrtc/PVRTDecompress.cpp -o .local/tests/gles-test
 plan "${FLAGS[*]}" tests/pvrtc_test.cpp app/src/main/cpp/runtime/pvrtc.cpp \
   third_party/pvrtc/PVRTDecompress.cpp -o .local/tests/pvrtc-test
 # The GL bridge is exercised against a recording driver: a shared object that answers the
 # GLES/EGL entry points and keeps what it was passed. It renders nothing, so the test only
 # claims marshalling, resource transitions and the frame flip — never a drawn frame.
 plan "${FLAGS[*]} -Itests" tests/gles_stub_driver.cpp -shared -fPIC -o .local/tests/libGLESv2_podnative.so
-plan "${FLAGS[*]} -Itests" tests/gles_driver_test.cpp app/src/main/cpp/runtime/{memory,gles,pvrtc}.cpp third_party/pvrtc/PVRTDecompress.cpp -o .local/tests/gles-driver-test
+plan "${FLAGS[*]} -Itests" tests/gles_driver_test.cpp app/src/main/cpp/runtime/{memory,heap,gles,pvrtc}.cpp third_party/pvrtc/PVRTDecompress.cpp -o .local/tests/gles-driver-test
 # A second double, in its own directory so both can carry the bundled soname: this one has no
 # ES 1.1 entry points at all, which is the shape of ANGLE and of most current mobile drivers.
 # It is what makes the fixed-function emulation testable without a GPU.
 plan "${FLAGS[*]} -Itests" tests/gles_es2_stub_driver.cpp -shared -fPIC -o .local/tests-es2/libGLESv2_podnative.so
-plan "${FLAGS[*]} -Itests" tests/gles_emulation_test.cpp app/src/main/cpp/runtime/{memory,gles,pvrtc}.cpp third_party/pvrtc/PVRTDecompress.cpp -o .local/tests/gles-emulation-test
+plan "${FLAGS[*]} -Itests" tests/gles_emulation_test.cpp app/src/main/cpp/runtime/{memory,heap,gles,pvrtc}.cpp third_party/pvrtc/PVRTDecompress.cpp -o .local/tests/gles-emulation-test
 plan "${FLAGS[*]}" tests/audio_test.cpp app/src/main/cpp/runtime/{memory,audio,openal,format,libc,heap}.cpp -o .local/tests/audio-test
 plan "${FLAGS[*]}" tests/fs_test.cpp app/src/main/cpp/runtime/{memory,fs,stdio,audio,libc,format,heap}.cpp -o .local/tests/fs-test
 xargs -a "$PLAN" -d '\n' -P "$JOBS" -n 1 -I {} bash -c '{}'

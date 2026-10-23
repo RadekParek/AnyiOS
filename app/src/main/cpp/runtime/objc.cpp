@@ -591,18 +591,12 @@ bool ObjC::guestFoundation(uint32_t receiver, const std::string& className,
                            const std::string& method, CpuState& state) {
     auto& r = state.registers;
     if (method == "retain") {
-        guestRefs[receiver]++;
+        retain(receiver);
         r[0] = receiver;
         return true;
     }
     if (method == "release" || method == "dealloc") {
-        auto found = guestRefs.find(receiver);
-        if (found != guestRefs.end() && found->second > 1) {
-            found->second--;
-        } else {
-            guestRefs.erase(receiver);
-            guestInstances.erase(receiver);
-        }
+        release(receiver);
         r[0] = receiver;
         return true;
     }
@@ -819,7 +813,7 @@ void ObjC::drainPools() {
         std::vector<uint32_t> owned = pools.back();
         pools.pop_back();
         for (uint32_t released : owned)
-            if (objects.count(released)) release(released);
+            if (objects.count(released) || guestInstances.count(released)) release(released);
     }
 }
 void ObjC::emitLog(const std::string& text) const {
@@ -951,6 +945,85 @@ bool ObjC::uiKitMessage(const std::string& className, uint32_t object, const std
         }
         throw Error("UIKIT_ARGUMENT", "geometry argument is not readable", address);
     };
+    auto objectState = [&](uint32_t address) -> Object* {
+        if (!address) return nullptr;
+        if (auto it = objects.find(address); it != objects.end()) return &it->second;
+        if (auto it = guestViews.find(address); it != guestViews.end()) return &it->second;
+        if (auto it = guestInstances.find(address); it != guestInstances.end()) {
+            Object& state = guestViews[address];
+            if (state.className.empty()) state.className = guestClassName(it->second);
+            return &state;
+        }
+        return nullptr;
+    };
+    auto detachView = [&](uint32_t viewAddress) {
+        Object* viewState = objectState(viewAddress);
+        if (!viewState) return;
+        if (viewState->superview) {
+            if (Object* parent = objectState(viewState->superview)) {
+                auto& subviews = parent->elements;
+                subviews.erase(std::remove(subviews.begin(), subviews.end(), viewAddress),
+                               subviews.end());
+            }
+        }
+        viewState->superview = 0;
+        viewState->window = 0;
+    };
+    auto attachControllerView = [&](uint32_t windowAddress, uint32_t controllerAddress) {
+        Object* windowState = objectState(windowAddress);
+        Object* controllerState = objectState(controllerAddress);
+        if (!windowState || !controllerState || !controllerState->view) return;
+        const uint32_t viewAddress = controllerState->view;
+        Object* viewState = objectState(viewAddress);
+        if (!viewState)
+            throw Error("UIKIT_VIEW", "UIViewController setView: received an unknown view",
+                        viewAddress);
+        if (viewState->superview && viewState->superview != windowAddress) detachView(viewAddress);
+        viewState->superview = windowAddress;
+        viewState->window = windowAddress;
+        auto& subviews = windowState->elements;
+        if (std::find(subviews.begin(), subviews.end(), viewAddress) == subviews.end())
+            subviews.push_back(viewAddress);
+    };
+    auto detachControllerView = [&](uint32_t windowAddress, uint32_t controllerAddress) {
+        Object* controllerState = objectState(controllerAddress);
+        if (!controllerState || !controllerState->view) return;
+        Object* viewState = objectState(controllerState->view);
+        if (viewState && viewState->superview == windowAddress) detachView(controllerState->view);
+    };
+    if (className == "UIViewController") {
+        if (method == "view") {
+            r[0] = value.view;
+            return true;
+        }
+        if (method == "setView:") {
+            const uint32_t newView = r[2];
+            if (newView && !objectState(newView))
+                throw Error("UIKIT_VIEW", "UIViewController setView: received an unknown view",
+                            newView);
+            if (value.view != newView) {
+                const uint32_t previous = value.view;
+                if (previous) {
+                    detachView(previous);
+                    release(previous);
+                }
+                if (newView) retain(newView);
+                value.view = newView;
+            }
+            // setView: can run before or after UIWindow's rootViewController is assigned.
+            for (const auto& [windowAddress, window] : objects)
+                if (window.className == "UIWindow" && window.rootViewController == object)
+                    attachControllerView(windowAddress, object);
+            for (const auto& [windowAddress, window] : guestViews)
+                if (window.className == "UIWindow" && window.rootViewController == object)
+                    attachControllerView(windowAddress, object);
+            return true;
+        }
+        if (method == "isViewLoaded") {
+            r[0] = value.view ? 1 : 0;
+            return true;
+        }
+    }
     if (className == "UIApplication") {
         if (method == "delegate") {
             r[0] = value.delegate;
@@ -1285,7 +1358,17 @@ bool ObjC::uiKitMessage(const std::string& className, uint32_t object, const std
             return true;
         }
         if (method == "setRootViewController:") {
-            value.rootViewController = r[2];
+            const uint32_t next = r[2];
+            const uint32_t previous = value.rootViewController;
+            if (next && !objectState(next))
+                throw Error("UIKIT_CONTROLLER", "UIWindow root controller is not an object", next);
+            if (previous != next) {
+                if (next) retain(next);
+                if (previous) detachControllerView(object, previous);
+                value.rootViewController = next;
+                if (previous) release(previous);
+            }
+            if (next) attachControllerView(object, next);
             return true;
         }
         if (method == "backgroundColor") {
@@ -1357,14 +1440,63 @@ bool ObjC::bundleMessage(const std::string& method, CpuState& state) {
     }
     return false;
 }
-void ObjC::release(uint32_t object) {
-    auto found = objects.find(object);
-    if (found == objects.end()) throw Error("OBJC_RELEASE", "release of a non-object", object);
-    if (found->second.references > 1) {
-        found->second.references--;
+void ObjC::retain(uint32_t object) {
+    if (!object) return;
+    if (auto found = objects.find(object); found != objects.end()) {
+        if (found->second.references < UINT32_MAX) found->second.references++;
         return;
     }
-    objects.erase(found);
+    if (guestInstances.count(object)) {
+        uint32_t& references = guestRefs[object];
+        if (references < UINT32_MAX) references++;
+        return;
+    }
+    throw Error("OBJC_RETAIN", "retain of a non-object", object);
+}
+void ObjC::release(uint32_t object) {
+    if (auto found = objects.find(object); found != objects.end()) {
+        if (found->second.references > 1) {
+            found->second.references--;
+            return;
+        }
+        uint32_t ownedView = found->second.className == "UIViewController" ? found->second.view : 0;
+        uint32_t rootController =
+            found->second.className == "UIWindow" ? found->second.rootViewController : 0;
+        if (found->second.className == "UIWindow")
+            for (uint32_t child : found->second.elements) {
+                Object* childState = nullptr;
+                if (auto view = objects.find(child); view != objects.end())
+                    childState = &view->second;
+                if (auto view = guestViews.find(child); view != guestViews.end())
+                    childState = &view->second;
+                if (childState && childState->superview == object)
+                    childState->superview = childState->window = 0;
+            }
+        objects.erase(found);
+        if (ownedView && (objects.count(ownedView) || guestInstances.count(ownedView)))
+            release(ownedView);
+        if (rootController &&
+            (objects.count(rootController) || guestInstances.count(rootController)))
+            release(rootController);
+        return;
+    }
+    if (guestInstances.count(object)) {
+        auto found = guestRefs.find(object);
+        if (found != guestRefs.end() && found->second > 1) {
+            found->second--;
+            return;
+        }
+        uint32_t ownedView = 0;
+        if (auto state = guestViews.find(object); state != guestViews.end())
+            ownedView = state->second.view;
+        guestRefs.erase(object);
+        guestViews.erase(object);
+        guestInstances.erase(object);
+        if (ownedView && (objects.count(ownedView) || guestInstances.count(ownedView)))
+            release(ownedView);
+        return;
+    }
+    throw Error("OBJC_RELEASE", "release of a non-object", object);
 }
 bool ObjC::collection(const std::string& className, const std::string& method, Object& object,
                       CpuState& state) {
@@ -1941,7 +2073,7 @@ void ObjC::message(CpuState& state) {
             if (pools.empty()) throw Error("OBJC_POOL", "autorelease without a pool");
             pools.back().push_back(self);
         }
-        if (method == "retain" && object.references - 1 < UINT32_MAX) object.references++;
+        if (method == "retain") retain(self);
         state.registers[0] = self;
         return;
     }
@@ -1950,7 +2082,7 @@ void ObjC::message(CpuState& state) {
             std::vector<uint32_t> owned = pools.back();
             pools.pop_back();
             for (uint32_t released : owned)
-                if (objects.count(released)) release(released);
+                if (objects.count(released) || guestInstances.count(released)) release(released);
         }
         release(self);
         state.registers[0] = self;
@@ -2141,7 +2273,7 @@ void ObjC::invoke(const std::string& entry, CpuState& state) {
             std::vector<uint32_t> owned = pools.back();
             pools.pop_back();
             for (uint32_t released : owned)
-                if (objects.count(released)) release(released);
+                if (objects.count(released) || guestInstances.count(released)) release(released);
         }
         return;
     }
@@ -2187,17 +2319,15 @@ void ObjC::invoke(const std::string& entry, CpuState& state) {
         return;
     }
     if (entry == "_objc_retain" || entry == "_objc_retainAutoreleasedReturnValue") {
-        auto found = objects.find(r[0]);
-        if (found != objects.end() && found->second.references < UINT32_MAX)
-            found->second.references++;
+        if (r[0] && (objects.count(r[0]) || guestInstances.count(r[0]))) retain(r[0]);
         return;
     }
     if (entry == "_objc_release") {
-        if (r[0] && objects.count(r[0])) release(r[0]);
+        if (r[0] && (objects.count(r[0]) || guestInstances.count(r[0]))) release(r[0]);
         return;
     }
     if (entry == "_objc_autoreleaseReturnValue") {
-        if (r[0] && objects.count(r[0])) {
+        if (r[0] && (objects.count(r[0]) || guestInstances.count(r[0]))) {
             if (pools.empty()) throw Error("OBJC_POOL", "autorelease without a pool");
             pools.back().push_back(r[0]);
         }

@@ -102,6 +102,79 @@ int main() {
     harness.call(msgSend, application, harness.text("setApplicationIconBadgeNumber:"), 17);
     assert(harness.call(msgSend, application, harness.text("applicationIconBadgeNumber")) == 17);
 
+    // UIViewController owns its view, and assigning a root controller makes that view the
+    // window's child. This is the setup path used by older EAGL titles before rendering starts.
+    const uint32_t controllerClass = harness.call(getClass, harness.text("UIViewController"), 0);
+    const uint32_t controller = harness.call(msgSend, controllerClass, harness.text("alloc"));
+    const uint32_t viewClass = harness.call(getClass, harness.text("UIView"), 0);
+    const uint32_t view = harness.call(msgSend, viewClass, harness.text("alloc"));
+    const uint32_t windowClass = harness.call(getClass, harness.text("UIWindow"), 0);
+    const uint32_t window = harness.call(msgSend, windowClass, harness.text("alloc"));
+    harness.call(msgSend, window, harness.text("setRootViewController:"), controller);
+    assert(harness.call(msgSend, controller, harness.text("retainCount")) == 2);
+    harness.call(msgSend, controller, harness.text("setView:"), view);
+    assert(harness.call(msgSend, controller, harness.text("view")) == view);
+    assert(harness.call(msgSend, controller, harness.text("isViewLoaded")) == 1);
+    assert(harness.call(msgSend, controller, harness.text("retainCount")) == 2);
+    assert(harness.call(msgSend, view, harness.text("retainCount")) == 2);
+    assert(harness.call(msgSend, view, harness.text("superview")) == window);
+    assert(harness.call(msgSend, view, harness.text("window")) == window);
+    const uint32_t windowSubviews = harness.call(msgSend, window, harness.text("subviews"));
+    assert(harness.call(msgSend, windowSubviews, harness.text("count")) == 1);
+    assert(harness.call(msgSend, windowSubviews, harness.text("objectAtIndex:"), 0) == view);
+    harness.call(release, view, 0);  // the controller's strong view reference keeps it alive
+    assert(harness.call(msgSend, view, harness.text("retainCount")) == 1);
+
+    // Setting the view before installing the controller as root is an equivalent UIKit order.
+    const uint32_t controller2 = harness.call(msgSend, controllerClass, harness.text("alloc"));
+    const uint32_t view2 = harness.call(msgSend, viewClass, harness.text("alloc"));
+    const uint32_t window2 = harness.call(msgSend, windowClass, harness.text("alloc"));
+    harness.call(msgSend, controller2, harness.text("setView:"), view2);
+    harness.call(msgSend, window2, harness.text("setRootViewController:"), controller2);
+    assert(harness.call(msgSend, controller2, harness.text("view")) == view2);
+    assert(harness.call(msgSend, view2, harness.text("window")) == window2);
+    harness.call(release, window2, 0);
+    assert(harness.call(msgSend, view2, harness.text("window")) == 0);
+    harness.call(release, controller2, 0);
+    assert(harness.call(msgSend, view2, harness.text("retainCount")) == 1);
+    harness.call(release, view2, 0);
+    fault("OBJC_RECEIVER", [&] { harness.call(msgSend, view2, harness.text("window")); });
+
+    // A guest-defined controller subclass inherits UIViewController's setter from its host
+    // superclass, just like Angry Birds' MyEAGLViewController.
+    {
+        Harness guest;
+        guest.memory.map({0x100000, 4096, uint8_t(Read | Write), "guest controller class"});
+        const uint32_t guestClass = 0x100000, meta = 0x100040, ro = 0x100100;
+        guest.memory.write32(guestClass, meta);
+        guest.memory.write32(guestClass + 4, guest.objc.classAddress("UIViewController", true));
+        guest.memory.write32(guestClass + 16, ro);
+        guest.memory.write32(meta, meta);
+        guest.memory.write32(meta + 4, 0);
+        guest.memory.write32(meta + 16, ro);
+        guest.memory.write32(ro, 0x10);
+        guest.memory.write32(ro + 4, 4);
+        guest.memory.write32(ro + 8, 24);
+        guest.memory.write32(ro + 16, guest.text("MyEAGLViewController"));
+        guest.memory.write32(ro + 20, 0);
+        guest.objc.registerGuestClasses({guestClass});
+        const uint32_t customController = guest.objc.allocateGuestInstance(guestClass);
+        const uint32_t customView =
+            guest.call(guest.objc.gateAddress("_objc_msgSend"),
+                       guest.objc.classAddress("UIView", true), guest.text("alloc"));
+        const uint32_t customWindow =
+            guest.call(guest.objc.gateAddress("_objc_msgSend"),
+                       guest.objc.classAddress("UIWindow", true), guest.text("alloc"));
+        guest.call(guest.objc.gateAddress("_objc_msgSend"), customWindow,
+                   guest.text("setRootViewController:"), customController);
+        guest.call(guest.objc.gateAddress("_objc_msgSend"), customController,
+                   guest.text("setView:"), customView);
+        assert(guest.call(guest.objc.gateAddress("_objc_msgSend"), customController,
+                          guest.text("view")) == customView);
+        assert(guest.call(guest.objc.gateAddress("_objc_msgSend"), customView,
+                          guest.text("window")) == customWindow);
+    }
+
     // Unknown class names are refused, not answered with nil (see the NSClassFromString case).
     fault("OBJC_CLASS_MISSING", [&] { harness.call(getClass, harness.text("NoSuchClass"), 0); });
     // A selector is just its interned guest string.

@@ -41,6 +41,8 @@ class Services final {
     void log(const std::string& line);
     std::vector<std::string> logTail(size_t count) const;
     size_t logSize() const { return guestLog.size(); }
+    // Counts for verbose traces whose hot-path repetitions were deliberately summarized.
+    std::string traceSummary() const;
     // Deep tracing for the "Verbose logging" setting: every guest-visible service call, the
     // values it was given and what it returned, plus the runtime's own decisions.
     // Threads the image starts through NSThread: the target/selector pair a created guest
@@ -137,6 +139,7 @@ class Services final {
     static constexpr size_t objcTraceCapacity = 2048;
     std::vector<std::string> objcTrace;
     std::vector<std::string> guestLog;
+    std::map<std::string, size_t> serviceTraceCalls, serviceTraceSuppressed;
     size_t logCapacity = 512;
     std::function<void(const std::string&)> externalLog;
     void traceSymbol(const std::string& name, const CpuState& state);

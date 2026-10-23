@@ -144,7 +144,7 @@ class ObjC final {
         float contentScale = 1;
         bool hidden = false, userInteraction = true, multipleTouch = false;
         uint32_t superview = 0, window = 0, backgroundColor = 0;
-        uint32_t rootViewController = 0, delegate = 0, keyWindow = 0;
+        uint32_t rootViewController = 0, view = 0, delegate = 0, keyWindow = 0;
         // A view's backing layer. Its class follows the view's own +layerClass override
         // (CAEAGLLayer for an OpenGL ES view), so the drawable properties reach the layer
         // kind the title asked for.
@@ -265,6 +265,7 @@ class ObjC final {
                     CpuState& state);
     uint32_t textOf(uint32_t object) const;
     void message(CpuState& state);
+    void retain(uint32_t object);
     void release(uint32_t object);
 };
 }  // namespace podnative::runtime

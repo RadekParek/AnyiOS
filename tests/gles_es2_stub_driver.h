@@ -1,4 +1,6 @@
 #pragma once
+#include <cstddef>
+#include <cstdint>
 
 // State recorded by gles_es2_stub_driver, the ES2-only test double.
 //
@@ -38,8 +40,13 @@ struct Es2StubState {
     int compileCalls = 0;
     int linkCalls = 0;
     int useProgramCalls = 0;
-    char vertexSource[1024] = {};
-    char fragmentSource[1024] = {};
+    int shaderSourceCalls = 0;
+    int getShaderCalls = 0;
+    int getProgramCalls = 0;
+    int shaderInfoLogCalls = 0;
+    int programInfoLogCalls = 0;
+    char vertexSource[16384] = {};
+    char fragmentSource[16384] = {};
     // Set by a test to make the next compile report failure, which must stop the emulation
     // rather than draw with a broken program.
     int forceCompileFailure = 0;
@@ -47,6 +54,35 @@ struct Es2StubState {
     char attribName[4][32] = {};
     int attribIndex[4] = {};
     int attribBindings = 0;
+    int attribLocationCalls = 0;
+    int lastAttribLocation = -1;
+
+    // --- guest shader, uniform and generic-attribute imports ---
+    int scalarUniformCalls = 0;
+    int scalarUniformComponents = 0;
+    int scalarUniformInteger = 0;
+    float scalarUniformValues[4] = {};
+    int vectorUniformCalls = 0;
+    int vectorUniformComponents = 0;
+    int vectorUniformInteger = 0;
+    int vectorUniformCount = 0;
+    float vectorUniformValues[16] = {};
+    int32_t vectorUniformInts[16] = {};
+    int matrixUniformCalls = 0;
+    int matrixUniformDimension = 0;
+    int matrixUniformCount = 0;
+    int matrixUniformTranspose = 0;
+    float matrixUniformValues[64] = {};
+    int uniform4fvCalls = 0;
+    int lightAmbientUploads = 0, lightDiffuseUploads = 0, lightPositionUploads = 0;
+    float lightAmbientValues[4] = {}, lightDiffuseValues[4] = {}, lightPositionValues[4] = {};
+    int clientAttribPointerCalls = 0;
+    int attribVectorCalls = 0;
+    unsigned lastAttribVectorIndex = 0;
+    int lastAttribVectorComponents = 0;
+    float lastAttribVector[4] = {};
+    unsigned lastClientAttribIndex = 0;
+    float clientAttribValues[4] = {};
 
     // --- uniforms, by name ---
     float mvp[16] = {};
@@ -60,6 +96,9 @@ struct Es2StubState {
 
     // --- client arrays turned into vertex buffers ---
     int bufferUploads = 0;
+    int bufferSubDataCalls = 0;
+    unsigned lastSubDataTarget = 0;
+    size_t lastSubDataOffset = 0, lastSubDataBytes = 0;
     unsigned lastUploadTarget = 0;
     unsigned lastUploadBytes = 0;
     // Every upload, so a test can tell the vertex copy from the index copy: an indexed draw
@@ -87,9 +126,39 @@ struct Es2StubState {
 
     int errors = 0;
     unsigned lastError = 0;
+    int frontFaceCalls = 0, cullFaceCalls = 0, blendEquationCalls = 0;
+    unsigned lastFrontFace = 0, lastCullFace = 0, lastBlendEquation = 0;
+    int readPixelsCalls = 0, readPixelsX = 0, readPixelsY = 0, readPixelsWidth = 0,
+        readPixelsHeight = 0, readPixelsFormat = 0, readPixelsType = 0;
+    size_t readPixelsBytes = 0;
+    unsigned char readPixelsData[256] = {};
+    int unpackAlignment = 4, packAlignment = 4;
+    unsigned boundFramebuffer = 0, boundRenderbuffer = 0;
+    int framebufferBindCalls = 0, framebufferStatusCalls = 0;
+    int framebufferRenderbufferCalls = 0, framebufferTextureCalls = 0;
+    int framebufferAttachmentQueries = 0, lastAttachmentLevel = 0;
+    int activeAttribQueries = 0, activeUniformQueries = 0, attachedShaderQueries = 0;
+    int precisionQueries = 0, uniformQueries = 0;
+    unsigned lastFramebufferTarget = 0, lastAttachment = 0, lastAttachmentRenderbufferTarget = 0;
+    int texParameterIntCalls = 0, texParameterFloatCalls = 0, texParameterVectorCalls = 0;
+    unsigned lastTexParameterTarget = 0, lastTexParameterName = 0;
+    int lastTexParameterInt = 0;
+    float lastTexParameterFloat = 0;
+    unsigned lastAttachmentObjectType = 0, lastAttachmentObjectName = 0;
+    unsigned lastAttachmentTextureTarget = 0;
+    int renderbufferStorageCalls = 0, renderbufferWidth = 0, renderbufferHeight = 0;
+    unsigned renderbufferInternalFormat = 0;
+    int bufferParameterQueries = 0;
+    unsigned lastBufferParameterTarget = 0, lastBufferParameterPname = 0;
+    int texImageCalls = 0;
+    unsigned texImageFormat = 0, texImageType = 0;
+    int texImageWidth = 0, texImageHeight = 0;
+    size_t texImageBytes = 0;
+    unsigned char texImageData[256] = {};
 };
 
 }  // namespace podnative::testing
 
 extern "C" podnative::testing::Es2StubState* es2_stub_state();
 extern "C" void es2_stub_reset();
+extern "C" void es2_stub_set_error(unsigned error);

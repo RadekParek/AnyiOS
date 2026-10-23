@@ -194,6 +194,7 @@ std::string attemptLaunch(const uint8_t* data, size_t size, const std::string& b
                     " receiver/selector pair(s):";
             for (const std::string& line : services.objectiveCTrace()) trace += "\n  " + line;
         }
+        const std::string serviceTrace = options.verbose ? services.traceSummary() : std::string();
         std::string mappings;
         if (options.verbose && image.memory) {
             for (const Region& region : image.memory->regions()) {
@@ -209,7 +210,7 @@ std::string attemptLaunch(const uint8_t* data, size_t size, const std::string& b
             if (!mappings.empty()) mappings = "\nMAPPED_REGIONS:" + mappings;
         }
         return header + "\n" + describeRun(run) + "\nDYLD_EXPORT_AUDIT: " + report + gaps +
-               mappings + trace + log + "\n" + services.uiSummary() + "\n" +
+               mappings + trace + serviceTrace + log + "\n" + services.uiSummary() + "\n" +
                services.graphicsSummary() + guestFrameStatus + "\n" + services.guestClassSummary() +
                "\nGUEST_THREADS: " + services.threadSummary() +
                "\nGUEST_AUDIO: " + services.audioSummary() +

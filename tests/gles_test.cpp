@@ -68,6 +68,37 @@ const char* kAngryBirdsImports[] = {
     "_glVertexPointer",
     "_glViewport",
 };
+// Common ES 2.0/core spellings and state/readback entry points added for newer titles.
+const char* kExpandedGlesImports[] = {
+    "_glAttachShader", "_glBindAttribLocation", "_glBindFramebuffer", "_glBindRenderbuffer",
+    "_glCheckFramebufferStatus", "_glClearStencil", "_glCompileShader", "_glCompressedTexSubImage2D",
+    "_glCopyTexImage2D", "_glCopyTexSubImage2D", "_glCreateProgram", "_glCreateShader",
+    "_glDetachShader", "_glFinish", "_glFlush", "_glGetActiveAttrib", "_glGetActiveUniform",
+    "_glGetAttachedShaders", "_glGetBufferParameteriv", "_glGetFramebufferAttachmentParameteriv",
+    "_glGetFramebufferAttachmentParameterivOES",
+    "_glColorMaterial", "_glCullFace", "_glDeleteFramebuffers", "_glDeleteProgram",
+    "_glDeleteRenderbuffers", "_glDeleteShader", "_glDisableVertexAttribArray",
+    "_glEnableVertexAttribArray",
+    "_glFramebufferRenderbuffer", "_glFramebufferTexture2D", "_glGenFramebuffers",
+    "_glGenRenderbuffers", "_glGenerateMipmap", "_glGetAttribLocation", "_glGetBooleanv",
+    "_glGetError", "_glGetFloatv", "_glGetProgramInfoLog", "_glGetProgramiv", "_glGetShaderInfoLog",
+    "_glGetShaderiv", "_glGetShaderPrecisionFormat", "_glGetShaderSource", "_glGetString",
+    "_glGetTexParameterfv", "_glGetTexParameteriv", "_glGetUniformfv", "_glGetUniformiv",
+    "_glGetUniformLocation", "_glGetVertexAttribfv", "_glGetVertexAttribiv",
+    "_glGetVertexAttribPointerv", "_glIsEnabled", "_glIsProgram", "_glIsShader", "_glLinkProgram",
+    "_glLightf", "_glLightModelfv", "_glLightModeli", "_glLoadIdentity", "_glMaterialf",
+    "_glMultMatrixf", "_glNormal3f", "_glOrthof", "_glPopMatrix", "_glPushMatrix",
+    "_glRotatef", "_glScalef", "_glTranslatef", "_glFrustumf",
+    "_glReadPixels", "_glReleaseShaderCompiler", "_glShaderBinary", "_glBufferSubData",
+    "_glShaderSource", "_glBlendEquation", "_glBlendFuncSeparate", "_glStencilFunc", "_glStencilOp",
+    "_glUniform1f", "_glUniform1fv", "_glUniform1i", "_glUniform1iv", "_glUniform2f", "_glUniform2fv",
+    "_glUniform2i", "_glUniform2iv", "_glUniform3f", "_glUniform3fv", "_glUniform3i", "_glUniform3iv",
+    "_glTexParameterf", "_glTexParameterfv", "_glTexParameteriv", "_glValidateProgram",
+    "_glUniform4f", "_glUniform4fv", "_glUniform4i", "_glUniform4iv", "_glUniformMatrix2fv",
+    "_glUniformMatrix3fv", "_glUniformMatrix4fv", "_glUseProgram", "_glVertexAttrib1f", "_glVertexAttrib1fv", "_glVertexAttrib2f", "_glVertexAttrib2fv",
+    "_glVertexAttrib3f", "_glVertexAttrib3fv", "_glVertexAttrib4f", "_glVertexAttrib4fv",
+    "_glVertexAttribPointer",
+};
 // A driver must never be faked. With no GLES library resolvable the bridge reports itself
 // unavailable, owns no symbols, and refuses every call instead of returning success.
 void noDriver() {
@@ -96,6 +127,11 @@ void ownedSymbols() {
         bool found = false;
         for (const std::string& symbol : symbols) found = found || symbol == name;
         check(found, std::string("Angry Birds imports ") + name);
+    }
+    for (const char* name : kExpandedGlesImports) {
+        bool found = false;
+        for (const std::string& symbol : symbols) found = found || symbol == name;
+        check(found, std::string("expanded GLES import ") + name);
     }
     // EAGL is a UIKit object boundary, not an exported GL symbol; it must not appear here.
     for (const std::string& symbol : symbols)
