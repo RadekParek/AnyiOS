@@ -575,11 +575,22 @@ void Services::install(ExportGraph& graph, const std::vector<std::string>& depen
     const size_t standard = imageFor("/usr/lib/libstdc++.6.dylib");
     for (size_t n = 0; n < symbols.size(); n++)
         graph.define(imageFor(libraryOf(symbols[n])), symbols[n], {Base + uint32_t(n) * 8});
-    for (const char* sharedName : {"___cxa_atexit", "___cxa_finalize", "___gxx_personality_sj0"}) {
+    // Which library a shared name is defined in follows the titles, not a guess. AngryBirds
+    // 1.0 binds ___cxa_atexit with the libSystem.B ordinal and ___gxx_personality_sj0 with
+    // libstdc++'s: on this SDK generation libSystem re-exports the C ABI half of the C++
+    // runtime but not the personality routine. A bind whose ordinal names a library the graph
+    // has no definition in resolves to the unimplemented-import trap, so the owner list per
+    // name is what keeps a working implementation reachable.
+    const std::pair<const char*, std::vector<size_t>> sharedNames[] = {
+        {"___cxa_atexit", {standard, helpers, system}},
+        {"___cxa_finalize", {standard, helpers, system}},
+        {"___gxx_personality_sj0", {standard, helpers}},
+    };
+    for (const auto& [sharedName, owners] : sharedNames) {
         const auto found = std::find(symbols.begin(), symbols.end(), sharedName);
         if (found == symbols.end()) continue;
         const uint32_t address = Base + uint32_t(found - symbols.begin()) * 8;
-        for (size_t image : {standard, helpers})
+        for (size_t image : owners)
             if (!graph.strong(image, sharedName)) graph.define(image, sharedName, {address});
     }
     const size_t uiKit = imageFor("/System/Library/Frameworks/UIKit.framework/UIKit");

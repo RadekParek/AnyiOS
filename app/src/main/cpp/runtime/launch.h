@@ -20,6 +20,12 @@ struct LaunchOptions {
     // single-stepping costs roughly ten times the execution rate: a verbose run that only
     // needs names and arguments should not pay for it.
     bool precise = false;
+    // Settings ▸ "Native OpenGL ES": resolve GL against the device's own driver first and
+    // keep the bundled ANGLE as the fallback. Off, the bundled ANGLE is the only driver tried
+    // first, so GL behaves the same on every device rather than depending on the GPU vendor.
+    // Either way an ES 1.1 title whose fixed-function entry points no loaded driver exports
+    // is served by the bridge emulating them over ES 2.0.
+    bool nativeGles = false;
 };
 // Real, bounded loader attempt. Never jump into guest code with unresolved services.
 // `bundleHost` and `containerHost` are the host directories that back the guest sandbox

@@ -44,6 +44,13 @@ bool GuestHeap::ensureMapped() noexcept {
     return true;
 }
 uint32_t GuestHeap::allocate(uint32_t bytes, uint32_t alignment) noexcept {
+    if (bytes >= LargeRequestBytes) {
+        largeRequestCount++;
+        largestRequestBytes = std::max(largestRequestBytes, bytes);
+    }
+    return allocateFrom(bytes, alignment);
+}
+uint32_t GuestHeap::allocateFrom(uint32_t bytes, uint32_t alignment) noexcept {
     if (!bytes || alignment < 4 || alignment > 4096 || (alignment & (alignment - 1))) return 0;
     if (!ensureMapped()) return 0;
     for (auto block = freeBlocks.begin(); block != freeBlocks.end(); ++block) {
@@ -62,13 +69,18 @@ uint32_t GuestHeap::allocate(uint32_t bytes, uint32_t alignment) noexcept {
     // The remaining free space is fragmented or too small: map more of the address space and
     // retry. This is how a real heap grows, and it keeps the host allocation proportional to
     // what the title actually uses.
-    if (grow()) return allocate(bytes, alignment);
+    if (grow()) return allocateFrom(bytes, alignment);
     return 0;
 }
 uint32_t GuestHeap::used() const {
     uint32_t total = 0;
     for (const auto& entry : live) total += entry.second;
     return total;
+}
+uint32_t GuestHeap::largestFreeBlock() const {
+    uint32_t largest = 0;
+    for (const auto& block : freeBlocks) largest = std::max(largest, block.second);
+    return largest;
 }
 void GuestHeap::release(uint32_t pointer) {
     auto found = live.find(pointer);

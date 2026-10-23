@@ -1,6 +1,10 @@
 #include "cpu.h"
 
 #include <dynarmic/interface/A32/a32.h>
+#include <dynarmic/interface/A32/coprocessor.h>
+#include <dynarmic/interface/exclusive_monitor.h>
+#include <dynarmic/interface/halt_reason.h>
+#include <dynarmic/interface/optimization_flags.h>
 #include <unistd.h>
 
 #include <algorithm>
@@ -8,14 +12,90 @@
 #include <csignal>
 #include <cstring>
 #include <limits>
+#include <memory>
 #include <optional>
 
 #include "error.h"
 namespace podnative::runtime {
+namespace {
+using CoprocReg = Dynarmic::A32::CoprocReg;
+using Coprocessor = Dynarmic::A32::Coprocessor;
+
+// Translated code is kept in one reservation that is committed as it fills. 16 MiB was
+// enough for a single 1.8 MB iOS 3 image but forced a real title's hot loops out of the
+// cache; the engine only reserves address space here, so a larger cache costs nothing
+// until a block is actually compiled.
+constexpr size_t CodeCacheBytes = 128 * 1024 * 1024;
+
+uint64_t ignoreCoprocessorOperation(void*, uint32_t, uint32_t) { return 0; }
+
+// iPhone OS user mode has no coprocessor it needs, but an MRC/MCR/LDC/STC the decoder
+// routes to an unregistered coprocessor is a translation failure inside the engine, not a
+// guest fault. Answering every operation (reads as zero, writes discarded) keeps a title
+// that probes one running, exactly as the hardware would for a trapped-but-ignored access.
+class IgnoredCoprocessor : public Coprocessor {
+   public:
+    Callback ignored() const { return Callback{&ignoreCoprocessorOperation, std::nullopt}; }
+    CallbackOrAccessOneWord CompileSendOneWord(bool, unsigned, CoprocReg, CoprocReg,
+                                               unsigned) override {
+        return ignored();
+    }
+    std::optional<Callback> CompileInternalOperation(bool, unsigned, CoprocReg, CoprocReg,
+                                                     CoprocReg, unsigned) override {
+        return ignored();
+    }
+    CallbackOrAccessTwoWords CompileSendTwoWords(bool, unsigned, CoprocReg) override {
+        return ignored();
+    }
+    CallbackOrAccessOneWord CompileGetOneWord(bool, unsigned, CoprocReg, CoprocReg,
+                                              unsigned) override {
+        return ignored();
+    }
+    CallbackOrAccessTwoWords CompileGetTwoWords(bool, unsigned, CoprocReg) override {
+        return ignored();
+    }
+    std::optional<Callback> CompileLoadWords(bool, bool, CoprocReg,
+                                             std::optional<uint8_t>) override {
+        return ignored();
+    }
+    std::optional<Callback> CompileStoreWords(bool, bool, CoprocReg,
+                                              std::optional<uint8_t>) override {
+        return ignored();
+    }
+};
+
+// CP15 is the system control coprocessor. The one register user-mode iOS code reads is
+// c13/c0/3 (TPIDRURO, the read-only thread id): libSystem keeps the running thread's
+// thread-specific-data array behind it, and code built against libSystem inlines
+// `pthread_getspecific` as `mrc p15, 0, rX, c13, c0, 3` plus a load. Compiled guest code
+// reads the host word this class points at, so each guest thread can be given its own array
+// without a service call per access.
+class SystemCoprocessor final : public IgnoredCoprocessor {
+   public:
+    explicit SystemCoprocessor(uint32_t* threadIdRegister) : threadIdRegister(threadIdRegister) {}
+    CallbackOrAccessOneWord CompileGetOneWord(bool two, unsigned opc1, CoprocReg crn, CoprocReg crm,
+                                              unsigned opc2) override {
+        if (!two && opc1 == 0 && crn == CoprocReg::C13 && crm == CoprocReg::C0 && opc2 == 3)
+            return threadIdRegister;
+        return IgnoredCoprocessor::CompileGetOneWord(two, opc1, crn, crm, opc2);
+    }
+
+   private:
+    uint32_t* threadIdRegister;
+};
+
+// Every halt reason this engine can raise. Clearing them together on a state restore is
+// what lets a run continue after a service call without discarding translated code.
+constexpr Dynarmic::HaltReason AllHalts = static_cast<Dynarmic::HaltReason>(0xffffffffu);
+}  // namespace
 class Cpu::Impl final : public Dynarmic::A32::UserCallbacks {
    public:
     Memory& memory;
+    // Declared before the JIT: the engine keeps pointers into both.
+    Dynarmic::ExclusiveMonitor monitor{1};
+    uint32_t threadIdRegister = 0;
     std::unique_ptr<Dynarmic::A32::Jit> jit;
+    CpuCounters counters;
     std::optional<CpuStop> stopped;
     bool poisoned = false;
     uint32_t instructionPC = 0;
@@ -24,7 +104,10 @@ class Cpu::Impl final : public Dynarmic::A32::UserCallbacks {
     // still a count of retired instructions, not an estimate.
     uint64_t ticksRemaining = 0, ticksUsed = 0;
     bool precise = false;
-    uint64_t observedMemoryRevision = 0;
+    // Translated code goes stale when guest *instructions* change, not when the guest writes
+    // to its own heap. Watching only code edits is what lets a host service call return
+    // without throwing away everything the engine has compiled.
+    uint64_t observedCodeRevision = 0;
     // A ring of the PCs that were about to execute, newest at pcCursor-1. Fixed size, one
     // store per instruction, so it stays affordable in a profile build too.
     static constexpr size_t PcHistory = 256;
@@ -94,6 +177,11 @@ class Cpu::Impl final : public Dynarmic::A32::UserCallbacks {
         sigaction(SIGBUS, &action, &previousBus);
     }
     explicit Impl(Memory& memory, IsaArch arch) : memory(memory) {
+        // This reporter is installed *before* the engine's own handler: the engine chains a
+        // fault it cannot explain to whatever was already installed, and with direct guest
+        // memory it recovers guest faults itself. Installing in the other order would let
+        // this reporter turn a recovered guest access into a host crash.
+        installCrashReporter();
         Dynarmic::A32::UserConfig config{};
         config.callbacks = this;
         // iOS "armv6" devices are ARM11 cores, i.e. ARMv6K. Dynarmic has no plain v6
@@ -101,12 +189,54 @@ class Cpu::Impl final : public Dynarmic::A32::UserCallbacks {
         config.arch_version = arch == IsaArch::ArmV6 ? Dynarmic::A32::ArchVersion::v6K
                                                      : Dynarmic::A32::ArchVersion::v7;
         config.check_halt_on_memory_access = true;
-        config.code_cache_size = 16 * 1024 * 1024;
-        config.unsafe_optimizations = false;
+        config.code_cache_size = CodeCacheBytes;
+        // LDREX/STREX are how iOS 3-era libSystem builds every atomic and spin lock. They
+        // need a real exclusive monitor, not a refusal.
+        config.processor_id = 0;
+        config.global_monitor = &monitor;
+        // Guest hint instructions are reported so WFE/YIELD in a spin loop is a scheduling
+        // observation instead of a fatal exception.
+        config.hook_hint_instructions = true;
+        // Floating-point accuracy trade-offs the engine documents as unsafe. They drop
+        // per-instruction FPCR/NaN bookkeeping from emitted code, which is a large part of
+        // the speed of VFP-heavy game code. The global exclusive monitor is deliberately
+        // NOT ignored: guest atomics across threads must stay coherent.
+        config.unsafe_optimizations = true;
+        config.optimizations = config.optimizations | Dynarmic::OptimizationFlag::Unsafe_UnfuseFMA |
+                               Dynarmic::OptimizationFlag::Unsafe_ReducedErrorFP |
+                               Dynarmic::OptimizationFlag::Unsafe_InaccurateNaN |
+                               Dynarmic::OptimizationFlag::Unsafe_IgnoreStandardFPCRValue;
+        for (size_t coprocessor = 0; coprocessor < config.coprocessors.size(); coprocessor++)
+            config.coprocessors[coprocessor] = std::make_shared<IgnoredCoprocessor>();
+        config.coprocessors[15] = std::make_shared<SystemCoprocessor>(&threadIdRegister);
+        // Direct guest memory. With it the engine compiles a guest load or store into a
+        // single host access; without it every access is a call back into this file. Both
+        // paths keep the same faults: unmapped, null and read-only accesses still arrive
+        // through the checked callbacks below and still produce MEMORY_* stops.
+        counters.directMemory = memory.enableDirectAccess();
+        if (counters.directMemory) {
+            config.page_table = memory.pageTable();
+            // One flat reservation means `host == base + guest` for every page, so the table
+            // holds the same base everywhere and the engine folds it into the addressing mode.
+            config.absolute_offset_page_table = true;
+            // Hardware fault recovery needs guest page protections to be exact on the host,
+            // and it cannot be used at all while a page is both writable and executable:
+            // a guest store into such a page has to reach the callback that invalidates the
+            // translated code for it.
+            counters.fastMemory =
+                memory.directProtectionIsExact() && !memory.hasWritableExecutable();
+            if (counters.fastMemory)
+                config.fastmem_pointer = reinterpret_cast<uintptr_t>(memory.directBase());
+        }
+        counters.exclusiveMonitor = config.global_monitor != nullptr;
         jit = std::make_unique<Dynarmic::A32::Jit>(config);
-        installCrashReporter();
+        observedCodeRevision = memory.codeRevision();
+        memory.takeCodeEdits();
     }
     ~Impl() {
+        // The engine's handler is chained to this one; drop the JIT (and with it that
+        // handler) before the reporter it chains to disappears.
+        jit.reset();
         sigaction(SIGSEGV, &previousSegv, nullptr);
         sigaction(SIGBUS, &previousBus, nullptr);
         if (active == this) active = nullptr;
@@ -116,10 +246,23 @@ class Cpu::Impl final : public Dynarmic::A32::UserCallbacks {
             stopped = CpuStop{StopReason::Fault, 0, instructionPC, 0, address, code, detail};
         if (jit) jit->HaltExecution(Dynarmic::HaltReason::MemoryAbort);
     }
+    // Invalidates exactly the guest code the host changed since the last sync. A run that
+    // makes thousands of service calls used to discard its whole code cache on every one of
+    // them, which is why a title spent its first seconds recompiling instead of running.
+    void syncCodeEdits() {
+        if (observedCodeRevision == memory.codeRevision()) return;
+        observedCodeRevision = memory.codeRevision();
+        for (const Range& range : memory.takeCodeEdits()) {
+            if (range.end <= range.begin) continue;
+            jit->InvalidateCacheRange(range.begin, range.end - range.begin);
+            counters.invalidatedRanges++;
+        }
+    }
     // Exceptions never unwind through generated machine code.
     template <class T>
     T read(uint32_t address) {
         if (stopped) return 0;
+        counters.callbackReads++;
         uint8_t bytes[sizeof(T)]{};
         try {
             memory.read(address, bytes, sizeof(T));
@@ -134,6 +277,7 @@ class Cpu::Impl final : public Dynarmic::A32::UserCallbacks {
     template <class T>
     void write(uint32_t address, T value) {
         if (stopped) return;
+        counters.callbackWrites++;
         uint8_t bytes[sizeof(T)];
         for (size_t i = 0; i < sizeof(T); i++) bytes[i] = uint8_t(value >> (i * 8));
         try {
@@ -144,7 +288,6 @@ class Cpu::Impl final : public Dynarmic::A32::UserCallbacks {
             const bool executable = memory.permits(address, sizeof(T), Execute);
             memory.write(address, bytes, sizeof(T));
             if (executable) jit->InvalidateCacheRange(address, sizeof(T));
-            observedMemoryRevision = memory.revision();
         } catch (const Error& e) {
             fault(e.code, e.what(), e.address);
         }
@@ -165,10 +308,19 @@ class Cpu::Impl final : public Dynarmic::A32::UserCallbacks {
     void MemoryWrite16(uint32_t a, uint16_t v) override { write(a, v); }
     void MemoryWrite32(uint32_t a, uint32_t v) override { write(a, v); }
     void MemoryWrite64(uint32_t a, uint64_t v) override { write(a, v); }
+    // A guest page the guest cannot write keeps its contents for as long as it is mapped;
+    // the only writer is a loader patch, and that is reported as a code edit which
+    // invalidates the blocks that folded it.
+    bool IsReadOnlyMemory(uint32_t address) override { return memory.pageIsReadOnly(address); }
+    // LDREX/STREX. The engine's monitor hands over the value the matching LDREX saw; the
+    // store only lands when the guest memory still holds it, which is the ARM guarantee the
+    // guest's atomics, spin locks and once-tokens are written against.
     template <class T>
-    bool exclusive(uint32_t address, T, T) {
-        fault("CPU_EXCLUSIVE_UNSUPPORTED", "exclusive-memory semantics not yet validated", address);
-        return false;
+    bool exclusive(uint32_t address, T value, T expected) {
+        counters.exclusiveStores++;
+        if (read<T>(address) != expected) return false;
+        write(address, value);
+        return !stopped;
     }
     bool MemoryWriteExclusive8(uint32_t a, uint8_t v, uint8_t e) override {
         return exclusive(a, v, e);
@@ -223,8 +375,43 @@ class Cpu::Impl final : public Dynarmic::A32::UserCallbacks {
         jit->HaltExecution(Dynarmic::HaltReason::UserDefined1);
     }
     void ExceptionRaised(uint32_t pc, Dynarmic::A32::Exception exception) override {
-        fault("CPU_EXCEPTION", "Dynarmic exception " + std::to_string(static_cast<int>(exception)),
-              pc);
+        using Dynarmic::A32::Exception;
+        switch (exception) {
+            case Exception::WaitForEvent:
+            case Exception::WaitForInterrupt:
+                // A wait hint says the guest has nothing to do until an event or interrupt this
+                // runtime does not deliver. Counted separately because a title that parks a
+                // thread here is idle, not stuck, and the scheduler already switches away from
+                // it at the next slice boundary.
+                counters.waitInstructions++;
+                counters.hintInstructions++;
+                return;
+            case Exception::Yield:
+            case Exception::SendEvent:
+            case Exception::SendEventLocal:
+            case Exception::PreloadData:
+            case Exception::PreloadDataWithIntentToWrite:
+            case Exception::PreloadInstruction:
+                // Hints. On the device these are low-power or scheduling hints, never faults,
+                // and the engine has already moved the PC past them: a spin loop that yields
+                // must keep spinning, not stop the run. Counted so a report can show how often
+                // the guest asked to yield.
+                counters.hintInstructions++;
+                return;
+            case Exception::NoExecuteFault:
+                // The instruction fetch already reported the exact reason (unmapped, null or a
+                // page without execute permission); this only makes sure the run stops.
+                fault("MEMORY_ACCESS", "instruction fetch from a page that cannot be executed", pc);
+                return;
+            case Exception::Breakpoint:
+            case Exception::UndefinedInstruction:
+            case Exception::UnpredictableInstruction:
+            case Exception::DecodeError:
+            default:
+                fault("CPU_EXCEPTION",
+                      "Dynarmic exception " + std::to_string(static_cast<int>(exception)), pc);
+                return;
+        }
     }
     void AddTicks(uint64_t ticks) override {
         ticksUsed += ticks;
@@ -236,6 +423,8 @@ Cpu::Impl* Cpu::Impl::active = nullptr;
 Cpu::Cpu(Memory& memory, IsaArch arch) : impl_(std::make_unique<Impl>(memory, arch)) {}
 Cpu::~Cpu() = default;
 void Cpu::setPrecise(bool on) { impl_->precise = on; }
+void Cpu::setThreadIdRegister(uint32_t value) { impl_->threadIdRegister = value; }
+CpuCounters Cpu::counters() const { return impl_->counters; }
 void Cpu::setState(const CpuState& state) {
     if ((state.cpsr & 0x1f) != 0x10 || (state.cpsr & 0x200))
         throw Error("CPU_STATE", "only little-endian ARM user mode is supported",
@@ -243,15 +432,19 @@ void Cpu::setState(const CpuState& state) {
     const bool thumb = state.cpsr & 0x20;
     if (state.registers[15] % (thumb ? 2 : 4))
         throw Error("CPU_ALIGNMENT", "invalid initial PC", state.registers[15]);
-    impl_->jit->Reset();
-    impl_->jit->ClearCache();
+    // Restoring state is not a reason to throw translated code away: a title returns from a
+    // host service call thousands of times a second. The pending halt is cleared, the
+    // exclusive reservation of the previous context is dropped, and only guest *code* the
+    // host changed is invalidated.
+    impl_->jit->ClearHalt(AllHalts);
     impl_->jit->Regs() = state.registers;
     impl_->jit->ExtRegs() = state.extensionRegisters;
     impl_->jit->SetCpsr(state.cpsr);
     impl_->jit->SetFpscr(state.fpscr);
+    impl_->jit->ClearExclusiveState();
     impl_->stopped.reset();
     impl_->poisoned = false;
-    impl_->observedMemoryRevision = impl_->memory.revision();
+    impl_->syncCodeEdits();
 }
 CpuState Cpu::state() const {
     return {impl_->jit->Regs(), impl_->jit->ExtRegs(), impl_->jit->Cpsr(), impl_->jit->Fpscr()};
@@ -277,10 +470,7 @@ CpuStop Cpu::run(uint64_t budget) {
     impl_->stopped.reset();
     impl_->jit->ClearHalt(Dynarmic::HaltReason::UserDefined1);
     // External host writes between slices must never leave translated instructions stale.
-    if (impl_->observedMemoryRevision != impl_->memory.revision()) {
-        impl_->jit->ClearCache();
-        impl_->observedMemoryRevision = impl_->memory.revision();
-    }
+    impl_->syncCodeEdits();
     impl_->ticksUsed = 0;
     impl_->ticksRemaining = budget;
     // Two execution paths, one instruction count.

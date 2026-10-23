@@ -18,6 +18,9 @@ std::unique_ptr<podnative::GraphicsBackend> backend;
 // The Settings switch. It is process-wide on purpose: the report and the guest log must agree
 // about whether deep tracing was on for the run that produced them.
 bool verboseLogging = false;
+// Settings ▸ "Native OpenGL ES". Also process-wide and also read at launch: the driver is
+// resolved once, so the switch has to be settled before the guest makes its first GL call.
+bool nativeGles = false;
 void fail(JNIEnv* env, const std::exception& e) {
     __android_log_print(ANDROID_LOG_ERROR, "PodNative", "%s", e.what());
     env->ThrowNew(env->FindClass("java/lang/IllegalStateException"), e.what());
@@ -138,6 +141,7 @@ extern "C" JNIEXPORT jstring JNICALL Java_org_podnative_NativeBridge_attemptLaun
         const std::string container = pathFrom(env, containerPath);
         podnative::runtime::LaunchOptions options;
         options.verbose = verboseLogging;
+        options.nativeGles = nativeGles;
         if (options.verbose) options.logLines = 4000;
         const auto report =
             podnative::runtime::attemptLaunch(data.data(), data.size(), bundle, container, options);
@@ -151,6 +155,11 @@ extern "C" JNIEXPORT jstring JNICALL Java_org_podnative_NativeBridge_attemptLaun
 extern "C" JNIEXPORT void JNICALL Java_org_podnative_NativeBridge_setVerbose(JNIEnv*, jclass,
                                                                              jboolean on) {
     verboseLogging = on == JNI_TRUE;
+}
+
+extern "C" JNIEXPORT void JNICALL Java_org_podnative_NativeBridge_setNativeGles(JNIEnv*, jclass,
+                                                                                jboolean on) {
+    nativeGles = on == JNI_TRUE;
 }
 
 extern "C" JNIEXPORT void JNICALL Java_org_podnative_NativeBridge_image(JNIEnv* env, jclass,

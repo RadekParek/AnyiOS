@@ -128,6 +128,63 @@ shaders, depth/stencil variants and Core Animation composition remain untested.
 Unsupported guest APIs will need semantic implementations or structured rejection,
 not no-op stubs.
 
+## Driver order and the OpenGL ES 1.1 gap
+
+`scripts/build-angle.sh` builds `libEGL` and `libGLESv2` only; upstream dropped
+`libGLESv1_CM`, so an `EGL_CONTEXT_CLIENT_VERSION 1` context cannot be created
+through the bundled driver. Titles built for iOS 3.x-5.x are ES 1.1 titles: they
+import `glVertexPointer`, `glColorPointer`, `glTexCoordPointer`, `glNormalPointer`,
+`glEnableClientState`, `glMatrixMode`, `glLoadMatrixf`, `glColor4f`,
+`glClientActiveTexture`, `glTexEnvi`, `glLightfv` and `glMaterialfv`, and an ES 2.0
+driver exports none of those names. Against bundled ANGLE such a title used to stop
+at its first fixed-function call, with the import's trap naming the function.
+
+The GL bridge resolves drivers as *families*: an EGL library together with the GLES
+library that belongs to it. An EGL from one driver and a GLES from another produce a
+display the two disagree about, which is a black screen with no error anywhere. The
+order is
+
+1. bundled ANGLE, `libEGL_podnative.so` + `libGLESv2_podnative.so` — the default;
+2. the device driver, `libEGL.so` + `libGLESv2.so` + `libGLESv1_CM.so`;
+3. the device driver by soname, `libEGL.so` + `libGLESv2.so.2`.
+
+Settings ▸ **Native OpenGL ES** reverses that order, for a title that needs
+something the bundled driver does not provide. It is off by default, it is applied
+before the driver is resolved, and it is never silent: `GLES_STATE` in the launch
+report names the libraries that answered and which order was preferred. EGL and
+ES 1.1 are optional inside a family, because a driver that ships both APIs in one
+library answers the EGL names from the GLES handle.
+
+A family whose GLES library has `glDrawArrays` but no `glVertexPointer` has no
+ES 1.1 frontend, and the bridge then serves those entry points itself instead of
+leaving them trapped. It holds the state an ES 2.0 driver has no place for — matrix
+mode, projection/modelview/texture matrices, current colour, client-array
+descriptions, texture-environment mode, client texture unit — and draws through a
+generated ES 2.0 program, asking EGL for an ES 2.0 context even though the guest
+asked for ES 1.1. `GL_FIXED` positions are widened to floats, a byte colour array is
+passed normalised so 255 still means 1.0, a client array in guest memory is copied
+into a stream buffer, and an array the guest already put in a buffer object is passed
+through as an offset with nothing copied. Programs are cached per variant — colour
+array on or off, texture coordinates from an array or from the current value,
+`GL_REPLACE` or not — so a frame does not relink. A draw copies as far as it will be
+read: to `first + count`, or to the largest index for an indexed draw.
+
+What the emulation does *not* do is reported too, because a title that looks wrong on
+a device nobody can attach a debugger to is otherwise undiagnosable: lighting is
+recorded and counted but not shaded, the `GL_DECAL`, `GL_BLEND` and `GL_ADD` texture
+environments are approximated as modulate and counted, and use of a client texture
+unit beyond the emulated one is counted. A generated shader that fails to compile is
+refused rather than drawn with, and the driver's own info log goes into the report.
+
+A driver that does have ES 1.1 keeps forwarding every call untouched and none of this
+state is used; `tests/gles_driver_test.cpp` covers that side against
+`tests/gles_stub_driver.cpp`. The emulation side is covered by
+`tests/gles_emulation_test.cpp` against `tests/gles_es2_stub_driver.cpp`, an ES 2.0
+-only recording double: the context version asked for, the generated shader pair and
+attribute bindings, the model-view-projection product, the vertex and index copies,
+fixed-point widening, the program cache and the named refusal. That double records
+rather than renders, so this is evidence of translation, not of a drawn frame.
+
 ## Licensing and distribution gate
 
 Retain upstream copyright, disclaimer and license; no upstream changes are made.

@@ -55,6 +55,13 @@ GuestRun execute(LoadedImage& image, Services& services, const ExportGraph& grap
     run.trappedImports = services.trapCount();
 
     Cpu cpu(*image.memory, image.arch);
+    // Every stop path returns `run`, so the engine's counters are published by scope exit
+    // rather than at each of the dozen places a run can end.
+    struct EngineCounters {
+        Cpu& cpu;
+        GuestRun& run;
+        ~EngineCounters() { run.engine = cpu.counters(); }
+    } engineCounters{cpu, run};
     // A precise trace asks the CPU for single-stepping: a trace whose PCs are block entries
     // would not be a trace of what the guest did. It is its own switch because it costs about
     // ten times the execution rate.
@@ -255,6 +262,20 @@ std::string describeRun(GuestRun& run) {
     if (!run.detail.empty()) out << " — " << run.detail;
     out << "\nGUEST_BLOCKER: kind=" << run.blockerKind << " subject=" << run.blockerSubject
         << " pc=" << pointer(run.pc) << " instructions=" << run.instructions;
+    // Engine evidence: how guest memory was reached and how much translated code survived.
+    // A run that discards its code cache per host call is a run that spends its time
+    // recompiling, which is exactly what this line makes visible.
+    out << "\nCPU_ENGINE: guest memory "
+        << (run.engine.directMemory
+                ? (run.engine.fastMemory ? "direct (flat arena, hardware fault recovery)"
+                                         : "direct (flat arena, checked page table)")
+                : "checked callbacks")
+        << ", exclusive monitor " << (run.engine.exclusiveMonitor ? "on" : "off") << ", "
+        << run.engine.fullCacheClears << " full code-cache clears, " << run.engine.invalidatedRanges
+        << " invalidated code range(s), " << run.engine.exclusiveStores << " exclusive store(s), "
+        << run.engine.hintInstructions << " hint instruction(s) of which "
+        << run.engine.waitInstructions << " wait(s), " << run.engine.callbackReads
+        << " checked read(s) and " << run.engine.callbackWrites << " checked write(s)";
     // "pc=0x47054" alone does not tell anyone what the guest was doing; the nearest
     // preceding function symbol does.
     if (!run.pcSymbol.empty()) out << " symbol=" << run.pcSymbol;

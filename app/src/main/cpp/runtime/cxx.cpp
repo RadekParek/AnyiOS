@@ -104,16 +104,50 @@ void CxxRuntime::zero(uint32_t address, size_t bytes) {
         done += chunk;
     }
 }
-uint32_t CxxRuntime::allocate(uint32_t bytes, const char* what) {
+uint32_t CxxRuntime::allocate(uint32_t bytes, const char* what, const CpuState* caller) {
     if (!bytes) bytes = 1;
+    const uint32_t returnAddress = caller ? caller->registers[14] : 0;
+    noteLargeRequest(what, bytes, returnAddress);
     const uint32_t pointer = heap.allocate(bytes, 8);
-    if (!pointer)
-        throw Error("CXX_ALLOC",
-                    std::string(what) + " could not be satisfied: the guest heap " + "holds " +
-                        std::to_string(heap.used()) + " of " + std::to_string(heap.capacity()) +
-                        " bytes and the request " + "was " + std::to_string(bytes) + " bytes",
-                    bytes);
-    return pointer;
+    if (pointer) return pointer;
+    std::string detail = std::string(what) + " could not be satisfied: the guest heap holds " +
+                         std::to_string(heap.used()) + " of " + std::to_string(heap.capacity()) +
+                         " bytes, its largest contiguous free block is " +
+                         std::to_string(heap.largestFreeBlock()) + " bytes, and the request was " +
+                         std::to_string(bytes) + " bytes";
+    if (returnAddress) detail += " from guest return address 0x" + hex(returnAddress);
+    if (caller) {
+        const std::string trace = guestBacktrace(*caller);
+        if (!trace.empty()) detail += "; guest call stack: " + trace;
+    }
+    throw Error("CXX_ALLOC", detail, bytes);
+}
+std::string CxxRuntime::guestBacktrace(const CpuState& cpu) const {
+    // iOS ARM images keep a frame chain in r7: [r7] is the caller's r7, [r7+4] its return
+    // address. Walking it reports the guest's own call stack, which is what turns "the heap
+    // ran out" into "this guest code asked for it". Every word is checked against guest
+    // permissions before it is read, and the walk stops at the first frame that does not
+    // look like one, so a corrupt chain yields a short trace rather than a wrong one.
+    std::string trace;
+    uint32_t frame = cpu.registers[7];
+    for (size_t depth = 0; depth < 16; depth++) {
+        if (!frame || (frame & 3) || !memory.permits(frame, 8, Read)) break;
+        const uint32_t caller = memory.read32(frame);
+        const uint32_t returnAddress = memory.read32(frame + 4);
+        if (returnAddress < 4 || !memory.permits(returnAddress - 4, 4, Execute)) break;
+        char cell[16];
+        std::snprintf(cell, sizeof(cell), "%08x", returnAddress);
+        if (!trace.empty()) trace += ' ';
+        trace += "0x" + std::string(cell);
+        if (caller <= frame) break;  // unwinding moves up the stack
+        frame = caller;
+    }
+    return trace;
+}
+void CxxRuntime::noteLargeRequest(const char* what, uint32_t bytes, uint32_t returnAddress) const {
+    if (!verbose || bytes < GuestHeap::LargeRequestBytes) return;
+    emit(std::string(what) + " asked for " + std::to_string(bytes) +
+         " bytes from guest return address 0x" + hex(returnAddress));
 }
 uint32_t CxxRuntime::errnoAddress() {
     if (!errnoCell) {
@@ -571,7 +605,7 @@ bool CxxRuntime::fortified(const std::string& name, CpuState& cpu) {
 bool CxxRuntime::abi(const std::string& name, CpuState& cpu) {
     auto& r = cpu.registers;
     if (name == "__Znwm" || name == "_Znwm" || name == "__Znam" || name == "_Znam") {
-        r[0] = allocate(r[0], "operator new");
+        r[0] = allocate(r[0], "operator new", &cpu);
         return true;
     }
     if (name == "__ZdlPv" || name == "_ZdlPv" || name == "__ZdaPv" || name == "_ZdaPv") {
@@ -583,7 +617,7 @@ bool CxxRuntime::abi(const std::string& name, CpuState& cpu) {
     }
     if (name == "___cxa_allocate_exception") {
         const uint32_t bytes = std::max<uint32_t>(r[0], 8);
-        r[0] = allocate(bytes, "exception object");
+        r[0] = allocate(bytes, "exception object", &cpu);
         zero(r[0], bytes);
         return true;
     }
