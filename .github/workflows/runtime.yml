@@ -75,6 +75,9 @@ jobs:
           mkdir -p .local/pc-artifact
           cp .local/cpu-tests/cpu_test .local/pc-artifact/AnyiOS-linux-x86_64-cpu-test
           cp .local/cpu-tests/oaknut_wx_test .local/pc-artifact/AnyiOS-linux-x86_64-wx-test
+          cp .local/cpu-tests/dyld_test .local/pc-artifact/AnyiOS-linux-x86_64-dyld-test
+          cp .local/cpu-tests/libc_test .local/pc-artifact/AnyiOS-linux-x86_64-libc-test
+          cp .local/cpu-tests/objc_test .local/pc-artifact/AnyiOS-linux-x86_64-objc-test
           # Runs a real .app bundle through the same entry point the app uses and prints the
           # launch report, so a compatibility report can be reproduced on a desktop.
           cp .local/cpu-tests/guest_runner .local/pc-artifact/AnyiOS-linux-x86_64-guest-runner
@@ -141,6 +144,9 @@ jobs:
           cp .local/cpu-tests/uikit_test.exe .local/pc-artifact/AnyiOS-windows-x86_64-uikit-test.exe
           cp .local/cpu-tests/audio_test.exe .local/pc-artifact/AnyiOS-windows-x86_64-audio-test.exe
           cp .local/cpu-tests/cxx_test.exe .local/pc-artifact/AnyiOS-windows-x86_64-cxx-test.exe
+          cp .local/cpu-tests/dyld_test.exe .local/pc-artifact/AnyiOS-windows-x86_64-dyld-test.exe
+          cp .local/cpu-tests/libc_test.exe .local/pc-artifact/AnyiOS-windows-x86_64-libc-test.exe
+          cp .local/cpu-tests/objc_test.exe .local/pc-artifact/AnyiOS-windows-x86_64-objc-test.exe
           cp .local/cpu-tests/pvrtc_test.exe .local/pc-artifact/AnyiOS-windows-x86_64-pvrtc-test.exe
           cp -r third_party/dynarmic/notices .local/pc-artifact/third-party-notices
           cp third_party/dynarmic/LICENSE.txt .local/pc-artifact/third-party-notices/dynarmic.txt

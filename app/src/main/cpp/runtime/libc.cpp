@@ -34,6 +34,20 @@ std::function<void(const std::string&)> defaultLogSink() {
 #endif
     };
 }
+bool breakDownTime(const time_t& value, std::tm& parts, bool local) {
+#if defined(_WIN32)
+    return (local ? ::localtime_s(&parts, &value) : ::gmtime_s(&parts, &value)) == 0;
+#else
+    return (local ? ::localtime_r(&value, &parts) : ::gmtime_r(&value, &parts)) != nullptr;
+#endif
+}
+time_t utcTime(std::tm& parts) {
+#if defined(_WIN32)
+    return ::_mkgmtime(&parts);
+#else
+    return ::timegm(&parts);
+#endif
+}
 }  // namespace
 void guestLog(const std::string& text) { defaultLogSink()(text); }
 std::string Libc::readString(uint32_t address, size_t limit) const {
@@ -78,8 +92,15 @@ void Libc::writeTm(uint32_t address, const std::tm& parts) {
     const int fields[9] = {parts.tm_sec,  parts.tm_min,  parts.tm_hour, parts.tm_mday, parts.tm_mon,
                            parts.tm_year, parts.tm_wday, parts.tm_yday, parts.tm_isdst};
     for (size_t n = 0; n < 9; n++) memory.write32(address + uint32_t(n * 4), uint32_t(fields[n]));
+#if defined(_WIN32)
+    // UCRT's std::tm contains only the nine standard fields; the guest's Darwin layout
+    // still has a UTC offset and zone pointer after them.
+    memory.write32(address + 36, 0);
+    memory.write32(address + 40, reserveString("UTC"));
+#else
     memory.write32(address + 36, uint32_t(int32_t(parts.tm_gmtoff)));
     memory.write32(address + 40, reserveString(parts.tm_zone ? parts.tm_zone : "UTC"));
+#endif
 }
 void Libc::readTm(uint32_t address, std::tm& parts) {
     const int fields[9] = {int(memory.read32(address)),      int(memory.read32(address + 4)),
@@ -96,6 +117,13 @@ void Libc::readTm(uint32_t address, std::tm& parts) {
     parts.tm_wday = fields[6];
     parts.tm_yday = fields[7];
     parts.tm_isdst = fields[8];
+#if defined(_WIN32)
+    // The Windows C runtime has no tm_gmtoff/tm_zone extension fields. The stored guest
+    // zone metadata is intentionally ignored by mktime/_mkgmtime, which normalize from the
+    // nine standard fields only.
+    (void)memory.read32(address + 36);
+    (void)memory.read32(address + 40);
+#else
     parts.tm_gmtoff = int32_t(memory.read32(address + 36));
     const uint32_t zone = memory.read32(address + 40);
     parts.tm_zone = zone ? nullptr : "UTC";
@@ -105,6 +133,7 @@ void Libc::readTm(uint32_t address, std::tm& parts) {
         zoneText[address] = readString(zone, 64);
         parts.tm_zone = zoneText[address].c_str();
     }
+#endif
 }
 uint32_t Libc::localeconvCell() {
     if (lconvCell) return lconvCell;
@@ -618,10 +647,10 @@ bool Libc::invoke(const std::string& name, CpuState& cpu) {
         const bool local = name == "_localtime" || name == "_localtime_r";
         time_t when = time_t(int32_t(r[0]));
         std::tm parts{};
-        if (local)
-            localtime_r(&when, &parts);
-        else
-            gmtime_r(&when, &parts);
+        if (!breakDownTime(when, parts, local)) {
+            r[0] = 0;
+            return true;
+        }
         uint32_t target = 0;
         if (name == "_gmtime_r" || name == "_localtime_r") {
             if (!r[1]) throw Error("LIBC_ARGUMENT", "gmtime_r/localtime_r needs a result buffer");
@@ -636,7 +665,7 @@ bool Libc::invoke(const std::string& name, CpuState& cpu) {
     if (name == "_timegm" || name == "_mktime") {
         std::tm parts{};
         readTm(r[0], parts);
-        const time_t value = name == "_timegm" ? timegm(&parts) : mktime(&parts);
+        const time_t value = name == "_timegm" ? utcTime(parts) : mktime(&parts);
         writeTm(r[0], parts);  // mktime normalises the caller's struct in place
         r[0] = uint32_t(int32_t(value));
         return true;

@@ -90,6 +90,13 @@ target_link_libraries(cxx_test PRIVATE podnative_hle)
 target_compile_options(cxx_test PRIVATE -Wall -Wextra -Werror -UNDEBUG)
 add_test(NAME cxx_runtime COMMAND cxx_test)
 
+foreach(test_name IN ITEMS dyld libc objc)
+    add_executable(${test_name}_test ${test_name}_test.cpp)
+    target_link_libraries(${test_name}_test PRIVATE podnative_hle)
+    target_compile_options(${test_name}_test PRIVATE -Wall -Wextra -Werror -UNDEBUG)
+    add_test(NAME ${test_name}_runtime COMMAND ${test_name}_test)
+endforeach()
+
 add_executable(pvrtc_test pvrtc_test.cpp)
 target_link_libraries(pvrtc_test PRIVATE podnative_hle)
 target_compile_options(pvrtc_test PRIVATE -Wall -Wextra -Werror -UNDEBUG)
