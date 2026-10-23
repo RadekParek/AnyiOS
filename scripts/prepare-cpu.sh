@@ -8,6 +8,10 @@ fetch_pin() {
   local url=$1 dest=$2 revision=$3
   if [[ ! -d "$dest/.git" ]]; then
     git init "$dest"
+    # Git for Windows may otherwise check out CRLF files, which makes the
+    # reviewed LF patch fail to apply even when the pinned source is identical.
+    git -C "$dest" config core.autocrlf false
+    git -C "$dest" config core.eol lf
     git -C "$dest" remote add origin "$url"
     git -C "$dest" fetch --depth 1 origin "$revision"
     git -C "$dest" checkout --detach FETCH_HEAD
@@ -26,6 +30,8 @@ elif git -C "$DEPS/dynarmic" apply --reverse --check "$PATCH" 2>/dev/null; then
   echo 'Reviewed Oaknut W^X patch already applied'
 else
   echo 'CPU dependency differs from the reviewed patch; refusing to overwrite it' >&2
+  git -C "$DEPS/dynarmic" apply --check "$PATCH" || true
+  git -C "$DEPS/dynarmic" apply --reverse --check "$PATCH" || true
   exit 1
 fi
 cd "$DEPS/boost"
