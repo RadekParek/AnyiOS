@@ -40,6 +40,21 @@ renderer or framework code is incorporated. Research is not component reuse.
 * Used for actual ARM/Thumb host correctness tests. Android compilation and device
   execution are separate gates. Linked into the application for a bounded fixed-program CPU diagnostic; not used for game execution. Engine/dependency texts are also shipped in `app/src/main/assets/cpu-notices/`.
 
+## PowerVR PVRTC decoder — software texture fallback
+
+* Origin: https://github.com/powervr-graphics/Native_SDK
+* Exact revision: `63f0098acdc11ec9a072c30000d2fa670a955bee`, recorded in
+  `third_party/pvrtc/revision.txt`.
+* License: MIT; full text retained in `third_party/pvrtc/LICENSE.md` and shipped in
+  `app/src/main/assets/cpu-notices/pvrtc.txt`.
+* `PVRTDecompress.cpp` / `.h` are derived from the pinned source; the only local edit
+  marks its power-of-two assertion helper `[[maybe_unused]]` for warning-clean release builds.
+  The emulator calls only `pvr::PVRTDecompressPVRTC`; its GLES bridge uses it to convert
+  PVRTC1 RGB/RGBA
+  2-bpp and 4-bpp uploads into bounded RGBA8 textures when using the pinned ANGLE
+  Vulkan backend, whose format table does not implement PVRTC Vulkan formats.
+  The same upstream source file includes an unused ETC decoder.
+
 ## Research only, not redistributed or linked
 
 HyperHLE-Reborn (`KlugKlugTG/HyperHLE-Reborn`) at

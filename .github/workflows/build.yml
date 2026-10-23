@@ -8,6 +8,11 @@ on:
       artifact:
         required: true
         type: string
+      app_only:
+        description: Skip converter tests and build only the Android app
+        required: false
+        type: boolean
+        default: false
     secrets:
       ANDROID_KEYSTORE_BASE64:
         required: false
@@ -146,12 +151,21 @@ jobs:
       - name: Lint, test and build
         env:
           VARIANT: ${{ inputs.variant }}
+          APP_ONLY: ${{ inputs.app_only }}
           PODNATIVE_STORE_PASSWORD: ${{ secrets.ANDROID_STORE_PASSWORD }}
           PODNATIVE_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
           PODNATIVE_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
         run: |
           set -o pipefail
-          if [ "$VARIANT" = debug ]; then
+          if [ "$APP_ONLY" = true ]; then
+            # Targeted manual builds still compile the app's converter dependency, but do not
+            # invoke converter lint or test tasks, or the separate PC converter suite.
+            if [ "$VARIANT" = debug ]; then
+              gradle --no-daemon --build-cache --parallel :app:lintDebug :app:testDebugUnitTest :app:assembleDebug 2>&1 | tee .local/logs/android-build.log
+            else
+              gradle --no-daemon --build-cache --parallel :app:lintRelease :app:testReleaseUnitTest :app:assembleRelease 2>&1 | tee .local/logs/android-build.log
+            fi
+          elif [ "$VARIANT" = debug ]; then
             gradle --no-daemon --build-cache --parallel :app:lintDebug :app:testDebugUnitTest :converter:lintDebug :converter:testDebugUnitTest :gameruntime-template:testDebugUnitTest :app:assembleDebug 2>&1 | tee .local/logs/android-build.log
           else
             gradle --no-daemon --build-cache --parallel :app:lintRelease :app:testReleaseUnitTest :converter:lintRelease :converter:testReleaseUnitTest :app:assembleRelease 2>&1 | tee .local/logs/android-build.log

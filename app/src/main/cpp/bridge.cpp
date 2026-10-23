@@ -2,6 +2,10 @@
 #include <android/native_window_jni.h>
 #include <jni.h>
 
+#include <atomic>
+#include <limits>
+#include <mutex>
+#include <new>
 #include <stdexcept>
 #include <vector>
 
@@ -21,6 +25,11 @@ bool verboseLogging = false;
 // Settings ▸ "Native OpenGL ES". Also process-wide and also read at launch: the driver is
 // resolved once, so the switch has to be settled before the guest makes its first GL call.
 bool nativeGles = false;
+std::atomic<int> guestScreenWidth{320}, guestScreenHeight{480};
+std::atomic<bool> guestLaunchCancelled{false};
+std::mutex guestFrameMutex;
+std::vector<uint8_t> guestFrame;
+int guestFrameWidth = 0, guestFrameHeight = 0;
 void fail(JNIEnv* env, const std::exception& e) {
     __android_log_print(ANDROID_LOG_ERROR, "PodNative", "%s", e.what());
     env->ThrowNew(env->FindClass("java/lang/IllegalStateException"), e.what());
@@ -128,6 +137,62 @@ std::string pathFrom(JNIEnv* env, jstring value) {
 }
 }  // namespace
 
+extern "C" JNIEXPORT void JNICALL Java_org_podnative_NativeBridge_beginGuestLaunch(JNIEnv*,
+                                                                                   jclass) {
+    guestLaunchCancelled.store(false, std::memory_order_relaxed);
+    std::lock_guard<std::mutex> lock(guestFrameMutex);
+    guestFrame.clear();
+    guestFrameWidth = guestFrameHeight = 0;
+}
+
+extern "C" JNIEXPORT void JNICALL Java_org_podnative_NativeBridge_cancelGuestLaunch(JNIEnv*,
+                                                                                    jclass) {
+    guestLaunchCancelled.store(true, std::memory_order_relaxed);
+}
+
+extern "C" JNIEXPORT void JNICALL Java_org_podnative_NativeBridge_setGuestScreenSize(JNIEnv* env,
+                                                                                     jclass,
+                                                                                     jint width,
+                                                                                     jint height) {
+    if (width <= 0 || height <= 0 || width > 2048 || height > 2048) {
+        env->ThrowNew(env->FindClass("java/lang/IllegalArgumentException"), "UIKIT_SCREEN");
+        return;
+    }
+    guestScreenWidth.store(width, std::memory_order_relaxed);
+    guestScreenHeight.store(height, std::memory_order_relaxed);
+}
+
+extern "C" JNIEXPORT jbyteArray JNICALL Java_org_podnative_NativeBridge_takeGuestFrame(JNIEnv* env,
+                                                                                       jclass) {
+    std::lock_guard<std::mutex> lock(guestFrameMutex);
+    if (guestFrame.empty()) return env->NewByteArray(0);
+    if (guestFrameWidth <= 0 || guestFrameHeight <= 0 ||
+        guestFrame.size() != size_t(guestFrameWidth) * size_t(guestFrameHeight) * 4) {
+        env->ThrowNew(env->FindClass("java/lang/IllegalStateException"),
+                      "GUEST_FRAME: stored readback has invalid dimensions");
+        return nullptr;
+    }
+    const size_t payload = guestFrame.size();
+    if (payload > size_t(std::numeric_limits<jsize>::max()) - 8) {
+        env->ThrowNew(env->FindClass("java/lang/IllegalStateException"),
+                      "GUEST_FRAME: readback exceeds the JNI array limit");
+        return nullptr;
+    }
+    jbyteArray result = env->NewByteArray(jsize(payload + 8));
+    if (!result) return nullptr;
+    const uint32_t width = uint32_t(guestFrameWidth), height = uint32_t(guestFrameHeight);
+    const jbyte header[8] = {jbyte(width),        jbyte(width >> 8),  jbyte(width >> 16),
+                             jbyte(width >> 24),  jbyte(height),      jbyte(height >> 8),
+                             jbyte(height >> 16), jbyte(height >> 24)};
+    env->SetByteArrayRegion(result, 0, 8, header);
+    env->SetByteArrayRegion(result, 8, jsize(payload),
+                            reinterpret_cast<const jbyte*>(guestFrame.data()));
+    if (env->ExceptionCheck()) return nullptr;
+    guestFrame.clear();
+    guestFrameWidth = guestFrameHeight = 0;
+    return result;
+}
+
 extern "C" JNIEXPORT jstring JNICALL Java_org_podnative_NativeBridge_attemptLaunch(
     JNIEnv* env, jclass, jbyteArray bytes, jstring bundlePath, jstring containerPath) {
     try {
@@ -139,10 +204,33 @@ extern "C" JNIEXPORT jstring JNICALL Java_org_podnative_NativeBridge_attemptLaun
         if (env->ExceptionCheck()) return nullptr;
         const std::string bundle = pathFrom(env, bundlePath);
         const std::string container = pathFrom(env, containerPath);
+        {
+            std::lock_guard<std::mutex> lock(guestFrameMutex);
+            guestFrame.clear();
+            guestFrameWidth = guestFrameHeight = 0;
+        }
         podnative::runtime::LaunchOptions options;
+        options.seconds =
+            60.0;  // bounded main-menu startup probe; the screen shows its final frame
         options.verbose = verboseLogging;
         options.nativeGles = nativeGles;
-        if (options.verbose) options.logLines = 4000;
+        options.screenWidth = guestScreenWidth.load(std::memory_order_relaxed);
+        options.screenHeight = guestScreenHeight.load(std::memory_order_relaxed);
+        options.cancelRequested = &guestLaunchCancelled;
+        options.frameSink = [](int width, int height, const std::vector<uint8_t>& pixels) {
+            if (width <= 0 || height <= 0 || width > 2048 || height > 2048 ||
+                pixels.size() != size_t(width) * size_t(height) * 4)
+                return;
+            std::lock_guard<std::mutex> lock(guestFrameMutex);
+            try {
+                guestFrame = pixels;
+                guestFrameWidth = width;
+                guestFrameHeight = height;
+            } catch (const std::bad_alloc&) {
+                guestFrame.clear();
+                guestFrameWidth = guestFrameHeight = 0;
+            }
+        };
         const auto report =
             podnative::runtime::attemptLaunch(data.data(), data.size(), bundle, container, options);
         return env->NewStringUTF(report.c_str());

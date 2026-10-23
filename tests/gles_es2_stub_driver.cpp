@@ -112,6 +112,7 @@ extern "C" void es2_stub_reset() {
 extern "C" {
 
 void* eglGetDisplay(void*) { return &displayToken; }
+void* eglGetPlatformDisplayEXT(uint32_t, void*, const int*) { return &displayToken; }
 uint32_t eglInitialize(void*, int* major, int* minor) {
     *major = 1;
     *minor = 4;
@@ -137,6 +138,7 @@ uint32_t eglMakeCurrent(void*, void* draw, void*, void* context) {
     return 1;
 }
 void* eglCreatePbufferSurface(void*, void*, const int*) { return &contextToken; }
+uint32_t eglDestroySurface(void*, void*) { return 1; }
 uint32_t eglDestroyContext(void*, void*) { return 1; }
 uint32_t eglSwapBuffers(void*, void*) { return 1; }
 uint32_t eglSwapInterval(void*, int) { return 1; }
@@ -187,7 +189,21 @@ void glGetProgramInfoLog(uint32_t, int size, int* written, char* log) {
 }
 void glDeleteProgram(uint32_t) {}
 void glUseProgram(uint32_t) { ++state.useProgramCalls; }
-int glGetUniformLocation(uint32_t, const char* name) { return uniformLocation(name); }
+int glGetUniformLocation(uint32_t, const char* name) {
+    if (!name) return -1;
+    // A real linker returns -1 for uniforms optimised out of a shader. Keep that distinction:
+    // otherwise a plain untextured program appears to upload texture state it never reads.
+    if (std::strcmp(name, "uColor") == 0 &&
+        std::strstr(state.vertexSource, "vColor = uColor;") == nullptr)
+        return -1;
+    if (std::strcmp(name, "uTexMatrix") == 0 &&
+        std::strstr(state.vertexSource, "uTexMatrix") == nullptr)
+        return -1;
+    if (std::strcmp(name, "uTexture") == 0 &&
+        std::strstr(state.fragmentSource, "uTexture") == nullptr)
+        return -1;
+    return uniformLocation(name);
+}
 
 void glUniformMatrix4fv(int location, int count, uint32_t transpose, const float* value) {
     if (location < 0 || location >= uniformCount || !value || count < 1) return;
@@ -286,8 +302,22 @@ void glTexSubImage2D(uint32_t, int, int, int, int, int, uint32_t, uint32_t, cons
 void glCompressedTexImage2D(uint32_t, int, uint32_t, int, int, int, int, const void*) {
     ++state.textureUploads;
 }
-void glEnable(uint32_t) {}
-void glDisable(uint32_t) {}
+void glEnable(uint32_t capability) {
+    ++state.enableCalls;
+    state.lastCapability = capability;
+    if (capability == 0x0de1 || capability == 0x0b50) {
+        ++state.errors;
+        state.lastError = 0x0500;  // ES 2.0 rejects ES 1.1 fixed-function capabilities
+    }
+}
+void glDisable(uint32_t capability) {
+    ++state.disableCalls;
+    state.lastCapability = capability;
+    if (capability == 0x0de1 || capability == 0x0b50) {
+        ++state.errors;
+        state.lastError = 0x0500;
+    }
+}
 void glBlendFunc(uint32_t, uint32_t) {}
 void glClearColor(float, float, float, float) {}
 void glClear(uint32_t) {}

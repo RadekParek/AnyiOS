@@ -85,6 +85,8 @@ struct Call {
 };
 
 constexpr uint32_t GL_FLOAT = 0x1406, GL_UNSIGNED_BYTE = 0x1401, GL_RGBA = 0x1908;
+constexpr uint32_t GL_FRAMEBUFFER = 0x8d40, GL_RENDERBUFFER = 0x8d41;
+constexpr uint32_t GL_COLOR_ATTACHMENT0 = 0x8ce0, GL_FRAMEBUFFER_BINDING = 0x8ca6;
 constexpr uint32_t GL_VERTEX_ARRAY = 0x8074, GL_TRIANGLES = 0x0004, GL_TRIANGLE_STRIP = 0x0005;
 
 void marshalling(const std::string& driver) {
@@ -163,6 +165,9 @@ void marshalling(const std::string& driver) {
 
 void drawable(const std::string& driver) {
     Memory memory(1024 * 1024);
+    std::vector<uint8_t> guestPage(65536, 0);
+    memory.map({0x10000, 65536, uint8_t(Read | Write), "guest GL names"}, guestPage.data(),
+               guestPage.size());
     GLES gles(memory);
     check(gles.load(), "driver resolved for the drawable test");
     check(gles.backend() == driver, "same backend");
@@ -171,10 +176,15 @@ void drawable(const std::string& driver) {
 
     check(gles.clientApiVersion() == 1, "an ES 1.1 title starts on an ES 1.1 context");
     check(gles.createDrawable(8, 4), "the drawable framebuffer is created: " + gles.describe());
+    check(recorded->platformDisplayCalls == 1 && recorded->platformDisplay == 0x3202 &&
+              recorded->angleDisplayType == 0x3450,
+          "bundled ANGLE gets the same explicit Vulkan platform as the Android renderer");
     check(recorded->contextVersion == 1, "the EGL context is OpenGL ES 1.1");
     check(gles.drawableWidth() == 8 && gles.drawableHeight() == 4, "drawable size is kept");
     check(recorded->renderbufferWidth == 8 && recorded->renderbufferHeight == 4,
           "the renderbuffer is the drawable's size");
+    check(recorded->renderbufferFormat == 0x8056,
+          "a driver without the RGBA8 extension gets the ES-required RGBA4 format");
     check(recorded->boundFramebuffer == 3 && recorded->attachedRenderbuffer == 7,
           "the colour renderbuffer is attached to the framebuffer");
 
@@ -183,11 +193,56 @@ void drawable(const std::string& driver) {
     check(recorded->readPixelsCalls == 1 && recorded->readPixelsWidth == 8 &&
               recorded->readPixelsHeight == 4,
           "present reads the whole drawable");
+    check(recorded->framebufferAtRead == 3 && gles.frameCurrent(),
+          "the private default framebuffer is selected and the host frame is current");
     const std::vector<uint8_t>& frame = gles.lastFrame();
     check(frame.size() == 8 * 4 * 4, "the frame is tightly packed RGBA8");
     check(frame[0] == 0 && frame[1] == 3 && frame[3] == 255,
           "the first host row is the last GL row (top row first)");
     check(frame[size_t(3) * 8 * 4 + 1] == 0, "the last host row is GL row 0");
+
+    // EAGL storage belongs to the renderbuffer the guest bound, and the drawable FBO remains
+    // the source of readback even if the guest later binds framebuffer zero.
+    Call genFramebuffer(gles, memory);
+    genFramebuffer.ints({1, 0x10000});
+    genFramebuffer("_glGenFramebuffersOES");
+    const uint32_t guestFramebuffer = memory.read32(0x10000);
+    check(guestFramebuffer != 3, "guest framebuffer names do not alias the private fallback");
+    Call bindFramebuffer(gles, memory);
+    bindFramebuffer.ints({GL_FRAMEBUFFER, guestFramebuffer});
+    bindFramebuffer("_glBindFramebufferOES");
+    Call genRenderbuffer(gles, memory);
+    genRenderbuffer.ints({1, 0x10004});
+    genRenderbuffer("_glGenRenderbuffersOES");
+    const uint32_t guestRenderbuffer = memory.read32(0x10004);
+    Call bindRenderbuffer(gles, memory);
+    bindRenderbuffer.ints({GL_RENDERBUFFER, guestRenderbuffer});
+    bindRenderbuffer("_glBindRenderbufferOES");
+    check(gles.renderbufferStorageFromDrawable(8, 4),
+          "EAGL allocates storage on the bound guest renderbuffer");
+    check(recorded->boundRenderbuffer == guestRenderbuffer && recorded->renderbufferWidth == 8 &&
+              recorded->renderbufferHeight == 4,
+          "EAGL storage uses the guest's bound renderbuffer and its drawable geometry");
+    Call attach(gles, memory);
+    attach.ints({GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_RENDERBUFFER, guestRenderbuffer});
+    attach("_glFramebufferRenderbufferOES");
+    check(gles.present(), "the attached guest EAGL framebuffer can be read back");
+    check(recorded->framebufferAtRead == guestFramebuffer,
+          "readback selects the guest framebuffer attached to the EAGL drawable");
+    Call bindDefault(gles, memory);
+    bindDefault.ints({GL_FRAMEBUFFER, 0});
+    bindDefault("_glBindFramebufferOES");
+    check(recorded->boundFramebuffer == 3,
+          "binding guest framebuffer zero maps back to the private default drawable");
+    memory.write32(0x10008, 0xffffffff);
+    Call queryBinding(gles, memory);
+    queryBinding.ints({GL_FRAMEBUFFER_BINDING, 0x10008});
+    queryBinding("_glGetIntegerv");
+    check(memory.read32(0x10008) == 0,
+          "GL_FRAMEBUFFER_BINDING reports the guest-visible default name, not the private FBO");
+    check(gles.present() && recorded->framebufferAtRead == guestFramebuffer &&
+              recorded->boundFramebuffer == 3,
+          "present reads the attached EAGL FBO then restores the guest's default binding");
 
     // An ES 2.0 request replaces the context: the version is the guest's, not a guess.
     gles.setClientApi(2);
@@ -207,6 +262,58 @@ void drawable(const std::string& driver) {
     check(recorded->pbufferCreated == 1 && recorded->surfaceMadeCurrent >= 1,
           "a pbuffer surface was created and made current");
 }
+
+void pvrtcUploads(const std::string& driver) {
+    Memory memory(1024 * 1024);
+    std::vector<uint8_t> page(65536, 0);
+    memory.map({0x10000, 65536, uint8_t(Read | Write), "guest compressed texture"}, page.data(),
+               page.size());
+    GLES gles(memory);
+    check(gles.load(), "the recording driver is resolved for compressed uploads");
+    check(gles.backend() == driver, "compressed uploads stay on the selected driver");
+    resetStub();
+    StubState* recorded = stub();
+
+    const std::vector<uint8_t> white(32, 0xff);
+    memory.write(0x10000, white.data(), white.size());
+    Call upload(gles, memory);
+    upload.ints({0x0de1, 0, 0x8c00, 8});
+    upload.stack({8, 0, uint32_t(white.size()), 0x10000});
+    upload("_glCompressedTexImage2D");
+    check(recorded->compressedTexImageCalls == 0,
+          "PVRTC1 is decoded instead of sent as an unsupported ANGLE Vulkan format");
+    check(recorded->texImageCalls == 1 && recorded->texImageInternalFormat == GL_RGBA &&
+              recorded->texImageFormat == GL_RGBA && recorded->texImageType == GL_UNSIGNED_BYTE &&
+              recorded->texImageWidth == 8 && recorded->texImageHeight == 8 &&
+              recorded->texImageBytes == 8 * 8 * 4,
+          "decoded PVRTC1 is uploaded to the selected driver as a bounded RGBA8 image");
+    for (size_t offset = 0; offset < recorded->texImageBytes; offset++)
+        check(recorded->texels[offset] == 255, "the driver receives the decoded white texels");
+
+    const std::vector<uint8_t> black(32, 0);
+    memory.write(0x10000, black.data(), black.size());
+    Call rgbUpload(gles, memory);
+    rgbUpload.ints({0x0de1, 0, 0x8c00, 8});
+    rgbUpload.stack({8, 0, uint32_t(black.size()), 0x10000});
+    rgbUpload("_glCompressedTexImage2D");
+    check(recorded->texImageCalls == 2 && recorded->texels[0] == 0 && recorded->texels[1] == 0 &&
+              recorded->texels[2] == 0 && recorded->texels[3] == 255,
+          "RGB PVRTC uploads keep opaque alpha when endpoint alpha bits are unused");
+    check(
+        gles.describe().find("PVRTC1 software-decoded uploads=2 (128 texels)") != std::string::npos,
+        "the launch report names the PVRTC software compatibility path");
+
+    const std::vector<uint8_t> etc(8, 0);
+    memory.write(0x10000, etc.data(), etc.size());
+    Call otherCompressed(gles, memory);
+    otherCompressed.ints({0x0de1, 0, 0x8d64, 4});  // ETC1 RGB8 OES, 4x4
+    otherCompressed.stack({4, 0, uint32_t(etc.size()), 0x10000});
+    otherCompressed("_glCompressedTexImage2D");
+    check(recorded->compressedTexImageCalls == 1 && recorded->compressedTexImageFormat == 0x8d64 &&
+              recorded->compressedTexImageWidth == 4 && recorded->compressedTexImageHeight == 4 &&
+              recorded->compressedTexImageBytes == etc.size(),
+          "other compressed formats are forwarded unchanged");
+}
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -214,7 +321,8 @@ int main(int argc, char** argv) {
     const std::string driver = argv[1];
     marshalling(driver);
     drawable(driver);
-    std::cout << "gles driver: AAPCS-VFP marshalling, client arrays, texel copies, EAGL "
-                 "drawable and frame flip verified through "
+    pvrtcUploads(driver);
+    std::cout << "gles driver: AAPCS-VFP marshalling, client arrays, texel copies, EAGL drawable, "
+                 "frame flip and PVRTC1 software decoding verified through "
               << driver << '\n';
 }

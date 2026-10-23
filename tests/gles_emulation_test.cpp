@@ -82,10 +82,12 @@ constexpr uint32_t GL_TEXTURE_2D = 0x0de1;
 constexpr uint32_t GL_UNSIGNED_BYTE = 0x1401, GL_UNSIGNED_SHORT = 0x1403, GL_FLOAT = 0x1406;
 constexpr uint32_t GL_FIXED = 0x140c;
 constexpr uint32_t GL_MODELVIEW = 0x1700, GL_PROJECTION = 0x1701;
-constexpr uint32_t GL_TEXTURE_ENV = 0x1703, GL_TEXTURE_ENV_MODE = 0x2200, GL_REPLACE = 0x1e01;
+constexpr uint32_t GL_TEXTURE_ENV = 0x1703, GL_TEXTURE_ENV_MODE = 0x2200;
+constexpr uint32_t GL_REPLACE = 0x1e01, GL_MODULATE = 0x2100;
+constexpr uint32_t GL_TEXTURE_MATRIX = 0x1702;
 constexpr uint32_t GL_VERTEX_ARRAY = 0x8074, GL_COLOR_ARRAY = 0x8076;
 constexpr uint32_t GL_TEXTURE_COORD_ARRAY = 0x8078;
-constexpr uint32_t GL_TEXTURE0 = 0x84c0;
+constexpr uint32_t GL_TEXTURE0 = 0x84c0, GL_TEXTURE1 = 0x84c1;
 constexpr uint32_t GL_MAX_TEXTURE_UNITS = 0x8482;
 constexpr uint32_t GL_ARRAY_BUFFER = 0x8892, GL_ELEMENT_ARRAY_BUFFER = 0x8893;
 constexpr uint32_t kGuestPage = 0x10000;
@@ -103,6 +105,15 @@ void answeredWithoutAFixedFunctionDriver(GLES& gles, Memory& memory, Es2StubStat
     check(gles.makeCurrent(), "makeCurrent succeeds over the ES 2.0 double: " + gles.describe());
     check(recorded->contextVersion == 2,
           "an ES 1.1 client gets an ES 2.0 context when the driver has no ES 1.1 frontend");
+
+    Call enableTexture(gles, memory);
+    enableTexture.ints({GL_TEXTURE_2D});
+    enableTexture.must("_glEnable");
+    Call disableTexture(gles, memory);
+    disableTexture.ints({GL_TEXTURE_2D});
+    disableTexture.must("_glDisable");
+    check(recorded->enableCalls == 0 && recorded->disableCalls == 0 && recorded->errors == 0,
+          "ES 1.1 GL_TEXTURE_2D state is emulated without sending invalid enums to strict ES 2.0");
 
     Call call(gles, memory);
     call.ints({GL_PROJECTION});
@@ -230,6 +241,145 @@ void oneTranslatedDraw(GLES& gles, Memory& memory, Es2StubState* recorded) {
           "a second draw of the same variant reuses the cached program");
 }
 
+// Texture enable, environment mode, texture matrix, and coordinates belong to the active unit.
+// These draws exercise unit one on its own; they do not claim simultaneous multitexture support.
+void textureUnitState(GLES& gles, Memory& memory, Es2StubState* recorded) {
+    resetStub();
+    float textureMatrix0[16] = {}, textureMatrix1[16] = {};
+    textureMatrix0[0] = textureMatrix0[5] = textureMatrix0[10] = textureMatrix0[15] = 1;
+    textureMatrix0[12] = 0.25f;
+    textureMatrix1[0] = textureMatrix1[5] = textureMatrix1[10] = textureMatrix1[15] = 1;
+    textureMatrix1[12] = 0.75f;
+
+    Call active0(gles, memory);
+    active0.ints({GL_TEXTURE0});
+    active0.must("_glActiveTexture");
+    Call textureMatrixMode(gles, memory);
+    textureMatrixMode.ints({GL_TEXTURE_MATRIX});
+    textureMatrixMode.must("_glMatrixMode");
+    memory.write(kGuestPage + 0x400, textureMatrix0, sizeof(textureMatrix0));
+    Call loadTextureMatrix0(gles, memory);
+    loadTextureMatrix0.ints({kGuestPage + 0x400});
+    loadTextureMatrix0.must("_glLoadMatrixf");
+    Call enableTexture0(gles, memory);
+    enableTexture0.ints({GL_TEXTURE_2D});
+    enableTexture0.must("_glEnable");
+    Call env0(gles, memory);
+    env0.ints({GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, GL_REPLACE});
+    env0.must("_glTexEnvi");
+    Call client0(gles, memory);
+    client0.ints({GL_TEXTURE0});
+    client0.must("_glClientActiveTexture");
+    Call enableCoords0(gles, memory);
+    enableCoords0.ints({GL_TEXTURE_COORD_ARRAY});
+    enableCoords0.must("_glEnableClientState");
+    const float coords0[6] = {0.1f, 0.2f, 0.3f, 0.4f, 0.5f, 0.6f};
+    memory.write(kGuestPage + 0x500, coords0, sizeof(coords0));
+    Call pointerCoords0(gles, memory);
+    pointerCoords0.ints({2, GL_FLOAT, 0, kGuestPage + 0x500});
+    pointerCoords0.must("_glTexCoordPointer");
+
+    Call active1(gles, memory);
+    active1.ints({GL_TEXTURE1});
+    active1.must("_glActiveTexture");
+    memory.write(kGuestPage + 0x400, textureMatrix1, sizeof(textureMatrix1));
+    Call loadTextureMatrix1(gles, memory);
+    loadTextureMatrix1.ints({kGuestPage + 0x400});
+    loadTextureMatrix1.must("_glLoadMatrixf");
+    Call disableTexture1(gles, memory);
+    disableTexture1.ints({GL_TEXTURE_2D});
+    disableTexture1.must("_glDisable");
+    Call env1(gles, memory);
+    env1.ints({GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, GL_MODULATE});
+    env1.must("_glTexEnvi");
+    Call client1(gles, memory);
+    client1.ints({GL_TEXTURE1});
+    client1.must("_glClientActiveTexture");
+    Call enableCoords1(gles, memory);
+    enableCoords1.ints({GL_TEXTURE_COORD_ARRAY});
+    enableCoords1.must("_glEnableClientState");
+    const float coords1[6] = {0.8f, 0.9f, 0.7f, 0.6f, 0.5f, 0.4f};
+    memory.write(kGuestPage + 0x600, coords1, sizeof(coords1));
+    Call pointerCoords1(gles, memory);
+    pointerCoords1.ints({2, GL_FLOAT, 0, kGuestPage + 0x600});
+    pointerCoords1.must("_glTexCoordPointer");
+
+    const float vertices[9] = {1, 2, 3, 4, 5, 6, 7, 8, 9};
+    memory.write(kGuestPage, vertices, sizeof(vertices));
+    Call enableVertices(gles, memory);
+    enableVertices.ints({GL_VERTEX_ARRAY});
+    enableVertices.must("_glEnableClientState");
+    Call vertexPointer(gles, memory);
+    vertexPointer.ints({3, GL_FLOAT, 0, kGuestPage});
+    vertexPointer.must("_glVertexPointer");
+
+    // Unit one is disabled while unit zero is enabled. Its draw must remain untextured.
+    Call drawUnit1Disabled(gles, memory);
+    drawUnit1Disabled.ints({GL_TRIANGLES, 0, 3});
+    drawUnit1Disabled.must("_glDrawArrays");
+    check(recorded->drawArraysCalls == 1 && recorded->textureMatrixUploads == 0 &&
+              recorded->samplerUploads == 0,
+          "unit one's disabled texture state is independent of enabled unit zero");
+
+    Call selectActive0(gles, memory);
+    selectActive0.ints({GL_TEXTURE0});
+    selectActive0.must("_glActiveTexture");
+    Call drawUnit0(gles, memory);
+    drawUnit0.ints({GL_TRIANGLES, 0, 3});
+    drawUnit0.must("_glDrawArrays");
+    check(recorded->textureMatrixUploads == 1 && near(recorded->textureMatrix[12], 0.25f) &&
+              recorded->samplerUploads == 1 && recorded->samplerUnit == 0,
+          "unit zero uses its own texture matrix and sampler (matrix uploads=" +
+              std::to_string(recorded->textureMatrixUploads) +
+              ", matrix translation=" + std::to_string(recorded->textureMatrix[12]) +
+              ", sampler uploads=" + std::to_string(recorded->samplerUploads) +
+              ", sampler unit=" + std::to_string(recorded->samplerUnit) + ")");
+    check(std::string(recorded->fragmentSource).find(" * vColor") == std::string::npos,
+          "unit zero's GL_REPLACE environment does not inherit unit one's GL_MODULATE mode");
+    check(near(recorded->lastUploadVertex[0], coords0[0]) &&
+              near(recorded->lastUploadVertex[1], coords0[1]),
+          "unit zero's client texture-coordinate array is selected for its draw");
+
+    // Enabling unit one now selects its own matrix, environment mode, coordinate array and
+    // sampler. The bridge still has one shader stage and makes that limitation explicit.
+    Call selectActive1(gles, memory);
+    selectActive1.ints({GL_TEXTURE1});
+    selectActive1.must("_glActiveTexture");
+    Call enableTexture1(gles, memory);
+    enableTexture1.ints({GL_TEXTURE_2D});
+    enableTexture1.must("_glEnable");
+    Call drawUnit1Enabled(gles, memory);
+    drawUnit1Enabled.ints({GL_TRIANGLES, 0, 3});
+    drawUnit1Enabled.must("_glDrawArrays");
+    check(recorded->textureMatrixUploads == 2 && near(recorded->textureMatrix[12], 0.75f) &&
+              recorded->samplerUploads == 2 && recorded->samplerUnit == 1,
+          "unit one uses its own texture matrix and binds its own sampler unit");
+    check(std::string(recorded->fragmentSource).find(" * vColor") != std::string::npos,
+          "unit one's GL_MODULATE environment is independent of unit zero's GL_REPLACE");
+    check(near(recorded->lastUploadVertex[0], coords1[0]) &&
+              near(recorded->lastUploadVertex[1], coords1[1]),
+          "unit one's client texture-coordinate array is selected for its draw");
+    const std::string report = gles.describe();
+    check(report.find("simultaneous texture stages are not emulated") != std::string::npos,
+          "the runtime reports that separate unit state does not implement simultaneous stages");
+    check(
+        report.find("1 draw(s) had both fixed-function texture units enabled") != std::string::npos,
+        "the runtime counts overlap rather than implying it emulated two active stages");
+
+    Call restoreActive0(gles, memory);
+    restoreActive0.ints({GL_TEXTURE0});
+    restoreActive0.must("_glActiveTexture");
+    Call disableTexture0(gles, memory);
+    disableTexture0.ints({GL_TEXTURE_2D});
+    disableTexture0.must("_glDisable");
+    Call restoreClient0(gles, memory);
+    restoreClient0.ints({GL_TEXTURE0});
+    restoreClient0.must("_glClientActiveTexture");
+    Call restoreMatrixMode(gles, memory);
+    restoreMatrixMode.ints({GL_MODELVIEW});
+    restoreMatrixMode.must("_glMatrixMode");
+}
+
 // A colour array and GL_FIXED positions: the variant changes, and so does the marshalling.
 void colourArrayAndFixedPoint(GLES& gles, Memory& memory, Es2StubState* recorded) {
     resetStub();
@@ -355,6 +505,7 @@ int main(int argc, char** argv) {
 
     answeredWithoutAFixedFunctionDriver(gles, memory, recorded);
     oneTranslatedDraw(gles, memory, recorded);
+    textureUnitState(gles, memory, recorded);
     colourArrayAndFixedPoint(gles, memory, recorded);
     indexedDraw(gles, memory, recorded);
     refusesToDrawWithABrokenProgram(gles, memory, recorded);

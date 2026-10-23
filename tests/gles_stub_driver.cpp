@@ -17,12 +17,15 @@ static StubState state;
 extern "C" StubState* stub_state() { return &state; }
 
 static int refuseSurfaceless = 0;
+static uint32_t nextFramebuffer = 3, nextRenderbuffer = 7;
 extern "C" void stub_refuse_surfaceless(int refuse) { refuseSurfaceless = refuse; }
 
 extern "C" void stub_reset() {
     std::memset(&state, 0, sizeof(state));
     state.getIntegerValue = 0;
     refuseSurfaceless = 0;
+    nextFramebuffer = 3;
+    nextRenderbuffer = 7;
 }
 
 extern "C" {
@@ -31,6 +34,13 @@ static uintptr_t displayToken = 1;
 static uintptr_t contextToken = 0;
 static uintptr_t currentContext = 0;
 void* eglGetDisplay(void*) { return &displayToken; }
+void* eglGetPlatformDisplayEXT(uint32_t platform, void*, const int* attributes) {
+    state.platformDisplayCalls++;
+    state.platformDisplay = platform;
+    for (int i = 0; attributes && attributes[i] != 0x3038; i += 2)
+        if (attributes[i] == 0x3203) state.angleDisplayType = uint32_t(attributes[i + 1]);
+    return &displayToken;
+}
 uint32_t eglInitialize(void*, int* major, int* minor) {
     *major = 1;
     *minor = 4;
@@ -64,6 +74,7 @@ void* eglCreatePbufferSurface(void*, void*, const int*) {
     state.pbufferCreated++;
     return &surfaceToken;
 }
+uint32_t eglDestroySurface(void*, void*) { return 1; }
 uint32_t eglDestroyContext(void*, void*) {
     state.destroyContextCalls++;
     currentContext = 0;
@@ -118,9 +129,10 @@ void glDrawArrays(uint32_t mode, int first, int count) {
         std::memcpy(state.vertices, vertexPointer,
                     std::min<size_t>(sizeof(state.vertices), size_t(state.vertexComponents) * 4));
 }
-void glTexImage2D(uint32_t, int, uint32_t, int w, int h, int, uint32_t format, uint32_t type,
-                  const void* pixels) {
+void glTexImage2D(uint32_t, int, uint32_t internal, int w, int h, int, uint32_t format,
+                  uint32_t type, const void* pixels) {
     state.texImageCalls++;
+    state.texImageInternalFormat = internal;
     state.texImageWidth = w;
     state.texImageHeight = h;
     state.texImageFormat = format;
@@ -129,18 +141,33 @@ void glTexImage2D(uint32_t, int, uint32_t, int w, int h, int, uint32_t format, u
     if (pixels && state.texImageBytes <= sizeof(state.texels))
         std::memcpy(state.texels, pixels, state.texImageBytes);
 }
+void glCompressedTexImage2D(uint32_t, int, uint32_t format, int w, int h, int, int imageSize,
+                            const void*) {
+    state.compressedTexImageCalls++;
+    state.compressedTexImageFormat = format;
+    state.compressedTexImageWidth = w;
+    state.compressedTexImageHeight = h;
+    state.compressedTexImageBytes = size_t(imageSize);
+}
 void glGenRenderbuffers(int count, uint32_t* names) {
-    for (int i = 0; i < count; i++) names[i] = 7;
+    for (int i = 0; i < count; i++) names[i] = nextRenderbuffer++;
 }
 void glBindRenderbuffer(uint32_t, uint32_t name) { state.boundRenderbuffer = name; }
-void glRenderbufferStorage(uint32_t, uint32_t, int w, int h) {
+void glRenderbufferStorage(uint32_t, uint32_t format, int w, int h) {
+    state.renderbufferFormat = format;
     state.renderbufferWidth = w;
     state.renderbufferHeight = h;
 }
 void glGenFramebuffers(int count, uint32_t* names) {
-    for (int i = 0; i < count; i++) names[i] = 3;
+    for (int i = 0; i < count; i++) names[i] = nextFramebuffer++;
 }
-void glBindFramebuffer(uint32_t, uint32_t name) { state.boundFramebuffer = name; }
+void glBindFramebuffer(uint32_t, uint32_t name) {
+    state.boundFramebuffer = name;
+    if (state.framebufferBindCalls <
+        int(sizeof(state.framebufferBinds) / sizeof(state.framebufferBinds[0])))
+        state.framebufferBinds[state.framebufferBindCalls] = name;
+    state.framebufferBindCalls++;
+}
 void glFramebufferRenderbuffer(uint32_t, uint32_t, uint32_t, uint32_t name) {
     state.attachedRenderbuffer = name;
 }
@@ -149,6 +176,7 @@ void glReadPixels(int /*x*/, int y, int w, int h, uint32_t, uint32_t, void* pixe
     state.readPixelsCalls++;
     state.readPixelsWidth = w;
     state.readPixelsHeight = h;
+    state.framebufferAtRead = state.boundFramebuffer;
     // Encode the GL row index in the green channel so the host-side flip is checkable.
     auto* bytes = static_cast<uint8_t*>(pixels);
     for (int row = 0; row < h; row++) {

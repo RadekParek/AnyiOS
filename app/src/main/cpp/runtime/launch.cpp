@@ -71,6 +71,9 @@ void prepareStack(LoadedImage& image, Memory& memory) {
 
 std::string attemptLaunch(const uint8_t* data, size_t size, const std::string& bundleHost,
                           const std::string& containerHost, const LaunchOptions& options) {
+    if (options.cancelRequested && options.cancelRequested->load(std::memory_order_relaxed))
+        return "LAUNCH_CANCELLED: the user cancelled before the image could be loaded.\n"
+               "Guest code was not executed.";
     try {
         auto image =  // The guest's address-space budget covers the image, the framework pages this
                       // runtime
@@ -87,6 +90,7 @@ std::string attemptLaunch(const uint8_t* data, size_t size, const std::string& b
         services.setVerbose(options.verbose);
         services.setPrecise(options.precise);
         services.setNativeGles(options.nativeGles);
+        services.setScreenSize(options.screenWidth, options.screenHeight);
         services.setEnvironment({{"HOME", "/var/mobile"},
                                  {"TMPDIR", "/var/mobile/Documents"},
                                  {"PATH", "/usr/bin:/bin:/usr/sbin:/sbin"}});
@@ -124,8 +128,35 @@ std::string attemptLaunch(const uint8_t* data, size_t size, const std::string& b
 #ifdef PODNATIVE_CPU_IN_APP
         prepareStack(image, *image.memory);
         GuestRun run;
+        std::string guestFrameStatus;
         try {
-            run = runGuest(image, services, graph, main, options.instructions, options.seconds);
+            run = runGuest(image, services, graph, main, options.instructions, options.seconds,
+                           options.cancelRequested);
+            if (options.frameSink) {
+                GLES& graphics = services.graphics();
+                bool captured = graphics.frameCurrent();
+                if (!captured) captured = graphics.present();
+                if (captured) {
+                    const auto& pixels = graphics.lastFrame();
+                    const int width = graphics.drawableWidth(), height = graphics.drawableHeight();
+                    if (width > 0 && height > 0 &&
+                        pixels.size() == size_t(width) * size_t(height) * 4) {
+                        try {
+                            options.frameSink(width, height, pixels);
+                            guestFrameStatus = "\nGUEST_FRAME: captured " + std::to_string(width) +
+                                               "x" + std::to_string(height) +
+                                               " RGBA8 drawable pixels.";
+                        } catch (const std::exception& e) {
+                            guestFrameStatus =
+                                "\nGUEST_FRAME: host transfer failed: " + std::string(e.what());
+                        }
+                    } else {
+                        guestFrameStatus = "\nGUEST_FRAME: readback dimensions were invalid.";
+                    }
+                } else {
+                    guestFrameStatus = "\nGUEST_FRAME: unavailable; " + graphics.describe();
+                }
+            }
             services.closeGuestFiles();
             services.drainGuestPools();
         } catch (const Error& e) {
@@ -134,9 +165,16 @@ std::string attemptLaunch(const uint8_t* data, size_t size, const std::string& b
                    image.summary();
         }
         const std::string header =
-            run.stop == "UNIMPLEMENTED" || run.stop == "TRAPPED"
-                ? "LAUNCH_BLOCKED: HLE_GAP: the guest started and stopped at an API that is not "
-                  "implemented yet."
+            run.stop == "UNIMPLEMENTED"
+                ? "LAUNCH_BLOCKED: HLE_GAP: the guest called an API that is not implemented yet."
+            : run.stop == "TRAPPED"
+                ? "LAUNCH_BLOCKED: GUEST_RUNTIME_TRAP: the guest stopped inside a named runtime "
+                  "operation."
+            : run.stop == "FAULT"
+                ? "LAUNCH_BLOCKED: GUEST_FAULT: the guest hit an invalid instruction or memory "
+                  "access."
+            : run.stop == "CANCELLED"
+                ? "LAUNCH_CANCELLED: the user stopped this bounded guest attempt."
                 : "LAUNCH_ATTEMPT: the guest image actually executed.";
         std::string log;
         if (options.logLines > 0 && services.logSize()) {
@@ -172,13 +210,13 @@ std::string attemptLaunch(const uint8_t* data, size_t size, const std::string& b
         }
         return header + "\n" + describeRun(run) + "\nDYLD_EXPORT_AUDIT: " + report + gaps +
                mappings + trace + log + "\n" + services.uiSummary() + "\n" +
-               services.graphicsSummary() + "\n" + services.guestClassSummary() +
+               services.graphicsSummary() + guestFrameStatus + "\n" + services.guestClassSummary() +
                "\nGUEST_THREADS: " + services.threadSummary() +
                "\nGUEST_AUDIO: " + services.audioSummary() +
                "\nGUEST_STORAGE: " + services.storageSummary() +
                "\nGUEST_HEAP: " + services.heapSummary() + "\n" + image.summary() +
-               "\nThis is bounded execution of a validated image, not evidence of gameplay, "
-               "rendering or a working app.";
+               "\nA GUEST_FRAME capture is framebuffer readback, not a device-side screenshot; "
+               "visual appearance and gameplay still require device review.";
 #else
         return "LAUNCH_BLOCKED: CPU_NOT_INTEGRATED: the tested CPU engine is not linked into "
                "this build.\nDYLD_EXPORT_AUDIT: " +

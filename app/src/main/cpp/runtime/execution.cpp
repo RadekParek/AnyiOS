@@ -2,6 +2,7 @@
 
 #include <chrono>
 #include <cstdio>
+#include <limits>
 #include <sstream>
 
 #include "cpu.h"
@@ -41,10 +42,85 @@ std::string pointer(uint32_t value) {
     out << "0x" << std::hex << value;
     return out.str();
 }
+std::vector<uint32_t> initializerFunctions(const LoadedImage& image) {
+    if (!image.memory) throw Error("GUEST_MEMORY", "image has no mapped memory");
+    std::vector<uint32_t> functions;
+    for (const auto& [address, count] : image.initializerSections) {
+        if (count > 100000 - functions.size())
+            throw Error("GUEST_INITIALIZER_LIMIT", "too many static initializer functions",
+                        address);
+        const uint64_t bytes = uint64_t(count) * 4;
+        if (!count || !image.memory->permits(address, size_t(bytes), Read)) {
+            if (!count) continue;
+            throw Error("GUEST_INITIALIZER", "initializer pointer section is unreadable", address);
+        }
+        for (uint32_t index = 0; index < count; index++) {
+            const uint32_t function = image.memory->read32(address + index * 4);
+            if (!function) continue;  // A null slot is harmless padding in some linkers.
+            const uint32_t code = function & ~1u;
+            if (!image.memory->permits(code, function & 1 ? 2 : 4, Execute))
+                throw Error("GUEST_INITIALIZER",
+                            "static initializer does not point to executable guest code", function);
+            functions.push_back(function);
+        }
+    }
+    return functions;
+}
+uint32_t installInitializerTrampoline(Memory& memory, const std::vector<uint32_t>& functions,
+                                      uint32_t entry) {
+    if (functions.empty()) return 0;
+    // This small ARM wrapper calls each dyld initializer through BLX, then branches to the
+    // original entry point. It preserves the process-entry registers and uses a dedicated
+    // RX page in the unused runtime-gate window; no writable-executable mapping is needed.
+    const size_t codeBytes = 20 + 16 * functions.size();
+    const uint64_t mappedBytes =
+        (uint64_t(codeBytes) + Memory::PageSize - 1) & ~(uint64_t(Memory::PageSize) - 1);
+    if (mappedBytes > std::numeric_limits<uint32_t>::max())
+        throw Error("GUEST_INITIALIZER_LIMIT", "initializer trampoline is too large");
+    std::vector<uint8_t> code(codeBytes, 0);
+    auto put = [&](size_t offset, uint32_t word) {
+        for (unsigned byte = 0; byte < 4; byte++) code[offset + byte] = uint8_t(word >> (byte * 8));
+    };
+    put(0, 0xe92d500f);  // push {r0-r3, r12, lr}
+    size_t offset = 4;
+    for (uint32_t function : functions) {
+        put(offset, 0xe59fc004);      // ldr r12, [pc, #4] -> literal at offset + 12
+        put(offset + 4, 0xe12fff3c);  // blx r12, including ARM/Thumb interworking
+        put(offset + 8, 0xea000000);  // b +0, skip the function pointer literal
+        put(offset + 12, function);
+        offset += 16;
+    }
+    put(offset, 0xe8bd500f);      // pop {r0-r3, r12, lr}
+    put(offset + 4, 0xe59fc000);  // ldr r12, [pc, #0] -> the original entry address
+    put(offset + 8, 0xe12fff1c);  // bx r12, restoring the entry's instruction set
+    put(offset + 12, entry);
+
+    constexpr uint32_t First = 0x6f003000;
+    constexpr uint32_t Limit = 0x6f100000;  // the unimplemented-import trap pages start here
+    const uint32_t regionSize = uint32_t(mappedBytes);
+    for (uint64_t candidate = First; candidate + regionSize <= Limit;
+         candidate += Memory::PageSize) {
+        bool overlaps = false;
+        for (const Region& region : memory.regions()) {
+            if (candidate < uint64_t(region.base) + region.size &&
+                region.base < candidate + regionSize) {
+                overlaps = true;
+                break;
+            }
+        }
+        if (overlaps) continue;
+        const uint32_t base = uint32_t(candidate);
+        memory.map({base, regionSize, uint8_t(Read | Execute), "Mach-O initializer trampoline"},
+                   code.data(), code.size());
+        return base;
+    }
+    throw Error("GUEST_INITIALIZER", "no free runtime address for the initializer trampoline");
+}
 }  // namespace
 namespace {
 GuestRun execute(LoadedImage& image, Services& services, const ExportGraph& graph, size_t requester,
-                 uint64_t instructionBudget, double seconds) {
+                 uint64_t instructionBudget, double seconds,
+                 const std::atomic<bool>* cancelRequested) {
     GuestRun run;
     if (!image.memory) throw Error("GUEST_MEMORY", "image has no mapped memory");
     // Unimplemented required imports bind to a faulting gate, so the guest starts and
@@ -53,6 +129,10 @@ GuestRun execute(LoadedImage& image, Services& services, const ExportGraph& grap
     image.dyld.applyWithGraph(*image.memory, 0, graph, requester,
                               [&](const std::string& name) { return services.trapFor(name); });
     run.trappedImports = services.trapCount();
+    const std::vector<uint32_t> initializers = initializerFunctions(image);
+    const uint32_t entry = image.registers[15] | ((image.cpsr & 0x20) ? 1u : 0u);
+    const uint32_t initializerTrampoline =
+        installInitializerTrampoline(*image.memory, initializers, entry);
 
     Cpu cpu(*image.memory, image.arch);
     // Every stop path returns `run`, so the engine's counters are published by scope exit
@@ -69,6 +149,10 @@ GuestRun execute(LoadedImage& image, Services& services, const ExportGraph& grap
     CpuState state;
     state.registers = image.registers;
     state.cpsr = image.cpsr;
+    if (initializerTrampoline) {
+        state.registers[15] = initializerTrampoline;
+        state.cpsr &= ~0x20u;  // The wrapper is ARM code; its final BX selects the entry mode.
+    }
     cpu.setState(state);
     services.adoptMainThread(state);
 
@@ -83,6 +167,11 @@ GuestRun execute(LoadedImage& image, Services& services, const ExportGraph& grap
     constexpr size_t MaxSamples = 120;
     auto lastSample = std::chrono::steady_clock::now();
     while (instructionBudget == 0 || run.instructions < instructionBudget) {
+        if (cancelRequested && cancelRequested->load(std::memory_order_relaxed)) {
+            run.stop = "CANCELLED";
+            run.detail = "the user cancelled the guest launch";
+            return run;
+        }
         if (seconds > 0 && std::chrono::steady_clock::now() >= deadline) {
             run.stop = "BUDGET";
             run.detail = "the caller's " + std::to_string(seconds) + " s probe budget was reached";
@@ -209,8 +298,10 @@ GuestRun execute(LoadedImage& image, Services& services, const ExportGraph& grap
 }
 }  // namespace
 GuestRun runGuest(LoadedImage& image, Services& services, const ExportGraph& graph,
-                  size_t requester, uint64_t instructionBudget, double seconds) {
-    GuestRun run = execute(image, services, graph, requester, instructionBudget, seconds);
+                  size_t requester, uint64_t instructionBudget, double seconds,
+                  const std::atomic<bool>* cancelRequested) {
+    GuestRun run =
+        execute(image, services, graph, requester, instructionBudget, seconds, cancelRequested);
     run.pcSymbol = image.nearestSymbol(run.pc);
     for (uint32_t address : run.frames) {
         const std::string symbol = image.nearestSymbol(address);
@@ -245,6 +336,11 @@ void classify(GuestRun& run) {
     if (run.stop == "EXITED") {
         run.blockerKind = "Guest exited";
         run.blockerSubject = detail.empty() ? "the guest returned from its entry point" : detail;
+        return;
+    }
+    if (run.stop == "CANCELLED") {
+        run.blockerKind = "Cancelled";
+        run.blockerSubject = detail.empty() ? "the user cancelled the guest launch" : detail;
         return;
     }
     run.blockerKind = "Time slice";

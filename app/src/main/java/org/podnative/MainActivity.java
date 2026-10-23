@@ -42,14 +42,22 @@ public final class MainActivity extends Activity {
     private PrototypeView prototype;
     private TextView liveStatus, progressLabel;
     private String tab = "Library", exportGame = "";
-    private boolean resumeTest, dark, showingSplashes, resumed;
-    private int presentationGeneration;
+    private boolean resumeTest, dark, showingSplashes, showingGuestFrame, showingBoot, resumed;
+    private int presentationGeneration, launchGeneration;
     private int background, surface, ink, muted, line, accent, soft;
     private long renderedRevision;
     private boolean renderedBusy;
     private String renderedNotice = "";
     private final Runnable libraryChanged = () -> {
-        if (prototype != null || isFinishing() || isDestroyed())
+        if (isFinishing() || isDestroyed())
+            return;
+        if (showingBoot && liveStatus != null) {
+            liveStatus.setText(library.progress.isEmpty()
+                    ? "Running the bounded guest startup probe…"
+                    : library.progress);
+            return;
+        }
+        if (prototype != null)
             return;
         if (renderedRevision == library.revision && renderedBusy == SharedCatalog.isBusy()
             && renderedNotice.equals(library.notice) && progressLabel != null)
@@ -538,13 +546,13 @@ public final class MainActivity extends Activity {
         gap(content, 18);
         content.addView(text(!game.blockReason.isEmpty() ? "Cannot launch this import"
                 : game.status.equals("Encrypted")        ? "Encrypted executable"
-                                                         : "Game launch is not available yet",
+                                                         : "Experimental guest launch",
             17, ink, true));
         gap(content, 8);
         content.addView(text(!game.blockReason.isEmpty() ? game.blockReason
                 : game.status.equals("Encrypted")
                 ? "The game was added, but its executable is protected. This build does not bypass DRM."
-                : "Attempt launch reopens the saved executable and checks it with the native loader. It reports the first startup blocker. Guest execution and iOS frameworks are not integrated yet; no game code runs in this build.",
+                : "Boot game extracts IPA resources to the private bundle cache, runs validated ARM32 guest code for up to 60 seconds, and displays the last readable EAGL frame when available. Missing iOS services or graphics setup can still stop startup; this is experimental and does not claim full gameplay.",
             14, muted, false));
         Button launch = action("Boot game · experimental", true, () -> {
             sheet.dismiss();
@@ -925,7 +933,7 @@ public final class MainActivity extends Activity {
         // Rotation lands here because the manifest declares configChanges. Re-assert the
         // immersive window (bars come back on some OEMs) and let the surface report its new
         // size; PrototypeView restarts the backend at the new dimensions.
-        if (prototype != null || showingSplashes)
+        if (prototype != null || showingSplashes || showingGuestFrame || showingBoot)
             enterEmulatorDisplay();
         else
             home();
@@ -933,7 +941,7 @@ public final class MainActivity extends Activity {
     @Override
     public void onWindowFocusChanged(boolean focused) {
         super.onWindowFocusChanged(focused);
-        if (focused && (prototype != null || showingSplashes))
+        if (focused && (prototype != null || showingSplashes || showingGuestFrame || showingBoot))
             enterEmulatorDisplay();
     }
     /** Chrome that fades out over the display and returns on tap, like a console overlay. */
@@ -1030,13 +1038,91 @@ public final class MainActivity extends Activity {
         setContentView(frame);
         chrome.requestApplyInsets();
     }
-    /** Boot attempt plus the crash screen that names the blocker when it stops. */
+    /** Bounded ARM32 guest startup, followed by the captured guest framebuffer when available. */
     private void attempt(GameLibrary.Game game) {
-        library.attemptLaunch(game, report -> {
-            if (isFinishing() || isDestroyed())
+        if (isFinishing() || isDestroyed())
+            return;
+        showingSplashes = false;
+        showingGuestFrame = false;
+        showingBoot = true;
+        final int generation = ++launchGeneration;
+        enterEmulatorDisplay();
+        // Angry Birds and the other early iPhone titles use a landscape design space. The
+        // ANGLE host surface remains at panel resolution; UIKit sees the legacy 480x320 points.
+        NativeBridge.setGuestScreenSize(480, 320);
+        NativeBridge.beginGuestLaunch();
+        FrameLayout boot = new FrameLayout(this);
+        boot.setBackgroundColor(Color.BLACK);
+        LinearLayout content = new LinearLayout(this);
+        content.setOrientation(LinearLayout.VERTICAL);
+        content.setGravity(Gravity.CENTER);
+        content.setPadding(dp(28), dp(24), dp(28), dp(24));
+        TextView title = text(game.title, 22, Color.WHITE, true);
+        title.setGravity(Gravity.CENTER);
+        content.addView(title);
+        liveStatus = text("Opening app resources and starting the guest…", 14,
+            Color.parseColor("#B9C7D8"), false);
+        liveStatus.setGravity(Gravity.CENTER);
+        liveStatus.setPadding(0, dp(12), 0, dp(22));
+        content.addView(liveStatus);
+        ProgressBar spinner = new ProgressBar(this);
+        content.addView(spinner);
+        Button cancel = action("Stop startup", false, this::stop);
+        LinearLayout.LayoutParams cancelLp = new LinearLayout.LayoutParams(-2, -2);
+        cancelLp.topMargin = dp(24);
+        content.addView(cancel, cancelLp);
+        boot.addView(content, new FrameLayout.LayoutParams(-1, -1));
+        setContentView(boot);
+        boolean accepted = library.attemptLaunch(game, result -> {
+            if (isFinishing() || isDestroyed() || generation != launchGeneration || !showingBoot)
                 return;
-            RuntimeCrash.show(this, game.title, report);
+            showingBoot = false;
+            if (result != null && result.hasFrame()) {
+                showGuestFrame(game, result);
+            } else {
+                String report = result == null ? "LAUNCH_BLOCKED: no native result" : result.report;
+                stop();
+                RuntimeCrash.show(this, game.title, report);
+            }
         });
+        if (!accepted) {
+            showingBoot = false;
+            stop();
+        }
+    }
+    /** Displays read-back guest RGBA through the Android ANGLE surface; this is a snapshot. */
+    private void showGuestFrame(GameLibrary.Game game, GameLibrary.LaunchResult result) {
+        showingGuestFrame = true;
+        showingSplashes = false;
+        showingBoot = false;
+        enterEmulatorDisplay();
+        FrameLayout frame = new FrameLayout(this);
+        frame.setBackgroundColor(Color.BLACK);
+        prototype = new PrototypeView(this, result.frameWidth, result.frameHeight,
+            result.guestFrame, prefs.getInt("fps", 60), prefs.getInt("resolution", 1080), info -> {
+                if (liveStatus != null)
+                    liveStatus.setText(info);
+            });
+        frame.addView(prototype, new FrameLayout.LayoutParams(-1, -1));
+        if (prefs.getBoolean("showConsole", false)) {
+            LinearLayout chrome = new LinearLayout(this);
+            chrome.setOrientation(LinearLayout.VERTICAL);
+            chrome.setBackgroundColor(Color.parseColor("#CC0B1020"));
+            chrome.setPadding(dp(16), dp(8), dp(16), dp(10));
+            TextView label = text(game.title + " · GUEST FRAME SNAPSHOT", 12, Color.WHITE, true);
+            chrome.addView(label);
+            liveStatus =
+                text("Captured from the guest EAGL framebuffer after a bounded startup probe.", 11,
+                    Color.parseColor("#B9C7D8"), false);
+            liveStatus.setMaxLines(2);
+            chrome.addView(liveStatus);
+            Button back = action("Stop", false, this::stop);
+            chrome.addView(back, new LinearLayout.LayoutParams(-2, -2));
+            frame.addView(chrome, new FrameLayout.LayoutParams(-1, -2, Gravity.TOP));
+        } else {
+            liveStatus = null;
+        }
+        setContentView(frame);
     }
     private void launch() {
         LinearLayout root = column();
@@ -1061,7 +1147,16 @@ public final class MainActivity extends Activity {
         enterEmulatorDisplay();
     }
     private void stop() {
+        if (showingBoot) {
+            if (library != null)
+                library.cancelLaunch();
+            else
+                NativeBridge.cancelGuestLaunch();
+        }
+        showingBoot = false;
+        showingGuestFrame = false;
         showingSplashes = false;
+        launchGeneration++;
         presentationGeneration++;
         leaveEmulatorDisplay();
         resumeTest = false;
@@ -1085,8 +1180,8 @@ public final class MainActivity extends Activity {
     @Override
     protected void onPause() {
         resumed = false;
-        boolean wasRunning = prototype != null;
-        boolean wasArtwork = showingSplashes;
+        boolean wasRunning = prototype != null || showingBoot;
+        boolean wasArtwork = showingSplashes || showingGuestFrame || showingBoot;
         if (wasRunning)
             stop();
         resumeTest = wasRunning && !wasArtwork;
@@ -1105,14 +1200,15 @@ public final class MainActivity extends Activity {
     }
     @Override
     protected void onSaveInstanceState(Bundle out) {
-        out.putBoolean("prototype", (prototype != null && !showingSplashes) || resumeTest);
+        out.putBoolean("prototype",
+            (prototype != null && !showingSplashes && !showingGuestFrame) || resumeTest);
         out.putString("tab", tab);
         out.putString("exportGame", exportGame);
         super.onSaveInstanceState(out);
     }
     @Override
     public void onBackPressed() {
-        if (prototype != null)
+        if (prototype != null || showingBoot)
             stop();
         else if (!tab.equals("Library")) {
             tab = "Library";

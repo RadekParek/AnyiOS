@@ -14,6 +14,11 @@ final class NativeBridge {
     static native String inspect(byte[] bytes);
     static native String cpuProbe();
     static native String attemptLaunch(byte[] bytes, String bundlePath, String containerPath);
+    static native void beginGuestLaunch();
+    static native void cancelGuestLaunch();
+    static native void setGuestScreenSize(int width, int height);
+    // Header is little-endian width/height followed by tightly packed RGBA8 pixels.
+    static native byte[] takeGuestFrame();
     // Settings ▸ "Verbose logging": names every service the guest calls, every unwind
     // decision and every GL error in the launch report. Off by default.
     static native void setVerbose(boolean on);
