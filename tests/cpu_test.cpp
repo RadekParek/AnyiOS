@@ -280,9 +280,11 @@ int main() {
         assert(describeRun(cancelled).find("GUEST_BLOCKER: kind=Cancelled") != std::string::npos);
         cancelled.called = {"_malloc", "_malloc", "_free"};
         assert(describeRun(cancelled).find("HOST_CALLS:") == std::string::npos);
-        assert(describeRun(cancelled, true).find(
-                   "HOST_CALLS: last 3 call(s), 2 distinct service name(s): _malloc (2x) _free") !=
-               std::string::npos);
+        assert(
+            describeRun(cancelled, true)
+                .find(
+                    "HOST_CALLS: last 3 call(s), 2 distinct service name(s): _malloc (2x) _free") !=
+            std::string::npos);
         LoadedImage faulting;
         faulting.memory = std::make_unique<Memory>();
         Services faultServices(*faulting.memory);

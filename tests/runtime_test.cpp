@@ -278,8 +278,9 @@ int main() {
     assert(importReport.find("registered service gate names=") != std::string::npos);
     assert(importReport.find("unresolved required imports=2 references across 1 unique "
                              "symbol/ordinal pairs") != std::string::npos);
-    assert(importReport.find("MISSING_REQUIRED_IMPORTS:\n  _missing_api (2 references; ordinal=-2)") !=
-           std::string::npos);
+    assert(
+        importReport.find("MISSING_REQUIRED_IMPORTS:\n  _missing_api (2 references; ordinal=-2)") !=
+        std::string::npos);
     assert(importReport.find("_missing_api") == importReport.rfind("_missing_api"));
     assert(importReport.find("__ZTVN10__cxxabiv117__class_type_infoE") == std::string::npos);
     assert(importReport.find("required ordinal=") == std::string::npos);

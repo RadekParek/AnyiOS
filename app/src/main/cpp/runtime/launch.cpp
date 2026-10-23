@@ -54,8 +54,7 @@ struct Coverage {
             for (size_t index = 0; index < shown; index++) {
                 const auto& [key, references] = ordered[index];
                 out << "\n  ";
-                for (unsigned char c : key.first)
-                    out << (c >= 32 && c < 127 ? char(c) : '?');
+                for (unsigned char c : key.first) out << (c >= 32 && c < 127 ? char(c) : '?');
                 out << " (" << references << (references == 1 ? " reference" : " references")
                     << "; ordinal=" << key.second << ')';
             }
@@ -64,8 +63,7 @@ struct Coverage {
                     << " additional unique symbol/ordinal pair(s) omitted.";
         };
         append("MISSING_REQUIRED_IMPORTS", missingRequired, verbose ? 512 : 64);
-        if (verbose && !missingWeak.empty())
-            append("MISSING_WEAK_IMPORTS", missingWeak, 512);
+        if (verbose && !missingWeak.empty()) append("MISSING_WEAK_IMPORTS", missingWeak, 512);
         return out.str();
     }
 };
@@ -100,8 +98,8 @@ std::string compactGuestLog(size_t captured, const std::vector<std::string>& lin
             groups.emplace_back(line, 1);
     }
     std::ostringstream out;
-    out << "\nGUEST_LOG: " << captured << " captured line(s), tail " << lines.size() << " line(s) in "
-        << groups.size() << " consecutive group(s):";
+    out << "\nGUEST_LOG: " << captured << " captured line(s), tail " << lines.size()
+        << " line(s) in " << groups.size() << " consecutive group(s):";
     for (const auto& [line, count] : groups) {
         out << "\n| ";
         if (count > 1) out << '[' << count << "x] ";
@@ -265,10 +263,10 @@ std::string attemptLaunch(const uint8_t* data, size_t size, const std::string& b
             }
             if (!mappings.empty()) mappings = "\nMAPPED_REGIONS:" + mappings;
         }
-        return header + "\n" + describeRun(run, options.verbose) + "\nDYLD_EXPORT_AUDIT: " + report + mappings +
-               trace + serviceTrace + log + "\n" + services.uiSummary() + "\n" +
-               services.graphicsSummary() + guestFrameStatus + "\n" + services.guestClassSummary() +
-               "\nGUEST_THREADS: " + services.threadSummary() +
+        return header + "\n" + describeRun(run, options.verbose) +
+               "\nDYLD_EXPORT_AUDIT: " + report + mappings + trace + serviceTrace + log + "\n" +
+               services.uiSummary() + "\n" + services.graphicsSummary() + guestFrameStatus + "\n" +
+               services.guestClassSummary() + "\nGUEST_THREADS: " + services.threadSummary() +
                "\nGUEST_AUDIO: " + services.audioSummary() +
                "\nGUEST_STORAGE: " + services.storageSummary() +
                "\nGUEST_HEAP: " + services.heapSummary() + "\n" + image.summary() +

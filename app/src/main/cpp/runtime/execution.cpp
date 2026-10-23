@@ -398,9 +398,8 @@ std::string describeRun(GuestRun& run, bool includeRecentCalls) {
     if (includeRecentCalls && !run.called.empty()) {
         std::vector<std::pair<std::string, size_t>> calls;
         for (const std::string& name : run.called) {
-            const auto found = std::find_if(calls.begin(), calls.end(), [&](const auto& entry) {
-                return entry.first == name;
-            });
+            const auto found = std::find_if(calls.begin(), calls.end(),
+                                            [&](const auto& entry) { return entry.first == name; });
             if (found == calls.end())
                 calls.emplace_back(name, 1);
             else

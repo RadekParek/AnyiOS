@@ -14,11 +14,10 @@ int main() {
     assert(plan.fixups.size() == 1 && plan.fixups[0].symbol == "_test" &&
            plan.fixups[0].address == 0x1000);
     DyldPlan summaryPlan;
-    summaryPlan.fixups = {{0x1000, false, false, false, 1, 0,
-                           "__ZTVN10__cxxabiv117__class_type_infoE"},
-                          {0x1004, false, false, false, 1, 0,
-                           "__ZTVN10__cxxabiv117__class_type_infoE"},
-                          {0x1008, true, false, false, 0, 0, ""}};
+    summaryPlan.fixups = {
+        {0x1000, false, false, false, 1, 0, "__ZTVN10__cxxabiv117__class_type_infoE"},
+        {0x1004, false, false, false, 1, 0, "__ZTVN10__cxxabiv117__class_type_infoE"},
+        {0x1008, true, false, false, 0, 0, ""}};
     const std::string planSummary = summaryPlan.summary();
     assert(planSummary.find("1 pointer rebases, 2 pointer bindings") != std::string::npos);
     assert(planSummary.find("__ZTVN10__cxxabiv117__class_type_infoE") == std::string::npos);
