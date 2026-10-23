@@ -7,6 +7,7 @@
 #include <set>
 #include <string>
 #include <thread>
+#include <utility>
 #include <vector>
 
 #include "cpu.h"
@@ -93,6 +94,10 @@ class ObjC final {
     uint32_t classAddress(const std::string& name, bool required) {
         return resolveClass(name, required);
     }
+    // Old apps may pass a nil UIApplicationMain delegate because their main NIB creates it.
+    // Until NIB archives are decoded, a single unambiguous image-defined *AppDelegate class
+    // that implements one documented launch selector is the only safe fallback.
+    std::pair<std::string, std::string> inferMainNibDelegate() const;
     bool guestClassDefined(uint32_t address) const { return guestClassAt(address) != nullptr; }
     // Whether a guest instance (or class object) implements a selector, as -respondsToSelector:
     // answers and as UIKit checks before calling an optional delegate method.
@@ -111,6 +116,7 @@ class ObjC final {
     std::string hostClassName(uint32_t address) const;
     // Instantiates one of the runtime's own classes (UIApplication and friends).
     uint32_t makeHostObject(const std::string& className) { return makeObject(className); }
+    uint32_t makeHostBoolean(bool value);
     // Reads a string object or string literal; refused by name when it is neither.
     std::string stringValue(uint32_t object) { return stringOf(object); }
     static constexpr uint32_t GateBase = 0x6f200000;

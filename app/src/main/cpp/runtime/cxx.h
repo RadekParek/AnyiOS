@@ -1,4 +1,5 @@
 #pragma once
+#include <cstddef>
 #include <cstdint>
 #include <functional>
 #include <string>
@@ -9,6 +10,7 @@
 #include "memory.h"
 
 namespace podnative::runtime {
+class ExportGraph;
 // C++ and compiler-runtime support that an iOS ARMv7 image links against:
 // libstdc++.6.dylib (operator new/delete, the Itanium C++ ABI entry points) and
 // libgcc_s.1.dylib (the integer/64-bit helper routines the ARM backend emits).
@@ -31,6 +33,16 @@ class CxxRuntime final {
     size_t runAtExit();
     bool isCxxSymbol(const std::string& symbol) const;
     bool isCompilerHelper(const std::string& symbol) const;
+    // These are data exports, not call gates: an Itanium RTTI object stores the vtable
+    // address point in its first word. The mapped page is only the ABI identity data this
+    // runtime needs to distinguish __class_type_info, __si_class_type_info and
+    // __vmi_class_type_info when it walks a thrown type's base graph.
+    void installTypeInfoVtables(ExportGraph& graph, size_t standardLibrary);
+    static constexpr uint32_t RttiVtablePage = 0x6f002000;
+    static constexpr uint32_t ClassTypeInfoVtable = RttiVtablePage;
+    static constexpr uint32_t PointerTypeInfoVtable = RttiVtablePage + 0x20;
+    static constexpr uint32_t SiClassTypeInfoVtable = RttiVtablePage + 0x40;
+    static constexpr uint32_t VmiClassTypeInfoVtable = RttiVtablePage + 0x60;
 
    private:
     Memory& memory;
@@ -70,7 +82,7 @@ class CxxRuntime final {
     // One exception in flight, from `__cxa_throw` to `__cxa_end_catch`.
     struct ThrowRecord {
         bool active = false, caught = false;
-        uint32_t object = 0, typeInfo = 0, destructor = 0;
+        uint32_t object = 0, caughtObject = 0, typeInfo = 0, destructor = 0;
         uint32_t handlerFrame = 0, landingPad = 0;
         int32_t filter = 0;
     };
@@ -82,7 +94,8 @@ class CxxRuntime final {
     bool readSleb(uint32_t& cursor, int32_t& value) const;
     bool parseLsda(uint32_t address, LsdaHeader& header) const;
     uint32_t typeEntry(const LsdaHeader& header, int32_t filter) const;
-    bool typeMatches(uint32_t catchType, uint32_t thrownType) const;
+    bool typeMatches(uint32_t catchType, uint32_t thrownType, int32_t& objectAdjustment) const;
+    bool rttiVtablesMapped = false;
     Personality personalityFor(uint32_t frame, bool search, bool handlerFrame);
     bool installFrame(uint32_t frame, CpuState& cpu);
     void rewindChainTo(uint32_t frame);

@@ -70,12 +70,28 @@ bool UIKit::invoke(const std::string& symbol, CpuState& state, ObjC& objc) {
     std::string delegateName;
     if (r[3]) delegateName = objc.stringValue(r[3]);
     if (r[2]) objc.stringValue(r[2]);  // principal class name is validated when present
+    bool inferredDelegate = false;
+    std::string inferredSelector;
+    if (delegateName.empty()) {
+        const auto candidate = objc.inferMainNibDelegate();
+        if (!candidate.first.empty()) {
+            delegateName = candidate.first;
+            inferredSelector = candidate.second;
+            inferredDelegate = true;
+        }
+    }
     if (argv.size() > 1 && !argv[1].empty()) applicationDescription += " (" + argv[1] + ")";
     std::ostringstream boot;
     boot << "UIApplicationMain: argc=" << argv.size();
     if (!argv.empty()) boot << ", argv[0]=\"" << argv[0] << "\"";
     if (!delegateName.empty()) boot << ", delegate=" << delegateName;
     emit(boot.str());
+    if (inferredDelegate)
+        emit("UIApplicationMain: inferred " + delegateName +
+             " as the unique AppDelegate class "
+             "implementing " +
+             inferredSelector +
+             "; the main NIB object graph and its outlet/action connections are not decoded");
     if (delegateName.empty()) {
         stage = Stage::Finished;
         // nil delegate is legal: UIKit then instantiates the class named by the bundle's

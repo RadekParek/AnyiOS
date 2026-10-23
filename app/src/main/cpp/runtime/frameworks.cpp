@@ -1,9 +1,11 @@
 #include "frameworks.h"
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <limits>
 
+#include "abi.h"
 #include "error.h"
 
 namespace podnative::runtime {
@@ -98,9 +100,76 @@ uint32_t CoreFoundation::create(std::vector<uint8_t> bytes, uint32_t bits, bool 
     objects.emplace(handle, std::move(entry));
     return handle;
 }
+namespace {
+double cfAbsoluteTime() {
+    constexpr double UnixToCfEpoch = 978307200.0;
+    return std::chrono::duration<double>(std::chrono::system_clock::now().time_since_epoch())
+               .count() -
+           UnixToCfEpoch;
+}
+}  // namespace
 bool CoreFoundation::invoke(const std::string& name, CpuState& cpu, Memory& memory) {
     auto& r = cpu.registers;
-    if (name == "_CFBitVectorCreate") {
+    if (name == "_CFAbsoluteTimeGetCurrent") {
+        resultF64(cpu, cfAbsoluteTime());
+    } else if (name == "_CFStringConvertEncodingToNSStringEncoding") {
+        // Common encodings from CoreFoundation and NSString's public encoding constants.
+        switch (r[0]) {
+            case 0x0000:
+                r[0] = 30;
+                break;  // MacRoman
+            case 0x0201:
+                r[0] = 5;
+                break;  // ISO Latin-1
+            case 0x0600:
+                r[0] = 1;
+                break;  // ASCII
+            case 0x0100:
+                r[0] = 10;
+                break;  // UTF-16
+            case 0x08000100:
+                r[0] = 4;
+                break;  // UTF-8
+            case 0x10000100:
+                r[0] = 0x90000100;
+                break;  // UTF-16BE
+            case 0x14000100:
+                r[0] = 0x94000100;
+                break;  // UTF-16LE
+            default:
+                r[0] = 0xffffffffu;
+                break;  // kCFStringEncodingInvalidId
+        }
+    } else if (name == "_CFDataCreate") {
+        if (r[0]) throw Error("CF_ALLOCATOR", "custom allocators are not implemented");
+        const int32_t length = int32_t(r[2]);
+        if (length < 0 || uint32_t(length) > 8 * 1024 * 1024)
+            throw Error("CF_BUDGET", "invalid or excessive CFData length");
+        std::vector<uint8_t> bytes(static_cast<size_t>(length), 0);
+        if (length) memory.read(r[1], bytes.data(), bytes.size());
+        const uint32_t handle = create(std::move(bytes), uint32_t(length), false);
+        Bits& data = get(handle);
+        if (!data.bytes.empty()) {
+            const size_t pageSize = Memory::PageSize;
+            const size_t mapped = (data.bytes.size() + pageSize - 1) & ~(pageSize - 1);
+            constexpr uint32_t DataLimit = 0xef000000;
+            if (mapped > DataLimit - nextDataAddress)
+                throw Error("CF_BUDGET", "CFData guest address space is exhausted");
+            data.dataAddress = nextDataAddress;
+            memory.map({nextDataAddress, uint32_t(mapped), uint8_t(Read | Write),
+                        "CoreFoundation data bytes"});
+            memory.write(nextDataAddress, data.bytes.data(), data.bytes.size());
+            nextDataAddress += uint32_t(mapped);
+        }
+        r[0] = handle;
+    } else if (name == "_CFDataGetBytePtr") {
+        r[0] = get(r[0]).dataAddress;
+    } else if (name == "_CFDataGetLength") {
+        const Bits& data = get(r[0]);
+        if (data.bytes.size() > size_t(std::numeric_limits<int32_t>::max()))
+            throw Error("CF_BUDGET", "CFData length overflows CFIndex");
+        r[0] = uint32_t(data.bytes.size());
+    } else if (name == "_CFBitVectorCreate") {
         if (r[0]) throw Error("CF_ALLOCATOR", "custom allocators are not implemented");
         if (r[2] > 8 * 1024 * 1024) throw Error("CF_BUDGET", "invalid or excessive bit count");
         std::vector<uint8_t> bytes((r[2] + 7) / 8);

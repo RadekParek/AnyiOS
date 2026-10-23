@@ -1,11 +1,13 @@
 #include "cxx.h"
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstdio>
 #include <limits>
 
 #include "error.h"
+#include "exports.h"
 #include "format.h"
 
 namespace podnative::runtime {
@@ -34,6 +36,7 @@ const char* const CxxSymbols[] = {
     "___cxa_call_unexpected",
     "___cxa_bad_typeid",
     "___cxa_pure_virtual",
+    "___dynamic_cast",
     "___cxa_atexit",
     "___cxa_guard_acquire",
     "___cxa_guard_release",
@@ -385,20 +388,111 @@ uint32_t CxxRuntime::typeEntry(const LsdaHeader& header, int32_t filter) const {
         throw Error("CXX_LSDA", "type table entry is outside guest memory", at);
     return memory.read32(at);
 }
-bool CxxRuntime::typeMatches(uint32_t catchType, uint32_t thrownType) const {
+void CxxRuntime::installTypeInfoVtables(ExportGraph& graph, size_t standardLibrary) {
+    // Four distinct address points let the matcher recognize the three class RTTI layouts
+    // (plus pointer RTTI) without needing to call the guest's imported libstdc++ vtable. The
+    // tables are deliberately data-only: CxxRuntime performs the type walk itself; virtual
+    // __do_catch/dynamic-cast callbacks into a guest ABI are not claimed here.
+    if (!rttiVtablesMapped) {
+        std::array<uint32_t, Memory::PageSize / sizeof(uint32_t)> page{};
+        memory.map({RttiVtablePage, Memory::PageSize, Read, "C++ ABI type_info vtable identities"},
+                   reinterpret_cast<const uint8_t*>(page.data()), sizeof(page));
+        rttiVtablesMapped = true;
+    }
+    const std::pair<const char*, uint32_t> vtables[] = {
+        {"__ZTVN10__cxxabiv117__class_type_infoE", ClassTypeInfoVtable},
+        {"__ZTVN10__cxxabiv119__pointer_type_infoE", PointerTypeInfoVtable},
+        {"__ZTVN10__cxxabiv120__si_class_type_infoE", SiClassTypeInfoVtable},
+        {"__ZTVN10__cxxabiv121__vmi_class_type_infoE", VmiClassTypeInfoVtable},
+    };
+    for (const auto& [symbol, address] : vtables)
+        if (!graph.strong(standardLibrary, symbol))
+            graph.define(standardLibrary, symbol, {address});
+}
+bool CxxRuntime::typeMatches(uint32_t catchType, uint32_t thrownType,
+                             int32_t& objectAdjustment) const {
+    objectAdjustment = 0;
     if (!catchType) return true;  // a null type_info is `catch (...)`
     if (!thrownType) return false;
-    if (catchType == thrownType) return true;
-    // Duplicate type_info objects for one type are common when a title links several copies
-    // of a library, so the mangled name is compared as well.
-    if (!memory.permits(catchType + 4, 4, Read) || !memory.permits(thrownType + 4, 4, Read))
+
+    const auto typeName = [this](uint32_t type) -> std::string {
+        if (!type || !memory.permits(type + 4, 4, Read)) return {};
+        const uint32_t name = memory.read32(type + 4);
+        if (!name || !memory.permits(name, 1, Read)) return {};
+        return readString(name);
+    };
+    const std::string catchName = typeName(catchType);
+    const std::string thrownName = typeName(thrownType);
+    if (catchType == thrownType || (!catchName.empty() && catchName == thrownName)) return true;
+
+    enum class Kind { Unknown, Class, Pointer, Single, Multiple };
+    const auto kindOf = [](uint32_t vtable) {
+        // Mach-O binds a C++ vtable symbol at its start; ABI RTTI objects point at its
+        // address point eight bytes in. Accepting the start too accommodates SDK linkers
+        // that encode the address-point bias in the vtable symbol itself.
+        if (vtable == ClassTypeInfoVtable || vtable == ClassTypeInfoVtable + 8) return Kind::Class;
+        if (vtable == PointerTypeInfoVtable || vtable == PointerTypeInfoVtable + 8)
+            return Kind::Pointer;
+        if (vtable == SiClassTypeInfoVtable || vtable == SiClassTypeInfoVtable + 8)
+            return Kind::Single;
+        if (vtable == VmiClassTypeInfoVtable || vtable == VmiClassTypeInfoVtable + 8)
+            return Kind::Multiple;
+        return Kind::Unknown;
+    };
+
+    // A class catch matches its exact type or an accessible, unambiguous base of the
+    // dynamic thrown type. The RTTI objects are target ABI structures: __si stores its one
+    // base pointer at +8; __vmi stores flags/count at +8/+12 and {type, offset_flags}
+    // pairs from +16. Non-virtual base offsets are the signed high 24 bits of offset_flags.
+    // Virtual-base adjustment needs the guest object's vtable and is intentionally refused
+    // rather than handing a catch block a pointer to the wrong subobject.
+    std::vector<uint32_t> path;
+    bool found = false, ambiguous = false;
+    int64_t foundAdjustment = 0;
+    const auto visit = [&](const auto& self, uint32_t derived, int64_t adjustment,
+                           unsigned depth) -> void {
+        if (!derived || depth > 64 || path.size() >= 64 || !memory.permits(derived, 8, Read) ||
+            std::find(path.begin(), path.end(), derived) != path.end())
+            return;
+        const std::string derivedName = typeName(derived);
+        if (!catchName.empty() && catchName == derivedName) {
+            if (!found) {
+                found = true;
+                foundAdjustment = adjustment;
+            } else if (foundAdjustment != adjustment) {
+                ambiguous = true;
+            }
+            return;
+        }
+        path.push_back(derived);
+        const Kind kind = kindOf(memory.read32(derived));
+        if (kind == Kind::Single) {
+            if (memory.permits(derived + 8, 4, Read))
+                self(self, memory.read32(derived + 8), adjustment, depth + 1);
+        } else if (kind == Kind::Multiple && memory.permits(derived + 8, 8, Read)) {
+            const uint32_t count = memory.read32(derived + 12);
+            if (count <= 64 && memory.permits(derived + 16, size_t(count) * 8, Read)) {
+                for (uint32_t index = 0; index < count; ++index) {
+                    const uint32_t entry = derived + 16 + index * 8;
+                    const uint32_t baseType = memory.read32(entry);
+                    const uint32_t offsetFlags = memory.read32(entry + 4);
+                    if (!(offsetFlags & 2u) || (offsetFlags & 1u))
+                        continue;  // private/virtual bases need ABI access or object-vtable data
+                    const int32_t baseOffset = int32_t(offsetFlags) >> 8;
+                    self(self, baseType, adjustment + baseOffset, depth + 1);
+                }
+            }
+        }
+        path.pop_back();
+    };
+    visit(visit, thrownType, 0, 0);
+    if (!found || ambiguous || foundAdjustment < INT32_MIN || foundAdjustment > INT32_MAX)
         return false;
-    const uint32_t catchName = memory.read32(catchType + 4);
-    const uint32_t thrownName = memory.read32(thrownType + 4);
-    if (!catchName || !thrownName || !memory.permits(catchName, 1, Read) ||
-        !memory.permits(thrownName, 1, Read))
-        return false;
-    return readString(catchName) == readString(thrownName);
+    objectAdjustment = int32_t(foundAdjustment);
+    if (verbose && !catchName.empty() && catchName != thrownName)
+        emit("cxx: caught " + thrownName + " as public base " + catchName + " with object offset " +
+             std::to_string(objectAdjustment));
+    return true;
 }
 CxxRuntime::Personality CxxRuntime::personalityFor(uint32_t frame, bool search, bool handlerFrame) {
     if (!memory.permits(frame, FrameLayout::size, Read))
@@ -441,7 +535,23 @@ CxxRuntime::Personality CxxRuntime::personalityFor(uint32_t frame, bool search, 
             if (recordFilter == 0) {
                 sawCleanup = true;
             } else if (recordFilter > 0) {
-                if (typeMatches(typeEntry(header, recordFilter), thrown.typeInfo)) {
+                int32_t adjustment = 0;
+                const uint32_t catchType = typeEntry(header, recordFilter);
+                if (typeMatches(catchType, thrown.typeInfo, adjustment)) {
+                    if (verbose) {
+                        std::string catchName = "catch (...)";
+                        if (catchType && memory.permits(catchType + 4, 4, Read)) {
+                            const uint32_t name = memory.read32(catchType + 4);
+                            if (name && memory.permits(name, 1, Read))
+                                catchName = "'" + readString(name) + "'";
+                        }
+                        emit("cxx: filter " + std::to_string(recordFilter) + " catches " +
+                             thrownTypeName() + " as " + catchName + " (object offset " +
+                             std::to_string(adjustment) + ")");
+                    }
+                    const int64_t caughtObject = int64_t(thrown.object) + adjustment;
+                    if (caughtObject < 0 || caughtObject > UINT32_MAX) continue;
+                    thrown.caughtObject = uint32_t(caughtObject);
                     sawHandler = true;
                     filter = recordFilter;
                     break;
@@ -491,7 +601,7 @@ bool CxxRuntime::installFrame(uint32_t frame, CpuState& cpu) {
     // reads the exception from data[0], the filter value from data[1] and the dispatch index
     // from call_site.
     memory.write32(frame + FrameLayout::callSite, pendingLandingPad - 1);
-    memory.write32(frame + FrameLayout::data, thrown.object);
+    memory.write32(frame + FrameLayout::data, thrown.caughtObject);
     memory.write32(frame + FrameLayout::data + 4, uint32_t(pendingFilter));
     rewindChainTo(frame);
     // __builtin_longjmp restores the frame pointer from buffer[0], the stack from buffer[2]
@@ -625,6 +735,50 @@ bool CxxRuntime::abi(const std::string& name, CpuState& cpu) {
         if (r[0] && heap.owns(r[0])) heap.release(r[0]);
         return true;
     }
+    if (name == "___dynamic_cast") {
+        // Itanium ABI: __dynamic_cast(src_ptr, src_type, dst_type, src2dst_offset). The
+        // object vptr's two preceding words are offset-to-top and the dynamic type_info.
+        // Public, non-virtual source/destination base adjustment shares the same bounded RTTI
+        // walk as exception matching; virtual-base casts need the full ABI vtable search and
+        // are refused as a null cast rather than returning an unadjusted pointer.
+        const uint32_t source = r[0], sourceType = r[1], destinationType = r[2];
+        if (!source) {
+            r[0] = 0;
+            return true;
+        }
+        if (!memory.permits(source, 4, Read))
+            throw Error("CXX_DYNAMIC_CAST", "source object is not readable", source);
+        const uint32_t vtable = memory.read32(source);
+        if (vtable < 8 || !memory.permits(vtable - 8, 8, Read)) {
+            r[0] = 0;
+            return true;
+        }
+        const int32_t topOffset = int32_t(memory.read32(vtable - 8));
+        const uint32_t dynamicType = memory.read32(vtable - 4);
+        const int64_t top = int64_t(source) + topOffset;
+        if (!sourceType || top < 0 || top > UINT32_MAX || !dynamicType) {
+            r[0] = 0;
+            return true;
+        }
+        int32_t sourceAdjustment = 0;
+        if (!typeMatches(sourceType, dynamicType, sourceAdjustment) ||
+            int64_t(top) + sourceAdjustment != source) {
+            r[0] = 0;
+            return true;
+        }
+        if (!destinationType) {
+            r[0] = uint32_t(top);  // dynamic_cast<void*> returns the complete object pointer
+            return true;
+        }
+        int32_t destinationAdjustment = 0;
+        if (!typeMatches(destinationType, dynamicType, destinationAdjustment)) {
+            r[0] = 0;
+            return true;
+        }
+        const int64_t result = top + destinationAdjustment;
+        r[0] = result >= 0 && result <= UINT32_MAX ? uint32_t(result) : 0;
+        return true;
+    }
     if (name == "___cxa_throw") {
         // __cxa_throw(object, type_info, destructor): raise, exactly as libstdc++ does, with
         // this runtime playing the part of libgcc's SjLj unwinder. Phase 1 searches the
@@ -633,6 +787,7 @@ bool CxxRuntime::abi(const std::string& name, CpuState& cpu) {
         thrown = ThrowRecord{};
         thrown.active = true;
         thrown.object = r[0];
+        thrown.caughtObject = r[0];
         thrown.typeInfo = r[1];
         thrown.destructor = r[2];
         if (verbose)
@@ -666,11 +821,11 @@ bool CxxRuntime::abi(const std::string& name, CpuState& cpu) {
             throw Error("CXX_CATCH", "the guest began a catch with no exception in flight");
         // The landing pad passes the word the unwinder placed in frame->data[0], which is the
         // thrown object itself; the catch block binds that pointer.
-        if (r[0] != thrown.object)
+        if (r[0] != thrown.caughtObject)
             emit("cxx: __cxa_begin_catch was handed 0x" + hex(r[0]) +
-                 " but the exception object is 0x" + hex(thrown.object));
+                 " but the catch object is 0x" + hex(thrown.caughtObject));
         thrown.caught = true;
-        r[0] = thrown.object;
+        r[0] = thrown.caughtObject;
         return true;
     }
     if (name == "___cxa_end_catch") {

@@ -6,8 +6,10 @@
 #include <cstring>
 #include <filesystem>
 #include <limits>
+#include <random>
 #include <set>
 #include <system_error>
+#include <tuple>
 
 #include "error.h"
 
@@ -77,6 +79,7 @@ Services::Services(Memory& m)
           "_OSAtomicCompareAndSwap32Barrier",
           "_OSAtomicAnd32OrigBarrier",
           "_OSAtomicOr32OrigBarrier",
+          "_SecRandomCopyBytes",
           // libm, re-exported through libSystem.
           "_sin",
           "_cos",
@@ -94,17 +97,30 @@ Services::Services(Memory& m)
           "_CFBitVectorCreateMutableCopy",
           "_CFBitVectorGetBitAtIndex",
           "_CFBitVectorSetBitAtIndex",
+          "_CFDataCreate",
+          "_CFDataGetBytePtr",
+          "_CFDataGetLength",
+          "_CFStringConvertEncodingToNSStringEncoding",
+          "_CFAbsoluteTimeGetCurrent",
           "_CFRetain",
           "_CFRelease",
           // CoreGraphics geometry and colour spaces, plus QuartzCore media time.
           "_CGAffineTransformMakeTranslation",
+          "_CGAffineTransformMakeRotation",
           "_CGAffineTransformTranslate",
+          "_CGAffineTransformRotate",
           "_CGAffineTransformScale",
           "_CGRectApplyAffineTransform",
+          "_CGRectContainsPoint",
           "_CGRectEqualToRect",
+          "_CGRectGetHeight",
+          "_CGRectGetMinX",
+          "_CGRectGetMinY",
           "_CGRectGetMidX",
           "_CGRectGetMidY",
+          "_CGRectGetWidth",
           "_CGRectInset",
+          "_CGRectOffset",
           "_CGColorSpaceCreateDeviceRGB",
           "_CGColorSpaceCreateDeviceGray",
           "_CGColorSpaceRetain",
@@ -137,6 +153,7 @@ Services::Services(Memory& m)
           "___cxa_call_unexpected",
           "___cxa_bad_typeid",
           "___cxa_pure_virtual",
+          "___dynamic_cast",
           "___cxa_atexit",
           "___cxa_guard_acquire",
           "___cxa_guard_release",
@@ -369,6 +386,9 @@ Services::Services(Memory& m)
           "_AudioSessionGetPropertySize",
           // QuartzCore transforms and CoreGraphics' own CA bridge.
           "_CATransform3DMakeRotation",
+          "_CATransform3DMakeTranslation",
+          "_CATransform3DRotate",
+          "_CATransform3DTranslate",
           "_CATransform3DScale",
           // UIKit process bootstrap: argv parsing, delegate instantiation and the launch
           // callback, with a real return path through the lifecycle gate.
@@ -482,6 +502,10 @@ Services::Services(Memory& m)
                          std::numeric_limits<float>::infinity(),
                          std::numeric_limits<float>::infinity(),
                          0,
+                         0,
+                         0,
+                         0,
+                         0,
                          0};
     memory.map({Base + Memory::PageSize, Memory::PageSize, Read, "CoreGraphics constants"},
                reinterpret_cast<const uint8_t*>(constants), sizeof(constants));
@@ -527,6 +551,7 @@ const std::string& Services::libraryOf(const std::string& symbol) const {
     static const std::string standard = "/usr/lib/libstdc++.6.dylib";
     static const std::string helpers = "/usr/lib/libgcc_s.1.dylib";
     static const std::string objc = "/usr/lib/libobjc.A.dylib";
+    static const std::string security = "/System/Library/Frameworks/Security.framework/Security";
     static const std::string uiKit = "/System/Library/Frameworks/UIKit.framework/UIKit";
     if (symbol.rfind("_UI", 0) == 0) return uiKit;
     if (symbol.rfind("_CF", 0) == 0) return coreFoundation;
@@ -540,7 +565,8 @@ const std::string& Services::libraryOf(const std::string& symbol) const {
           "_alGetListener", "_alListener", "_alDistanceModel", "_alDoppler", "_alSpeedOfSound"})
         if (symbol.rfind(prefix, 0) == 0) return openAL;
     if (symbol.rfind("_gl", 0) == 0) return openGLES;
-    if (symbol.rfind("_objc_", 0) == 0) return objc;
+    if (symbol.rfind("_objc_", 0) == 0 || symbol == "___objc_personality_v0") return objc;
+    if (symbol.rfind("_Sec", 0) == 0 || symbol.rfind("_kSec", 0) == 0) return security;
     if (cxx.isCxxSymbol(symbol)) return standard;
     if (cxx.isCompilerHelper(symbol)) return helpers;
     if (symbol.rfind("_NS", 0) == 0) return foundation;
@@ -562,6 +588,7 @@ void Services::install(ExportGraph& graph, const std::vector<std::string>& depen
     auto quartzCore = imageFor("/System/Library/Frameworks/QuartzCore.framework/QuartzCore");
     auto audioToolbox = imageFor("/System/Library/Frameworks/AudioToolbox.framework/AudioToolbox");
     auto objcLibrary = imageFor("/usr/lib/libobjc.A.dylib");
+    const size_t security = imageFor("/System/Library/Frameworks/Security.framework/Security");
     // Every framework the image links against must exist in the graph, or its two-level
     // ordinals cannot resolve at all. Register them all, in the binary's own order.
     for (const auto& dependency : dependencies) imageFor(dependency);
@@ -573,6 +600,10 @@ void Services::install(ExportGraph& graph, const std::vector<std::string>& depen
     // that does not export it, which is exactly the class of bug the audit exists to catch.
     const size_t helpers = imageFor("/usr/lib/libgcc_s.1.dylib");
     const size_t standard = imageFor("/usr/lib/libstdc++.6.dylib");
+    // The exception matcher reads these target ABI data objects directly; exporting the
+    // missing vtable symbols as call gates would put executable code where type_info expects
+    // data and still leave derived-to-base catches broken.
+    cxx.installTypeInfoVtables(graph, standard);
     for (size_t n = 0; n < symbols.size(); n++)
         graph.define(imageFor(libraryOf(symbols[n])), symbols[n], {Base + uint32_t(n) * 8});
     // Which library a shared name is defined in follows the titles, not a guess. AngryBirds
@@ -653,14 +684,80 @@ void Services::install(ExportGraph& graph, const std::vector<std::string>& depen
                  {constantStringVariable("RetainedBacking")});
     graph.define(coreFoundation, "___CFConstantStringClassReference",
                  {objc.classAddress("NSConstantString", false)});
+    // SDK globals that are CFStringRef/NSString* constants, not functions. Games pass these
+    // through collection, notification, locale and run-loop APIs, so each needs a valid
+    // guest-side constant-string cell rather than an executable gate.
+    for (const auto& [image, symbol, text] : {
+             std::tuple<size_t, const char*, const char*>{foundation, "_NSDefaultRunLoopMode",
+                                                          "NSDefaultRunLoopMode"},
+             {foundation, "_NSFilePosixPermissions", "NSFilePosixPermissions"},
+             {foundation, "_NSGregorianCalendar", "gregorian"},
+             {foundation, "_NSKeyValueChangeNotificationIsPriorKey", "notificationIsPrior"},
+             {foundation, "_NSLocaleCountryCode", "country"},
+             {foundation, "_NSLocaleCurrencyCode", "currency"},
+             {foundation, "_NSLocalizedDescriptionKey", "NSLocalizedDescription"},
+             {foundation, "_NSMachErrorDomain", "NSMachErrorDomain"},
+             {foundation, "_NSPOSIXErrorDomain", "NSPOSIXErrorDomain"},
+             {foundation, "_NSUnderlyingErrorKey", "NSUnderlyingError"},
+             {foundation, "_NSInvalidArgumentException", "NSInvalidArgumentException"},
+             {foundation, "_NSInternalInconsistencyException", "NSInternalInconsistencyException"},
+             {coreFoundation, "_kCFRunLoopDefaultMode", "kCFRunLoopDefaultMode"},
+             {coreFoundation, "_kCFBundleIdentifierKey", "CFBundleIdentifier"},
+             {coreFoundation, "_kCFBundleVersionKey", "CFBundleVersion"},
+             {quartzCore, "_kCAFillModeForwards", "forwards"},
+             {quartzCore, "_kCAMediaTimingFunctionLinear", "linear"},
+             {security, "_kSecAttrAccessible", "pdmn"},
+             {security, "_kSecAttrAccessibleWhenUnlocked", "ak"},
+             {security, "_kSecAttrAccount", "acct"},
+             {security, "_kSecAttrGeneric", "genp"},
+             {security, "_kSecAttrService", "svce"},
+             {security, "_kSecClass", "class"},
+             {security, "_kSecClassGenericPassword", "genp"},
+             {security, "_kSecMatchLimit", "m_Limit"},
+             {security, "_kSecMatchLimitOne", "m_LimitOne"},
+             {security, "_kSecReturnData", "r_Data"},
+             {security, "_kSecValueData", "v_Data"},
+             {uiKit, "_UIApplicationDidBecomeActiveNotification",
+              "UIApplicationDidBecomeActiveNotification"},
+             {uiKit, "_UIApplicationWillEnterForegroundNotification",
+              "UIApplicationWillEnterForegroundNotification"},
+             {uiKit, "_UIApplicationWillResignActiveNotification",
+              "UIApplicationWillResignActiveNotification"},
+             {uiKit, "_UIApplicationWillTerminateNotification",
+              "UIApplicationWillTerminateNotification"},
+         })
+        if (!graph.strong(image, symbol))
+            graph.define(image, symbol, {constantStringVariable(text)});
+    // Core Foundation's default allocator is the null handle. UIKit's invalid background-task
+    // token is zero; both are data cells whose contents are read by the guest.
+    const uint32_t zeroCell = libc.guestHeap().allocate(4, 4);
+    if (!zeroCell) throw Error("HLE_ALLOC", "could not allocate a constant data cell");
+    memory.write32(zeroCell, 0);
+    if (!graph.strong(coreFoundation, "_kCFAllocatorDefault"))
+        graph.define(coreFoundation, "_kCFAllocatorDefault", {zeroCell});
+    const uint32_t trueCell = libc.guestHeap().allocate(4, 4);
+    const uint32_t falseCell = libc.guestHeap().allocate(4, 4);
+    if (!trueCell || !falseCell) throw Error("HLE_ALLOC", "could not allocate CFBoolean cells");
+    memory.write32(trueCell, objc.makeHostBoolean(true));
+    memory.write32(falseCell, objc.makeHostBoolean(false));
+    if (!graph.strong(coreFoundation, "_kCFBooleanTrue"))
+        graph.define(coreFoundation, "_kCFBooleanTrue", {trueCell});
+    if (!graph.strong(coreFoundation, "_kCFBooleanFalse"))
+        graph.define(coreFoundation, "_kCFBooleanFalse", {falseCell});
+    if (!graph.strong(security, "_kSecRandomDefault"))
+        graph.define(security, "_kSecRandomDefault", {zeroCell});
+    if (!graph.strong(uiKit, "_UIBackgroundTaskInvalid"))
+        graph.define(uiKit, "_UIBackgroundTaskInvalid", {zeroCell});
     graph.define(coreGraphics, "_CGAffineTransformIdentity", {Base + Memory::PageSize});
     graph.define(coreGraphics, "_CGRectNull", {Base + Memory::PageSize + 24});
+    graph.define(coreGraphics, "_CGRectZero", {Base + Memory::PageSize + 40});
     // Keep the handles referenced: the images must exist even when nothing is defined in
     // them yet, because the binary's ordinals index this table.
     (void)system;
     (void)foundation;
     (void)coreFoundation;
     (void)audioToolbox;
+    (void)security;
 }
 uint32_t Services::constantStringVariable(const std::string& text) {
     // A CFString global is a variable holding a pointer to a __CFConstantString: a class
@@ -860,6 +957,28 @@ void Services::invoke(const std::string& name, CpuState& state) {
     // The last symbol the guest asked for, so a stop report can show the calls leading up
     // to it instead of a row of identical trap codes.
     lastSymbol = name;
+    if (name == "_SecRandomCopyBytes") {
+        const uint32_t generator = state.registers[0];
+        const uint32_t count = state.registers[1];
+        const uint32_t destination = state.registers[2];
+        constexpr int32_t errSecParam = -50;
+        constexpr int32_t errSecRandomFailure = -25291;
+        if (generator || count > 1024 * 1024 ||
+            (count && (!destination || !memory.permits(destination, count, Write)))) {
+            state.registers[0] = uint32_t(errSecParam);
+            return;
+        }
+        try {
+            std::random_device random;
+            std::vector<uint8_t> bytes(count);
+            for (uint8_t& byte : bytes) byte = uint8_t(random());
+            if (count) memory.write(destination, bytes.data(), bytes.size());
+            state.registers[0] = 0;  // errSecSuccess
+        } catch (const std::exception&) {
+            state.registers[0] = uint32_t(errSecRandomFailure);
+        }
+        return;
+    }
     if (name == "___podnative_thread_callback") {
         runThreadStart(state);
         return;

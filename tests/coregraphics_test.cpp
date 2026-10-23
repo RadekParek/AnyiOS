@@ -69,6 +69,59 @@ int main() {
     call.f32(3, 40);
     call.invoke("_CGRectGetMidY");
     assert(near(call.resultFloat(), 40));
+    call.f32(0, 10);
+    call.f32(1, 20);
+    call.f32(2, 30);
+    call.f32(3, 40);
+    call.invoke("_CGRectGetWidth");
+    assert(near(call.resultFloat(), 30));
+    call.f32(0, 10);
+    call.f32(1, 20);
+    call.f32(2, 30);
+    call.f32(3, 40);
+    call.invoke("_CGRectGetHeight");
+    assert(near(call.resultFloat(), 40));
+    call.f32(0, 10);
+    call.f32(1, 20);
+    call.f32(2, 30);
+    call.f32(3, 40);
+    call.invoke("_CGRectGetMinX");
+    assert(near(call.resultFloat(), 10));
+    call.f32(0, 10);
+    call.f32(1, 20);
+    call.f32(2, 30);
+    call.f32(3, 40);
+    call.invoke("_CGRectGetMinY");
+    assert(near(call.resultFloat(), 20));
+
+    // CGRectContainsPoint receives the four-word rect in r0-r3 and CGPoint on the stack.
+    call.state = {};
+    call.state.registers[13] = Stack;
+    call.f32(0, 10);
+    call.f32(1, 20);
+    call.f32(2, 30);
+    call.f32(3, 40);
+    call.stackFloat(0, 15);
+    call.stackFloat(1, 25);
+    call.invoke("_CGRectContainsPoint");
+    assert(call.state.registers[0] == 1);
+    call.stackFloat(0, 50);
+    call.invoke("_CGRectContainsPoint");
+    assert(call.state.registers[0] == 0);
+
+    // CGRectOffset translates the origin and preserves the extent.
+    call.state = {};
+    call.state.registers[13] = Stack;
+    call.f32(0, 10);
+    call.f32(1, 20);
+    call.f32(2, 30);
+    call.f32(3, 40);
+    call.stackFloat(0, 5);
+    call.stackFloat(1, -2);
+    call.invoke("_CGRectOffset");
+    Rect offset = call.resultRect();
+    assert(near(offset.x, 15) && near(offset.y, 18) && near(offset.width, 30) &&
+           near(offset.height, 40));
 
     call.state = {};
     call.state.registers[13] = Stack;
@@ -126,6 +179,28 @@ int main() {
     call.invoke("_CGAffineTransformTranslate");
     Affine moved = call.readAffine(0x8000);
     assert(near(moved.a, 2) && near(moved.d, 2) && near(moved.tx, 5) && near(moved.ty, 6));
+
+    call.state = {};
+    call.state.registers[13] = Stack;
+    call.word(0, 0x8000);
+    call.word(1, floatBits(static_cast<float>(M_PI / 2)));
+    call.invoke("_CGAffineTransformMakeRotation");
+    Affine rotated = call.readAffine(0x8000);
+    assert(near(rotated.a, 0) && near(rotated.b, 1) && near(rotated.c, -1) && near(rotated.d, 0));
+
+    call.state = {};
+    call.state.registers[13] = Stack;
+    call.word(0, 0x8000);
+    call.word(1, floatBits(1));
+    call.word(2, floatBits(0));
+    call.word(3, floatBits(0));
+    call.stackFloat(0, 1);
+    call.stackFloat(1, 0);
+    call.stackFloat(2, 0);
+    call.stackFloat(3, static_cast<float>(M_PI / 2));
+    call.invoke("_CGAffineTransformRotate");
+    rotated = call.readAffine(0x8000);
+    assert(near(rotated.a, 0) && near(rotated.b, 1) && near(rotated.c, -1) && near(rotated.d, 0));
 
     // Applying a transform to a rectangle returns its bounding box in r0-r3.
     call.state = {};
@@ -212,6 +287,35 @@ int main() {
         assert(near(bitsFloat(memory.read32(0x8100)), 2));
         assert(near(bitsFloat(memory.read32(0x8114)), 3));
         assert(near(bitsFloat(memory.read32(0x8128)), 4));
+
+        CpuState translate;
+        translate.registers[0] = 0x8200;
+        translate.registers[1] = floatBits(3);
+        translate.registers[2] = floatBits(4);
+        translate.registers[3] = floatBits(5);
+        translate.registers[13] = Stack;
+        assert(cg.invoke("_CATransform3DMakeTranslation", translate, memory));
+        assert(near(bitsFloat(memory.read32(0x8230)), 3));
+        assert(near(bitsFloat(memory.read32(0x8234)), 4));
+        assert(near(bitsFloat(memory.read32(0x8238)), 5));
+
+        CpuState moved3d;
+        moved3d.registers[0] = 0x8300;
+        moved3d.registers[1] = floatBits(1);
+        moved3d.registers[2] = 0;
+        moved3d.registers[3] = 0;
+        moved3d.registers[13] = Stack;
+        for (size_t n = 0; n < 13; ++n) memory.write32(Stack + uint32_t(n * 4), floatBits(0));
+        memory.write32(Stack + 2 * 4, floatBits(1));
+        memory.write32(Stack + 7 * 4, floatBits(1));
+        memory.write32(Stack + 12 * 4, floatBits(1));
+        memory.write32(Stack + 13 * 4, floatBits(7));
+        memory.write32(Stack + 14 * 4, floatBits(8));
+        memory.write32(Stack + 15 * 4, floatBits(9));
+        assert(cg.invoke("_CATransform3DTranslate", moved3d, memory));
+        assert(near(bitsFloat(memory.read32(0x8330)), 7));
+        assert(near(bitsFloat(memory.read32(0x8334)), 8));
+        assert(near(bitsFloat(memory.read32(0x8338)), 9));
     }
 
     // CFBundle/CFURL report the mounted sandbox path to the guest.
@@ -244,6 +348,34 @@ int main() {
         small.registers[3] = 4;
         assert(cf.invoke("_CFURLGetFileSystemRepresentation", small, memory));
         assert(small.registers[0] == 0);
+        // CFData owns bytes in a guest mapping, so CFDataGetBytePtr never leaks a host address.
+        const uint8_t sourceBytes[] = {0x41, 0x00, 0x42, 0xff};
+        memory.write(0x8300, sourceBytes, sizeof(sourceBytes));
+        CpuState createData;
+        createData.registers[0] = 0;  // default allocator
+        createData.registers[1] = 0x8300;
+        createData.registers[2] = sizeof(sourceBytes);
+        assert(cf.invoke("_CFDataCreate", createData, memory));
+        const uint32_t dataHandle = createData.registers[0];
+        CpuState dataLength;
+        dataLength.registers[0] = dataHandle;
+        assert(cf.invoke("_CFDataGetLength", dataLength, memory));
+        assert(dataLength.registers[0] == sizeof(sourceBytes));
+        CpuState bytePointer;
+        bytePointer.registers[0] = dataHandle;
+        assert(cf.invoke("_CFDataGetBytePtr", bytePointer, memory));
+        uint8_t copiedBytes[sizeof(sourceBytes)] = {};
+        memory.read(bytePointer.registers[0], copiedBytes, sizeof(copiedBytes));
+        assert(std::memcmp(copiedBytes, sourceBytes, sizeof(sourceBytes)) == 0);
+        CpuState absolute;
+        assert(cf.invoke("_CFAbsoluteTimeGetCurrent", absolute, memory));
+        const double cfTime =
+            bitsDouble(uint64_t(absolute.registers[0]) | uint64_t(absolute.registers[1]) << 32);
+        assert(cfTime > 700000000 && cfTime < 1000000000);
+        CpuState encoding;
+        encoding.registers[0] = 0x08000100;  // kCFStringEncodingUTF8
+        assert(cf.invoke("_CFStringConvertEncodingToNSStringEncoding", encoding, memory));
+        assert(encoding.registers[0] == 4);
         // A bit vector handle is not a URL.
         CpuState notUrl;
         notUrl.registers[0] = 0x7fffffff;
