@@ -37,7 +37,9 @@ public class GameInspectorExtractTest {
         File staging = new File(temporary.getRoot(), "staging");
         File bundle = GameInspector.extractAppBundle(source, staging, "AngryBirds");
         assertTrue(new File(bundle, "Info.plist").isFile());
-        assertEquals("texture-data", Files.readString(new File(bundle, "data/atlas.bin").toPath()));
+        assertEquals("texture-data",
+            new String(Files.readAllBytes(new File(bundle, "data/atlas.bin").toPath()),
+                StandardCharsets.UTF_8));
         assertFalse(new File(bundle, "iTunesMetadata.plist").exists());
         assertTrue(source.isFile());
     }
