@@ -24,14 +24,17 @@ fetch_pin() {
 fetch_pin https://github.com/lioncash/dynarmic.git "$DEPS/dynarmic" "$(cat "$ROOT/third_party/dynarmic/revision.txt")"
 fetch_pin https://github.com/boostorg/boost.git "$DEPS/boost" "$(cat "$ROOT/third_party/dynarmic/boost-revision.txt")"
 PATCH="$ROOT/third_party/dynarmic/patches/oaknut-wx.patch"
-if git -C "$DEPS/dynarmic" apply --check "$PATCH" 2>/dev/null; then
-  git -C "$DEPS/dynarmic" apply "$PATCH"
-elif git -C "$DEPS/dynarmic" apply --reverse --check "$PATCH" 2>/dev/null; then
+# Some Windows Git configurations still materialize this pinned file as CRLF.
+# Ignore whitespace differences only for this reviewed patch against the exact pin.
+PATCH_FLAGS=(--ignore-space-change --ignore-whitespace)
+if git -C "$DEPS/dynarmic" apply "${PATCH_FLAGS[@]}" --check "$PATCH" 2>/dev/null; then
+  git -C "$DEPS/dynarmic" apply "${PATCH_FLAGS[@]}" "$PATCH"
+elif git -C "$DEPS/dynarmic" apply "${PATCH_FLAGS[@]}" --reverse --check "$PATCH" 2>/dev/null; then
   echo 'Reviewed Oaknut W^X patch already applied'
 else
   echo 'CPU dependency differs from the reviewed patch; refusing to overwrite it' >&2
-  git -C "$DEPS/dynarmic" apply --check "$PATCH" || true
-  git -C "$DEPS/dynarmic" apply --reverse --check "$PATCH" || true
+  git -C "$DEPS/dynarmic" apply "${PATCH_FLAGS[@]}" --check "$PATCH" || true
+  git -C "$DEPS/dynarmic" apply "${PATCH_FLAGS[@]}" --reverse --check "$PATCH" || true
   exit 1
 fi
 cd "$DEPS/boost"
