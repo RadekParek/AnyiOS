@@ -1,6 +1,6 @@
 name: AnyiOS builds
-# Two artifacts only: the Android APK and the Linux PC build. Host tests run inside
-# the PC job so a red build still means something without producing extra artifacts.
+# Android, Linux and Windows builds publish platform-specific artifacts. Host suites run
+# inside the PC jobs so a red build still means something without separate test artifacts.
 on:
   # A branch push and its pull request run the same two jobs; validating the pull
   # request and main is enough, and it stops every change being built twice.
@@ -10,7 +10,7 @@ on:
   workflow_dispatch:
     inputs:
       android_only:
-        description: Build only the Android APK (skip the PC job and converter tests)
+        description: Build only the Android APK (skip the PC jobs and converter tests)
         required: false
         type: boolean
         default: false
@@ -29,6 +29,6 @@ jobs:
       app_only: ${{ github.event_name == 'workflow_dispatch' && inputs.android_only }}
     secrets: inherit
   pc:
-    name: PC build (Linux x86-64)
+    name: PC builds (Linux and Windows x86-64)
     if: ${{ github.event_name != 'workflow_dispatch' || inputs.android_only != true }}
     uses: ./.github/workflows/runtime.yml

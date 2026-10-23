@@ -24,6 +24,11 @@ import java.util.zip.ZipFile;
 final class GameInspector {
     private static final int MAX_EXECUTABLE = 64 * 1024 * 1024;
     private static final long MAX_CONTAINER = 512L * 1024 * 1024;
+    static final long MAX_EXTRACTED_APP_BUNDLE = 4L * 1024 * 1024 * 1024;
+
+    static boolean exceedsExtractedBundleLimit(long total, int nextBytes) {
+        return total < 0 || nextBytes < 0 || total > MAX_EXTRACTED_APP_BUNDLE - nextBytes;
+    }
     static final class Result {
         String kind = "Executable";
         String title, version = "Unknown version", bundleId = "", executable = "", report = "";
@@ -490,9 +495,9 @@ final class GameInspector {
                     int read;
                     while ((read = in.read(buffer)) != -1) {
                         checkExtractionCancelled(isCancelled);
-                        if (total > 1024L * 1024 * 1024 - read)
+                        if (exceedsExtractedBundleLimit(total, read))
                             throw new IOException(
-                                "Extracted app bundle exceeds the 1 GiB safety limit");
+                                "Extracted app bundle exceeds the 4 GiB safety limit");
                         total += read;
                         if (total >= nextSpaceCheck) {
                             if (destination.getUsableSpace() < 64L * 1024 * 1024 + read)

@@ -3,9 +3,9 @@
 ## Actual changes, not gameplay claims
 
 - A single **Android and PC builds** workflow invokes the Android APK build plus
-  the reusable runtime pipeline. It publishes a signed Android APK, Linux x86-64
-  CPU/W^X diagnostic executables, and Android ARM64 CPU diagnostic executables.
-  The Linux artifact is **not a desktop emulator GUI or a playable game build**.
+  the reusable runtime pipeline. It publishes a signed Android APK and Linux/Windows
+  x86-64 CPU/HLE diagnostics. The PC artifacts are **not desktop emulator GUIs or
+  playable game builds**, and the Windows artifact does not bundle ANGLE.
 - Original handheld/screen/control launcher icon replaces the letter P. The native
   UI uses violet/teal accents, staggered card entrances and press feedback.
   Android's animation-disable setting is respected. New visuals need device review.

@@ -8,6 +8,10 @@
 #include "error.h"
 namespace podnative::runtime {
 namespace {
+// Pointer fixups are compact (often one repeat opcode for a whole data segment), so a
+// 100,000-entry ceiling rejected otherwise valid older game images. Keep a strict one-million
+// total cap; stream size, segment bounds, opcode-work and loader budgets remain independent.
+constexpr size_t MaxFixups = 1000000;
 struct Stream {
     const uint8_t* b;
     size_t n, p = 0;
@@ -75,7 +79,7 @@ DyldPlan decodeDyld(const uint8_t* bytes, size_t size, const std::vector<DyldSeg
             !(segments[segment].permissions & Write) || offset % 4)
             throw Error("DYLD_TARGET", "invalid, unaligned or non-writable fixup target");
         if (!rebasing && symbol.empty()) throw Error("DYLD_SYMBOL", "binding has no symbol");
-        if (plan.fixups.size() >= 100000) throw Error("DYLD_LIMIT", "too many fixups");
+        if (plan.fixups.size() >= MaxFixups) throw Error("DYLD_LIMIT", "too many fixups");
         if (symbol.size() > 8 * 1024 * 1024 - nameBytes)
             throw Error("DYLD_LIMIT", "symbol allocation budget exceeded");
         nameBytes += symbol.size();
@@ -120,7 +124,7 @@ DyldPlan decodeDyld(const uint8_t* bytes, size_t size, const std::vector<DyldSeg
                 case 0x50:
                 case 0x60: {
                     uint64_t count = op == 0x50 ? imm : s.leb();
-                    if (count > 100000 - plan.fixups.size())
+                    if (count > MaxFixups - plan.fixups.size())
                         throw Error("DYLD_LIMIT", "rebase repeat count");
                     for (uint64_t i = 0; i < count; i++) {
                         emit();
@@ -137,7 +141,7 @@ DyldPlan decodeDyld(const uint8_t* bytes, size_t size, const std::vector<DyldSeg
                 }
                 case 0x80: {
                     auto count = s.leb(), skip = s.leb();
-                    if (count > 100000 - plan.fixups.size())
+                    if (count > MaxFixups - plan.fixups.size())
                         throw Error("DYLD_LIMIT", "rebase repeat count");
                     for (uint64_t i = 0; i < count; i++) {
                         emit();
@@ -209,7 +213,7 @@ DyldPlan decodeDyld(const uint8_t* bytes, size_t size, const std::vector<DyldSeg
                     break;
                 case 0xc0: {
                     auto count = s.leb(), skip = s.leb();
-                    if (count > 100000 - plan.fixups.size())
+                    if (count > MaxFixups - plan.fixups.size())
                         throw Error("DYLD_LIMIT", "binding repeat count");
                     for (uint64_t i = 0; i < count; i++) {
                         emit();

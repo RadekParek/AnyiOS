@@ -77,6 +77,18 @@ public class GameInspectorExtractTest {
     }
 
     @Test
+    public void keepsTheFourGiBExtractionLimitWithOverflowSafeAccounting() {
+        long limit = GameInspector.MAX_EXTRACTED_APP_BUNDLE;
+        assertEquals(4L * 1024 * 1024 * 1024, limit);
+        assertFalse(GameInspector.exceedsExtractedBundleLimit(limit - 1, 1));
+        assertFalse(GameInspector.exceedsExtractedBundleLimit(limit, 0));
+        assertTrue(GameInspector.exceedsExtractedBundleLimit(limit, 1));
+        assertTrue(GameInspector.exceedsExtractedBundleLimit(limit + 1, 0));
+        assertTrue(GameInspector.exceedsExtractedBundleLimit(Long.MAX_VALUE, 65536));
+        assertTrue(GameInspector.exceedsExtractedBundleLimit(0, -1));
+    }
+
+    @Test
     public void refusesAmbiguousTopLevelAppBundles() throws Exception {
         File source = ipa("TwoApps.ipa", "Payload/One.app/Info.plist", "one", "Payload/One.app/One",
             "mach-o", "Payload/Two.app/Info.plist", "two", "Payload/Two.app/Two", "mach-o");

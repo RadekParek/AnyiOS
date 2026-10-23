@@ -5,7 +5,10 @@
 #include <dynarmic/interface/exclusive_monitor.h>
 #include <dynarmic/interface/halt_reason.h>
 #include <dynarmic/interface/optimization_flags.h>
+#if defined(__unix__) || defined(__APPLE__)
+#define PODNATIVE_POSIX_CRASH_REPORTER 1
 #include <unistd.h>
+#endif
 
 #include <algorithm>
 #include <array>
@@ -99,6 +102,7 @@ class Cpu::Impl final : public Dynarmic::A32::UserCallbacks {
     std::optional<CpuStop> stopped;
     bool poisoned = false;
     uint32_t instructionPC = 0;
+    bool faultPcPending = false;
     // Batch execution keeps an exact instruction count through Dynarmic's own cycle
     // accounting: the JIT reports every tick it consumed, so the number in the report is
     // still a count of retired instructions, not an estimate.
@@ -117,6 +121,7 @@ class Cpu::Impl final : public Dynarmic::A32::UserCallbacks {
         pcs[pcCursor % PcHistory] = pc;
         pcCursor++;
     }
+#if defined(PODNATIVE_POSIX_CRASH_REPORTER)
     // A fault inside translated code cannot be reported as a C++ exception: generated code has
     // no unwind tables. This handler therefore prints the guest PCs that led to the fault and
     // the host address that faulted, then lets the default action happen. Without it a run
@@ -167,7 +172,9 @@ class Cpu::Impl final : public Dynarmic::A32::UserCallbacks {
         std::raise(signal);
     }
     struct sigaction previousSegv{}, previousBus{};
+#endif
     void installCrashReporter() {
+#if defined(PODNATIVE_POSIX_CRASH_REPORTER)
         active = this;
         struct sigaction action{};
         action.sa_sigaction = &Impl::reportCrash;
@@ -175,6 +182,7 @@ class Cpu::Impl final : public Dynarmic::A32::UserCallbacks {
         sigemptyset(&action.sa_mask);
         sigaction(SIGSEGV, &action, &previousSegv);
         sigaction(SIGBUS, &action, &previousBus);
+#endif
     }
     explicit Impl(Memory& memory, IsaArch arch) : memory(memory) {
         // This reporter is installed *before* the engine's own handler: the engine chains a
@@ -237,13 +245,23 @@ class Cpu::Impl final : public Dynarmic::A32::UserCallbacks {
         // The engine's handler is chained to this one; drop the JIT (and with it that
         // handler) before the reporter it chains to disappears.
         jit.reset();
+#if defined(PODNATIVE_POSIX_CRASH_REPORTER)
         sigaction(SIGSEGV, &previousSegv, nullptr);
         sigaction(SIGBUS, &previousBus, nullptr);
         if (active == this) active = nullptr;
+#endif
     }
-    void fault(const std::string& code, const std::string& detail, uint32_t address = 0) {
-        if (!stopped)
-            stopped = CpuStop{StopReason::Fault, 0, instructionPC, 0, address, code, detail};
+    void fault(const std::string& code, const std::string& detail, uint32_t address = 0,
+               std::optional<uint32_t> faultPc = std::nullopt) {
+        if (!stopped) {
+            // A memory callback runs inside a translated block, where instructionPC is only
+            // the block entry. Dynarmic commits the exact stopped guest PC when Run/Step
+            // returns, so defer this part of the report until then instead of guessing from
+            // the block's entry address.
+            faultPcPending = !precise && !faultPc.has_value();
+            stopped = CpuStop{
+                StopReason::Fault, 0, faultPc.value_or(instructionPC), 0, address, code, detail};
+        }
         if (jit) jit->HaltExecution(Dynarmic::HaltReason::MemoryAbort);
     }
     // Invalidates exactly the guest code the host changed since the last sync. A run that
@@ -296,7 +314,7 @@ class Cpu::Impl final : public Dynarmic::A32::UserCallbacks {
         try {
             return memory.fetch32(address);
         } catch (const Error& e) {
-            fault(e.code, e.what(), e.address);
+            fault(e.code, e.what(), e.address, address);
             return std::nullopt;
         }
     }
@@ -335,7 +353,7 @@ class Cpu::Impl final : public Dynarmic::A32::UserCallbacks {
         return exclusive(a, v, e);
     }
     void InterpreterFallback(uint32_t pc, size_t) override {
-        fault("CPU_INSTRUCTION_UNSUPPORTED", "Dynarmic requested interpreter fallback", pc);
+        fault("CPU_INSTRUCTION_UNSUPPORTED", "Dynarmic requested interpreter fallback", 0, pc);
     }
     void CallSVC(uint32_t service) override {
         // In a batched run the block entry is not the SVC's address, so the trapping
@@ -401,7 +419,8 @@ class Cpu::Impl final : public Dynarmic::A32::UserCallbacks {
             case Exception::NoExecuteFault:
                 // The instruction fetch already reported the exact reason (unmapped, null or a
                 // page without execute permission); this only makes sure the run stops.
-                fault("MEMORY_ACCESS", "instruction fetch from a page that cannot be executed", pc);
+                fault("MEMORY_ACCESS", "instruction fetch from a page that cannot be executed", 0,
+                      pc);
                 return;
             case Exception::Breakpoint:
             case Exception::UndefinedInstruction:
@@ -409,7 +428,7 @@ class Cpu::Impl final : public Dynarmic::A32::UserCallbacks {
             case Exception::DecodeError:
             default:
                 fault("CPU_EXCEPTION",
-                      "Dynarmic exception " + std::to_string(static_cast<int>(exception)), pc);
+                      "Dynarmic exception " + std::to_string(static_cast<int>(exception)), 0, pc);
                 return;
         }
     }
@@ -419,7 +438,9 @@ class Cpu::Impl final : public Dynarmic::A32::UserCallbacks {
     }
     uint64_t GetTicksRemaining() override { return ticksRemaining ? ticksRemaining : 1; }
 };
+#if defined(PODNATIVE_POSIX_CRASH_REPORTER)
 Cpu::Impl* Cpu::Impl::active = nullptr;
+#endif
 Cpu::Cpu(Memory& memory, IsaArch arch) : impl_(std::make_unique<Impl>(memory, arch)) {}
 Cpu::~Cpu() = default;
 void Cpu::setPrecise(bool on) { impl_->precise = on; }
@@ -443,6 +464,7 @@ void Cpu::setState(const CpuState& state) {
     impl_->jit->SetFpscr(state.fpscr);
     impl_->jit->ClearExclusiveState();
     impl_->stopped.reset();
+    impl_->faultPcPending = false;
     impl_->poisoned = false;
     impl_->syncCodeEdits();
 }
@@ -468,6 +490,7 @@ CpuStop Cpu::run(uint64_t budget) {
                 "CPU_BUDGET",
                 "an empty slice retires nothing"};
     impl_->stopped.reset();
+    impl_->faultPcPending = false;
     impl_->jit->ClearHalt(Dynarmic::HaltReason::UserDefined1);
     // External host writes between slices must never leave translated instructions stale.
     impl_->syncCodeEdits();
@@ -489,11 +512,15 @@ CpuStop Cpu::run(uint64_t budget) {
                 flags = impl_->jit->Run();
             } catch (const std::exception& e) {
                 impl_->poisoned = true;
-                return {StopReason::Fault,    impl_->ticksUsed, impl_->instructionPC, 0, 0,
+                return {StopReason::Fault,    impl_->ticksUsed, impl_->jit->Regs()[15], 0, 0,
                         "CPU_HOST_EXECUTION", e.what()};
             }
             if (impl_->stopped) {
                 auto result = *impl_->stopped;
+                if (impl_->faultPcPending) {
+                    result.pc = impl_->jit->Regs()[15];
+                    impl_->faultPcPending = false;
+                }
                 result.attemptedInstructions = impl_->ticksUsed;
                 impl_->poisoned = result.reason == StopReason::Fault;
                 return result;
@@ -502,7 +529,7 @@ CpuStop Cpu::run(uint64_t budget) {
                 impl_->poisoned = true;
                 return {StopReason::Fault,
                         impl_->ticksUsed,
-                        impl_->instructionPC,
+                        impl_->jit->Regs()[15],
                         0,
                         0,
                         "CPU_MEMORY_ABORT",

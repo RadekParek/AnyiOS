@@ -4,6 +4,7 @@
 #include <array>
 #include <cmath>
 #include <cstdio>
+#include <cstring>
 #include <limits>
 
 #include "error.h"
@@ -22,14 +23,6 @@ const char* const CxxSymbols[] = {
     "__ZdlPv",
     "__ZdaPv",
     "__ZSt9terminatev",
-    "__ZNSt8ios_base4InitC1Ev",
-    "__ZNSt8ios_base4InitC2Ev",
-    "__ZNSt8ios_base4InitD1Ev",
-    "__ZNSt8ios_base4InitD2Ev",
-    "_ZNSt8ios_base4InitC1Ev",
-    "_ZNSt8ios_base4InitC2Ev",
-    "_ZNSt8ios_base4InitD1Ev",
-    "_ZNSt8ios_base4InitD2Ev",
     "_Znwm",
     "_Znam",
     "_ZdlPv",
@@ -50,6 +43,44 @@ const char* const CxxSymbols[] = {
     "___cxa_guard_release",
     "___cxa_guard_abort",
     "___objc_personality_v0",
+};
+const char* const IosInitSymbols[] = {
+    "__ZNSt8ios_base4InitC1Ev",    "__ZNSt8ios_base4InitC2Ev",     "_ZNSt8ios_base4InitC1Ev",
+    "_ZNSt8ios_base4InitC2Ev",     "__ZNSt3__18ios_base4InitC1Ev", "__ZNSt3__18ios_base4InitC2Ev",
+    "_ZNSt3__18ios_base4InitC1Ev", "_ZNSt3__18ios_base4InitC2Ev",
+};
+const char* const IosDestructorSymbols[] = {
+    "__ZNSt8ios_base4InitD1Ev",    "__ZNSt8ios_base4InitD2Ev",     "_ZNSt8ios_base4InitD1Ev",
+    "_ZNSt8ios_base4InitD2Ev",     "__ZNSt3__18ios_base4InitD1Ev", "__ZNSt3__18ios_base4InitD2Ev",
+    "_ZNSt3__18ios_base4InitD1Ev", "_ZNSt3__18ios_base4InitD2Ev",
+};
+const char* const LibcxxStringInitSymbols[] = {
+    "__ZNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEE6__initEPKcj",
+    "_ZNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEE6__initEPKcj",
+    "__ZNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEE6__initEPKcm",
+    "_ZNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEE6__initEPKcm",
+};
+const char* const LibcxxStringDestructorSymbols[] = {
+    "__ZNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEED1Ev",
+    "_ZNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEED1Ev",
+    "__ZNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEED2Ev",
+    "_ZNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEED2Ev",
+};
+const char* const LibstdcxxStringLengthCtorSymbols[] = {
+    "__ZNSsC1EPKcj", "_ZNSsC1EPKcj", "__ZNSsC2EPKcj", "_ZNSsC2EPKcj",
+    "__ZNSsC1EPKcm", "_ZNSsC1EPKcm", "__ZNSsC2EPKcm", "_ZNSsC2EPKcm",
+};
+const char* const LibstdcxxStringCStringCtorSymbols[] = {
+    "__ZNSsC1EPKc",
+    "_ZNSsC1EPKc",
+    "__ZNSsC2EPKc",
+    "_ZNSsC2EPKc",
+};
+const char* const LibstdcxxStringDestructorSymbols[] = {
+    "__ZNSsD1Ev",
+    "_ZNSsD1Ev",
+    "__ZNSsD2Ev",
+    "_ZNSsD2Ev",
 };
 const char* const CompilerSymbols[] = {
     "___divsi3",
@@ -93,7 +124,14 @@ int64_t signedDivide64(int64_t a, int64_t b) {
     return a / b;
 }
 }  // namespace
-bool CxxRuntime::isCxxSymbol(const std::string& symbol) const { return listed(CxxSymbols, symbol); }
+bool CxxRuntime::isCxxSymbol(const std::string& symbol) const {
+    return listed(CxxSymbols, symbol) || listed(IosInitSymbols, symbol) ||
+           listed(IosDestructorSymbols, symbol) || listed(LibcxxStringInitSymbols, symbol) ||
+           listed(LibcxxStringDestructorSymbols, symbol) ||
+           listed(LibstdcxxStringLengthCtorSymbols, symbol) ||
+           listed(LibstdcxxStringCStringCtorSymbols, symbol) ||
+           listed(LibstdcxxStringDestructorSymbols, symbol);
+}
 bool CxxRuntime::isCompilerHelper(const std::string& symbol) const {
     return listed(CompilerSymbols, symbol);
 }
@@ -114,6 +152,84 @@ void CxxRuntime::zero(uint32_t address, size_t bytes) {
         memory.write(address + uint32_t(done), zeros.data(), chunk);
         done += chunk;
     }
+}
+void CxxRuntime::initializeLibcxxString(uint32_t object, uint32_t source, uint32_t length) {
+    if (length > CopyLimit)
+        throw Error("CXX_STRING_LIMIT", "libc++ basic_string input exceeds the call budget",
+                    length);
+    if (!object || !memory.permits(object, 12, Write))
+        throw Error("CXX_STRING", "libc++ basic_string object is not writable", object);
+    if (length && !source)
+        throw Error("CXX_STRING", "libc++ basic_string received a null source", source);
+    std::vector<uint8_t> characters(length);
+    if (length) memory.read(source, characters.data(), characters.size());
+
+    // The 32-bit little-endian libc++ ABI stores a short string in a 12-byte union:
+    // byte zero is (length << 1), and the inline characters start at byte one. Short
+    // capacity is ten bytes plus the terminator. Long strings use {tagged capacity,
+    // size, pointer}; capacity is the allocation count, including its NUL byte.
+    if (length < 11) {
+        std::array<uint8_t, 12> representation{};
+        representation[0] = uint8_t(length << 1);
+        if (length) std::memcpy(representation.data() + 1, characters.data(), length);
+        representation[1 + length] = 0;
+        memory.write(object, representation.data(), representation.size());
+        return;
+    }
+
+    uint32_t capacity = length + 1;
+    if (capacity & 1) ++capacity;  // the long-capacity bitfield stores capacity / 2
+    const uint32_t data = allocate(capacity, "libc++ basic_string");
+    if (length) memory.write(data, characters.data(), length);
+    const char terminator = 0;
+    memory.write(data + length, &terminator, 1);
+    memory.write32(object, capacity | 1u);
+    memory.write32(object + 4, length);
+    memory.write32(object + 8, data);
+}
+void CxxRuntime::initializeLibstdcxxString(uint32_t object, uint32_t source, uint32_t length) {
+    if (length > CopyLimit)
+        throw Error("CXX_STRING_LIMIT", "libstdc++ std::string input exceeds the call budget",
+                    length);
+    if (!object || !memory.permits(object, 4, Write))
+        throw Error("CXX_STRING", "libstdc++ std::string object is not writable", object);
+    if (length && !source)
+        throw Error("CXX_STRING", "libstdc++ std::string received a null source", source);
+    std::vector<uint8_t> characters(length);
+    if (length) memory.read(source, characters.data(), characters.size());
+
+    // The older 32-bit libstdc++ ABI keeps a char* in the string object. Twelve bytes
+    // immediately before it are the copy-on-write {length, capacity, refcount} header.
+    const uint32_t allocationSize = uint32_t(12 + size_t(length) + 1);
+    const uint32_t header = allocate(allocationSize, "libstdc++ std::string");
+    const uint32_t data = header + 12;
+    memory.write32(header, length);
+    memory.write32(header + 4, length);
+    memory.write32(header + 8, 0);  // one unshared reference
+    if (length) memory.write(data, characters.data(), characters.size());
+    const char terminator = 0;
+    memory.write(data + length, &terminator, 1);
+    memory.write32(object, data);
+}
+void CxxRuntime::destroyLibcxxString(uint32_t object) {
+    if (!object) return;
+    if (!memory.permits(object, 12, Read) || !memory.permits(object, 12, Write))
+        throw Error("CXX_STRING", "libc++ basic_string destructor received an invalid object",
+                    object);
+    if (memory.read32(object) & 1u) {
+        const uint32_t data = memory.read32(object + 8);
+        if (data && heap.owns(data)) heap.release(data);
+    }
+    zero(object, 12);
+}
+void CxxRuntime::destroyLibstdcxxString(uint32_t object) {
+    if (!object) return;
+    if (!memory.permits(object, 4, Read) || !memory.permits(object, 4, Write))
+        throw Error("CXX_STRING", "libstdc++ std::string destructor received an invalid object",
+                    object);
+    const uint32_t data = memory.read32(object);
+    if (data >= 12 && heap.owns(data - 12)) heap.release(data - 12);
+    memory.write32(object, 0);
 }
 uint32_t CxxRuntime::allocate(uint32_t bytes, const char* what, const CpuState* caller) {
     if (!bytes) bytes = 1;
@@ -387,14 +503,24 @@ bool CxxRuntime::parseLsda(uint32_t address, LsdaHeader& header) const {
 uint32_t CxxRuntime::typeEntry(const LsdaHeader& header, int32_t filter) const {
     if (!header.typeTable || filter <= 0) return 0;
     // GCC stores the type table backwards from @TType: entry i lives at TType - i * size.
-    if (header.typeEncoding != 0x00 && header.typeEncoding != 0x03)
+    if (header.typeEncoding != 0x00 && header.typeEncoding != 0x03 && header.typeEncoding != 0x9b)
         throw Error("CXX_LSDA",
                     "type table encoding 0x" + hex(header.typeEncoding) + " is not implemented",
                     header.typeTable);
     const uint32_t at = header.typeTable - uint32_t(filter) * 4;
     if (!memory.permits(at, 4, Read))
         throw Error("CXX_LSDA", "type table entry is outside guest memory", at);
-    return memory.read32(at);
+    if (header.typeEncoding != 0x9b) return memory.read32(at);
+
+    // DW_EH_PE_indirect | DW_EH_PE_pcrel | DW_EH_PE_sdata4 (0x9b): the signed
+    // displacement is relative to this type-table word, and names another word holding
+    // the actual type_info pointer. Both the computed slot and the indirection are checked.
+    const int32_t displacement = int32_t(memory.read32(at));
+    const int64_t indirect = int64_t(at) + displacement;
+    if (indirect < 0 || indirect + 4 > 0x100000000LL ||
+        !memory.permits(uint32_t(indirect), 4, Read))
+        throw Error("CXX_LSDA", "indirect type table entry is outside guest memory", at);
+    return memory.read32(uint32_t(indirect));
 }
 void CxxRuntime::installTypeInfoVtables(ExportGraph& graph, size_t standardLibrary) {
     // Four distinct address points let the matcher recognize the three class RTTI layouts
@@ -730,8 +856,31 @@ bool CxxRuntime::abi(const std::string& name, CpuState& cpu) {
         if (r[0] && heap.owns(r[0])) heap.release(r[0]);
         return true;
     }
-    if (name == "__ZNSt8ios_base4InitC1Ev" || name == "__ZNSt8ios_base4InitC2Ev" ||
-        name == "_ZNSt8ios_base4InitC1Ev" || name == "_ZNSt8ios_base4InitC2Ev") {
+    if (listed(LibcxxStringInitSymbols, name)) {
+        initializeLibcxxString(r[0], r[1], r[2]);
+        return true;
+    }
+    if (listed(LibcxxStringDestructorSymbols, name)) {
+        destroyLibcxxString(r[0]);
+        return true;
+    }
+    if (listed(LibstdcxxStringLengthCtorSymbols, name)) {
+        initializeLibstdcxxString(r[0], r[1], r[2]);
+        return true;
+    }
+    if (listed(LibstdcxxStringCStringCtorSymbols, name)) {
+        const std::string text = readString(r[1]);
+        if (text.size() > CopyLimit)
+            throw Error("CXX_STRING_LIMIT", "libstdc++ std::string input exceeds the call budget",
+                        r[1]);
+        initializeLibstdcxxString(r[0], r[1], uint32_t(text.size()));
+        return true;
+    }
+    if (listed(LibstdcxxStringDestructorSymbols, name)) {
+        destroyLibstdcxxString(r[0]);
+        return true;
+    }
+    if (listed(IosInitSymbols, name)) {
         if (iosInitReferences == std::numeric_limits<size_t>::max())
             throw Error("CXX_IOS_INIT", "too many live std::ios_base::Init guards");
         ++iosInitReferences;
@@ -741,8 +890,7 @@ bool CxxRuntime::abi(const std::string& name, CpuState& cpu) {
                 "unimplemented");
         return true;
     }
-    if (name == "__ZNSt8ios_base4InitD1Ev" || name == "__ZNSt8ios_base4InitD2Ev" ||
-        name == "_ZNSt8ios_base4InitD1Ev" || name == "_ZNSt8ios_base4InitD2Ev") {
+    if (listed(IosDestructorSymbols, name)) {
         if (!iosInitReferences)
             throw Error("CXX_IOS_INIT", "std::ios_base::Init destructor has no live guard");
         --iosInitReferences;

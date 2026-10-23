@@ -33,6 +33,36 @@ int main() {
     auto rebases = decodeDyld(rebase, sizeof(rebase), segments, true);
     rebases.apply(memory, 0x100, {});
     assert(memory.read32(0x1000) == 0x2100);
+    // A compact repeat opcode may describe more than 100,000 legitimate pointer slots.
+    // Accept it up to the explicit one-million fixup bound without relaxing segment checks.
+    auto appendUleb = [](std::vector<uint8_t>& stream, uint64_t value) {
+        do {
+            uint8_t byte = uint8_t(value & 0x7f);
+            value >>= 7;
+            if (value) byte |= 0x80;
+            stream.push_back(byte);
+        } while (value);
+    };
+    constexpr uint64_t repeatedCount = 100001;
+    std::vector<uint8_t> repeatedRebase = {0x11, 0x20, 0, 0x60};
+    appendUleb(repeatedRebase, repeatedCount);
+    repeatedRebase.push_back(0);
+    const std::vector<DyldSegment> repeatedSegments = {
+        {0x1000, size_t(repeatedCount * 4), uint8_t(Read | Write)}};
+    const auto repeatedPlan =
+        decodeDyld(repeatedRebase.data(), repeatedRebase.size(), repeatedSegments, true);
+    assert(repeatedPlan.fixups.size() == repeatedCount);
+    assert(repeatedPlan.fixups.back().address == 0x1000 + (repeatedCount - 1) * 4);
+    std::vector<uint8_t> overLimitRebase = {0x11, 0x20, 0, 0x60};
+    appendUleb(overLimitRebase, 1000001);
+    overLimitRebase.push_back(0);
+    try {
+        decodeDyld(overLimitRebase.data(), overLimitRebase.size(), repeatedSegments, true);
+        assert(false);
+    } catch (const Error& e) {
+        assert(e.code == "DYLD_LIMIT" &&
+               std::string(e.what()).find("rebase repeat") != std::string::npos);
+    }
     auto weak = plan;
     weak.fixups[0].weak = true;
     weak.apply(memory, 0,

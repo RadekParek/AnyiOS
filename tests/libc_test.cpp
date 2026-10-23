@@ -63,6 +63,14 @@ int main() {
     Libc libc(memory);
     Call call(memory, libc);
 
+    // The portable host-time wrappers preserve Darwin's guest tm layout and UTC round-trip.
+    constexpr uint32_t unixEpoch = 0x5200;
+    assert(call("_gmtime_r", 0, unixEpoch) == unixEpoch);
+    assert(memory.read32(unixEpoch + 12) == 1);   // tm_mday
+    assert(memory.read32(unixEpoch + 16) == 0);   // tm_mon
+    assert(memory.read32(unixEpoch + 20) == 70);  // tm_year
+    assert(call("_timegm", unixEpoch) == 0);
+
     // getenv exposes the launcher's environment as real guest strings, cached once.
     libc.setEnvironment({{"HOME", "/var/mobile"}});
     const char* home = "HOME";

@@ -386,6 +386,20 @@ bool ObjC::stringMessage(const std::string& text, uint32_t bytes, const std::str
         r[0] = makeString(text + stringOf(r[2]));
         return true;
     }
+    if (method == "stringByAppendingPathComponent:") {
+        const std::string component = stringOf(r[2]);
+        std::string path = text;
+        if (path.empty()) {
+            path = component;
+        } else {
+            if (path.back() != '/') path.push_back('/');
+            size_t first = 0;
+            while (first < component.size() && component[first] == '/') ++first;
+            path.append(component, first, std::string::npos);
+        }
+        r[0] = makeString(path);
+        return true;
+    }
     if (method == "substringToIndex:" || method == "substringFromIndex:") {
         const size_t index = r[2] > text.size() ? text.size() : size_t(r[2]);
         r[0] =
