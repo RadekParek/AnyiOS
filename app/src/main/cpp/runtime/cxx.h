@@ -30,6 +30,7 @@ class CxxRuntime final {
     bool isVerbose() const { return verbose; }
     // Registered __cxa_atexit/_atexit handlers, run once at guest exit.
     size_t atExitCount() const { return atExit.size(); }
+    size_t iosInitCount() const { return iosInitReferences; }
     size_t runAtExit();
     bool isCxxSymbol(const std::string& symbol) const;
     bool isCompilerHelper(const std::string& symbol) const;
@@ -52,6 +53,9 @@ class CxxRuntime final {
         uint32_t function, argument;
     };
     std::vector<ExitHandler> atExit;
+    // libstdc++ emits one ios_base::Init object per translation unit that includes iostreams.
+    // Track that ABI lifetime; actual standard stream objects/formatted I/O remain unsupported.
+    size_t iosInitReferences = 0;
     // Stack of live `__Unwind_SjLj_Register` frames (innermost last).
     std::vector<uint32_t> sjljFrames;
     // Head of the guest's SjLj frame chain (each frame stores its `prev` in guest memory).

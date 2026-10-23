@@ -10,6 +10,7 @@
 #include "memory.h"
 
 namespace podnative::runtime {
+class GuestHeap;
 // OpenGL ES 1.1 over a real driver.
 //
 // The guest is ARM code, so every GL entry point is a call gate: the CPU stops on the
@@ -39,7 +40,7 @@ namespace podnative::runtime {
 //    uploads and `glGet*` results are copied in and out of guest memory around the call.
 class GLES final {
    public:
-    explicit GLES(Memory& memory);
+    explicit GLES(Memory& memory, GuestHeap* guestHeap = nullptr);
     ~GLES();
     GLES(const GLES&) = delete;
     GLES& operator=(const GLES&) = delete;
@@ -65,8 +66,8 @@ class GLES final {
     bool emulatesFixedFunction() const { return fixedFunction; }
     // True when `symbol` was a GL/EGL entry point this bridge owns.
     bool invoke(const std::string& symbol, CpuState& state);
-    // "Verbose logging": every GL call with its arguments plus the real glGetError result,
-    // decoded. Off by default; it never changes what is drawn.
+    // "Verbose logging": sampled, argument-decoded GL calls and explicit guest glGetError
+    // results. The trace never reads the driver's error state behind the guest's back.
     void setVerbose(bool on) { verbose = on; }
     void setLogSink(std::function<void(const std::string&)> sink) { logSink = std::move(sink); }
     // One-line evidence for the launch report: backend, driver strings and counters.
@@ -108,7 +109,9 @@ class GLES final {
         uint32_t type = 0;
         int stride = 0;
         uint32_t pointer = 0;
+        uint32_t buffer = 0;    // GL_ARRAY_BUFFER captured when the pointer was set
         bool buffered = false;  // the pointer is an offset into a bound buffer object
+        bool normalized = false;
     };
     // Reads the guest's argument registers the way AAPCS-VFP lays them out: integers and
     // pointers from r0-r3 and then the stack, floats from s0-s15, each numbered separately.
@@ -121,9 +124,13 @@ class GLES final {
         float f32();
     };
     Memory& memory;
+    GuestHeap* guestHeap = nullptr;
     std::string backendName;
     std::map<std::string, Entry> functions;
+    std::map<uint32_t, uint32_t> guestStrings;
+    std::map<std::string, size_t> traceCalls, traceSuppressed;
     size_t calls = 0, draws = 0;
+    int packAlignment = 4, unpackAlignment = 4;
     size_t pvrtcDecodedUploads = 0, pvrtcDecodedPixels = 0;
     bool driverLoaded = false;
     // Display/context/drawable. Opaque so this header stays free of EGL types.
@@ -157,6 +164,7 @@ class GLES final {
     // Client-side array state, one set per active client texture unit.
     ClientArray vertex, colour, normal;
     std::map<int, ClientArray> texCoord;
+    std::map<uint32_t, ClientArray> genericAttributes;
     int clientTextureUnit = 0x84c0;  // GL_TEXTURE0, the enum a guest passes to select it
     bool arrayBufferBound = false, elementBufferBound = false;
 
@@ -169,27 +177,64 @@ class GLES final {
                                                        0, 0, 1, 0, 0, 0, 0, 1};
     std::array<float, 16> modelview = Identity, projection = Identity, textureMatrix = Identity;
     std::map<int, std::array<float, 16>> textureMatrices;  // nonzero active texture units
-    std::array<float, 16>* matrix = &modelview;            // the stack glMatrixMode selected
-    uint32_t matrixMode = 0x1700;                          // GL_MODELVIEW
-    float currentColour[4] = {1, 1, 1, 1};  // glColor4f, used when no colour array is
+    // These vectors hold the saved levels below each current top; per-unit texture stacks
+    // match the separate matrix stacks OpenGL ES 1.1 exposes for each active texture unit.
+    std::vector<std::array<float, 16>> modelviewStack, projectionStack;
+    std::map<int, std::vector<std::array<float, 16>>> textureMatrixStacks;
+    std::array<float, 16>* matrix = &modelview;  // the stack glMatrixMode selected
+    uint32_t matrixMode = 0x1700;                // GL_MODELVIEW
+    float currentColour[4] = {1, 1, 1, 1};       // glColor4f, used when no colour array is
     uint32_t boundArrayBuffer = 0, boundElementBuffer = 0;
     int textureEnvMode = 0x2100;  // GL_MODULATE, the ES 1.1 default for unit zero
     std::map<int, int> textureEnvModes;
-    bool texture2dEnabled = false, lightingEnabled = false;
+    struct Light {
+        bool enabled = false;
+        std::array<float, 4> ambient{};
+        std::array<float, 4> diffuse{};
+        std::array<float, 4> specular{};
+        std::array<float, 4> position = {0, 0, 1, 0};
+        std::array<float, 4> spotDirection = {0, 0, -1, 0};
+        float constantAttenuation = 1, linearAttenuation = 0, quadraticAttenuation = 0;
+        float spotExponent = 0, spotCutoff = 180, spotCutoffCos = -1;
+    };
+    std::array<Light, 8> lights{};
+    std::array<float, 4> globalAmbient = {0.2f, 0.2f, 0.2f, 1};
+    struct Material {
+        std::array<float, 4> ambient = {0.2f, 0.2f, 0.2f, 1};
+        std::array<float, 4> diffuse = {0.8f, 0.8f, 0.8f, 1};
+        std::array<float, 4> specular = {0, 0, 0, 1};
+        std::array<float, 4> emission = {0, 0, 0, 1};
+        float shininess = 0;
+    };
+    std::array<Material, 2> materials{};  // GL_FRONT, GL_BACK
+    std::array<float, 4> currentNormal = {0, 0, 1, 0};
+    bool texture2dEnabled = false, lightingEnabled = false, normalizeNormals = false;
+    bool colorMaterialEnabled = false, localViewer = false, twoSidedLighting = false;
+    uint32_t colorMaterialFace = 0x0408, colorMaterialMode = 0x1602;
     std::map<int, bool> texture2dUnits;
     // Approximations and non-default texture-unit use are counted for diagnostics.
-    size_t lightingCalls = 0, approximatedTexEnv = 0, clientTextureUnitUses = 0,
-           nonDefaultTextureUnitDraws = 0, simultaneousTextureStageDraws = 0;
+    size_t approximatedTexEnv = 0, clientTextureUnitUses = 0, nonDefaultTextureUnitDraws = 0,
+           simultaneousTextureStageDraws = 0;
     int activeTextureUnit = 0;  // glActiveTexture, as an offset from GL_TEXTURE0
     // A generated program and the uniform locations a draw needs from it, so a draw never
     // asks the driver for a location it already asked for.
     struct Program {
         uint32_t id = 0;
         int mvp = -1, colour = -1, texture = -1, textureMatrix = -1;
+        int modelview = -1, normalMatrix = -1, globalAmbient = -1;
+        int materialAmbient = -1, materialDiffuse = -1, materialSpecular = -1;
+        int materialEmission = -1, materialShininess = -1;
+        int colorMaterialEnabled = -1, colorMaterialFace = -1, colorMaterialMode = -1;
+        int localViewer = -1, twoSided = -1, normalizeNormals = -1;
+        int lightAmbient = -1, lightDiffuse = -1, lightSpecular = -1;
+        int lightPosition = -1, lightSpotDirection = -1, lightParameters = -1;
+        int lightExponent = -1;
     };
     std::map<uint32_t, Program> programs;     // variant key -> compiled program
-    std::array<uint32_t, 3> streamBuffers{};  // position, colour, texcoord uploads
+    std::array<uint32_t, 4> streamBuffers{};  // position, colour, texcoord and normal uploads
     uint32_t indexBuffer = 0, activeProgram = 0;
+    // Shadow only element-array contents needed to size mixed client-array indexed draws.
+    std::map<uint32_t, std::vector<uint8_t>> elementBufferData;
 
     // The ES 1.1 entry points the driver does not have, answered from the state above.
     bool fixedFunctionEntry(const std::string& name, Marshal& m);
@@ -236,11 +281,13 @@ class GLES final {
     // Copies every enabled client array into host memory for the draw that follows.
     bool bindClientArrays(size_t count, std::vector<std::vector<uint8_t>>& storage);
     void setError(const std::string& text);
+    void setGlError(uint32_t error, const std::string& text);
     std::string lastError;
+    uint32_t pendingGlError = 0;
     // The dispatch table itself, without the tracing wrapper.
     bool invokeEntry(const std::string& symbol, CpuState& state);
-    // Reads the driver's error state after a call and names it, or returns an empty string.
-    std::string takeError();
+    std::string formatTraceCall(const std::string& symbol, const CpuState& before,
+                                const CpuState& after) const;
     bool verbose = false;
     std::function<void(const std::string&)> logSink;
 };

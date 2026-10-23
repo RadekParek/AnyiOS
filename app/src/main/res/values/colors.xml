@@ -1,4 +1,4 @@
 <resources>
-    <!-- Near-black plate so the green metal engine die reads as backlit hardware. -->
-    <color name="launcher_background">#05070A</color>
+    <!-- Deep graphite-blue plate to frame the titanium launcher mark. -->
+    <color name="launcher_background">#060B13</color>
 </resources>

@@ -1,12 +1,12 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- In-app mark: the same black-plate green metal die as the launcher icon. -->
+<!-- In-app mark: the same graphite-and-titanium die as the launcher icon. -->
 <vector xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:aapt="http://schemas.android.com/aapt"
     android:width="64dp"
     android:height="64dp"
     android:viewportWidth="108"
     android:viewportHeight="108">
-    <path android:fillColor="#05070A" android:pathData="M24,0 L84,0 Q108,0 108,24 L108,84 Q108,108 84,108 L24,108 Q0,108 0,84 L0,24 Q0,0 24,0 Z" />
+    <path android:fillColor="#060B13" android:pathData="M24,0 L84,0 Q108,0 108,24 L108,84 Q108,108 84,108 L24,108 Q0,108 0,84 L0,24 Q0,0 24,0 Z" />
     <path android:pathData="M54,18 L81,33.5 L81,64.5 L54,80 L27,64.5 L27,33.5 Z">
         <aapt:attr name="android:fillColor">
             <gradient
@@ -15,9 +15,9 @@
                 android:endX="81"
                 android:endY="80"
                 android:type="linear">
-                <item android:offset="0" android:color="#FF6BF0B2" />
-                <item android:offset="0.4" android:color="#FF1F8F62" />
-                <item android:offset="1" android:color="#FF06281C" />
+                <item android:offset="0" android:color="#FFEAF2FD" />
+                <item android:offset="0.4" android:color="#FF7890AE" />
+                <item android:offset="1" android:color="#FF1B293D" />
             </gradient>
         </aapt:attr>
     </path>
@@ -29,11 +29,11 @@
                 android:endX="74"
                 android:endY="73"
                 android:type="linear">
-                <item android:offset="0" android:color="#FFB6FFD9" />
-                <item android:offset="0.5" android:color="#FF1DA46F" />
-                <item android:offset="1" android:color="#FF0A3F2C" />
+                <item android:offset="0" android:color="#FFC9DDF3" />
+                <item android:offset="0.5" android:color="#FF466B93" />
+                <item android:offset="1" android:color="#FF1C3553" />
             </gradient>
         </aapt:attr>
     </path>
-    <path android:fillColor="#FF0A2A1E" android:pathData="M50,41 L63,48.5 L50,56 Z" />
+    <path android:fillColor="#FF14263A" android:pathData="M50,41 L63,48.5 L50,56 Z" />
 </vector>

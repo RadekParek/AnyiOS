@@ -12,27 +12,15 @@ bool boundary(const std::string& path, size_t length) {
     if (length > path.size()) return false;
     return path.size() == length || path[length] == '/';
 }
-// A component-wise symlink check: the guest must not be able to leave a mount by
-// following a link that the host extractor happened to leave in the bundle.
-bool followsLink(const std::filesystem::path& path) {
-    std::error_code error;
-    std::filesystem::path prefix;
-    size_t components = 0;
-    for (const auto& part : path) {
-        prefix /= part;
-        components++;
-        if (components <= 1) continue;  // The root itself is whatever the host provides.
-        const auto status = std::filesystem::symlink_status(prefix, error);
-        if (error) {
-            // A missing component means the caller is about to create it; every other
-            // unknown state is refused rather than allowed to escape the mount.
-            if (error == std::errc::no_such_file_or_directory) return false;
-            return true;
-        }
-        if (std::filesystem::is_symlink(status)) return true;
-        if (!std::filesystem::exists(status)) return false;
-    }
-    return false;
+// Compare canonical paths by components rather than string prefix: /root/app2 is not inside
+// /root/app. Canonicalizing the target first lets in-mount aliases work while still refusing
+// a bundle or container symlink that resolves outside its explicitly mounted root.
+bool containedBy(const std::filesystem::path& root, const std::filesystem::path& target) {
+    auto rootPart = root.begin();
+    auto targetPart = target.begin();
+    for (; rootPart != root.end(); ++rootPart, ++targetPart)
+        if (targetPart == target.end() || *rootPart != *targetPart) return false;
+    return true;
 }
 }  // namespace
 bool FileSystem::validGuestPath(const std::string& path, std::string& reason) {
@@ -101,10 +89,21 @@ std::string FileSystem::resolve(const std::string& guestPath, bool write,
     }
     std::string tail = guestPath.substr(chosen->guestRoot.size());
     while (!tail.empty() && tail.front() == '/') tail.erase(tail.begin());
-    std::filesystem::path host(chosen->hostRoot);
+    std::error_code error;
+    const std::filesystem::path root = std::filesystem::weakly_canonical(chosen->hostRoot, error);
+    if (error) {
+        reason = "mounted host root cannot be resolved safely";
+        return {};
+    }
+    std::filesystem::path host = root;
     if (!tail.empty()) host /= tail;
-    if (followsLink(host)) {
-        reason = "path resolves through a symbolic link";
+    host = std::filesystem::weakly_canonical(host, error);
+    if (error) {
+        reason = "guest path cannot be resolved safely inside its mount";
+        return {};
+    }
+    if (!containedBy(root, host)) {
+        reason = "path resolves outside the mount through a symbolic link";
         return {};
     }
     return host.string();

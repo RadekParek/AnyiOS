@@ -177,11 +177,13 @@ void UIKit::resume(CpuState& state, ObjC& objc) {
             if (objc.nextMainThreadTask(task)) {
                 activeTaskEvent = task.eventId;
                 hasActiveTask = true;
-                char line[128];
-                std::snprintf(line, sizeof(line),
-                              "UIApplicationMain: run loop runs %s on 0x%08x for the main thread",
-                              task.selector.c_str(), task.target);
-                emit(line);
+                char taskKey[128];
+                std::snprintf(taskKey, sizeof(taskKey), "%s on 0x%08x", task.selector.c_str(),
+                              task.target);
+                const size_t dispatches = ++runLoopTaskCounts[taskKey];
+                if (dispatches == 1)
+                    emit("UIApplicationMain: run loop dispatched " + std::string(taskKey) +
+                         " on the main thread; repeated dispatches are counted in the summary");
                 state.registers[0] = 0;
                 objc.sendGuestMessage(task.target, task.selector, state, {task.argument},
                                       LifecycleGate);
@@ -225,6 +227,15 @@ std::string UIKit::describe() const {
     if (!events.empty()) {
         out << "\nUIKIT_EVENTS:";
         for (const std::string& line : events) out << "\n  " << line;
+    }
+    if (!runLoopTaskCounts.empty()) {
+        size_t total = 0;
+        for (const auto& [task, count] : runLoopTaskCounts) {
+            (void)task;
+            total += count;
+        }
+        out << "\nUIKIT_RUN_LOOP: " << total << " main-thread task dispatch(es)";
+        for (const auto& [task, count] : runLoopTaskCounts) out << "\n  " << task << ": " << count;
     }
     if (!delegateDescription.empty()) out << "\nUIKIT_DELEGATE: " << delegateDescription;
     if (!argv.empty()) {

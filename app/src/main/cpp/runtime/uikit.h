@@ -1,6 +1,8 @@
 #pragma once
+#include <cstddef>
 #include <cstdint>
 #include <functional>
+#include <map>
 #include <string>
 #include <vector>
 
@@ -67,6 +69,7 @@ class UIKit final {
     // implement `applicationDidFinishLaunching:`; later ones implement the options variant.
     std::string launchSelector;
     std::vector<std::string> argv;
+    std::map<std::string, size_t> runLoopTaskCounts;
     void emit(const std::string& text);
     // Reads the guest argv array into printable strings; a malformed array is refused.
     std::vector<std::string> readArguments(uint32_t argc, uint32_t argvAddress) const;

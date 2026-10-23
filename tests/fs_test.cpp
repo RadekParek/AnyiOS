@@ -70,6 +70,7 @@ int main() {
     std::ofstream(root / "bundle" / "data" / "level.txt") << "level one";
     std::error_code ignored;
     std::filesystem::create_symlink("/etc/passwd", root / "bundle" / "escape", ignored);
+    std::filesystem::create_symlink("data", root / "bundle" / "internal-data", ignored);
 
     Memory memory;
     std::vector<uint8_t> page(65536, 0);
@@ -88,6 +89,8 @@ int main() {
 
     const std::string level = files.resolve("/var/mobile/data/level.txt", false, reason);
     check(!level.empty() && std::filesystem::exists(level), "bundle path resolves");
+    check(files.resolve("/var/mobile/internal-data/level.txt", false, reason) == level,
+          "a symlink that resolves inside its mount is safely canonicalized");
     check(!files.resolve("/var/mobile/data/level.txt", true, reason).empty(),
           "the bundle mount accepts writes, as the iOS 3 app directory did");
     // A writable bundle is still a sandbox: nothing outside the mounts is reachable.
@@ -103,8 +106,9 @@ int main() {
           "parent references are refused");
     check(files.resolve("relative/path", false, reason).empty(), "relative paths are refused");
     check(files.resolve("/var/mobile/escape", false, reason).empty(),
-          "a symlink inside the bundle is not followed");
-    check(reason.find("symbolic link") != std::string::npos, "the refusal names the symlink");
+          "a symlink cannot escape the mounted bundle");
+    check(reason.find("symbolic link") != std::string::npos,
+          "the refusal names the escaping symlink");
     check(files.describe().find("/var/mobile (read-write)") != std::string::npos,
           "mount description names the access mode");
 
@@ -129,6 +133,15 @@ int main() {
     check(call("_fgetc", file) == 'l', "fgetc reads one byte");
     check(call("_fclose", file) == 0, "fclose closes the file");
     fault("STDIO_BAD_FILE", [&] { call("_fread", 0x2000, 1, 4, file); });
+
+    // fopen follows an alias only when its canonical destination remains inside the mount.
+    put(memory, 0x1700, "/var/mobile/internal-data/level.txt");
+    const uint32_t aliasFile = call("_fopen", 0x1700, 0x1100);
+    check(aliasFile != 0, "fopen accepts an in-mount symlink to a bundle resource");
+    check(call("_fclose", aliasFile) == 0, "the aliased stream closes normally");
+    put(memory, 0x1700, "/var/mobile/escape");
+    check(call("_fopen", 0x1700, 0x1100) == 0,
+          "fopen still refuses a symlink whose target escapes the mount");
 
     // Writing through the writable container, then reading it back from the host.
     put(memory, 0x1200, "/var/mobile/Documents/save.dat");

@@ -8,12 +8,47 @@
 #include <limits>
 #include <random>
 #include <set>
+#include <sstream>
 #include <system_error>
 #include <tuple>
 
 #include "error.h"
 
 namespace podnative::runtime {
+namespace {
+bool repetitiveServiceTrace(const std::string& name) {
+    static const std::set<std::string> hot = {"_malloc",
+                                              "_calloc",
+                                              "_realloc",
+                                              "_free",
+                                              "_memcpy",
+                                              "_memmove",
+                                              "_memset",
+                                              "_memcmp",
+                                              "_memchr",
+                                              "_bzero",
+                                              "_strlen",
+                                              "_strcmp",
+                                              "_strncmp",
+                                              "_strcasecmp",
+                                              "_strncasecmp",
+                                              "_strcpy",
+                                              "_strncpy",
+                                              "_strcat",
+                                              "_strlcat",
+                                              "_strchr",
+                                              "_strrchr",
+                                              "_strstr",
+                                              "_strdup",
+                                              "_mach_absolute_time",
+                                              "_gettimeofday",
+                                              "_CFAbsoluteTimeGetCurrent",
+                                              "_CACurrentMediaTime"};
+    return hot.count(name) || name.rfind("___mod", 0) == 0 || name.rfind("___div", 0) == 0 ||
+           name.rfind("__aeabi_", 0) == 0 || name.rfind("__Unwind_SjLj_", 0) == 0;
+}
+}  // namespace
+
 Services::Services(Memory& m)
     : memory(m),
       libc(m),
@@ -23,7 +58,7 @@ Services::Services(Memory& m)
       posix(m),
       openal(m),
       objc(m),
-      gles(m),
+      gles(m, &libc.guestHeap()),
       uikit(m),
       symbols{
           // libSystem: C runtime.
@@ -904,7 +939,9 @@ void Services::dispatch(const CpuStop& stop, CpuState& state) {
         stop.service != (stop.pc - Base) / 8 + 1)
         throw Error("HLE_TRAP", "unregistered guest service trap", stop.pc);
     const uint32_t entry = (stop.pc - Base) / 8;
-    if (verbose) traceSymbol(symbols[entry], state);
+    // GL calls have a signature-aware trace in GLES; printing their raw r0-r3 here too
+    // duplicates the information and mislabels VFP/stack arguments.
+    if (verbose && symbols[entry].rfind("_gl", 0) != 0) traceSymbol(symbols[entry], state);
     invoke(symbols[entry], state);
     // Same rule as above: a service that starts a guest callback keeps the PC it set.
     if (state.registers[15] == stop.pc + 4) {
@@ -943,9 +980,29 @@ std::vector<std::string> Services::logTail(size_t count) const {
     if (count >= guestLog.size()) return guestLog;
     return {guestLog.end() - std::ptrdiff_t(count), guestLog.end()};
 }
+std::string Services::traceSummary() const {
+    if (serviceTraceSuppressed.empty()) return {};
+    std::ostringstream out;
+    out << "\nSERVICE_TRACE_SUMMARY: repetitive service calls were sampled; totals and suppressed "
+           "counts follow:";
+    for (const auto& [name, suppressed] : serviceTraceSuppressed) {
+        const auto found = serviceTraceCalls.find(name);
+        const size_t total = found == serviceTraceCalls.end() ? suppressed : found->second;
+        out << "\n  " << name << ": " << total << " call(s), " << (total - suppressed) << " shown, "
+            << suppressed << " summarized";
+    }
+    return out.str();
+}
 void Services::traceSymbol(const std::string& name, const CpuState& state) {
+    const size_t occurrence = ++serviceTraceCalls[name];
+    const size_t limit = repetitiveServiceTrace(name) ? 3 : 32;
+    if (occurrence > limit) {
+        ++serviceTraceSuppressed[name];
+        return;
+    }
     // Argument words as the guest passed them, and the guest stack pointer, which is what
-    // makes a crash trace in a verbose log actionable.
+    // makes the first few calls actionable. Hot libc/math helpers are sampled and their exact
+    // totals are reported separately, rather than pushing useful later events out of the ring.
     char line[256];
     std::snprintf(line, sizeof(line),
                   "call %s(r0=0x%08x r1=0x%08x r2=0x%08x r3=0x%08x) sp=0x%08x lr=0x%08x",

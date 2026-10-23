@@ -22,6 +22,14 @@ const char* const CxxSymbols[] = {
     "__ZdlPv",
     "__ZdaPv",
     "__ZSt9terminatev",
+    "__ZNSt8ios_base4InitC1Ev",
+    "__ZNSt8ios_base4InitC2Ev",
+    "__ZNSt8ios_base4InitD1Ev",
+    "__ZNSt8ios_base4InitD2Ev",
+    "_ZNSt8ios_base4InitC1Ev",
+    "_ZNSt8ios_base4InitC2Ev",
+    "_ZNSt8ios_base4InitD1Ev",
+    "_ZNSt8ios_base4InitD2Ev",
     "_Znwm",
     "_Znam",
     "_ZdlPv",
@@ -720,6 +728,25 @@ bool CxxRuntime::abi(const std::string& name, CpuState& cpu) {
     }
     if (name == "__ZdlPv" || name == "_ZdlPv" || name == "__ZdaPv" || name == "_ZdaPv") {
         if (r[0] && heap.owns(r[0])) heap.release(r[0]);
+        return true;
+    }
+    if (name == "__ZNSt8ios_base4InitC1Ev" || name == "__ZNSt8ios_base4InitC2Ev" ||
+        name == "_ZNSt8ios_base4InitC1Ev" || name == "_ZNSt8ios_base4InitC2Ev") {
+        if (iosInitReferences == std::numeric_limits<size_t>::max())
+            throw Error("CXX_IOS_INIT", "too many live std::ios_base::Init guards");
+        ++iosInitReferences;
+        if (verbose)
+            emit(
+                "cxx: std::ios_base::Init guard acquired; standard stream operations remain "
+                "unimplemented");
+        return true;
+    }
+    if (name == "__ZNSt8ios_base4InitD1Ev" || name == "__ZNSt8ios_base4InitD2Ev" ||
+        name == "_ZNSt8ios_base4InitD1Ev" || name == "_ZNSt8ios_base4InitD2Ev") {
+        if (!iosInitReferences)
+            throw Error("CXX_IOS_INIT", "std::ios_base::Init destructor has no live guard");
+        --iosInitReferences;
+        if (verbose && !iosInitReferences) emit("cxx: final std::ios_base::Init guard released");
         return true;
     }
     if (name == "__ZSt9terminatev" || name == "_ZSt9terminatev") {
