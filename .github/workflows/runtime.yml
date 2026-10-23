@@ -134,7 +134,25 @@ jobs:
           ninja --version
           g++ --version
       - name: Build and run real-engine CPU/HLE suites
-        run: scripts/test-cpu.sh
+        run: |
+          mkdir -p .local/logs
+          set -o pipefail
+          scripts/test-cpu.sh 2>&1 | tee .local/logs/windows-cpu.log
+      - name: Windows failure diagnostics
+        if: failure()
+        run: |
+          python3 - <<'PYCODE'
+          from pathlib import Path
+
+          log = Path('.local/logs/windows-cpu.log')
+          if log.exists():
+              lines = log.read_text(errors='replace').splitlines()[-30:]
+              message = 'Windows CPU/HLE log tail:\n' + '\n'.join(lines)
+          else:
+              message = 'Windows CPU/HLE log was not created.'
+          message = message[:6000].replace('%', '%25').replace('\r', '%0D').replace('\n', '%0A')
+          print('::error title=Windows CPU/HLE failure::' + message)
+          PYCODE
       - name: Package Windows host build
         run: |
           mkdir -p .local/pc-artifact
