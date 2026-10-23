@@ -89,6 +89,24 @@ int main() {
     assert(graph.strong(coreFoundation, "_CFRelease"));
     assert(graph.resolve(executable, -2, "_malloc") == services.address("_malloc"));
     assert(graph.hasStrong("_CFRelease") && !graph.hasStrong("_missing"));
+    const size_t objcImage = graph.index("/usr/lib/libobjc.A.dylib").value();
+    assert(graph.strong(objcImage, "___objc_personality_v0"));
+    const auto rectZero = graph.resolve(executable, -2, "_CGRectZero");
+    assert(rectZero.has_value());
+    assert(memory.read32(*rectZero) == 0 && memory.read32(*rectZero + 4) == 0 &&
+           memory.read32(*rectZero + 8) == 0 && memory.read32(*rectZero + 12) == 0);
+    assert(graph.index("/System/Library/Frameworks/Security.framework/Security").has_value());
+    assert(graph.resolve(executable, -2, "_kSecAttrAccount").has_value());
+    const auto cfTrue = graph.resolve(executable, -2, "_kCFBooleanTrue");
+    assert(cfTrue.has_value() && memory.read32(*cfTrue) != 0);
+    uint8_t randomBytes[16] = {};
+    memory.write(0x3000, randomBytes, sizeof(randomBytes));
+    const CpuState random = call(services, "_SecRandomCopyBytes", 0, sizeof(randomBytes), 0x3000);
+    assert(random.registers[0] == 0);
+    memory.read(0x3000, randomBytes, sizeof(randomBytes));
+    bool randomWasFilled = false;
+    for (uint8_t byte : randomBytes) randomWasFilled = randomWasFilled || byte != 0;
+    assert(randomWasFilled);
     // Each gate is defined under the library that exports it on iOS, so strict
     // ordinals from a real binary resolve instead of failing at bind time.
     // Ordinals number the dependency list the binary declares; each gate lives in the

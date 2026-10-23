@@ -1,10 +1,27 @@
-# Continuation progress — 2026-10-22
+# Continuation progress — 2026-10-23
 
-## 0.9.5 — measured on the host, from real launches instead of guesses
+## 0.9.6 — device-reported C++ exception handled; common API gaps filled
 
-AngryBirds now runs **564,869 instructions** (from 340,304) and reaches its own error
-handling. Getting there needed a way to *see* what the guest is doing, so the work started
-with the measurement, not the fix.
+The 2026-10-23 Android report stopped AngryBirds 1.0 at 657,846 instructions when the
+bundle-index read threw `io::IOException` and the runtime said no SjLj landing pad caught
+it. I reproduced the same point on the host with the repository IPA and a recording ES2
+driver (657,888 instructions, 2,767 host calls): the exception now finds its landing pad
+and execution continues. The host fixture handles these first-run I/O errors through a
+catch-all; the device report's clipped trace does not expose its exact LSDA catch type. The
+new RTTI walk also supports typed public-base handlers. The host run's import audit has
+**0 required and 0 weak unimplemented imports**. With a three-second budget the guest reaches its own loop, executes
+4.42 billion instructions, starts three guest threads, and issues four draws through the
+fixed-function-to-ES2 bridge. The driver records calls; this is not evidence of pixels,
+main-menu visibility, or a successful device run.
+
+The device reports from 07:04–07:06 named three more direct stops. The UIApplication badge
+getter is now stateful, `NSStringFromClass`/`NSStringFromSelector` return real guest NSString
+objects, and nil-delegate startup has a conservative fallback only when the image defines
+exactly one `*AppDelegate` class implementing a documented launch selector. That fallback
+is reported honestly: it does not decode the main NIB's outlets/actions. The hundreds of
+other imports in those different applications are not all implemented or validated; this
+increment adds the concrete geometry, transform, CFData, encoding, absolute-time and
+Security-random APIs described below rather than mapping unknown imports to success.
 
 * **`tools/guest_runner` — the app's entry point on a desktop.** It takes a `.app` bundle
   (or a bare Mach-O), mounts a container directory, and prints the same launch report the
@@ -41,32 +58,60 @@ with the measurement, not the fix.
   Android has a system `libEGL` in memory, and mixing it with ANGLE's GLESv2 yields a
   display the other library knows nothing about.
 
-### Where AngryBirds stops now, and why
+### SjLj exception matching and remaining limits
 
-`GUEST_STOP: TRAPPED — CXX_UNCAUGHT: the guest threw a C++ exception of type
-'N2io11IOExceptionE' with 6 SjLj frame(s) registered`.
+`CxxRuntime` now exports the four Itanium RTTI vtable symbols as **guest data identities**
+(not executable gates) and walks `__si_class_type_info` and public, non-virtual
+`__vmi_class_type_info` bases. A caught base subobject receives its adjusted guest pointer;
+`___dynamic_cast` uses the same bounded non-virtual walk and the object vtable's
+`offset-to-top`/dynamic-type words. A virtual-base adjustment is still refused as a failed
+match/cast because it needs the complete ABI vtable search. Guest exception destructors are
+also not called: invoking guest code from inside a service is still outside this runtime's
+contract, and verbose reports say when that destructor is skipped.
 
-The guest's own log shows this is **not** a fatal path: it constructs
-`Throwable("Failed to open /var/mobile/data/bundleIndex.idx")` and throws so an enclosing
-`catch` can fall back to reading the data files directly. Emulating that needs the SjLj
-unwinder, which is the next piece of work. The ABI is now documented rather than guessed:
+The host replay at the device report's instruction boundary logs three `N2io11IOExceptionE`
+throws. Each now finds its landing pad (the fixture's call sites use catch-all filters 1,
+17 and 11), resumes through the cleanup frame, and reaches the game code instead of
+`CXX_UNCAUGHT`. Separate synthetic RTTI tests exercise a thrown derived type caught as a
+public base and verify the base-subobject pointer adjustment. AngryBirds then logs the
+expected first-run missing `bundleIndex.idx`, `highscores.lua` and `settings.lua` files and
+enters its own thread/frame loop. The repository fixture and recording ES2 driver are the
+only artifacts used; no device pixels were captured.
 
-* `struct SjLj_Function_Context` (libgcc, `unwind-sjlj.c`) is `prev` at +0, `call_site`
-  at +4, `data[4]` at +8, `personality` at +24, `lsda` at +28, `jbuf[]` after that;
-  confirmed against the guest's own frames (the personality slot holds
-  `___gxx_personality_sj0`, the LSDA slots point into `__DATA,__gcc_except_tab`).
-* `__cxa_throw`, `__Unwind_SjLj_Register/Unregister/Resume` and
-  `___gxx_personality_sj0` are **all** HLE boundaries in this image, so the driver, the
-  personality and the LSDA walk all belong to this runtime — no guest callback is needed.
-* Installing a frame means restoring `sp`/`fp`/`pc` from `jbuf` and letting the guest's
-  own dispatch code run; the landing pad is chosen from the LSDA call-site table.
-* The open question is this old toolchain's exact LSDA header encoding
-  (`__DATA,__gcc_except_tab` at `0x141420`), which is needed to map a call-site index to a
-  landing pad. That decoding is the first thing the next round should settle; guessing it
-  would corrupt guest stacks, so nothing was invented here.
+### Other directly reported imports
 
-No gameplay, rendering, audio or device claim is made. The PC host suites, the CPU suites
-and the Android build are the evidence that exists.
+`-[UIApplication applicationIconBadgeNumber]` now reads the modeled UIApplication value and
+its setter stores it. Foundation's `NSStringFromClass` and `NSStringFromSelector` create guest
+NSString objects instead of trapping. When `UIApplicationMain` has a nil delegate, UIKit now
+uses a launch class only if exactly one image class ending in `AppDelegate` implements one of
+the documented launch selectors; ambiguous or absent candidates still report the NIB gap.
+This is a narrow inference, **not** NIB deserialization: IBOutlet/action connections and the
+rest of the archived object graph remain unimplemented.
+
+More concrete API coverage was added from the supplied missing-import lists: affine rotation,
+CGRect containment/offset/dimensions/origin, CATransform3D rotation/translation composition,
+CFAbsoluteTime, CFData create/length/guest-byte-pointer, common CF-to-NSString encodings,
+Security random bytes, and common Foundation/CoreFoundation/Security/QuartzCore/UIKit string
+constants. No success-returning placeholders were added for imports whose semantics are not
+implemented (notably keychain CRUD, Objective-C exceptions, networking, rendering contexts,
+and the large C++ string/iostream surface in the other applications).
+
+### Verification and honest boundary
+
+* `scripts/test-host.sh`: pass, including the new exception hierarchy/base-pointer tests,
+  data/geometry tests, Objective-C helper/property tests, Security random bytes and the
+  one-candidate NIB fallback test.
+* `scripts/test-cpu.sh`: CTest 6/6.
+* `scripts/check-format.sh`: clang-format 19.1.7 and script lint pass.
+* AngryBirds host replay at 657,846 requested instructions: 657,888 executed, no unimplemented
+  import trap, no required/weak unresolved imports, and three caught `io::IOException`s.
+* Three-second AngryBirds host probe: `BUDGET`, 4.42B instructions, 4 recorded draws through
+  ES1-to-ES2 emulation, 3 guest threads. The recording driver renders nothing; this does not
+  establish gameplay or menu visibility.
+* The merged Android build d24e920 is the build that produced the user's reports. **The new
+  APK has not yet been built or re-tested on their device.** That remains the next evidence
+  gate; converter code and converter tests remain out of scope.
+
 ## 0.9.4 — the OpenGL ES boundary is a real driver call, not a stub
 
 AngryBirds' 51 GL imports used to stop the run at `_glFrontFace`. They now reach a real

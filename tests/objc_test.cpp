@@ -75,10 +75,31 @@ int main() {
     const uint32_t nsstring = harness.call(getClass, harness.text("NSString"), 0);
     const uint32_t nsobject = harness.call(getClass, harness.text("NSObject"), 0);
     assert(nsstring && nsobject && nsstring != nsobject);
+    const uint32_t lengthSelector = harness.text("length");
+    // Foundation's C helpers return NSString objects, not borrowed pointers to class/SEL
+    // metadata. This is what callers such as diagnostic UI code expect.
+    CpuState fromClass{};
+    fromClass.registers[0] = nsstring;
+    assert(harness.objc.dispatch(harness.objc.gateAddress("_NSStringFromClass"), fromClass));
+    assert(harness.objc.stringValue(fromClass.registers[0]) == "NSString");
+    CpuState fromSelector{};
+    fromSelector.registers[0] = lengthSelector;
+    assert(harness.objc.dispatch(harness.objc.gateAddress("_NSStringFromSelector"), fromSelector));
+    assert(harness.objc.stringValue(fromSelector.registers[0]) == "length");
+    fromClass.registers[0] = 0;
+    assert(harness.objc.dispatch(harness.objc.gateAddress("_NSStringFromClass"), fromClass));
+    assert(fromClass.registers[0] == 0);
+    // UIApplication's badge property has a persistent modeled value rather than a no-op
+    // setter or an unimplemented getter.
+    const uint32_t applicationClass = harness.call(getClass, harness.text("UIApplication"), 0);
+    const uint32_t application =
+        harness.call(msgSend, applicationClass, harness.text("sharedApplication"));
+    harness.call(msgSend, application, harness.text("setApplicationIconBadgeNumber:"), 17);
+    assert(harness.call(msgSend, application, harness.text("applicationIconBadgeNumber")) == 17);
+
     // Unknown class names are refused, not answered with nil (see the NSClassFromString case).
     fault("OBJC_CLASS_MISSING", [&] { harness.call(getClass, harness.text("NoSuchClass"), 0); });
     // A selector is just its interned guest string.
-    const uint32_t lengthSelector = harness.text("length");
     assert(harness.call(registerName, lengthSelector, 0) == lengthSelector);
 
     const uint32_t hello = harness.call(msgSend, nsstring, selString, harness.text("AnyiOS"));

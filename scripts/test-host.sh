@@ -23,7 +23,7 @@ plan "${FLAGS[*]}" tests/exports_test.cpp \
   -o .local/tests/exports-test
 plan "${FLAGS[*]}" tests/objc_test.cpp app/src/main/cpp/runtime/{memory,objc,exports,format,libc,heap,gles}.cpp -o .local/tests/objc-test
 plan "${FLAGS[*]}" tests/libc_test.cpp app/src/main/cpp/runtime/{memory,libc,format,heap}.cpp -o .local/tests/libc-test
-plan "${FLAGS[*]}" tests/cxx_test.cpp app/src/main/cpp/runtime/{memory,cxx,format,heap}.cpp -o .local/tests/cxx-test
+plan "${FLAGS[*]}" tests/cxx_test.cpp app/src/main/cpp/runtime/{memory,cxx,exports,format,heap}.cpp -o .local/tests/cxx-test
 plan "${FLAGS[*]}" tests/uikit_test.cpp app/src/main/cpp/runtime/{memory,objc,exports,format,libc,heap,uikit,gles}.cpp -o .local/tests/uikit-test
 plan "${FLAGS[*]}" tests/gles_test.cpp app/src/main/cpp/runtime/{memory,gles}.cpp -o .local/tests/gles-test
 # The GL bridge is exercised against a recording driver: a shared object that answers the

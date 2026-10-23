@@ -48,7 +48,8 @@ class CoreFoundation final {
    private:
     struct Bits {
         std::vector<uint8_t> bytes;
-        uint32_t count, references;
+        uint32_t count = 0, references = 0;
+        uint32_t dataAddress = 0;  // guest pointer for CFDataGetBytePtr; never a host address
         bool mutableBits;
         // CFURL/CFBundle carry a guest path plus a kind tag; bit vectors leave both empty.
         std::string path;
@@ -56,6 +57,7 @@ class CoreFoundation final {
     };
     std::map<uint32_t, Bits> objects;
     uint32_t next = 0xe0000000;
+    uint32_t nextDataAddress = 0xe1000000;
     size_t allocated = 0;
     uint32_t bundle = 0;
     std::string bundlePath = "/var/mobile", documentsPath = "/var/mobile/Documents";

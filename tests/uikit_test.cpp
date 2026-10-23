@@ -210,6 +210,33 @@ int main() {
         CpuState unused;
         assert(!bootstrap.invoke("_UIViewCreate", unused, none));
     }
+    // Some iOS 3-era applications pass nil for UIApplicationMain's delegate because the
+    // main NIB normally creates it. Until NIB archives are decoded, a narrowly safe fallback
+    // uses the one and only image-defined *AppDelegate that implements a launch selector.
+    {
+        Memory fourth;
+        ObjC candidate(fourth);
+        candidate.installGates();
+        UIKit bootstrap(fourth);
+        bootstrap.installGates();
+        candidate.setLogSink([](const std::string&) {});
+        std::vector<uint8_t> classes(4096, 0), code(4096, 0), literals(4096, 0);
+        fourth.map({0x300000, 4096, uint8_t(Read | Write), "classes"}, classes.data(),
+                   classes.size());
+        fourth.map({0x301000, 4096, uint8_t(Read | Execute), "code"}, code.data(), code.size());
+        fourth.map({0x302000, 4096, uint8_t(Read | Write), "literals"}, literals.data(),
+                   literals.size());
+        buildClass(fourth, 0x300000, "UniqueAppDelegate",
+                   "applicationDidFinishLaunching:", 0x301001);
+        candidate.registerGuestClasses({0x300000});
+        CpuState state;
+        state.registers[14] = 0x300fff;
+        assert(bootstrap.invoke("_UIApplicationMain", state, candidate));
+        assert(state.registers[15] == 0x301000);
+        assert(bootstrap.describe().find("inferred UniqueAppDelegate") != std::string::npos);
+        assert(bootstrap.describe().find("outlet/action connections are not decoded") !=
+               std::string::npos);
+    }
     std::cout << "UIKit bootstrap (argv, delegate instantiation, launch callback, run-loop "
                  "outcome) passed\n";
 }

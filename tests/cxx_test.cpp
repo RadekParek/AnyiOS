@@ -7,6 +7,7 @@
 
 #include "runtime/abi.h"
 #include "runtime/error.h"
+#include "runtime/exports.h"
 #include "runtime/format.h"
 #include "runtime/heap.h"
 #include "runtime/memory.h"
@@ -198,6 +199,103 @@ int main() {
         check(reported, "a throw reports its type name and the SjLj chain depth");
         call("__Unwind_SjLj_Unregister", inner);
         call("__Unwind_SjLj_Unregister", outer);
+    }
+    // Mangled names alone only match exact types. Real C++ exceptions also match a base
+    // class, which is why the ABI vtables above are guest data rather than missing call gates.
+    // This mirrors io::IOException being caught through a standard exception base: a
+    // derived type_info points to its direct base at +8, which can itself be __si RTTI.
+    {
+        ExportGraph graph;
+        const size_t standard = graph.addImage("/usr/lib/libstdc++.6.dylib");
+        cxx.installTypeInfoVtables(graph, standard);
+        check(graph.resolve(standard, 0, "__ZTVN10__cxxabiv117__class_type_infoE") ==
+                  CxxRuntime::ClassTypeInfoVtable,
+              "class_type_info resolves to mapped ABI data, not a service gate");
+        check(graph.resolve(standard, 0, "__ZTVN10__cxxabiv120__si_class_type_infoE") ==
+                  CxxRuntime::SiClassTypeInfoVtable,
+              "si_class_type_info resolves to its own vtable identity");
+
+        put(memory, 0x6000, "N2io11IOExceptionE");
+        put(memory, 0x6020, "St13runtime_error");
+        put(memory, 0x6040, "St9exception");
+        // Three target-layout type_info records: a simple-derived chain, then its base.
+        memory.write32(0x6100, CxxRuntime::SiClassTypeInfoVtable + 8);
+        memory.write32(0x6104, 0x6000);
+        memory.write32(0x6108, 0x6120);
+        memory.write32(0x6120, CxxRuntime::SiClassTypeInfoVtable + 8);
+        memory.write32(0x6124, 0x6020);
+        memory.write32(0x6128, 0x6140);
+        memory.write32(0x6140, CxxRuntime::ClassTypeInfoVtable + 8);
+        memory.write32(0x6144, 0x6040);
+
+        // LSDA: LPStart omitted, absolute type pointers, one call site with action 1,
+        // positive filter 1, and the backwards type table entry at TType - 4.
+        const uint8_t lsda[] = {0xff, 0x00, 0x0a, 0xff, 0x02, 0x01, 0x01, 0x01, 0x00};
+        memory.write(0x6200, lsda, sizeof(lsda));
+        memory.write32(0x6209, 0x6140);  // catch std::exception
+        memory.write32(0x5000, 0);
+        call("__Unwind_SjLj_Register", 0x5000);
+        memory.write32(0x5004, 1);       // call-site index
+        memory.write32(0x501c, 0x6200);  // LSDA
+        memory.write32(0x5020, 0x7100);  // saved r7
+        memory.write32(0x5024, 0x7201);  // Thumb landing-pad resume address
+        memory.write32(0x5028, 0x7300);  // saved sp
+        call("___cxa_throw", 0x1800, 0x6100, 0);
+        check(call.state.registers[15] == 0x7200 && (call.state.cpsr & 0x20),
+              "an io::IOException-derived type resumes at the std::exception handler");
+        check(memory.read32(0x5008) == 0x1800,
+              "the catch landing pad receives the thrown object for a zero-offset base");
+        call("___cxa_begin_catch", 0x1800);
+        check(call.state.registers[0] == 0x1800,
+              "__cxa_begin_catch returns the caught base subobject");
+        call("___cxa_end_catch");
+        call("__Unwind_SjLj_Unregister", 0x5000);
+    }
+    // Multiple inheritance keeps an offset for a non-virtual base in the upper 24 bits of
+    // base_info::offset_flags. The handler must receive the base-subobject pointer, not the
+    // start of the derived object.
+    {
+        put(memory, 0x6060, "N6sample7DerivedE");
+        put(memory, 0x6080, "N6sample4BaseE");
+        memory.write32(0x6160, CxxRuntime::VmiClassTypeInfoVtable + 8);
+        memory.write32(0x6164, 0x6060);
+        memory.write32(0x6168, 0);  // __flags
+        memory.write32(0x616c, 1);  // one base class
+        memory.write32(0x6170, 0x6180);
+        memory.write32(0x6174, (8 << 8) | 2);  // public base, eight bytes into the thrown object
+        memory.write32(0x6180, CxxRuntime::ClassTypeInfoVtable + 8);
+        memory.write32(0x6184, 0x6080);
+        // Replace the sole catch type entry with sample::Base; the frame still has one site.
+        memory.write32(0x6209, 0x6180);
+        memory.write32(0x5000, 0);
+        call("__Unwind_SjLj_Register", 0x5000);
+        memory.write32(0x5004, 1);
+        memory.write32(0x501c, 0x6200);
+        memory.write32(0x5020, 0x7100);
+        memory.write32(0x5024, 0x7201);
+        memory.write32(0x5028, 0x7300);
+        call("___cxa_throw", 0x1800, 0x6160, 0);
+        check(memory.read32(0x5008) == 0x1808,
+              "a multiple-inheritance catch receives the adjusted base pointer");
+        call("___cxa_begin_catch", 0x1808);
+        check(call.state.registers[0] == 0x1808,
+              "__cxa_begin_catch preserves the adjusted base pointer");
+        call("___cxa_end_catch");
+        call("__Unwind_SjLj_Unregister", 0x5000);
+    }
+    // __dynamic_cast uses the complete-object pointer from the vtable header, then the same
+    // public base offsets to perform a cross-cast from a secondary base back to the derived
+    // object. It must not return the secondary-base pointer unchanged.
+    {
+        memory.write32(0x6308, uint32_t(-8));  // offset-to-top for the Base subobject vtable
+        memory.write32(0x630c, 0x6160);        // dynamic type_info: sample::Derived
+        memory.write32(0x6808, 0x6310);        // vptr in its Base subobject
+        check(call("___dynamic_cast", 0x6808, 0x6180, 0x6160, 8) == 0x6800,
+              "dynamic_cast<Base*, Derived*> recovers the complete object");
+        check(call("___dynamic_cast", 0x6808, 0x6180, 0, 8) == 0x6800,
+              "dynamic_cast<void*> returns the complete object");
+        check(call("___dynamic_cast", 0x6808, 0x6180, 0x6140, 8) == 0,
+              "an unrelated dynamic cast fails with null");
     }
     fault("CXX_UNCAUGHT", [&] { call("___cxa_throw", 0x1800, 0, 0); });
     fault("CXX_UNWIND", [&] { call("___gxx_personality_sj0", 0, 0, 0, 0); });

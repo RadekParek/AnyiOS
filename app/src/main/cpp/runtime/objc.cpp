@@ -43,6 +43,8 @@ const std::vector<std::string>& entryNames() {
         "_objc_autoreleasePoolPop",
         "_objc_retainBlock",
         "_NSClassFromString",
+        "_NSStringFromClass",
+        "_NSStringFromSelector",
         "_NSLog",
         "_NSSearchPathForDirectoriesInDomains",
         "_NSHomeDirectory",
@@ -274,6 +276,12 @@ uint32_t ObjC::makeString(const std::string& text) {
     objects[object].text = internText(text);
     return object;
 }
+uint32_t ObjC::makeHostBoolean(bool value) {
+    const uint32_t object = makeObject("NSNumber");
+    objects[object].integer = value ? 1 : 0;
+    objects[object].real = value ? 1.0 : 0.0;
+    return object;
+}
 uint32_t ObjC::makeArray(const std::vector<uint32_t>& elements) {
     const uint32_t object = makeObject("NSArray");
     objects[object].elements = elements;
@@ -455,6 +463,27 @@ std::string ObjC::guestClassSummary() const {
         out += (shown == 1 ? " " : ", ") + name;
     }
     return out;
+}
+std::pair<std::string, std::string> ObjC::inferMainNibDelegate() const {
+    std::pair<std::string, std::string> candidate;
+    for (const auto& [name, info] : guestClasses) {
+        constexpr size_t SuffixLength = 11;
+        if (name.size() < SuffixLength ||
+            name.compare(name.size() - SuffixLength, SuffixLength, "AppDelegate") != 0)
+            continue;
+        std::string selectorName;
+        if (guestMethod(info.address, false, "application:didFinishLaunchingWithOptions:"))
+            selectorName = "application:didFinishLaunchingWithOptions:";
+        else if (guestMethod(info.address, false, "applicationDidFinishLaunching:"))
+            selectorName = "applicationDidFinishLaunching:";
+        if (selectorName.empty()) continue;
+        // A guess is only safe when a single class satisfies both the historic naming
+        // convention and the actual UIKit callback contract. Ambiguous candidates leave the
+        // existing explicit NIB-not-implemented outcome untouched.
+        if (!candidate.first.empty()) return {};
+        candidate = {name, selectorName};
+    }
+    return candidate;
 }
 uint32_t ObjC::allocateGuestInstance(uint32_t classAddress) {
     const GuestClass* info = guestClassAt(classAddress);
@@ -925,11 +954,20 @@ bool ObjC::uiKitMessage(const std::string& className, uint32_t object, const std
         }
         // Status bar and idle-timer requests are accepted as configuration: there is no
         // window server to apply them to, and the boot view owns the real full-screen state.
+        if (method == "applicationIconBadgeNumber") {
+            r[0] = uint32_t(value.integer);
+            return true;
+        }
+        if (method == "setApplicationIconBadgeNumber:") {
+            value.integer = int32_t(r[2]);
+            r[0] = 0;
+            return true;
+        }
         if (method == "setStatusBarHidden:" || method == "setStatusBarHidden:animated:" ||
             method == "setStatusBarStyle:" || method == "setStatusBarStyle:animated:" ||
             method == "setStatusBarOrientation:" || method == "setStatusBarOrientation:animated:" ||
             method == "setIdleTimerDisabled:" || method == "beginIgnoringInteractionEvents" ||
-            method == "endIgnoringInteractionEvents" || method == "setApplicationIconBadgeNumber:")
+            method == "endIgnoringInteractionEvents")
             return true;
         if (method == "statusBarOrientation") {
             r[0] = 1;  // UIInterfaceOrientationPortrait until a window reports otherwise.
@@ -2097,6 +2135,20 @@ void ObjC::invoke(const std::string& entry, CpuState& state) {
             return;
         }
         r[0] = resolveClass(readText(name), false);
+        return;
+    }
+    if (entry == "_NSStringFromClass") {
+        if (!r[0]) {
+            r[0] = 0;
+            return;
+        }
+        std::string name = classNameOf(r[0]);
+        if (name.rfind("class ", 0) == 0) name.erase(0, 6);
+        r[0] = makeString(name);
+        return;
+    }
+    if (entry == "_NSStringFromSelector") {
+        r[0] = r[0] ? makeString(selectorText(r[0])) : 0;
         return;
     }
     if (entry == "_NSLog") {
