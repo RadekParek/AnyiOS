@@ -3,6 +3,7 @@
 #include <functional>
 #include <memory>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "cpu.h"
@@ -41,6 +42,9 @@ struct LoadedImage {
     DyldPlan dyld;
     size_t legacyStubs = 0;
     std::vector<LegacyStub> stubs;
+    // S_MOD_INIT_FUNC_POINTERS sections (`__mod_init_func` on iOS). Their function
+    // pointers are read only after dyld rebases and binds the mapped image.
+    std::vector<std::pair<uint32_t, uint32_t>> initializerSections;
     // Classes the image itself defines, taken from its `__objc_classlist` section. Their
     // metadata stays guest-owned: the runtime reads it in place instead of copying it, so
     // a class a title looks up by name is the same object its own code uses.

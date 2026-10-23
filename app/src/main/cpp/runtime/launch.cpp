@@ -134,9 +134,14 @@ std::string attemptLaunch(const uint8_t* data, size_t size, const std::string& b
                    image.summary();
         }
         const std::string header =
-            run.stop == "UNIMPLEMENTED" || run.stop == "TRAPPED"
-                ? "LAUNCH_BLOCKED: HLE_GAP: the guest started and stopped at an API that is not "
-                  "implemented yet."
+            run.stop == "UNIMPLEMENTED"
+                ? "LAUNCH_BLOCKED: HLE_GAP: the guest called an API that is not implemented yet."
+            : run.stop == "TRAPPED"
+                ? "LAUNCH_BLOCKED: GUEST_RUNTIME_TRAP: the guest stopped inside a named runtime "
+                  "operation."
+            : run.stop == "FAULT"
+                ? "LAUNCH_BLOCKED: GUEST_FAULT: the guest hit an invalid instruction or memory "
+                  "access."
                 : "LAUNCH_ATTEMPT: the guest image actually executed.";
         std::string log;
         if (options.logLines > 0 && services.logSize()) {
