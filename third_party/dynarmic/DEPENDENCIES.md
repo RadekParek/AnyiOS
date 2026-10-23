@@ -1,8 +1,9 @@
 # Exact CPU component provenance
 
 Dynarmic 6.7.0 source pin: `a41c380246d3d9f9874f0f792d234dc0cc17c180`.
-PodNative applies `patches/oaknut-wx.patch` to the bundled Oaknut allocator; other
-upstream code is unchanged. Root license: 0BSD, retained at LICENSE.txt.
+PodNative applies `patches/oaknut-wx.patch` for the bundled Oaknut allocator and
+Windows x64 exception-handler initialization. These are the only upstream source
+changes. Root license: 0BSD, retained at LICENSE.txt.
 
 These subtrees are contained in that exact Dynarmic commit (not floating external
 repositories). Tree object IDs identify their exact contents. License texts were
@@ -37,12 +38,15 @@ than MAP_FAILED as mmap failure, and does not change permissions on those system
 in protect/unprotect even when Dynarmic's no-execute support is enabled.
 `oaknut-wx.patch` adds an opt-in OAKNUT_USE_WX path: initial RW allocation,
 checked RW/RX transitions, and checked MAP_FAILED with standard system errors.
-No fallback requests RWX. This is enabled for the Android correctness target only;
-no claim is made about upstream block-mode execution or concurrency.
+No fallback requests RWX. It also registers the x64 fast-memory exception callback
+before Dynarmic seals its generated-code prelude RX; the Windows handler stores that
+selector in the code buffer's unwind metadata, so registering it afterward faults.
+The W^X path is enabled for Android and Windows CPU/HLE correctness builds.
 
 Tests verify real Linux /proc/self/maps permissions, readable contents across
 transitions and structured mmap failure. The Android artifact includes the same
-allocator test separately from the instruction test. Actual Android app-UID
-execution, 16 KiB host pages and SELinux policy behavior still require a device.
-The modified allocator remains under the retained Oaknut MIT license. The patch
-is idempotently applied to the exact source pin; mismatching code is rejected.
+allocator test separately from the instruction test. Windows CI also exercises the
+x64 JIT initialization and CPU/HLE tests. Actual Android app-UID execution, 16 KiB
+host pages and SELinux policy behavior still require a device. The modified allocator
+remains under the retained Oaknut MIT license. The patch is idempotently applied to
+the exact source pin; mismatching code is rejected.
