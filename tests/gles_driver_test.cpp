@@ -252,6 +252,8 @@ void drawable(const std::string& driver) {
 
     // A driver that refuses a surfaceless context still gets one, through a pbuffer; the
     // guest draws into a framebuffer object, so a one-pixel surface is all that is needed.
+    // The stub returns a different EGLConfig for a weaker pbuffer-only query, forcing this
+    // fallback to reuse the context's compatible config instead of failing with EGL_BAD_MATCH.
     gles.setClientApi(1);
     using Refuse = void (*)(int);
     auto refuse = reinterpret_cast<Refuse>(dlsym(RTLD_DEFAULT, "stub_refuse_surfaceless"));

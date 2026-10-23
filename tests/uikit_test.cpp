@@ -121,6 +121,8 @@ int main() {
     const std::string report = uikit.describe();
     assert(report.find("GameAppDelegate") != std::string::npos);
     assert(report.find("no implemented sources") != std::string::npos);
+    assert(report.find("UIKIT_EVENTS: last") != std::string::npos);
+    assert(report.find("repeat UIKIT_STATE") != std::string::npos);
     assert(!log.empty());
     // A title that runs its game loop on its own thread keeps running: the main thread parks
     // in the run loop instead of returning out of UIApplicationMain (which would make the

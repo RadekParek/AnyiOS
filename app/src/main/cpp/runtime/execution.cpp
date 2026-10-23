@@ -1,10 +1,12 @@
 #include "execution.h"
 
+#include <algorithm>
 #include <chrono>
 #include <cstdio>
 #include <iomanip>
 #include <limits>
 #include <sstream>
+#include <utility>
 
 #include "cpu.h"
 #include "error.h"
@@ -193,7 +195,7 @@ GuestRun execute(LoadedImage& image, Services& services, const ExportGraph& grap
             // The register state at the fault is what makes a guest fault actionable: it says
             // whether the guest branched to a value it read from memory, returned through a
             // corrupted frame, or was handed a bad pointer by a service.
-            const CpuState faulted = cpu.state();
+            const CpuState faulted = cpu.faultState();
             std::ostringstream registers;
             registers << " (" << std::hex << std::setfill('0');
             for (size_t index = 0; index <= 12; index++) {
@@ -353,7 +355,7 @@ void classify(GuestRun& run) {
         detail.empty() ? "the bounded slice ended before the app finished starting" : detail;
 }
 }  // namespace
-std::string describeRun(GuestRun& run) {
+std::string describeRun(GuestRun& run, bool includeRecentCalls) {
     if (run.blockerKind.empty()) classify(run);
     std::ostringstream out;
     out << "GUEST_EXECUTION: " << run.instructions << " instructions, final PC=" << pointer(run.pc)
@@ -393,9 +395,22 @@ std::string describeRun(GuestRun& run) {
                 << pointer(run.samples[n].pc)
                 << (run.samples[n].lastCall.empty() ? "" : " after " + run.samples[n].lastCall);
     }
-    if (!run.called.empty()) {
-        out << "\nHOST_CALLS: ";
-        for (size_t n = 0; n < run.called.size(); n++) out << (n ? " " : "") << run.called[n];
+    if (includeRecentCalls && !run.called.empty()) {
+        std::vector<std::pair<std::string, size_t>> calls;
+        for (const std::string& name : run.called) {
+            const auto found = std::find_if(calls.begin(), calls.end(),
+                                            [&](const auto& entry) { return entry.first == name; });
+            if (found == calls.end())
+                calls.emplace_back(name, 1);
+            else
+                ++found->second;
+        }
+        out << "\nHOST_CALLS: last " << run.called.size() << " call(s), " << calls.size()
+            << " distinct service name(s):";
+        for (const auto& [name, count] : calls) {
+            out << " " << name;
+            if (count > 1) out << " (" << count << "x)";
+        }
     }
     return out.str();
 }

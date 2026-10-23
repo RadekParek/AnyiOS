@@ -149,6 +149,7 @@ class GLES final {
     // of which driver that was.
     std::string driverLibraries;
     void* display = nullptr;
+    void* eglConfig = nullptr;
     void* context = nullptr;
     void* surface = nullptr;
     uint32_t framebuffer = 0, renderbuffer = 0;

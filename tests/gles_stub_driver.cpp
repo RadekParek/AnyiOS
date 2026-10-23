@@ -18,6 +18,12 @@ extern "C" StubState* stub_state() { return &state; }
 
 static int refuseSurfaceless = 0;
 static uint32_t nextFramebuffer = 3, nextRenderbuffer = 7;
+static uintptr_t displayToken = 1;
+static uintptr_t contextToken = 0;
+static uintptr_t currentContext = 0;
+static uintptr_t surfaceToken = 1;
+static uintptr_t contextConfigToken = 1, alternateConfigToken = 2;
+static void* contextConfig = nullptr;
 extern "C" void stub_refuse_surfaceless(int refuse) { refuseSurfaceless = refuse; }
 
 extern "C" void stub_reset() {
@@ -26,13 +32,13 @@ extern "C" void stub_reset() {
     refuseSurfaceless = 0;
     nextFramebuffer = 3;
     nextRenderbuffer = 7;
+    contextToken = currentContext = 0;
+    surfaceToken = 1;
+    contextConfig = nullptr;
 }
 
 extern "C" {
 // --- EGL: surfaceless, as on Android when the guest draws into a renderbuffer ---
-static uintptr_t displayToken = 1;
-static uintptr_t contextToken = 0;
-static uintptr_t currentContext = 0;
 void* eglGetDisplay(void*) { return &displayToken; }
 void* eglGetPlatformDisplayEXT(uint32_t platform, void*, const int* attributes) {
     state.platformDisplayCalls++;
@@ -47,13 +53,18 @@ uint32_t eglInitialize(void*, int* major, int* minor) {
     return 1;
 }
 uint32_t eglBindAPI(uint32_t) { return 1; }
-uint32_t eglChooseConfig(void*, const int*, void** configs, int count, int* found) {
-    static int config = 1;
-    if (count > 0 && configs) configs[0] = &config;
+uint32_t eglChooseConfig(void*, const int* attributes, void** configs, int count, int* found) {
+    bool requestsDepth = false;
+    for (int i = 0; attributes && attributes[i] != 0x3038; i += 2)
+        if (attributes[i] == 0x3025 && attributes[i + 1] > 0) requestsDepth = true;
+    if (count > 0 && configs)
+        configs[0] = requestsDepth ? static_cast<void*>(&contextConfigToken)
+                                   : static_cast<void*>(&alternateConfigToken);
     *found = 1;
     return 1;
 }
-void* eglCreateContext(void*, void*, void*, const int* attributes) {
+void* eglCreateContext(void*, void* config, void*, const int* attributes) {
+    contextConfig = config;
     state.createContextCalls++;
     for (int i = 0; attributes && attributes[i] != 0x3038; i += 2)
         if (attributes[i] == 0x3098) state.contextVersion = uint32_t(attributes[i + 1]);
@@ -69,15 +80,18 @@ uint32_t eglMakeCurrent(void*, void* draw, void*, void* context) {
     currentContext = context ? 1 : 0;
     return 1;
 }
-void* eglCreatePbufferSurface(void*, void*, const int*) {
-    static int surfaceToken = 1;
+void* eglCreatePbufferSurface(void*, void* config, const int*) {
     state.pbufferCreated++;
+    // EGL_BAD_MATCH: a pbuffer created from an incompatible config cannot be attached to
+    // the context selected earlier. This catches the exact fallback mistake on real drivers.
+    if (config != contextConfig) return nullptr;
     return &surfaceToken;
 }
 uint32_t eglDestroySurface(void*, void*) { return 1; }
 uint32_t eglDestroyContext(void*, void*) {
     state.destroyContextCalls++;
     currentContext = 0;
+    contextConfig = nullptr;
     return 1;
 }
 void* eglGetProcAddress(const char*) { return nullptr; }

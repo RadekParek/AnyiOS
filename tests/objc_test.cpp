@@ -9,6 +9,7 @@
 #include "runtime/abi.h"
 #include "runtime/error.h"
 #include "runtime/exports.h"
+#include "runtime/gles.h"
 using namespace podnative::runtime;
 namespace {
 template <class F>
@@ -76,6 +77,18 @@ int main() {
     const uint32_t retain = harness.objc.gateAddress("_objc_retain");
     const uint32_t release = harness.objc.gateAddress("_objc_release");
     assert(getClass && registerName && msgSend && retain && release);
+
+    // +setCurrentContext: activates EGL but does not invent a drawable. The guest view will
+    // bind its own framebuffer/renderbuffer before requesting layer-backed storage.
+    GLES graphics(memory);
+    assert(graphics.load());
+    harness.objc.setGraphics(&graphics);
+    const uint32_t eaglClass = harness.call(getClass, harness.text("EAGLContext"), 0);
+    const uint32_t eaglContext = harness.call(msgSend, eaglClass, harness.text("alloc"));
+    assert(harness.call(msgSend, eaglContext, harness.text("initWithAPI:"), 1) == eaglContext);
+    assert(harness.call(msgSend, eaglClass, harness.text("setCurrentContext:"), eaglContext) == 1);
+    assert(harness.call(msgSend, eaglClass, harness.text("currentContext")) == eaglContext);
+    assert(graphics.drawableWidth() == 0 && graphics.drawableHeight() == 0);
 
     const uint32_t nsstring = harness.call(getClass, harness.text("NSString"), 0);
     const uint32_t nsobject = harness.call(getClass, harness.text("NSObject"), 0);

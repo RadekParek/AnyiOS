@@ -818,9 +818,11 @@ void ObjC::setScreenSize(int width, int height) {
     screenHeight = height;
 }
 bool ObjC::activateEaglContext() {
-    if (!gles || !gles->makeCurrent()) return false;
-    if (gles->drawableWidth() > 0 && gles->drawableHeight() > 0) return true;
-    return gles->createDrawable(screenWidth, screenHeight);
+    // EAGLContext::setCurrentContext only activates the EGL context. The guest creates and
+    // binds its own framebuffer/renderbuffer, then asks renderbufferStorage:fromDrawable: to
+    // allocate layer-backed storage. Creating a fallback drawable here can make a valid
+    // context switch fail before the view has even finished initializing.
+    return gles && gles->makeCurrent();
 }
 void ObjC::drainPools() {
     while (!pools.empty()) {

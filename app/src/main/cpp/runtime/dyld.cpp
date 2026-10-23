@@ -323,17 +323,10 @@ std::string DyldPlan::summary() const {
     std::ostringstream out;
     for (const auto& f : fixups) f.rebase ? ++rebases : ++bindings;
     out << "DYLD_PLAN: " << rebases << " pointer rebases, " << bindings
-        << " pointer bindings. Decoded, not resolved or applied.";
-    size_t shown = 0;
-    for (const auto& f : fixups) {
-        if (f.rebase || shown++ >= 120) continue;
-        out << "\n" << (f.weak ? "weak " : "required ") << "ordinal=" << f.ordinal << " ";
-        for (unsigned char c : f.symbol) out << (c >= 32 && c < 127 ? char(c) : '?');
-        out << (f.lazy ? " (lazy)" : "");
-    }
+        << " pointer bindings. Raw binding names are omitted; unresolved imports are summarized "
+           "in DYLD_EXPORT_AUDIT.";
     if (needsCoalescing)
         out << "\nWeak-definition coalescing requires the registered export graph; unresolved definitions still block application.";
-    if (bindings > 120) out << "\nDisplay limited to 120 bindings.";
     return out.str();
 }
 }  // namespace podnative::runtime

@@ -52,7 +52,14 @@ c++ -std=c++20 -Wall -Wextra -Werror -Iapp/src/main/cpp -fsyntax-only tools/host
 find app/src/main/cpp/runtime -maxdepth 1 -name '*.cpp' ! -name 'cpu.cpp' -print0 |
   xargs -0 -P "$JOBS" -n 1 -I {} c++ -std=c++20 -Wall -Wextra -Werror -DPODNATIVE_CPU_IN_APP=1 \
     -Iapp/src/main/cpp -Ithird_party/pvrtc -fsyntax-only {}
-for test in macho runtime imports fat frameworks coregraphics dyld exports libc cxx audio fs objc uikit gles pvrtc; do .local/tests/$test-test; done
+for test in macho runtime imports fat frameworks coregraphics dyld exports libc cxx audio fs objc uikit gles pvrtc; do
+  if [[ "$test" == objc ]]; then
+    LD_LIBRARY_PATH=".local/tests${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" \
+      .local/tests/objc-test
+  else
+    .local/tests/$test-test
+  fi
+done
 LD_LIBRARY_PATH=".local/tests${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" \
   .local/tests/gles-driver-test libGLESv2_podnative.so
 LD_LIBRARY_PATH=".local/tests-es2${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" \

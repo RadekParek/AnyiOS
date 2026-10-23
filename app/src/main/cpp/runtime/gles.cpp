@@ -4346,7 +4346,7 @@ void GLES::setClientApi(int api) {
                 destroyContext(display, context);
         }
     }
-    surface = context = nullptr;
+    surface = context = eglConfig = nullptr;
     framebuffer = renderbuffer = 0;
     boundGuestFramebuffer = boundGuestRenderbuffer = 0;
     drawableFramebuffer = drawableRenderbuffer = 0;
@@ -4448,6 +4448,10 @@ bool GLES::makeCurrent() {
             setError("eglCreateContext failed");
             return false;
         }
+        // A later pbuffer fallback must use a config compatible with this context. Choosing
+        // again with weaker attributes can return a different EGLConfig, causing
+        // eglMakeCurrent to fail and EAGL view initialization to return nil on Android.
+        eglConfig = config;
     }
     auto makeCurrentFn = egl<Boolean (*)(Display, Surface, Surface, Context)>("eglMakeCurrent");
     auto getCurrentContext = egl<Context (*)()>("eglGetCurrentContext");
@@ -4465,16 +4469,22 @@ bool GLES::makeCurrent() {
             egl<Boolean (*)(Display, const Int*, Config*, Int, Int*)>("eglChooseConfig");
         auto createPbuffer =
             egl<Surface (*)(Display, Config, const Int*)>("eglCreatePbufferSurface");
-        if (chooseConfig && createPbuffer) {
-            const Int configAttributes[] = {
-                EGL_SURFACE_TYPE, EGL_PBUFFER_BIT, EGL_RENDERABLE_TYPE,
-                contextApi == 2 ? EGL_OPENGL_ES2_BIT : EGL_OPENGL_ES_BIT, EGL_NONE};
-            Config config = nullptr;
-            Int count = 0;
-            chooseConfig(display, configAttributes, &config, 1, &count);
-            if (count) {
+        if (createPbuffer) {
+            Config pbufferConfig = static_cast<Config>(eglConfig);
+            // Contexts and their draw/read surfaces must use compatible configs. The selected
+            // context config already requested EGL_PBUFFER_BIT, so prefer it; only query a
+            // fallback config when the driver created a context without exposing its config.
+            if (!pbufferConfig && chooseConfig) {
+                const Int configAttributes[] = {
+                    EGL_SURFACE_TYPE, EGL_PBUFFER_BIT, EGL_RENDERABLE_TYPE,
+                    contextApi == 2 ? EGL_OPENGL_ES2_BIT : EGL_OPENGL_ES_BIT, EGL_NONE};
+                Int count = 0;
+                chooseConfig(display, configAttributes, &pbufferConfig, 1, &count);
+                if (!count) pbufferConfig = nullptr;
+            }
+            if (pbufferConfig) {
                 const Int surfaceAttributes[] = {EGL_WIDTH, 1, EGL_HEIGHT, 1, EGL_NONE};
-                surface = createPbuffer(display, config, surfaceAttributes);
+                surface = createPbuffer(display, pbufferConfig, surfaceAttributes);
             }
         }
     }
