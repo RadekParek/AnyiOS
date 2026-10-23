@@ -113,6 +113,7 @@ jobs:
     env:
       CMAKE_GENERATOR: Ninja
       CMAKE_EXE_LINKER_FLAGS: -static -static-libgcc -static-libstdc++
+      CXXFLAGS: -g
     defaults:
       run:
         shell: msys2 {0}
@@ -128,6 +129,7 @@ jobs:
             mingw-w64-ucrt-x86_64-cmake
             mingw-w64-ucrt-x86_64-ninja
             mingw-w64-ucrt-x86_64-python
+            mingw-w64-ucrt-x86_64-gdb
       - name: Verify the Windows toolchain
         run: |
           cmake --version
@@ -141,6 +143,12 @@ jobs:
       - name: Windows failure diagnostics
         if: failure()
         run: |
+          for exe in cpu_test.exe perf_probe.exe; do
+            if [[ -f ".local/cpu-tests/$exe" ]]; then
+              echo "=== gdb backtrace: $exe ===" | tee -a .local/logs/windows-cpu.log
+              gdb -q -batch -ex 'set pagination off' -ex run -ex 'thread apply all bt' --args ".local/cpu-tests/$exe" 2>&1 | tee -a .local/logs/windows-cpu.log || true
+            fi
+          done
           python3 - <<'PYCODE'
           from pathlib import Path
 
