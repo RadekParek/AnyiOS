@@ -16,8 +16,8 @@ class GuestHeap;
 // The guest is ARM code, so every GL entry point is a call gate: the CPU stops on the
 // SVC, this class marshals the guest's registers into the C prototype the driver
 // expects and performs the actual call. Nothing here answers "success" on its own:
-// when no driver is loaded every GL symbol stays unbound and the guest stops at the
-// first GL call with its name.
+// when no driver is loaded every GL symbol stays unbound; when a loaded driver cannot
+// resolve a required entry point, the stop names that exact driver function.
 //
 // The driver this app ships is ANGLE, which is OpenGL ES 2.0 and has no ES 1.1 frontend
 // at all, while the titles this runtime runs are ES 1.1: they live on the fixed-function
@@ -255,6 +255,7 @@ class GLES final {
 
     Entry function(const char* name) const;
     bool resolve(const char* name);
+    void resolveMissingImports();
     uint32_t drawableColorFormat();
     // Takes a handle on a driver library, preferring one the linker already loaded.
     static void* openLibrary(const char* name);

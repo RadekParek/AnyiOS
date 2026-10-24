@@ -45,6 +45,31 @@ std::string pointer(uint32_t value) {
     out << "0x" << std::hex << value;
     return out.str();
 }
+// The memory fault's address and registers are not enough when the reported PC is adjacent
+// to the load/store. Preserve the raw guest instruction at that PC so a report can be checked
+// against the exact image instead of assuming the PC is a memory operation.
+std::string instructionAtPc(const Memory& memory, const CpuState& state, uint32_t pc,
+                            const char* label) {
+    pc &= ~1u;
+    try {
+        std::ostringstream out;
+        out << '\n' << label;
+        if (state.cpsr & (1u << 5)) {
+            const uint16_t first = memory.fetch16(pc);
+            out << "Thumb 0x" << std::hex << std::setw(4) << std::setfill('0') << first;
+            if ((first & 0xf800u) >= 0xe800u) {
+                if (pc > std::numeric_limits<uint32_t>::max() - 2) return {};
+                const uint16_t second = memory.fetch16(pc + 2);
+                out << std::setw(4) << second << " (32-bit instruction)";
+            }
+        } else {
+            out << "ARM 0x" << std::hex << std::setw(8) << std::setfill('0') << memory.fetch32(pc);
+        }
+        return out.str();
+    } catch (const Error&) {
+        return {};
+    }
+}
 std::vector<uint32_t> initializerFunctions(const LoadedImage& image) {
     if (!image.memory) throw Error("GUEST_MEMORY", "image has no mapped memory");
     std::vector<uint32_t> functions;
@@ -218,6 +243,13 @@ GuestRun execute(LoadedImage& image, Services& services, const ExportGraph& grap
             run.stop = "FAULT";
             run.detail =
                 stop.code + ": " + stop.detail + " at " + pointer(stop.pc) + registers.str();
+            run.detail +=
+                instructionAtPc(*image.memory, faulted, stop.pc, "instruction at reported PC: ");
+            const uint32_t callbackPc = faulted.registers[15] & ~1u;
+            run.detail += "\nfault callback PC register: " + pointer(callbackPc);
+            if (callbackPc != (stop.pc & ~1u))
+                run.detail += instructionAtPc(*image.memory, faulted, callbackPc,
+                                              "instruction at fault-callback PC: ");
             // The last instructions before the fault: a jump to a value read out of memory is
             // only explainable by the code that produced it.
             std::ostringstream trace;

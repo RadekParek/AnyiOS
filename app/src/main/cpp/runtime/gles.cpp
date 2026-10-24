@@ -680,6 +680,14 @@ bool GLES::load() {
     return true;
 }
 
+void GLES::resolveMissingImports() {
+    // Some EGL implementations do not return every entry point until a context exists. The
+    // library exports are still the first choice; retry only missing entries after the
+    // context is current so eglGetProcAddress can supply the rest without mixing drivers.
+    for (const char* import : ImportNames) resolve(import + 1);
+    fixedFunction = function("glDrawArrays") && !function("glVertexPointer");
+}
+
 std::vector<std::string> GLES::symbols() const {
     // Ownership does not depend on the driver: these are the imports this bridge answers
     // for. Without a driver each one keeps its trap, so the guest stops on the exact name.
@@ -834,12 +842,27 @@ bool GLES::bindClientArrays(size_t count, std::vector<std::vector<uint8_t>>& sto
 bool GLES::invoke(const std::string& symbol, CpuState& state) {
     if (symbol.rfind("_gl", 0) != 0) return false;
     if (!available()) return false;
-    if (!verbose) return invokeEntry(symbol, state);
+    bool registeredImport = false;
+    for (const char* import : ImportNames)
+        if (symbol == import) {
+            registeredImport = true;
+            break;
+        }
+    const std::string name = symbol.substr(1);
+    auto missingEntryPoint = [&]() -> bool {
+        if (!registeredImport || function(name.c_str())) return false;
+        throw Error(
+            "GLES_ENTRY_POINT",
+            "driver " + backendName + " does not resolve required OpenGL ES entry point " + name);
+    };
+    if (!verbose) {
+        if (invokeEntry(symbol, state)) return true;
+        return missingEntryPoint();
+    }
     const CpuState before = state;
     const bool handled = invokeEntry(symbol, state);
-    if (!handled) return false;
+    if (!handled) return missingEntryPoint();
 
-    const std::string name = symbol.substr(1);
     const size_t occurrence = ++traceCalls[name];
     size_t limit = 12;
     if (name == "glDrawArrays" || name == "glDrawElements" || name == "glClear" ||
@@ -2343,7 +2366,9 @@ bool GLES::invokeEntry(const std::string& symbol, CpuState& state) {
     if (name == "glBindTexture") {
         auto f = fn<void (*)(uint32_t, uint32_t)>(name.c_str());
         if (!f) return false;
-        f(m.word(), m.word());
+        const uint32_t target = m.word();
+        const uint32_t texture = m.word();
+        f(target, texture);
         return true;
     }
     if (name == "glBlendFunc" || name == "glPixelStorei" || name == "glHint" ||
@@ -4459,8 +4484,14 @@ bool GLES::makeCurrent() {
         setError("EGL has no eglMakeCurrent");
         return false;
     }
-    if (getCurrentContext && getCurrentContext() == context) return true;
-    if (makeCurrentFn(display, nullptr, nullptr, context)) return true;
+    if (getCurrentContext && getCurrentContext() == context) {
+        resolveMissingImports();
+        return true;
+    }
+    if (makeCurrentFn(display, nullptr, nullptr, context)) {
+        resolveMissingImports();
+        return true;
+    }
     // Not every driver accepts a surfaceless context (ANGLE's Android backend included).
     // The guest renders into a framebuffer object, so a one-pixel pbuffer is enough to make
     // the context current; -presentRenderbuffer: still reads pixels back from the drawable.
@@ -4492,6 +4523,7 @@ bool GLES::makeCurrent() {
         setError("eglMakeCurrent failed");
         return false;
     }
+    resolveMissingImports();
     return true;
 }
 

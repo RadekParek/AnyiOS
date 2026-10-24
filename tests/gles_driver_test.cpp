@@ -99,6 +99,19 @@ void marshalling(const std::string& driver) {
     resetStub();
     StubState* recorded = stub();
 
+    Call earlyEnable(gles, memory);
+    earlyEnable.ints({0x0be2});  // GL_BLEND
+    bool namedMissingEntry = false;
+    try {
+        earlyEnable("_glEnable");
+    } catch (const Error& error) {
+        namedMissingEntry = error.code == "GLES_ENTRY_POINT" &&
+                            std::string(error.what()).find("glEnable") != std::string::npos;
+    }
+    check(namedMissingEntry,
+          "an unresolved driver entry point is named instead of becoming an HLE_SYMBOL trap");
+    check(gles.makeCurrent(), "a context can supply delayed eglGetProcAddress entry points");
+
     // Floats come from s0-s3 even though the integers r0-r3 are also set: a bridge that
     // read colours out of r0-r3 would see the sentinel values instead of the colour.
     Call call(gles, memory);
@@ -127,6 +140,37 @@ void marshalling(const std::string& driver) {
     check(recorded->viewport[0] == 1 && recorded->viewport[1] == 2 && recorded->viewport[2] == 3 &&
               recorded->viewport[3] == 4,
           "glViewport reads four integers from r0-r3");
+
+    // These are imports reported by Angry Birds itself. They must reach the resolved driver
+    // entry points rather than only appearing in the bridge's registered-symbol list.
+    Call enableCapability(gles, memory);
+    enableCapability.ints({0x0be2});  // GL_BLEND
+    enableCapability("_glEnable");
+    check(recorded->enableCalls == 1 && recorded->enabledCapability == 0x0be2,
+          "_glEnable reaches the driver with its GLenum argument");
+    Call disableCapability(gles, memory);
+    disableCapability.ints({0x0be2});
+    disableCapability("_glDisable");
+    check(recorded->disableCalls == 1 && recorded->disabledCapability == 0x0be2,
+          "_glDisable reaches the driver with its GLenum argument");
+    Call frontFace(gles, memory);
+    frontFace.ints({0x0900});  // GL_CW
+    frontFace("_glFrontFace");
+    check(recorded->frontFaceCalls == 1 && recorded->frontFaceMode == 0x0900,
+          "_glFrontFace reaches the driver with its GLenum argument");
+    Call generateTextures(gles, memory);
+    generateTextures.ints({2, 0x10020});
+    generateTextures("_glGenTextures");
+    check(recorded->generatedTextureCalls == 2 && memory.read32(0x10020) != 0 &&
+              memory.read32(0x10024) != 0 && memory.read32(0x10020) != memory.read32(0x10024),
+          "_glGenTextures returns distinct driver-generated names to guest memory");
+    Call bindTexture(gles, memory);
+    bindTexture.ints({0x0de1, memory.read32(0x10020)});  // GL_TEXTURE_2D, generated name
+    bindTexture("_glBindTexture");
+    check(
+        recorded->boundTextureTarget == 0x0de1 && recorded->boundTexture == memory.read32(0x10020),
+        "_glBindTexture forwards GL_TEXTURE_2D and generated texture " +
+            std::to_string(memory.read32(0x10020)) + " in argument order");
 
     // A client array is read when the draw happens, not when it is described.
     const float vertices[6] = {0, 0, 10, 0, 0, 10};

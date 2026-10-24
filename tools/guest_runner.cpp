@@ -7,6 +7,8 @@
 //
 //   guest-runner [--seconds N] [--instructions N] [--verbose] [--precise] [--log-lines N]
 //                [--native-gles]
+//                [--bundle-archive IPA --bundle-prefix Payload/App.app/
+//                 --bundle-cache DIR --bundle-overlay DIR]
 //                <bundle.app|executable> [container dir]
 //
 // Without --seconds/--instructions the guest runs until it stops on its own, which is what a
@@ -88,6 +90,14 @@ int main(int argc, char** argv) {
             // The Settings ▸ "Native OpenGL ES" switch, reproducible on a host: resolve GL
             // against the machine's own driver first instead of the bundled ANGLE.
             options.nativeGles = true;
+        } else if (argument == "--bundle-archive" && i + 1 < argc) {
+            options.bundleArchive = argv[++i];
+        } else if (argument == "--bundle-prefix" && i + 1 < argc) {
+            options.bundleArchivePrefix = argv[++i];
+        } else if (argument == "--bundle-cache" && i + 1 < argc) {
+            options.bundleCache = argv[++i];
+        } else if (argument == "--bundle-overlay" && i + 1 < argc) {
+            options.bundleOverlay = argv[++i];
         } else if (argument == "--verbose") {
             // Deep trace: every service call, every unwind decision, every GL error. The
             // report then carries the tail of it, which is what a compatibility report needs.
@@ -102,8 +112,20 @@ int main(int argc, char** argv) {
     }
     if (positional.empty() || positional.size() > 2) {
         std::cerr << "usage: guest-runner [--seconds N] [--instructions N] [--verbose] "
-                     "[--native-gles] <bundle.app|executable> [container directory]\n"
+                     "[--native-gles] [--bundle-archive IPA --bundle-prefix Payload/App.app/ "
+                     "--bundle-cache DIR --bundle-overlay DIR] "
+                     "<bundle.app|executable> [container directory]\n"
                      "  no --seconds/--instructions: run until the guest stops by itself\n";
+        return 2;
+    }
+    const bool archiveMount = !options.bundleArchive.empty();
+    const bool hasArchiveDetails = !options.bundleArchivePrefix.empty() ||
+                                   !options.bundleCache.empty() || !options.bundleOverlay.empty();
+    if (archiveMount != hasArchiveDetails ||
+        (archiveMount && (options.bundleArchivePrefix.empty() || options.bundleCache.empty() ||
+                          options.bundleOverlay.empty() || positional.size() != 2))) {
+        std::cerr << "guest-runner: archive-backed runs need --bundle-archive, --bundle-prefix, "
+                     "--bundle-cache, --bundle-overlay, and a container directory\n";
         return 2;
     }
     try {
@@ -112,9 +134,15 @@ int main(int argc, char** argv) {
         std::string container;
         if (positional.size() == 2) {
             fs::create_directories(positional[1]);
-            container = positional[1];
+            container = fs::absolute(positional[1]).lexically_normal().string();
         }
-        std::cout << podnative::runtime::attemptLaunch(image.data(), image.size(), bundle.string(),
+        if (archiveMount) {
+            options.bundleArchive = fs::absolute(options.bundleArchive).lexically_normal().string();
+            options.bundleCache = fs::absolute(options.bundleCache).lexically_normal().string();
+            options.bundleOverlay = fs::absolute(options.bundleOverlay).lexically_normal().string();
+        }
+        const std::string bundleHost = archiveMount ? std::string() : bundle.string();
+        std::cout << podnative::runtime::attemptLaunch(image.data(), image.size(), bundleHost,
                                                        container, options)
                   << '\n';
         return 0;
