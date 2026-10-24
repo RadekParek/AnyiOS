@@ -150,6 +150,9 @@ void Memory::map(Region region, const uint8_t* initial, size_t initialSize) {
         throw Error("MEMORY_ALIGNMENT", "mapping must contain aligned, whole pages", region.base);
     if ((region.permissions & ~uint8_t(7)) || !region.permissions)
         throw Error("MEMORY_PERMISSION", "invalid mapping permissions", region.base);
+    if (!region.maxPermissions) region.maxPermissions = region.permissions;
+    if ((region.maxPermissions & ~uint8_t(7)) || (region.permissions & ~region.maxPermissions))
+        throw Error("MEMORY_PERMISSION", "invalid maximum mapping permissions", region.base);
     if (initialSize > region.size || (initialSize && !initial))
         throw Error("MEMORY_INITIAL_DATA", "invalid initialization range", region.base);
     auto next = storage_.lower_bound(region.base);
@@ -222,6 +225,26 @@ void Memory::validate(uint32_t address, size_t size, uint8_t permission) const {
 bool Memory::permits(uint32_t address, size_t size, uint8_t permission) const {
     try {
         validate(address, size, permission);
+        return true;
+    } catch (const Error&) {
+        return false;
+    }
+}
+bool Memory::permitsLoader(uint32_t address, size_t size, uint8_t permission) const {
+    try {
+        if (permission & ~uint8_t(7)) return false;
+        const uint64_t end = endOf(address, size);
+        uint64_t cursor = address;
+        while (cursor < end) {
+            auto it = storage_.upper_bound(uint32_t(cursor));
+            if (it == storage_.begin()) return false;
+            --it;
+            const Region& region = it->second.region;
+            if (cursor >= uint64_t(region.base) + region.size ||
+                (region.maxPermissions & permission) != permission)
+                return false;
+            cursor = std::min(end, uint64_t(region.base) + region.size);
+        }
         return true;
     } catch (const Error&) {
         return false;
@@ -305,6 +328,9 @@ void Memory::write(uint32_t address, const void* source, size_t size) {
 void Memory::patch(uint32_t address, const void* source, size_t size) {
     if (size && !source) throw Error("MEMORY_ARGUMENT", "null patch source", address);
     validate(address, size, Read);
+    patchMapped(address, source, size);
+}
+void Memory::patchMapped(uint32_t address, const void* source, size_t size) {
     const auto* input = static_cast<const uint8_t*>(source);
     size_t done = 0;
     while (done < size) {
@@ -314,8 +340,7 @@ void Memory::patch(uint32_t address, const void* source, size_t size) {
             size - done, size_t(it->second.region.base) + it->second.region.size - current);
 #ifdef PODNATIVE_MEMORY_ARENA
         // A loader patch of a read-only (usually executable) region has to open the host
-        // pages it touches and no others: an image binds hundreds of stubs, and reopening
-        // the whole segment per stub would turn startup into a wall of syscalls.
+        // pages it touches and no others, then restore the exact guest protection.
         const bool reopen = arena_ && (it->second.region.permissions & Write) == 0;
         if (reopen) protectHost(arena_, current, count, PROT_READ | PROT_WRITE);
         std::memcpy(hostAt(it->second, current), input + done, count);
@@ -326,10 +351,66 @@ void Memory::patch(uint32_t address, const void* source, size_t size) {
         done += count;
     }
     if (size) ++revision_;
-    // A loader patch is always reported as a code edit, executable or not: the engine may
-    // fold reads of guest pages the guest cannot write, and a patch is the one way such a
-    // page changes.
+    // A loader patch is also a code edit: read-only literal pages may have been folded by
+    // the JIT, and the cache must see their new bytes before translating guest code.
     noteCodeEdit(address, size);
+}
+void Memory::loaderWrite32(uint32_t address, uint32_t value) { loaderWrite32s({{address, value}}); }
+void Memory::loaderWrite32s(const std::vector<std::pair<uint32_t, uint32_t>>& writes) {
+    if (writes.empty()) return;
+    std::vector<std::pair<uint32_t, uint32_t>> ordered = writes;
+    std::sort(ordered.begin(), ordered.end(),
+              [](const auto& a, const auto& b) { return a.first < b.first; });
+    for (size_t index = 0; index < ordered.size(); index++) {
+        const uint32_t address = ordered[index].first;
+        if (address % 4) throw Error("MEMORY_ALIGNMENT", "loader word is unaligned", address);
+        if (index && ordered[index - 1].first == address)
+            throw Error("MEMORY_PATCH", "duplicate loader write target", address);
+        if (!permitsLoader(address, 4, Write))
+            throw Error("MEMORY_ACCESS", "loader target is unmapped or maxprot is not writable",
+                        address);
+    }
+    auto storageAt = [this](uint32_t address) -> Storage& {
+        return std::prev(storage_.upper_bound(address))->second;
+    };
+#ifdef PODNATIVE_MEMORY_ARENA
+    std::vector<uint32_t> writableHostPages;
+    if (arena_) {
+        const uint32_t host = uint32_t(hostPageSize());
+        for (const auto& [address, value] : ordered) {
+            (void)value;
+            if (storageAt(address).region.permissions & Write) continue;
+            const uint32_t page = address & ~(host - 1);
+            if (writableHostPages.empty() || writableHostPages.back() != page)
+                writableHostPages.push_back(page);
+        }
+        for (uint32_t page : writableHostPages)
+            protectHost(arena_, page, host, PROT_READ | PROT_WRITE);
+    }
+#endif
+    for (const auto& [address, value] : ordered) {
+        const uint8_t bytes[4] = {uint8_t(value), uint8_t(value >> 8), uint8_t(value >> 16),
+                                  uint8_t(value >> 24)};
+        std::memcpy(hostAt(storageAt(address), address), bytes, sizeof(bytes));
+    }
+#ifdef PODNATIVE_MEMORY_ARENA
+    if (arena_)
+        for (uint32_t page : writableHostPages) applyArenaProtection(page, hostPageSize());
+#endif
+    ++revision_;
+    uint32_t rangeBegin = ordered.front().first;
+    uint64_t rangeEnd = uint64_t(rangeBegin) + 4;
+    for (size_t index = 1; index < ordered.size(); index++) {
+        const uint32_t address = ordered[index].first;
+        if (address <= rangeEnd) {
+            rangeEnd = std::max(rangeEnd, uint64_t(address) + 4);
+            continue;
+        }
+        noteCodeEdit(rangeBegin, size_t(rangeEnd - rangeBegin));
+        rangeBegin = address;
+        rangeEnd = uint64_t(address) + 4;
+    }
+    noteCodeEdit(rangeBegin, size_t(rangeEnd - rangeBegin));
 }
 bool Memory::pageIsReadOnly(uint32_t address) const {
     const uint64_t pageBegin = address & ~uint64_t(PageSize - 1);

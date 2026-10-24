@@ -131,6 +131,9 @@ class Services final {
     size_t count() const { return symbols.size(); }
     // Name of the most recent service the guest called, for the stop report.
     const std::string& lastCall() const { return lastSymbol; }
+    bool guestExitRequested() const { return libc.guestExitRequested(); }
+    const std::string& guestExitRoutine() const { return libc.exitRoutine(); }
+    uint32_t guestExitStatus() const { return libc.exitStatus(); }
 
    private:
     Memory& memory;
@@ -163,6 +166,7 @@ class Services final {
     // Darwin's default rune tables, so a guest that indexes __DefaultRuneLocale or calls
     // ___maskrune sees the same classification and case mapping a device would report.
     uint32_t runeLocaleCell = 0;
+    uint32_t cfTypeArrayCallbacks = 0;
     uint32_t runeLocale();
     // A guest CFString global initialised to `text`.
     uint32_t constantStringVariable(const std::string& text);

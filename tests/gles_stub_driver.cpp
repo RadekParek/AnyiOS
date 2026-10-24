@@ -109,6 +109,13 @@ void glClearColor(float r, float g, float b, float a) {
     state.clearColour[2] = b;
     state.clearColour[3] = a;
 }
+void glColorMask(uint8_t red, uint8_t green, uint8_t blue, uint8_t alpha) {
+    state.colorMaskCalls++;
+    state.colorMask[0] = red;
+    state.colorMask[1] = green;
+    state.colorMask[2] = blue;
+    state.colorMask[3] = alpha;
+}
 void glViewport(int x, int y, int w, int h) {
     state.viewportCalls++;
     state.viewport[0] = x;

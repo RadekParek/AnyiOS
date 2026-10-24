@@ -4,9 +4,9 @@
 #include <cstdio>
 #include <cstring>
 #include <limits>
-#include <map>
 #include <optional>
 #include <sstream>
+#include <unordered_map>
 
 #include "../macho.h"
 #include "error.h"
@@ -46,6 +46,7 @@ struct Segment {
     uint32_t offset;
     uint32_t fileSize;
 };
+constexpr size_t MaxImageFixups = DyldFixupBudget;
 }  // namespace
 LoadedImage loadMachO(const uint8_t* data, size_t size, size_t budget) {
     if (size && !data) throw Error("LOAD_ARGUMENT", "null executable data");
@@ -147,7 +148,9 @@ LoadedImage loadMachO(const uint8_t* data, size_t size, size_t budget) {
                 throw Error("LOAD_GUARD_DATA", "inaccessible segment has initialized data", vm);
             if (segments.size() >= 256) throw Error("LOAD_LIMIT", "too many segments");
             segments.push_back(
-                {{vm, vmSize, uint8_t(protection), r.fixed(p + 8, 16)}, offset, fileSize});
+                {{vm, vmSize, uint8_t(protection), r.fixed(p + 8, 16), uint8_t(maximum)},
+                 offset,
+                 fileSize});
         } else if (cmd == 0x80000028) {  // LC_MAIN: file-relative entryoff, not a guest pointer.
             if (length < 24 || hasEntry)
                 throw Error("LOAD_ENTRY", "truncated or duplicate entry point");
@@ -346,15 +349,21 @@ LoadedImage loadMachO(const uint8_t* data, size_t size, size_t budget) {
         [](const FunctionSymbol& a, const FunctionSymbol& b) { return a.address < b.address; });
     std::vector<DyldSegment> dyldSegments;
     for (const auto& segment : segments)
-        dyldSegments.push_back(
-            {segment.region.base, segment.region.size, segment.region.permissions});
-    size_t dyldNames = 0;
+        dyldSegments.push_back({segment.region.base, segment.region.size,
+                                segment.region.permissions, segment.region.maxPermissions});
+    size_t dyldNames = 0, fixupWork = 0;
+    auto consumeFixupWork = [&](size_t count) {
+        if (count > MaxImageFixups - fixupWork)
+            throw Error("DYLD_LIMIT", "combined fixup budget exceeded");
+        fixupWork += count;
+    };
     for (size_t stream = 0; stream < 4; stream++) {
         const auto [offset, bytes] = dyldStreams[stream];
         if (!bytes) continue;
         auto decoded =
             decodeDyld(data + offset, bytes, dyldSegments, stream == 0, stream == 3, stream == 2);
-        if (decoded.fixups.size() > 100000 - result.dyld.fixups.size())
+        consumeFixupWork(decoded.fixups.size());
+        if (decoded.fixups.size() > MaxImageFixups - result.dyld.fixups.size())
             throw Error("DYLD_LIMIT", "combined fixup budget exceeded");
         result.dyld.needsCoalescing |= decoded.needsCoalescing;
         if (decoded.strongDefinitions.size() > 100000 - result.dyld.strongDefinitions.size())
@@ -374,9 +383,12 @@ LoadedImage loadMachO(const uint8_t* data, size_t size, size_t budget) {
             result.dyld.fixups.push_back(std::move(fixup));
         }
     }
-    std::map<uint32_t, size_t> planned;
+    std::unordered_map<uint32_t, size_t> planned;
+    const size_t relocationReserve =
+        hasDynamicSymbols ? std::min<size_t>(MaxImageFixups, r.u32(dynamicSymbols + 68)) : 0;
+    planned.reserve(std::min(MaxImageFixups, result.dyld.fixups.size() + relocationReserve + 1024));
     for (size_t index = 0; index < result.dyld.fixups.size(); index++)
-        planned[result.dyld.fixups[index].address] = index;
+        planned.insert_or_assign(result.dyld.fixups[index].address, index);
     // External relocations (LC_DYSYMTAB extreloff/nextrel). An image linked before
     // LC_DYLD_INFO carries no bind stream at all: every Objective-C superclass, metaclass,
     // `__objc_empty_cache` and class-reference slot is described here instead. Ignoring the
@@ -385,8 +397,7 @@ LoadedImage loadMachO(const uint8_t* data, size_t size, size_t budget) {
     if (hasDynamicSymbols) {
         const uint32_t relocationOffset = r.u32(dynamicSymbols + 64);
         const uint32_t relocationCount = r.u32(dynamicSymbols + 68);
-        if (relocationCount > 100000)
-            throw Error("DYLD_LIMIT", "external relocation count exceeds budget");
+        consumeFixupWork(relocationCount);
         for (uint32_t index = 0; index < relocationCount; index++) {
             const uint64_t record = uint64_t(relocationOffset) + uint64_t(index) * 8;
             const uint32_t address = r.u32(record);
@@ -403,7 +414,7 @@ LoadedImage loadMachO(const uint8_t* data, size_t size, size_t budget) {
                 throw Error("DYLD_RELOCATION", "unaligned relocation target", address);
             bool writable = false;
             for (const auto& segment : segments)
-                if ((segment.region.permissions & Write) && address >= segment.region.base &&
+                if ((segment.region.maxPermissions & Write) && address >= segment.region.base &&
                     uint64_t(address) + 4 <= uint64_t(segment.region.base) + segment.region.size)
                     writable = true;
             if (!writable)
@@ -454,7 +465,7 @@ LoadedImage loadMachO(const uint8_t* data, size_t size, size_t budget) {
                     throw Error("DYLD_LIMIT", "relocation symbol budget exceeded");
                 if (!rebase) dyldNames += symbol.size();
             }
-            if (result.dyld.fixups.size() >= 100000)
+            if (result.dyld.fixups.size() >= MaxImageFixups)
                 throw Error("DYLD_LIMIT", "combined fixup budget exceeded");
             planned.emplace(address, result.dyld.fixups.size());
             result.dyld.fixups.push_back(
@@ -521,8 +532,7 @@ LoadedImage loadMachO(const uint8_t* data, size_t size, size_t budget) {
             }
             continue;
         }
-        if (section.count > 100000)
-            throw Error("DYLD_LIMIT", "indirect pointer count exceeds budget");
+        consumeFixupWork(section.count);
         for (uint32_t index = 0; index < section.count; index++) {
             uint32_t symbol = r.u32(uint64_t(table) + uint64_t(section.first + index) * 4);
             if (symbol & 0xc0000000u)
@@ -555,7 +565,8 @@ LoadedImage loadMachO(const uint8_t* data, size_t size, size_t budget) {
                 // and the earlier binding wins. Only a rebase slot is a real conflict.
                 continue;
             }
-            if (result.dyld.fixups.size() >= 100000 || name.size() > 8 * 1024 * 1024 - dyldNames)
+            if (result.dyld.fixups.size() >= MaxImageFixups ||
+                name.size() > 8 * 1024 * 1024 - dyldNames)
                 throw Error("DYLD_LIMIT", "combined indirect binding budget");
             dyldNames += name.size();
             result.dyld.fixups.push_back({address, false, bool(data[record + 6] & 0x40),

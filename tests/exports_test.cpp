@@ -36,6 +36,17 @@ CpuState call(Services& services, const char* name, uint32_t a, uint32_t b = 0, 
     services.dispatch(stop, state);
     return state;
 }
+CpuState objcCall(Services& services, uint32_t receiver, uint32_t selector, uint32_t arg2 = 0) {
+    CpuState state;
+    state.registers[0] = receiver;
+    state.registers[1] = selector;
+    state.registers[2] = arg2;
+    state.registers[14] = 0x1000;
+    state.registers[15] = ObjC::GateBase + 4;
+    CpuStop stop{StopReason::SupervisorCall, 1, ObjC::GateBase, 0, 0, "CPU_SVC", ""};
+    services.dispatch(stop, state);
+    return state;
+}
 }  // namespace
 int main() {
     Memory memory;
@@ -53,14 +64,15 @@ int main() {
     ExportGraph graph;
     // The binary's own dependency list is registered as images, so every two-level
     // ordinal it uses has a target.
-    services.install(graph, {"/usr/lib/libSystem.B.dylib", "/usr/lib/libobjc.A.dylib",
-                             "/usr/lib/libstdc++.6.dylib", "/usr/lib/libgcc_s.1.dylib",
-                             "/System/Library/Frameworks/Foundation.framework/Foundation",
-                             "/System/Library/Frameworks/CoreFoundation.framework/CoreFoundation",
-                             "/System/Library/Frameworks/CoreGraphics.framework/CoreGraphics",
-                             "/System/Library/Frameworks/QuartzCore.framework/QuartzCore",
-                             "/System/Library/Frameworks/UIKit.framework/UIKit",
-                             "/System/Library/Frameworks/OpenGLES.framework/OpenGLES"});
+    services.install(
+        graph,
+        {"/usr/lib/libSystem.B.dylib", "/usr/lib/libobjc.A.dylib", "/usr/lib/libstdc++.6.dylib",
+         "/usr/lib/libgcc_s.1.dylib", "/System/Library/Frameworks/Foundation.framework/Foundation",
+         "/System/Library/Frameworks/CoreFoundation.framework/CoreFoundation",
+         "/System/Library/Frameworks/CoreGraphics.framework/CoreGraphics",
+         "/System/Library/Frameworks/QuartzCore.framework/QuartzCore",
+         "/System/Library/Frameworks/UIKit.framework/UIKit",
+         "/System/Library/Frameworks/OpenGLES.framework/OpenGLES", "/usr/lib/libc++.1.dylib"});
     size_t executable = graph.addImage("<executable>");
     // Every dependency image exists before the executable, so no ordinal dangles.
     for (const char* dependency :
@@ -70,7 +82,7 @@ int main() {
           "/System/Library/Frameworks/CoreGraphics.framework/CoreGraphics",
           "/System/Library/Frameworks/QuartzCore.framework/QuartzCore",
           "/System/Library/Frameworks/UIKit.framework/UIKit",
-          "/System/Library/Frameworks/OpenGLES.framework/OpenGLES"})
+          "/System/Library/Frameworks/OpenGLES.framework/OpenGLES", "/usr/lib/libc++.1.dylib"})
         assert(graph.index(dependency).has_value());
     assert(executable > 9);
     graph.setMainExecutable(executable);
@@ -87,6 +99,14 @@ int main() {
     assert(graph.resolve(executable, -2, "_memcpy") == memcpyGate);
     assert(!graph.resolve(executable, -2, "_missing"));
     assert(graph.strong(coreFoundation, "_CFRelease"));
+    assert(graph.resolve(executable, -2, "_CFArrayCreateMutable") ==
+           services.address("_CFArrayCreateMutable"));
+    const auto cfTypeCallbacks = graph.resolve(executable, -2, "_kCFTypeArrayCallBacks");
+    assert(cfTypeCallbacks && memory.read32(*cfTypeCallbacks) == 0);
+    assert(memory.read32(*cfTypeCallbacks + 4) == services.address("_CFArrayRetainValueCallBack"));
+    assert(memory.read32(*cfTypeCallbacks + 8) == services.address("_CFArrayReleaseValueCallBack"));
+    assert(memory.read32(*cfTypeCallbacks + 12) == 0);
+    assert(memory.read32(*cfTypeCallbacks + 16) == services.address("_CFArrayEqualValueCallBack"));
     assert(graph.resolve(executable, -2, "_malloc") == services.address("_malloc"));
     assert(graph.hasStrong("_CFRelease") && !graph.hasStrong("_missing"));
     const size_t objcImage = graph.index("/usr/lib/libobjc.A.dylib").value();
@@ -119,9 +139,20 @@ int main() {
          "/System/Library/Frameworks/CoreGraphics.framework/CoreGraphics",
          "/System/Library/Frameworks/QuartzCore.framework/QuartzCore",
          "/System/Library/Frameworks/UIKit.framework/UIKit",
-         "/System/Library/Frameworks/OpenGLES.framework/OpenGLES"});
+         "/System/Library/Frameworks/OpenGLES.framework/OpenGLES", "/usr/lib/libc++.1.dylib"});
     assert(graph.resolve(executable, 3, "_Znwm") == services.address("_Znwm"));
+    assert(graph.resolve(executable, 3, "__ZNSt8ios_base4InitC1Ev") ==
+           services.address("__ZNSt8ios_base4InitC1Ev"));
+    assert(graph.resolve(executable, 3, "__ZNSsC1EPKcRKSaIcE") ==
+           services.address("__ZNSsC1EPKcRKSaIcE"));
     assert(graph.resolve(executable, 4, "___divsi3") == services.address("___divsi3"));
+    assert(graph.resolve(executable, 4, "__Unwind_SjLj_Register") ==
+           services.address("__Unwind_SjLj_Register"));
+    assert(graph.resolve(
+               executable, 11,
+               "__ZNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEE6__initEPKcm") ==
+           services.address(
+               "__ZNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEE6__initEPKcm"));
     assert(!graph.resolve(executable, 3, "___divsi3"));
     assert(graph.resolve(executable, 6, "_CFRelease") == services.address("_CFRelease"));
     assert(graph.resolve(executable, 7, "_CGColorSpaceCreateDeviceRGB") ==
@@ -130,10 +161,73 @@ int main() {
     // objc_msgSend is a runtime gate, not a plain service symbol.
     assert(graph.resolve(executable, 2, "_objc_msgSend") == ObjC::GateBase);
     assert(graph.resolve(executable, 5, "_OBJC_CLASS_$_NSString").has_value());
+    const auto recursiveLockClass = graph.resolve(executable, 5, "_OBJC_CLASS_$_NSRecursiveLock");
+    assert(recursiveLockClass.has_value());
+    // Exercise the actual Objective-C allocation and lock selectors, not only their exports.
+    CpuState mainGuestThread;
+    services.adoptMainThread(mainGuestThread);
+    auto selectorAt = [&](uint32_t address, const char* selector) {
+        memory.write(address, selector, std::strlen(selector) + 1);
+        return address;
+    };
+    const uint32_t allocSelector = selectorAt(0x3500, "alloc");
+    const uint32_t initSelector = selectorAt(0x3510, "init");
+    const uint32_t lockSelector = selectorAt(0x3520, "lock");
+    const uint32_t tryLockSelector = selectorAt(0x3530, "tryLock");
+    const uint32_t unlockSelector = selectorAt(0x3540, "unlock");
+    const uint32_t releaseSelector = selectorAt(0x3550, "release");
+    CpuState recursiveLock = objcCall(services, *recursiveLockClass, allocSelector);
+    const uint32_t lockObject = recursiveLock.registers[0];
+    assert(lockObject != 0);
+    assert(objcCall(services, lockObject, initSelector).registers[0] == lockObject);
+    assert(objcCall(services, lockObject, lockSelector).registers[0] == 0);
+    assert(objcCall(services, lockObject, lockSelector).registers[0] == 0);
+    assert(objcCall(services, lockObject, tryLockSelector).registers[0] == 1);
+    assert(objcCall(services, lockObject, unlockSelector).registers[0] == 0);
+    assert(objcCall(services, lockObject, unlockSelector).registers[0] == 0);
+    assert(objcCall(services, lockObject, unlockSelector).registers[0] == 0);
+    assert(objcCall(services, lockObject, releaseSelector).registers[0] == lockObject);
+
+    // NSRecursiveLock delegates to this same cooperative mutex scheduler. Check recursive
+    // acquisition, contention, handoff on unlock, and rejection of a non-owner unlock.
+    Memory schedulerMemory;
+    std::vector<uint8_t> schedulerCode(Memory::PageSize, 0), schedulerData(Memory::PageSize, 0);
+    schedulerMemory.map({0x2000, Memory::PageSize, uint8_t(Read | Execute), "worker code"},
+                        schedulerCode.data(), schedulerCode.size());
+    schedulerMemory.map({0x3000, Memory::PageSize, uint8_t(Read | Write), "mutex storage"},
+                        schedulerData.data(), schedulerData.size());
+    Posix scheduler(schedulerMemory);
+    CpuState schedulerState;
+    scheduler.adoptMainThread(schedulerState);
+    constexpr uint32_t recursiveMutexAddress = 0x3000;
+    scheduler.initializeRecursiveMutex(recursiveMutexAddress);
+    assert(scheduler.lockMutex(recursiveMutexAddress) == 0);
+    assert(scheduler.lockMutex(recursiveMutexAddress) == 0);
+    assert(scheduler.tryLockMutex(recursiveMutexAddress) == 0);
+    assert(scheduler.unlockMutex(recursiveMutexAddress) == 0);
+    assert(scheduler.unlockMutex(recursiveMutexAddress) == 0);
+    assert(scheduler.unlockMutex(recursiveMutexAddress) == 0);
+    assert(scheduler.lockMutex(recursiveMutexAddress) == 0);
+    assert(scheduler.spawnThread(0x2000, 0) == 2);
+    assert(scheduler.switchThreads(schedulerState));
+    assert(scheduler.tryLockMutex(recursiveMutexAddress) == 16);  // Darwin EBUSY
+    assert(scheduler.lockMutex(recursiveMutexAddress) == 0);
+    assert(scheduler.wantsSwitch() && scheduler.runnableCount() == 1);
+    assert(scheduler.switchThreads(schedulerState));  // The contending worker blocks.
+    assert(scheduler.unlockMutex(recursiveMutexAddress) == 0);
+    assert(scheduler.wantsSwitch());
+    assert(scheduler.switchThreads(schedulerState));  // Unlock hands ownership to the worker.
+    assert(scheduler.unlockMutex(recursiveMutexAddress) == 0);
+    assert(scheduler.switchThreads(schedulerState));
+    assert(scheduler.unlockMutex(recursiveMutexAddress) == 1);  // Darwin EPERM
+    scheduler.destroyInternalMutex(recursiveMutexAddress);
+
     // Foundation's own C entry points bind through the Foundation image.
     assert(graph.resolve(executable, 5, "_NSLog"));
-    // ... and an unimplemented name in an existing framework is still unresolved, not faked.
-    assert(!graph.resolve(executable, 9, "_glGenTextures"));
+    assert(graph.resolve(executable, 10, "_glColorMask") == services.address("_glColorMask"));
+    assert(graph.resolve(executable, 10, "_glGenTextures") == services.address("_glGenTextures"));
+    // An unimplemented name in an existing framework remains unresolved, not faked.
+    assert(!graph.resolve(executable, 10, "_glReadPixels"));
     fault("EXPORT_IMAGE", [&] { graph.addImage("<executable>"); });
 
     ExportGraph deps;

@@ -121,6 +121,16 @@ class ObjC final {
     uint32_t makeHostBoolean(bool value);
     // Reads a string object or string literal; refused by name when it is neither.
     std::string stringValue(uint32_t object) { return stringOf(object); }
+    // CoreFoundation CFType-array callbacks are bridged to the same session-owned object
+    // table; constants/classes are immortal, while allocated objects use normal refcounts.
+    bool ownsObject(uint32_t object) const;
+    void retainObject(uint32_t object);
+    void releaseObject(uint32_t object);
+    bool equalObjects(uint32_t a, uint32_t b) const;
+    void setRecursiveLockHooks(std::function<uint32_t()> create, std::function<int(uint32_t)> lock,
+                               std::function<int(uint32_t)> tryLock,
+                               std::function<int(uint32_t)> unlock,
+                               std::function<void(uint32_t)> destroy);
     static constexpr uint32_t GateBase = 0x6f200000;
 
    private:
@@ -154,6 +164,7 @@ class ObjC final {
         uint32_t threadTarget = 0, threadArgument = 0;
         std::string threadSelector;
         bool threadStarted = false, threadCancelled = false, threadFinished = false;
+        uint32_t recursiveMutex = 0;  // NSRecursiveLock's cooperative pthread mutex address
     };
     Memory& memory;
     std::vector<std::string> entries;
@@ -231,6 +242,9 @@ class ObjC final {
     std::function<std::string(uint32_t)> trapName;
     std::function<size_t()> liveThreads;
     std::function<bool(uint32_t, const std::string&, uint32_t)> spawnThread;
+    std::function<uint32_t()> createRecursiveMutex;
+    std::function<int(uint32_t)> lockRecursiveMutex, tryLockRecursiveMutex, unlockRecursiveMutex;
+    std::function<void(uint32_t)> destroyRecursiveMutex;
     uint32_t currentThreadObject = 0;
     GLES* gles = nullptr;
     std::function<void(const std::string&)> logSink;
@@ -243,6 +257,7 @@ class ObjC final {
     std::function<void(uint32_t)> wakeEvent;
     std::function<void()> signalRunLoop;
     uint32_t makeString(const std::string& text);
+    void ensureRecursiveLock(Object& object);
     uint32_t makeArray(const std::vector<uint32_t>& elements);
     void emitLog(const std::string& text) const;
     bool bundleMessage(const std::string& method, CpuState& state);

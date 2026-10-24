@@ -16,8 +16,8 @@ class ExportGraph;
 // libgcc_s.1.dylib (the integer/64-bit helper routines the ARM backend emits).
 //
 // Every entry point either performs the operation for real or raises a named guest
-// failure. Nothing here reports success for work it did not do: exception unwinding,
-// for example, is refused with CXX_UNWIND because SjLj registration is not emulated.
+// failure. SjLj registration and the supported GCC-era exception path are emulated against
+// guest frame/LSDA data; unsupported encodings and Objective-C exceptions remain explicit.
 class CxxRuntime final {
    public:
     CxxRuntime(Memory& memory, GuestHeap& heap)
@@ -33,7 +33,11 @@ class CxxRuntime final {
     size_t iosInitCount() const { return iosInitReferences; }
     size_t runAtExit();
     bool isCxxSymbol(const std::string& symbol) const;
+    bool isLibcxxSymbol(const std::string& symbol) const;
     bool isCompilerHelper(const std::string& symbol) const;
+    // Every callable ABI entry this runtime handles. Services turns these into gates as well
+    // as assigning their two-level Mach-O library owners.
+    std::vector<std::string> symbols() const;
     // These are data exports, not call gates: an Itanium RTTI object stores the vtable
     // address point in its first word. The mapped page is only the ABI identity data this
     // runtime needs to distinguish __class_type_info, __si_class_type_info and

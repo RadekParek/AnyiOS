@@ -42,6 +42,31 @@ int main() {
     auto rebases = decodeDyld(rebase, sizeof(rebase), segments, true);
     rebases.apply(memory, 0x100, {});
     assert(memory.read32(0x1000) == 0x2100);
+    // __DATA_CONST can be read-only after launch while maxprot still permits the dyld
+    // loader to patch it. The guest never receives write permission after the fixup.
+    {
+        const std::vector<DyldSegment> constSegments = {
+            {0x2000, 4096, uint8_t(Read), uint8_t(Read | Write)}};
+        const auto constPlan = decodeDyld(rebase, sizeof(rebase), constSegments, true);
+        uint8_t initial[4] = {0x34, 0x12, 0, 0};
+        Memory constMemory;
+        constMemory.map({0x2000, 4096, uint8_t(Read), "__DATA_CONST", uint8_t(Read | Write)},
+                        initial, sizeof(initial));
+        assert(!constMemory.permits(0x2000, 4, Write));
+        assert(constMemory.permitsLoader(0x2000, 4, Write));
+        constPlan.apply(constMemory, 0x100, {});
+        assert(constMemory.read32(0x2000) == 0x1334);
+        assert(!constMemory.permits(0x2000, 4, Write));
+        const std::vector<DyldSegment> neverWritable = {
+            {0x2000, 4096, uint8_t(Read), uint8_t(Read)}};
+        try {
+            decodeDyld(rebase, sizeof(rebase), neverWritable, true);
+            assert(false);
+        } catch (const Error& e) {
+            assert(e.code == "DYLD_TARGET" &&
+                   std::string(e.what()).find("maximum protection") != std::string::npos);
+        }
+    }
     // A compact repeat opcode may describe more than 100,000 legitimate pointer slots.
     // Accept it up to the explicit one-million fixup bound without relaxing segment checks.
     auto appendUleb = [](std::vector<uint8_t>& stream, uint64_t value) {

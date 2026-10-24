@@ -135,6 +135,21 @@ Services::Services(Memory& m)
           "_CFDataCreate",
           "_CFDataGetBytePtr",
           "_CFDataGetLength",
+          "_CFArrayCreate",
+          "_CFArrayCreateMutable",
+          "_CFArrayCreateMutableCopy",
+          "_CFArrayCreateCopy",
+          "_CFArrayGetCount",
+          "_CFArrayGetValueAtIndex",
+          "_CFArrayGetValues",
+          "_CFArrayAppendValue",
+          "_CFArrayInsertValueAtIndex",
+          "_CFArraySetValueAtIndex",
+          "_CFArrayRemoveValueAtIndex",
+          "_CFArrayRemoveAllValues",
+          "_CFArrayRetainValueCallBack",
+          "_CFArrayReleaseValueCallBack",
+          "_CFArrayEqualValueCallBack",
           "_CFStringConvertEncodingToNSStringEncoding",
           "_CFAbsoluteTimeGetCurrent",
           "_CFRetain",
@@ -465,6 +480,7 @@ Services::Services(Memory& m)
           "_glClearColor",
           "_glClientActiveTexture",
           "_glColor4f",
+          "_glColorMask",
           "_glColorPointer",
           "_glCompressedTexImage2D",
           "_glDeleteBuffers",
@@ -505,6 +521,12 @@ Services::Services(Memory& m)
           "_glVertexPointer",
           "_glViewport",
       } {
+    // The C++ runtime's dispatcher already knows these ABI spellings. Register every one as
+    // an actual call gate too; classifying a symbol's library without exporting its gate left
+    // ios_base::Init and both string ABIs bound to the missing-import trap.
+    for (const std::string& symbol : cxx.symbols())
+        if (std::find(symbols.begin(), symbols.end(), symbol) == symbols.end())
+            symbols.push_back(symbol);
     // Two entries for one symbol would define it twice in the same image, which the export
     // graph refuses; catching it here names the symbol instead of failing the launch.
     {
@@ -547,6 +569,26 @@ Services::Services(Memory& m)
     posix.setExitGate(address("___podnative_thread_exit"));
     objc.setTrapName([this](uint32_t address) { return trapSymbol(address); });
     objc.setGraphics(&gles);
+    cf.setExternalObjectHooks(
+        [this](uint32_t value) { return objc.ownsObject(value); },
+        [this](uint32_t value) { objc.retainObject(value); },
+        [this](uint32_t value) { objc.releaseObject(value); },
+        [this](uint32_t left, uint32_t right) { return objc.equalObjects(left, right); });
+    objc.setRecursiveLockHooks(
+        [this] {
+            const uint32_t storage = libc.guestHeap().allocate(8, 8);
+            if (!storage)
+                throw Error("OBJC_LOCK", "guest heap cannot allocate NSRecursiveLock state");
+            posix.initializeRecursiveMutex(storage);
+            return storage;
+        },
+        [this](uint32_t mutex) { return posix.lockMutex(mutex); },
+        [this](uint32_t mutex) { return posix.tryLockMutex(mutex); },
+        [this](uint32_t mutex) { return posix.unlockMutex(mutex); },
+        [this](uint32_t mutex) {
+            posix.destroyInternalMutex(mutex);
+            libc.guestHeap().release(mutex);
+        });
     objc.installGates();
     uikit.installGates();
     uikit.setThreadHooks([this] { return posix.liveThreadCount(); },
@@ -584,6 +626,7 @@ const std::string& Services::libraryOf(const std::string& symbol) const {
     static const std::string openAL = "/System/Library/Frameworks/OpenAL.framework/OpenAL";
     static const std::string openGLES = "/System/Library/Frameworks/OpenGLES.framework/OpenGLES";
     static const std::string standard = "/usr/lib/libstdc++.6.dylib";
+    static const std::string libcxx = "/usr/lib/libc++.1.dylib";
     static const std::string helpers = "/usr/lib/libgcc_s.1.dylib";
     static const std::string objc = "/usr/lib/libobjc.A.dylib";
     static const std::string security = "/System/Library/Frameworks/Security.framework/Security";
@@ -602,6 +645,7 @@ const std::string& Services::libraryOf(const std::string& symbol) const {
     if (symbol.rfind("_gl", 0) == 0) return openGLES;
     if (symbol.rfind("_objc_", 0) == 0 || symbol == "___objc_personality_v0") return objc;
     if (symbol.rfind("_Sec", 0) == 0 || symbol.rfind("_kSec", 0) == 0) return security;
+    if (cxx.isLibcxxSymbol(symbol)) return libcxx;
     if (cxx.isCxxSymbol(symbol)) return standard;
     if (cxx.isCompilerHelper(symbol)) return helpers;
     if (symbol.rfind("_NS", 0) == 0) return foundation;
@@ -624,6 +668,17 @@ void Services::install(ExportGraph& graph, const std::vector<std::string>& depen
     auto audioToolbox = imageFor("/System/Library/Frameworks/AudioToolbox.framework/AudioToolbox");
     auto objcLibrary = imageFor("/usr/lib/libobjc.A.dylib");
     const size_t security = imageFor("/System/Library/Frameworks/Security.framework/Security");
+    // libc++ has its own two-level namespace owner. Accept both historic install-name aliases
+    // before registering the image's dependency list, so either ordinal reaches the same gates.
+    size_t libcxx;
+    if (auto existing = graph.index("/usr/lib/libc++.1.dylib"))
+        libcxx = *existing;
+    else if (auto existing = graph.index("/usr/lib/libc++.dylib"))
+        libcxx = *existing;
+    else
+        libcxx = graph.addImage("/usr/lib/libc++.1.dylib");
+    if (!graph.index("/usr/lib/libc++.1.dylib")) graph.alias(libcxx, "/usr/lib/libc++.1.dylib");
+    if (!graph.index("/usr/lib/libc++.dylib")) graph.alias(libcxx, "/usr/lib/libc++.dylib");
     // Every framework the image links against must exist in the graph, or its two-level
     // ordinals cannot resolve at all. Register them all, in the binary's own order.
     for (const auto& dependency : dependencies) imageFor(dependency);
@@ -770,6 +825,19 @@ void Services::install(ExportGraph& graph, const std::vector<std::string>& depen
     memory.write32(zeroCell, 0);
     if (!graph.strong(coreFoundation, "_kCFAllocatorDefault"))
         graph.define(coreFoundation, "_kCFAllocatorDefault", {zeroCell});
+    if (!cfTypeArrayCallbacks) {
+        cfTypeArrayCallbacks = libc.guestHeap().allocate(20, 4);
+        if (!cfTypeArrayCallbacks)
+            throw Error("HLE_ALLOC", "could not allocate kCFTypeArrayCallBacks");
+        memory.write32(cfTypeArrayCallbacks, 0);  // CFArrayCallBacks.version
+        memory.write32(cfTypeArrayCallbacks + 4, address("_CFArrayRetainValueCallBack"));
+        memory.write32(cfTypeArrayCallbacks + 8, address("_CFArrayReleaseValueCallBack"));
+        memory.write32(cfTypeArrayCallbacks + 12, 0);  // optional description callback
+        memory.write32(cfTypeArrayCallbacks + 16, address("_CFArrayEqualValueCallBack"));
+    }
+    cf.setTypeArrayCallbacksAddress(cfTypeArrayCallbacks);
+    if (!graph.strong(coreFoundation, "_kCFTypeArrayCallBacks"))
+        graph.define(coreFoundation, "_kCFTypeArrayCallBacks", {cfTypeArrayCallbacks});
     const uint32_t trueCell = libc.guestHeap().allocate(4, 4);
     const uint32_t falseCell = libc.guestHeap().allocate(4, 4);
     if (!trueCell || !falseCell) throw Error("HLE_ALLOC", "could not allocate CFBoolean cells");

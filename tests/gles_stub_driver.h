@@ -9,6 +9,8 @@ struct StubState {
     float clearColour[4];
     int viewportCalls;
     int viewport[4];
+    int colorMaskCalls;
+    uint8_t colorMask[4];
     int drawCalls;
     int drawMode, drawFirst, drawCount;
     int vertexComponents, vertexType, vertexStride;

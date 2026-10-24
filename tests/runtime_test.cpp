@@ -53,6 +53,89 @@ Bytes executable(bool thumb = false) {
     put(b, 0x104, 0xef000000);
     return b;
 }
+void appendUleb(Bytes& bytes, uint32_t value) {
+    do {
+        uint8_t byte = uint8_t(value & 0x7f);
+        value >>= 7;
+        if (value) byte |= 0x80;
+        bytes.push_back(byte);
+    } while (value);
+}
+Bytes combinedFixupBudgetFixture() {
+    // Both valid dyld streams stay below the per-stream limit; together they exceed the
+    // image-wide budget. Rebase and bind the same mapped slots so the test covers aggregate
+    // input work, not a malformed target or a target-count-only check.
+    constexpr uint32_t Count = 500001;
+    constexpr uint32_t RebaseOffset = 0x4f0000, BindOffset = 0x4f0100;
+    constexpr uint32_t FileBytes = 0x500000;
+    Bytes b = executable();
+    b.resize(FileBytes, 0);
+    put(b, 16, 3);
+    put(b, 20, 128);
+    put(b, 56, FileBytes);  // __TEXT vm size
+    put(b, 64, FileBytes);  // and file size
+    put(b, 68, 7);          // maxprot permits dyld writes
+    put(b, 72, 7);
+    put(b, 84, 0x80000022);  // LC_DYLD_INFO_ONLY
+    put(b, 88, 48);
+    for (size_t at = 92; at < 132; at += 4) put(b, at, 0);
+    Bytes rebase{0x20, 0x00, 0x80};  // segment 0, offset 0, rebase count with skip
+    appendUleb(rebase, Count);
+    rebase.push_back(0);  // skip zero bytes between pointer slots
+    rebase.push_back(0);  // DONE
+    Bytes bind{0x40};     // SET_SYMBOL_TRAILING_FLAGS_IMM, regular strong import
+    const std::string symbol = "_test";
+    bind.reserve(32);
+    for (char value : symbol) bind.push_back(uint8_t(value));
+    bind.push_back(0);
+    bind.push_back(0x70);  // segment 0, offset 0
+    bind.push_back(0);
+    bind.push_back(0xc0);  // bind count with skip
+    appendUleb(bind, Count);
+    bind.push_back(0);
+    bind.push_back(0);  // DONE
+    put(b, 92, RebaseOffset);
+    put(b, 96, uint32_t(rebase.size()));
+    put(b, 100, BindOffset);
+    put(b, 104, uint32_t(bind.size()));
+    std::copy(rebase.begin(), rebase.end(), b.begin() + RebaseOffset);
+    std::copy(bind.begin(), bind.end(), b.begin() + BindOffset);
+    put(b, 132, 0x80000028);  // LC_MAIN
+    put(b, 136, 24);
+    put(b, 140, 0x100);
+    put(b, 148, 0);
+    return b;
+}
+Bytes readOnlyFixupFixture(uint32_t maximumProtection = uint32_t(Read | Write)) {
+    Bytes b = executable();
+    b.resize(8192, 0);
+    put(b, 16, 4);
+    put(b, 20, 184);
+    // A final-read-only __DATA_CONST-like segment whose maxprot permits dyld's rebase.
+    put(b, 84, 1);
+    put(b, 88, 56);
+    std::memcpy(b.data() + 92, "__DATA_CONST", 12);
+    put(b, 108, 0x2000);
+    put(b, 112, 4096);
+    put(b, 116, 4096);
+    put(b, 120, 4096);
+    put(b, 124, maximumProtection);
+    put(b, 128, Read);
+    put(b, 132, 0);
+    put(b, 140, 0x80000022);  // LC_DYLD_INFO_ONLY
+    put(b, 144, 48);
+    for (size_t at = 148; at < 188; at += 4) put(b, at, 0);
+    const uint8_t rebase[] = {0x21, 0, 0x51, 0};  // segment 1, offset zero, rebase once
+    put(b, 148, 0x300);
+    put(b, 152, sizeof(rebase));
+    std::copy(rebase, rebase + sizeof(rebase), b.begin() + 0x300);
+    put(b, 188, 0x80000028);  // LC_MAIN
+    put(b, 192, 24);
+    put(b, 196, 0x100);
+    put(b, 204, 0);
+    put(b, 4096, 0x1234);
+    return b;
+}
 Bytes executableWithInitializer() {
     Bytes b = executable();
     // Grow the __TEXT segment command by one section and move LC_MAIN after it.
@@ -124,6 +207,16 @@ int main() {
     assert(image.memory->fetch32(0x1100) == 0xe3a0002a && !image.requiresDyld);
     assert(image.memory->read32(0x70000000) == 0);
     assert(!image.memory->permits(0x6ffff000, 4, Read));
+    b = readOnlyFixupFixture();
+    image = loadMachO(b.data(), b.size());
+    assert(image.dyld.fixups.size() == 1);
+    assert(!image.memory->permits(0x2000, 4, Write));
+    assert(image.memory->permitsLoader(0x2000, 4, Write));
+    image.dyld.apply(*image.memory, 0x100, {});
+    assert(image.memory->read32(0x2000) == 0x1334);
+    assert(!image.memory->permits(0x2000, 4, Write));
+    b = readOnlyFixupFixture(uint32_t(Read));
+    fault("DYLD_TARGET", [&] { loadMachO(b.data(), b.size()); });
     b = executableWithInitializer();
     image = loadMachO(b.data(), b.size());
     assert(image.initializerSections.size() == 1);
@@ -262,6 +355,8 @@ int main() {
         std::copy(stream.begin(), stream.end(), fixture.begin() + 0x300);
         return fixture;
     };
+    b = combinedFixupBudgetFixture();
+    fault("DYLD_LIMIT", [&] { loadMachO(b.data(), b.size()); });
     b = dynamic();
     image = loadMachO(b.data(), b.size());
     assert(image.requiresDyld);

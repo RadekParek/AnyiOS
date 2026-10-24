@@ -151,6 +151,34 @@ void Posix::wakeMutexWaiter(uint32_t address) {
         return;
     }
 }
+void Posix::initializeRecursiveMutex(uint32_t address) {
+    if (!address || !memory.permits(address, 8, Write))
+        throw Error("POSIX_MUTEX", "recursive mutex needs writable guest storage", address);
+    Mutex fresh;
+    fresh.type = MutexRecursive;
+    mutexes[address] = fresh;
+    memory.write32(address, 0);
+    memory.write32(address + 4, 0);
+}
+int Posix::unlockMutex(uint32_t address) {
+    Mutex& mutex = mutexAt(address);
+    if (!mutex.locked || mutex.owner != current) {
+        lockErrors++;
+        return kEperm;
+    }
+    if (--mutex.depth == 0) {
+        mutex.locked = false;
+        mutex.owner = 0;
+        wakeMutexWaiter(address);
+    }
+    return 0;
+}
+void Posix::destroyInternalMutex(uint32_t address) {
+    Mutex& mutex = mutexAt(address);
+    if (mutex.locked)
+        throw Error("POSIX_MUTEX", "cannot destroy a locked recursive mutex", address);
+    mutex.destroyed = true;
+}
 void Posix::retireThread(uint32_t result) {
     Thread& thread = currentThread();
     thread.exited = true;
@@ -389,26 +417,15 @@ bool Posix::invoke(const std::string& symbol, CpuState& cpu) {
         return true;
     }
     if (symbol == "_pthread_mutex_lock") {
-        r[0] = uint32_t(acquire(r[0], true));
+        r[0] = uint32_t(lockMutex(r[0]));
         return true;
     }
     if (symbol == "_pthread_mutex_trylock") {
-        r[0] = uint32_t(acquire(r[0], false));
+        r[0] = uint32_t(tryLockMutex(r[0]));
         return true;
     }
     if (symbol == "_pthread_mutex_unlock") {
-        Mutex& mutex = mutexAt(r[0]);
-        if (!mutex.locked || mutex.owner != current) {
-            lockErrors++;
-            r[0] = uint32_t(kEperm);
-            return true;
-        }
-        if (--mutex.depth == 0) {
-            mutex.locked = false;
-            mutex.owner = 0;
-            wakeMutexWaiter(r[0]);
-        }
-        r[0] = 0;
+        r[0] = uint32_t(unlockMutex(r[0]));
         return true;
     }
     if (symbol == "_pthread_mutexattr_init") {

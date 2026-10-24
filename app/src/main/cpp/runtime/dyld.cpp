@@ -2,16 +2,13 @@
 
 #include <cstdio>
 #include <limits>
-#include <set>
 #include <sstream>
+#include <unordered_map>
+#include <unordered_set>
 
 #include "error.h"
 namespace podnative::runtime {
 namespace {
-// Pointer fixups are compact (often one repeat opcode for a whole data segment), so a
-// 100,000-entry ceiling rejected otherwise valid older game images. Keep a strict one-million
-// total cap; stream size, segment bounds, opcode-work and loader budgets remain independent.
-constexpr size_t MaxFixups = 1000000;
 struct Stream {
     const uint8_t* b;
     size_t n, p = 0;
@@ -74,12 +71,26 @@ DyldPlan decodeDyld(const uint8_t* bytes, size_t size, const std::vector<DyldSeg
             throw Error("DYLD_TYPE_UNSUPPORTED", "only ARM32 pointer fixups are implemented");
         if (segment >= segments.size())
             throw Error("DYLD_SEGMENT", "fixup emitted before a segment was selected");
-        if (offset > segments[segment].size || segments[segment].size - offset < 4 ||
-            uint64_t(segments[segment].address) + offset + 4 > 0x100000000ULL ||
-            !(segments[segment].permissions & Write) || offset % 4)
-            throw Error("DYLD_TARGET", "invalid, unaligned or non-writable fixup target");
+        const DyldSegment& targetSegment = segments[segment];
+        const uint64_t targetAddress = uint64_t(targetSegment.address) + offset;
+        std::string invalidTarget;
+        if (offset > targetSegment.size || targetSegment.size - offset < 4 ||
+            targetAddress + 4 > 0x100000000ULL)
+            invalidTarget = "outside the selected segment";
+        else if (offset % 4)
+            invalidTarget = "not 4-byte aligned";
+        else if (!((targetSegment.maxPermissions ? targetSegment.maxPermissions
+                                                 : targetSegment.permissions) &
+                   Write))
+            invalidTarget = "the segment maximum protection forbids dyld writes";
+        if (!invalidTarget.empty()) {
+            std::ostringstream detail;
+            detail << "fixup target 0x" << std::hex << targetAddress << " in segment " << std::dec
+                   << segment << " is " << invalidTarget;
+            throw Error("DYLD_TARGET", detail.str(), uint32_t(targetAddress));
+        }
         if (!rebasing && symbol.empty()) throw Error("DYLD_SYMBOL", "binding has no symbol");
-        if (plan.fixups.size() >= MaxFixups) throw Error("DYLD_LIMIT", "too many fixups");
+        if (plan.fixups.size() >= DyldFixupBudget) throw Error("DYLD_LIMIT", "too many fixups");
         if (symbol.size() > 8 * 1024 * 1024 - nameBytes)
             throw Error("DYLD_LIMIT", "symbol allocation budget exceeded");
         nameBytes += symbol.size();
@@ -124,7 +135,7 @@ DyldPlan decodeDyld(const uint8_t* bytes, size_t size, const std::vector<DyldSeg
                 case 0x50:
                 case 0x60: {
                     uint64_t count = op == 0x50 ? imm : s.leb();
-                    if (count > MaxFixups - plan.fixups.size())
+                    if (count > DyldFixupBudget - plan.fixups.size())
                         throw Error("DYLD_LIMIT", "rebase repeat count");
                     for (uint64_t i = 0; i < count; i++) {
                         emit();
@@ -141,7 +152,7 @@ DyldPlan decodeDyld(const uint8_t* bytes, size_t size, const std::vector<DyldSeg
                 }
                 case 0x80: {
                     auto count = s.leb(), skip = s.leb();
-                    if (count > MaxFixups - plan.fixups.size())
+                    if (count > DyldFixupBudget - plan.fixups.size())
                         throw Error("DYLD_LIMIT", "rebase repeat count");
                     for (uint64_t i = 0; i < count; i++) {
                         emit();
@@ -213,7 +224,7 @@ DyldPlan decodeDyld(const uint8_t* bytes, size_t size, const std::vector<DyldSeg
                     break;
                 case 0xc0: {
                     auto count = s.leb(), skip = s.leb();
-                    if (count > MaxFixups - plan.fixups.size())
+                    if (count > DyldFixupBudget - plan.fixups.size())
                         throw Error("DYLD_LIMIT", "binding repeat count");
                     for (uint64_t i = 0; i < count; i++) {
                         emit();
@@ -240,10 +251,12 @@ void DyldPlan::apply(
         throw Error("DYLD_COALESCING_UNIMPLEMENTED",
                     "weak-definition coalescing requires a dependency/export graph");
     std::vector<std::pair<uint32_t, uint32_t>> writes;
-    std::set<uint32_t> used;
+    writes.reserve(fixups.size());
+    std::unordered_set<uint32_t> used;
+    used.reserve(fixups.size());
     for (const auto& f : fixups) {
-        if (!used.insert(f.address).second || !memory.permits(f.address, 4, Write))
-            throw Error("DYLD_TARGET", "duplicate or inaccessible target", f.address);
+        if (!used.insert(f.address).second || !memory.permitsLoader(f.address, 4, Write))
+            throw Error("DYLD_TARGET", "duplicate or maxprot-nonwritable target", f.address);
         int64_t value;
         if (f.rebase)
             value = int64_t(memory.read32(f.address)) + slide;
@@ -258,7 +271,7 @@ void DyldPlan::apply(
         if (value < 0 || value > UINT32_MAX) throw Error("DYLD_VALUE", "pointer value overflow");
         writes.emplace_back(f.address, uint32_t(value));
     }
-    for (auto [address, value] : writes) memory.write32(address, value);
+    memory.loaderWrite32s(writes);
 }
 void DyldPlan::applyWithGraph(Memory& memory, uint32_t slide, const ExportGraph& graph,
                               size_t requester,
@@ -268,7 +281,8 @@ void DyldPlan::applyWithGraph(Memory& memory, uint32_t slide, const ExportGraph&
             throw Error("DYLD_WEAK_DEFINITION",
                         "strong declaration has no registered strong definition");
     DyldPlan normalized;
-    std::map<uint32_t, size_t> targets;
+    std::unordered_map<uint32_t, size_t> targets;
+    targets.reserve(fixups.size());
     for (const auto& fixup : fixups) {
         auto old = targets.find(fixup.address);
         if (old == targets.end()) {

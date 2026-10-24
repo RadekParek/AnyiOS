@@ -54,6 +54,13 @@ class Posix final {
     // Sleeps the running guest thread until its deadline. Another guest thread runs in the
     // meantime, and the host is idle rather than spinning when nothing else can run.
     void sleepFor(double seconds);
+    // NSRecursiveLock uses this same cooperative mutex table, so a contending guest thread
+    // blocks and is resumed by the scheduler instead of spinning or being falsely admitted.
+    void initializeRecursiveMutex(uint32_t address);
+    int lockMutex(uint32_t address) { return acquire(address, true); }
+    int tryLockMutex(uint32_t address) { return acquire(address, false); }
+    int unlockMutex(uint32_t address);
+    void destroyInternalMutex(uint32_t address);
     // The gate a created thread returns into; a thread routine that returns ends here.
     void setExitGate(uint32_t address) { exitGate = address; }
     // Guest-visible lines (a sleep that had to be capped, for instance) go through the same

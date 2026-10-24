@@ -15,7 +15,8 @@ struct GuestRun {
     uint32_t pc = 0;
     // Name of the guest function the PC landed in, when the image still carries symbols.
     std::string pcSymbol;
-    std::string stop = "NOT_STARTED";  // EXITED, BUDGET, CANCELLED, FAULT, UNIMPLEMENTED, TRAPPED
+    std::string stop =
+        "NOT_STARTED";  // EXITED, RETURNED, BUDGET, CANCELLED, FAULT, UNIMPLEMENTED, TRAPPED
     std::string detail;
     size_t serviceCalls = 0;
     size_t trappedImports = 0;

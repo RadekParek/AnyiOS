@@ -15,6 +15,10 @@ struct Region {
     uint32_t size;
     uint8_t permissions;
     std::string label;
+    // Mach-O maxprot may allow dyld to write a pointer during loading even when initprot
+    // leaves __DATA_CONST read-only at runtime. Zero means "same as permissions" for ordinary
+    // mappings; it never grants extra guest access.
+    uint8_t maxPermissions = 0;
 };
 // A closed-open guest address range.
 struct Range {
@@ -55,11 +59,13 @@ class Memory final {
     void read(uint32_t address, void* destination, size_t size) const;
     void write(uint32_t address, const void* source, size_t size);
     // Loader-only mutation that does not require guest write permission: used to rewrite
-    // an image's symbol stubs inside its executable segment before the guest starts. The
-    // range must still be mapped and readable, so a bad pointer faults instead of
-    // corrupting host memory.
+    // an image's symbol stubs or dyld fixups before the guest starts. `patch` requires a
+    // readable mapping; `loaderWrite32` additionally requires maxprot to permit writes.
     void patch(uint32_t address, const void* source, size_t size);
     void patch32(uint32_t address, uint32_t value);
+    void loaderWrite32(uint32_t address, uint32_t value);
+    void loaderWrite32s(const std::vector<std::pair<uint32_t, uint32_t>>& writes);
+    bool permitsLoader(uint32_t address, size_t size, uint8_t permission) const;
     uint32_t read32(uint32_t address) const;
     void write32(uint32_t address, uint32_t value);
     uint32_t fetch32(uint32_t address) const;
@@ -122,6 +128,7 @@ class Memory final {
     const Storage& at(uint32_t address, uint8_t permission) const;
     void validate(uint32_t address, size_t size, uint8_t permission) const;
     void copyOut(uint32_t address, void* destination, size_t size, uint8_t permission) const;
+    void patchMapped(uint32_t address, const void* source, size_t size);
     // Host pointer for a validated address inside one region.
     uint8_t* hostAt(const Storage& storage, uint32_t address) const;
     void noteCodeEdit(uint32_t address, size_t size);
