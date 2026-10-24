@@ -4,6 +4,7 @@
 #include <cmath>
 #include <cstring>
 #include <iostream>
+#include <vector>
 
 #include "runtime/abi.h"
 #include "runtime/error.h"
@@ -49,11 +50,26 @@ struct Call {
     }
 };
 bool near(float a, float b) { return std::fabs(a - b) < 1e-4f; }
+std::vector<char> readMemory(Memory& memory, uint32_t address, size_t size) {
+    std::vector<char> bytes(size);
+    memory.read(address, bytes.data(), size);
+    return bytes;
+}
 }  // namespace
 int main() {
     Memory memory;
     memory.map({0x8000, Memory::PageSize, Read | Write, "cg scratch"});
+    memory.map({0x9000, 65536, Read | Write, "cg bitmap data"});
     CoreGraphics cg;
+    uint32_t nextBitmapAllocation = 0x10000;
+    std::vector<uint32_t> releasedBitmapAllocations;
+    cg.setHeapHooks(
+        [&](uint32_t bytes, uint32_t alignment) {
+            const uint32_t address = (nextBitmapAllocation + alignment - 1) & ~(alignment - 1);
+            nextBitmapAllocation = address + ((bytes + Memory::PageSize - 1) & ~(Memory::PageSize - 1));
+            return address;
+        },
+        [&](uint32_t address) { releasedBitmapAllocations.push_back(address); });
     Call call(memory, cg);
 
     // CGRect is four words and travels in r0-r3 in both directions.
@@ -239,6 +255,111 @@ int main() {
     call.invoke("_CGColorSpaceCreateDeviceGray");
     const uint32_t gray = call.state.registers[0];
     assert(rgb && gray && rgb != gray && cg.liveColorSpaces() == 2);
+
+    // Bitmap contexts hold a colour-space reference, modify only validated guest memory,
+    // and snapshot images with independent pixel storage and lifetimes.
+    {
+        uint8_t original[] = {1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12,
+                              13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24};
+        memory.write(0x9000, original, sizeof(original));
+        call.state = {};
+        call.state.registers[13] = Stack;
+        call.word(0, 0x9000);  // caller-owned data
+        call.word(1, 3);        // width
+        call.word(2, 2);        // height
+        call.word(3, 8);        // bits per component
+        call.stackWord(0, 12);  // bytes per row
+        call.stackWord(1, rgb);
+        call.stackWord(2, 1);   // premultiplied-last RGBA
+        call.invoke("_CGBitmapContextCreate");
+        const uint32_t context = call.state.registers[0];
+        assert(context && cg.liveBitmapContexts() == 1);
+
+        call.state = {};
+        call.state.registers[13] = Stack;
+        call.word(0, context);
+        call.f32(1, 0);
+        call.f32(2, 0);
+        call.f32(3, 1);
+        call.stackFloat(0, 1);
+        call.invoke("_CGContextClearRect");
+        const uint8_t cleared[4] = {0, 0, 0, 0};
+        assert(std::memcmp(readMemory(memory, 0x9000, 4).data(), cleared, 4) == 0);
+        assert(readMemory(memory, 0x9000 + 4, 1)[0] == 5);
+
+        call.state = {};
+        call.word(0, context);
+        call.invoke("_CGBitmapContextCreateImage");
+        const uint32_t image = call.state.registers[0];
+        assert(image && cg.liveImages() == 1);
+        call.state = {};
+        call.word(0, image);
+        call.invoke("_CGImageGetWidth");
+        assert(call.state.registers[0] == 3);
+        call.state = {};
+        call.word(0, image);
+        call.invoke("_CGImageGetHeight");
+        assert(call.state.registers[0] == 2);
+
+        std::vector<char> snapshot = readMemory(memory, 0x9000, sizeof(original));
+        std::memset(original, 0xee, sizeof(original));
+        memory.write(0x9000, original, sizeof(original));
+        call.state = {};
+        call.state.registers[13] = Stack;
+        call.word(0, context);
+        call.f32(1, 0);
+        call.f32(2, 0);
+        call.f32(3, 3);
+        call.stackFloat(0, 2);
+        call.stackWord(1, image);
+        call.invoke("_CGContextDrawImage");
+        assert(std::memcmp(readMemory(memory, 0x9000, snapshot.size()).data(), snapshot.data(),
+                           snapshot.size()) == 0);
+
+        call.state = {};
+        call.word(0, image);
+        call.invoke("_CGImageRetain");
+        assert(call.state.registers[0] == 2);
+        call.state = {};
+        call.word(0, context);
+        call.invoke("_CGContextRetain");
+        assert(call.state.registers[0] == 2);
+        call.state = {};
+        call.word(0, image);
+        call.invoke("_CGImageRelease");
+        call.invoke("_CGImageRelease");
+        call.state = {};
+        call.word(0, context);
+        call.invoke("_CGContextRelease");
+        call.invoke("_CGContextRelease");
+        assert(cg.liveImages() == 0 && cg.liveBitmapContexts() == 0);
+        assert(cg.liveColorSpaces() == 2);  // context and image released their retained refs
+    }
+
+    // A null data pointer asks CoreGraphics to own zero-initialized guest-heap storage.
+    {
+        call.state = {};
+        call.state.registers[13] = Stack;
+        call.word(0, 0);
+        call.word(1, 2);
+        call.word(2, 2);
+        call.word(3, 8);
+        call.stackWord(0, 0);  // compute the tightly packed gray stride
+        call.stackWord(1, gray);
+        call.stackWord(2, 0);
+        call.invoke("_CGBitmapContextCreate");
+        const uint32_t context = call.state.registers[0];
+        assert(context && cg.liveBitmapContexts() == 1);
+        // The fake guest allocator hands this context 0x10000; it starts cleared.
+        const uint8_t zeros[4] = {};
+        assert(std::memcmp(readMemory(memory, 0x10000, sizeof(zeros)).data(), zeros, sizeof(zeros)) == 0);
+        call.state = {};
+        call.word(0, context);
+        call.invoke("_CGContextRelease");
+        assert(cg.liveBitmapContexts() == 0 && releasedBitmapAllocations.size() == 1 &&
+               releasedBitmapAllocations[0] == 0x10000);
+    }
+
     call.state = {};
     call.word(0, rgb);
     call.invoke("_CGColorSpaceRetain");
@@ -261,7 +382,7 @@ int main() {
     // Unknown entry points report "not mine" so dispatch can keep looking.
     CpuState unknown;
     unknown.registers[13] = Stack;
-    assert(!cg.invoke("_CGBitmapContextCreate", unknown, memory));
+    assert(!cg.invoke("_CGCreateUnmodeledImageType", unknown, memory));
 
     // CATransform3D is sixteen floats returned through a hidden pointer.
     {

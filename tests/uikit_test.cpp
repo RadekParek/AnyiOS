@@ -62,7 +62,10 @@ int main() {
     objc.installGates();
     UIKit uikit(memory);
     uikit.installGates();
-    std::vector<std::string> log;
+    std::vector<std::string> log, mainLoopParks;
+    size_t liveThreads = 1;
+    uikit.setThreadHooks([&] { return liveThreads; },
+                         [&] { mainLoopParks.push_back("park"); });
     uikit.setLogSink([&](const std::string& line) { log.push_back(line); });
     // The lifecycle gate is a labelled address inside its page, not the page base. A trap
     // written at offset zero of the page is invisible to a guest that returns to
@@ -114,13 +117,15 @@ int main() {
     state.registers[15] = UIKit::LifecycleGate;
     assert(uikit.atLifecycleGate(state.registers[15]));
     uikit.resume(state, objc);
-    // UIApplicationMain returns to its caller with the Thumb bit re-applied from the
-    // original return address.
-    assert(state.registers[15] == 0x300ffe);
+    // UIApplicationMain stays inside its main run loop even when the runtime has no input
+    // source to dispatch; returning would make an otherwise-live app fall through to exit.
+    assert(state.registers[15] == UIKit::LifecycleGate);
     assert((state.cpsr & 0x20) != 0);
+    assert(mainLoopParks.size() == 1);
     const std::string report = uikit.describe();
     assert(report.find("GameAppDelegate") != std::string::npos);
-    assert(report.find("no implemented sources") != std::string::npos);
+    assert(report.find("waiting in the main run loop") != std::string::npos);
+    assert(report.find("No event source") != std::string::npos);
     assert(report.find("UIKIT_EVENTS: last") != std::string::npos);
     assert(report.find("repeat UIKIT_STATE") != std::string::npos);
     assert(!log.empty());
@@ -134,8 +139,8 @@ int main() {
         UIKit bootstrap(loop);
         bootstrap.installGates();
         std::vector<std::string> parked;
-        size_t runnable = 2;
-        bootstrap.setThreadHooks([&] { return runnable; }, [&] { parked.push_back("park"); });
+        size_t live = 2;
+        bootstrap.setThreadHooks([&] { return live; }, [&] { parked.push_back("park"); });
         threaded.setLogSink([](const std::string&) {});
         std::vector<uint8_t> metas(4096, 0), text(4096, 0), lits(4096, 0);
         loop.map({0x300000, 4096, uint8_t(Read | Write), "classes"}, metas.data(), metas.size());
@@ -160,11 +165,13 @@ int main() {
         // bootstrap never claims that UIApplicationMain returned while the app runs.
         assert(state.registers[15] == UIKit::LifecycleGate);
         assert(bootstrap.describe().find("keeps running") != std::string::npos);
-        // With no other runnable thread the old contract holds: the bootstrap returns.
-        runnable = 1;
+        // With only the main thread alive, UIKit still waits instead of returning to _exit.
+        live = 1;
         state.registers[15] = UIKit::LifecycleGate;
         bootstrap.resume(state, threaded);
-        assert(state.registers[15] == 0x300ffe);
+        assert(parked.size() == 2);
+        assert(state.registers[15] == UIKit::LifecycleGate);
+        assert(bootstrap.describe().find("No event source") != std::string::npos);
     }
     // A delegate that implements neither launch selector is a named failure, not a silent
     // "started".

@@ -10,8 +10,6 @@
 #include "memory.h"
 
 namespace podnative::runtime {
-// Guest console output: logcat on device, stdout on the host harness.
-void guestLog(const std::string& text);
 // Genuine C runtime subset for guest apps. Every buffer access goes through Memory, so
 // a bogus pointer faults instead of touching host memory. Unimplemented names return false.
 class Libc final {

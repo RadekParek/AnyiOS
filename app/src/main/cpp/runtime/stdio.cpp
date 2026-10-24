@@ -421,7 +421,7 @@ uint32_t Stdio::openStream(uint32_t pathAddress, uint32_t modeAddress) {
     const bool truncate = !mode.empty() && mode.front() == 'w';
     const std::string host = files.resolve(path, write, reason, truncate);
     if (host.empty()) {
-        emit("fopen(\"" + path + "\") refused: " + reason);
+        emit("fopen(\"" + path + "\", \"" + mode + "\") refused: " + reason);
         return 0;
     }
     std::string hostMode;
@@ -430,7 +430,7 @@ uint32_t Stdio::openStream(uint32_t pathAddress, uint32_t modeAddress) {
     hostMode += 'b';
     std::FILE* file = std::fopen(host.c_str(), hostMode.c_str());
     if (!file) {
-        emit("fopen(\"" + path + "\") failed: " + std::strerror(errno));
+        emit("fopen(\"" + path + "\", \"" + mode + "\") failed: " + std::strerror(errno));
         return 0;
     }
     if (verbose) emit("stdio: fopen(\"" + path + "\", \"" + mode + "\") -> " + host);
@@ -518,8 +518,16 @@ bool Stdio::invoke(const std::string& name, CpuState& cpu) {
             items = size ? uint32_t(got / size) : 0;
         } else {
             if (bytes) memory.read(buffer, data.data(), bytes);
-            const size_t put = bytes ? std::fwrite(data.data(), 1, bytes, entry->file) : 0;
-            items = size ? uint32_t(put / size) : 0;
+            if (entry->standard) {
+                // Guest stdout/stderr belongs to the emulated process. Writing through the
+                // host FILE* leaks arbitrary guest bytes into the launcher protocol instead
+                // of the captured guest log.
+                if (bytes) emit(std::string(data.begin(), data.end()));
+                items = size ? count : 0;
+            } else {
+                const size_t put = bytes ? std::fwrite(data.data(), 1, bytes, entry->file) : 0;
+                items = size ? uint32_t(put / size) : 0;
+            }
         }
         r[0] = items;
         return true;

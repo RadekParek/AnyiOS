@@ -11,15 +11,17 @@ trap 'rm -f "$PLAN"' EXIT
 plan() { printf 'c++ %s\n' "$*" >> "$PLAN"; }
 plan "${FLAGS[*]}" tests/macho_test.cpp app/src/main/cpp/macho.cpp -o .local/tests/macho-test
 plan "${FLAGS[*]}" tests/runtime_test.cpp app/src/main/cpp/macho.cpp \
-  app/src/main/cpp/runtime/{memory,loader,launch,dyld,exports,services,frameworks,coregraphics,libc,cxx,fs,stdio,audio,posix,openal,format,heap,objc,uikit,gles,pvrtc}.cpp \
+  app/src/main/cpp/runtime/{memory,loader,launch,dyld,exports,services,frameworks,coregraphics,systemconfiguration,commoncrypto,libc,cxx,fs,stdio,audio,posix,openal,format,heap,objc,uikit,gles,pvrtc}.cpp \
   third_party/pvrtc/PVRTDecompress.cpp -lz -o .local/tests/runtime-test
 plan "${FLAGS[*]}" tests/imports_test.cpp app/src/main/cpp/{macho,macho_info}.cpp -o .local/tests/imports-test
+plan "${FLAGS[*]}" tests/commoncrypto_test.cpp app/src/main/cpp/runtime/{memory,commoncrypto}.cpp -o .local/tests/commoncrypto-test
+plan "${FLAGS[*]}" tests/systemconfiguration_test.cpp app/src/main/cpp/runtime/{memory,systemconfiguration,frameworks}.cpp -o .local/tests/systemconfiguration-test
 plan "${FLAGS[*]}" tests/fat_test.cpp app/src/main/cpp/macho_container.cpp -o .local/tests/fat-test
 plan "${FLAGS[*]}" tests/frameworks_test.cpp app/src/main/cpp/runtime/{memory,frameworks}.cpp -o .local/tests/frameworks-test
 plan "${FLAGS[*]}" tests/coregraphics_test.cpp app/src/main/cpp/runtime/{memory,frameworks,coregraphics}.cpp -o .local/tests/coregraphics-test
 plan "${FLAGS[*]}" tests/dyld_test.cpp app/src/main/cpp/runtime/{memory,dyld,exports}.cpp -o .local/tests/dyld-test
 plan "${FLAGS[*]}" tests/exports_test.cpp \
-  app/src/main/cpp/runtime/{memory,exports,services,frameworks,coregraphics,dyld,libc,cxx,fs,stdio,audio,posix,openal,format,heap,objc,uikit,gles,pvrtc}.cpp \
+  app/src/main/cpp/runtime/{memory,exports,services,frameworks,coregraphics,systemconfiguration,commoncrypto,dyld,libc,cxx,fs,stdio,audio,posix,openal,format,heap,objc,uikit,gles,pvrtc}.cpp \
   third_party/pvrtc/PVRTDecompress.cpp -lz -o .local/tests/exports-test
 plan "${FLAGS[*]}" tests/objc_test.cpp app/src/main/cpp/runtime/{memory,objc,exports,format,libc,heap,gles,pvrtc}.cpp third_party/pvrtc/PVRTDecompress.cpp -o .local/tests/objc-test
 plan "${FLAGS[*]}" tests/libc_test.cpp app/src/main/cpp/runtime/{memory,libc,format,heap}.cpp -o .local/tests/libc-test
@@ -40,7 +42,7 @@ plan "${FLAGS[*]} -Itests" tests/gles_es2_stub_driver.cpp -shared -fPIC -o .loca
 plan "${FLAGS[*]} -Itests" tests/gles_emulation_test.cpp app/src/main/cpp/runtime/{memory,heap,gles,pvrtc}.cpp third_party/pvrtc/PVRTDecompress.cpp -o .local/tests/gles-emulation-test
 plan "${FLAGS[*]}" tests/audio_test.cpp app/src/main/cpp/runtime/{memory,audio,openal,format,libc,heap}.cpp -o .local/tests/audio-test
 plan "${FLAGS[*]}" tests/fs_test.cpp app/src/main/cpp/runtime/{memory,fs,stdio,audio,libc,format,heap}.cpp -lz -o .local/tests/fs-test
-xargs -a "$PLAN" -d '\n' -P "$JOBS" -n 1 -I {} bash -c '{}'
+xargs -a "$PLAN" -d '\n' -P "$JOBS" -I {} bash -c '{}'
 # Development tools are compiled here too, so they cannot rot: the guest runner is the
 # entry point the compatibility work is measured with, and the host GL harness is a
 # diagnostic double that must keep matching the bridge's expectations.
@@ -50,9 +52,9 @@ c++ -std=c++20 -Wall -Wextra -Werror -Iapp/src/main/cpp -fsyntax-only tools/host
 # Host-visible units must also survive the Xcode/NDK warning set used for the app.
 # cpu.cpp is excluded: it needs the pinned Dynarmic headers, which the PC suite owns.
 find app/src/main/cpp/runtime -maxdepth 1 -name '*.cpp' ! -name 'cpu.cpp' -print0 |
-  xargs -0 -P "$JOBS" -n 1 -I {} c++ -std=c++20 -Wall -Wextra -Werror -DPODNATIVE_CPU_IN_APP=1 \
+  xargs -0 -P "$JOBS" -I {} c++ -std=c++20 -Wall -Wextra -Werror -DPODNATIVE_CPU_IN_APP=1 \
     -Iapp/src/main/cpp -Ithird_party/pvrtc -fsyntax-only {}
-for test in macho runtime imports fat frameworks coregraphics dyld exports libc cxx audio fs objc uikit gles pvrtc; do
+for test in macho runtime imports commoncrypto systemconfiguration fat frameworks coregraphics dyld exports libc cxx audio fs objc uikit gles pvrtc; do
   if [[ "$test" == objc ]]; then
     LD_LIBRARY_PATH=".local/tests${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" \
       .local/tests/objc-test

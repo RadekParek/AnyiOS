@@ -2,6 +2,8 @@
 
 #include <algorithm>
 #include <chrono>
+#include <iomanip>
+#include <sstream>
 #include <string>
 #include <thread>
 
@@ -341,6 +343,13 @@ size_t Posix::runnableCount() const {
         if (!entry.second.exited && !entry.second.blocked) count++;
     return count;
 }
+bool Posix::mainRunLoopWaiting() const {
+    for (const auto& entry : threads) {
+        const Thread& thread = entry.second;
+        if (thread.main && !thread.exited && thread.inRunLoop && thread.blocked) return true;
+    }
+    return false;
+}
 void Posix::writeSchedParam(uint32_t address, int policy) {
     (void)policy;
     if (address && memory.permits(address, 4, Write))
@@ -627,7 +636,9 @@ std::string Posix::describe() const {
         if (thread.joining) text += ": joining thread " + std::to_string(thread.joining);
         if (thread.hasWakeAt) text += ": sleeping until a deadline";
         if (!thread.blocked) text += ": runnable";
-        text += ", pc=0x" + std::to_string(thread.state.registers[15]);
+        std::ostringstream programCounter;
+        programCounter << std::hex << std::nouppercase << thread.state.registers[15];
+        text += ", pc=0x" + programCounter.str();
     }
     return text;
 }

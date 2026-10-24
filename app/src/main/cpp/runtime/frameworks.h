@@ -40,6 +40,10 @@ class CoreFoundation final {
    public:
     bool invoke(const std::string& symbol, CpuState& cpu, Memory& memory);
     size_t liveObjects() const { return objects.size(); }
+    bool isRunLoopObject(uint32_t handle) const {
+        const auto found = objects.find(handle);
+        return found != objects.end() && found->second.isRunLoop;
+    }
     // Guest sandbox roots that CFBundle/CFURL report. Empty until the launcher mounts.
     void setPaths(std::string bundle, std::string documents) {
         bundlePath = std::move(bundle);
@@ -66,7 +70,7 @@ class CoreFoundation final {
         size_t payloadBytes = 0, capacity = 0;
         uint32_t callbackAddress = 0;
         bool mutableBits = false, isArray = false, isData = false, isBitVector = false;
-        bool retainsValues = false, isPath = false;
+        bool retainsValues = false, isPath = false, isRunLoop = false;
         // CFURL/CFBundle carry a guest path plus a kind tag; bit vectors leave both empty.
         std::string path;
         uint32_t kind = 0;
@@ -75,7 +79,7 @@ class CoreFoundation final {
     uint32_t next = 0xe0000000;
     uint32_t nextDataAddress = 0xe1000000;
     size_t allocated = 0;
-    uint32_t bundle = 0, typeArrayCallbacksAddress = 0;
+    uint32_t bundle = 0, typeArrayCallbacksAddress = 0, currentRunLoop = 0;
     std::string bundlePath = "/var/mobile", documentsPath = "/var/mobile/Documents";
     std::function<bool(uint32_t)> ownsExternalObject;
     std::function<void(uint32_t)> retainExternalObject, releaseExternalObject;
@@ -89,5 +93,6 @@ class CoreFoundation final {
     void releaseHandle(uint32_t handle);
     bool equalValue(uint32_t a, uint32_t b, size_t depth = 0) const;
     uint32_t createPath(std::string path, uint32_t kind = 1);
+    uint32_t currentRunLoopObject();
 };
 }  // namespace podnative::runtime

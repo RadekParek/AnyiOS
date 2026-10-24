@@ -127,7 +127,8 @@ class CxxRuntime final {
     void noteLargeRequest(const char* what, uint32_t bytes, uint32_t returnAddress) const;
     uint32_t errnoAddress();
     void zero(uint32_t address, size_t bytes);
-    void initializeLibcxxString(uint32_t object, uint32_t source, uint32_t length);
+    void initializeLibcxxString(uint32_t object, uint32_t source, uint32_t length,
+                                uint32_t requestedCapacity = 0);
     void initializeLibstdcxxString(uint32_t object, uint32_t source, uint32_t length);
     void destroyLibcxxString(uint32_t object);
     void destroyLibstdcxxString(uint32_t object);

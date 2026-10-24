@@ -15,11 +15,11 @@ class ObjC;
 // argv, creates the UIApplication object, instantiates the delegate class *the image
 // defines*, and sends `application:didFinishLaunchingWithOptions:` into guest code. When
 // that method returns, control comes back through a dedicated lifecycle gate so the host
-// can state what the main run loop can and cannot service.
+// can dispatch queued main-thread selectors or park the guest in the application run loop.
 //
-// What it deliberately does not do: there is no window server, no event source and no
-// display link yet, so the run loop has nothing to dispatch. That is reported, not faked as
-// a successful launch.
+// The runtime does not invent events, timers, display links, a window server or input. When
+// no guest work is available it reports an idle main run loop instead of returning from
+// UIApplicationMain; real UIKit keeps an application alive while that loop waits.
 class UIKit final {
    public:
     explicit UIKit(Memory& memory) : memory(memory) {}
@@ -33,11 +33,11 @@ class UIKit final {
     // Called at that gate. Either enters the next guest callback or finishes the bootstrap.
     void resume(CpuState& state, ObjC& objc);
     void setLogSink(std::function<void(const std::string&)> sink) { logSink = std::move(sink); }
-    // The bootstrap needs two facts from the scheduler: whether a guest thread the
-    // application started is runnable, and how to park the main thread while it is. A title
-    // that runs its game loop on its own thread keeps running that way on a device too.
-    void setThreadHooks(std::function<size_t()> runnable, std::function<void()> park) {
-        runnableThreads = std::move(runnable);
+    // The bootstrap needs the number of live guest threads and a way to park the main thread.
+    // A title that runs its game loop on a worker keeps running there while UIKit waits for
+    // main-thread work; a single-threaded app also remains in its idle run loop.
+    void setThreadHooks(std::function<size_t()> live, std::function<void()> park) {
+        liveThreads = std::move(live);
         parkMainThread = std::move(park);
     }
     std::string describe() const;
@@ -47,7 +47,7 @@ class UIKit final {
     Memory& memory;
 
     Stage stage = Stage::Idle;
-    std::function<size_t()> runnableThreads;
+    std::function<size_t()> liveThreads;
     // The main thread waits here for a run-loop event; it is woken when a guest thread
     // queues one with performSelectorOnMainThread:.
     std::function<void()> parkMainThread;

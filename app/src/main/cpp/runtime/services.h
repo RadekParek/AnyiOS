@@ -1,6 +1,7 @@
 #pragma once
 #include "audio.h"
 #include "coregraphics.h"
+#include "commoncrypto.h"
 #include "cxx.h"
 #include "exports.h"
 #include "frameworks.h"
@@ -11,6 +12,7 @@
 #include "openal.h"
 #include "posix.h"
 #include "stdio.h"
+#include "systemconfiguration.h"
 #include "uikit.h"
 
 namespace podnative::runtime {
@@ -35,7 +37,13 @@ class Services final {
         libc.setLogSink(forward);
         cxx.setLogSink(forward);
         stdio.setLogSink(forward);
-        objc.setLogSink(forward);
+        audio.setLogSink(forward);
+        // Objective-C diagnostics always enter the common report ring. When verbose tracing
+        // is enabled, retain a separate bounded copy as well; never fall back to host stdout.
+        objc.setLogSink([this](const std::string& line) {
+            if (verbose && objcTrace.size() < objcTraceCapacity) objcTrace.push_back(line);
+            log(line);
+        });
         uikit.setLogSink(forward);
         gles.setLogSink(forward);
     }
@@ -64,11 +72,8 @@ class Services final {
         cxx.setVerbose(on);
         gles.setVerbose(on);
         stdio.setVerbose(on);
-        // Objective-C sends get their own bounded store: the call graph is short, and the
-        // general ring would push it out under the audio thread's service calls.
-        objc.setLogSink(on ? [this](const std::string& line) {
-            if (objcTrace.size() < objcTraceCapacity) objcTrace.push_back(line);
-        } : std::function<void(const std::string&)>());
+        // The Objective-C sink installed by setLogSink observes this flag and also keeps a
+        // bounded trace. It remains wired to the common report ring in both modes.
     }
     // Settings ▸ "Native OpenGL ES": the device's own driver is tried before the bundled
     // ANGLE. Off by default, because one driver on every device is the point of bundling it.
@@ -101,6 +106,7 @@ class Services final {
     bool guestThreadsFinished() const { return posix.finished(); }
     const std::string& guestThreadStall() const { return posix.stallReason(); }
     size_t guestThreadCount() const { return posix.threadCount(); }
+    bool mainRunLoopWaiting() const { return posix.mainRunLoopWaiting(); }
     // OpenAL device/buffer/source state for the launch report.
     std::string audioSummary() const { return openal.describe(); }
     // Guest-visible description of the sandbox for the launch report.
@@ -151,6 +157,8 @@ class Services final {
     void traceSymbol(const std::string& name, const CpuState& state);
     CoreFoundation cf;
     CoreGraphics cg;
+    SystemConfiguration systemConfiguration;
+    CommonCrypto commonCrypto;
     Libc libc;
     CxxRuntime cxx;
     FileSystem files;

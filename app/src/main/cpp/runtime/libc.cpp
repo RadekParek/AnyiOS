@@ -49,7 +49,6 @@ time_t utcTime(std::tm& parts) {
 #endif
 }
 }  // namespace
-void guestLog(const std::string& text) { defaultLogSink()(text); }
 std::string Libc::readString(uint32_t address, size_t limit) const {
     std::string text;
     for (size_t offset = 0; offset < limit; offset++) {

@@ -16,7 +16,7 @@ struct GuestRun {
     // Name of the guest function the PC landed in, when the image still carries symbols.
     std::string pcSymbol;
     std::string stop =
-        "NOT_STARTED";  // EXITED, RETURNED, BUDGET, CANCELLED, FAULT, UNIMPLEMENTED, TRAPPED
+        "NOT_STARTED";  // EXITED, RETURNED, BUDGET, CANCELLED, WAITING, FAULT, UNIMPLEMENTED, TRAPPED
     std::string detail;
     size_t serviceCalls = 0;
     size_t trappedImports = 0;
@@ -37,14 +37,15 @@ struct GuestRun {
     };
     std::vector<Sample> samples;
     // Human-readable blocker for the crash screen: kind, subject and next action.
-    std::string blockerKind;     // Startup, Unimplemented API, Guest fault, Trap, Exit
+    std::string blockerKind;  // Startup, Unimplemented API, Guest fault, Trap, Exit, idle run loop
     std::string blockerSubject;  // the exact symbol or fault code
     // What the CPU engine did to execute it: which guest-memory path translated code used
     // and how much of its translated code it had to throw away.
     CpuCounters engine;
 };
 // Real execution. With a zero instruction budget and zero seconds the guest runs until it
-// stops by itself: a fault, an unimplemented import, or its own exit.
+// stops by itself: a fault, an unimplemented import, its own exit, or an idle UIKit run loop
+// with no queued event and no runnable guest thread.
 GuestRun runGuest(LoadedImage& image, Services& services, const ExportGraph& graph,
                   size_t requester, uint64_t instructionBudget, double seconds,
                   const std::atomic<bool>* cancelRequested = nullptr,

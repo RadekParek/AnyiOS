@@ -121,6 +121,7 @@ class ObjC final {
     uint32_t makeHostBoolean(bool value);
     // Reads a string object or string literal; refused by name when it is neither.
     std::string stringValue(uint32_t object) { return stringOf(object); }
+    bool isStringValue(uint32_t object) const;
     // CoreFoundation CFType-array callbacks are bridged to the same session-owned object
     // table; constants/classes are immortal, while allocated objects use normal refcounts.
     bool ownsObject(uint32_t object) const;
@@ -165,6 +166,10 @@ class ObjC final {
         std::string threadSelector;
         bool threadStarted = false, threadCancelled = false, threadFinished = false;
         uint32_t recursiveMutex = 0;  // NSRecursiveLock's cooperative pthread mutex address
+        std::string audioCategory, audioMode;
+        double preferredSampleRate = 44100.0, preferredIOBufferDuration = 0.0;
+        uint32_t audioCategoryOptions = 0, audioDelegate = 0;
+        bool audioSessionActive = false;
     };
     Memory& memory;
     std::vector<std::string> entries;
@@ -182,6 +187,7 @@ class ObjC final {
     uint32_t applicationObject = 0;   // +[UIApplication sharedApplication]
     uint32_t mainScreen = 0;          // +[UIScreen mainScreen]
     uint32_t accelerometer = 0;       // +[UIAccelerometer sharedAccelerometer]
+    uint32_t avAudioSession = 0;      // +[AVAudioSession sharedInstance]
     uint32_t currentEaglContext = 0;  // +[EAGLContext setCurrentContext:]
     uint32_t mainBundle = 0;
     std::map<uint32_t, uint32_t> syncDepth;  // @synchronized nesting per object

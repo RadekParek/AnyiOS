@@ -88,6 +88,57 @@ Coverage audit(const LoadedImage& image, const ExportGraph& graph, size_t main) 
 }
 
 #ifdef PODNATIVE_CPU_IN_APP
+std::string reportSafeGuestLog(const std::string& line) {
+    static constexpr char Hex[] = "0123456789ABCDEF";
+    std::string safe;
+    safe.reserve(line.size());
+    for (size_t i = 0; i < line.size();) {
+        const auto byte = static_cast<uint8_t>(line[i]);
+        if (byte == '\n') {
+            safe += "\\n";
+            ++i;
+        } else if (byte == '\r') {
+            safe += "\\r";
+            ++i;
+        } else if (byte == '\t') {
+            safe += "\\t";
+            ++i;
+        } else if (byte >= 0x20 && byte <= 0x7e) {
+            safe.push_back(char(byte));
+            ++i;
+        } else if (byte >= 0xc2) {
+            const size_t length = byte <= 0xdf ? 2 : byte <= 0xef ? 3 : byte <= 0xf4 ? 4 : 0;
+            uint32_t codepoint = length == 2 ? byte & 0x1f : length == 3 ? byte & 0x0f
+                                                       : length == 4 ? byte & 0x07
+                                                                     : 0;
+            bool valid = length && i + length <= line.size();
+            for (size_t j = 1; valid && j < length; ++j) {
+                const auto continuation = static_cast<uint8_t>(line[i + j]);
+                valid = continuation >= 0x80 && continuation <= 0xbf;
+                codepoint = (codepoint << 6) | (continuation & 0x3f);
+            }
+            const uint32_t minimum = length == 2 ? 0x80 : length == 3 ? 0x800 : 0x10000;
+            valid = valid && codepoint >= minimum && codepoint <= 0x10ffff &&
+                    !(codepoint >= 0xd800 && codepoint <= 0xdfff);
+            if (valid) {
+                safe.append(line, i, length);
+                i += length;
+            } else {
+                safe += "\\x";
+                safe.push_back(Hex[byte >> 4]);
+                safe.push_back(Hex[byte & 0x0f]);
+                ++i;
+            }
+        } else {
+            safe += "\\x";
+            safe.push_back(Hex[byte >> 4]);
+            safe.push_back(Hex[byte & 0x0f]);
+            ++i;
+        }
+    }
+    return safe;
+}
+
 std::string compactGuestLog(size_t captured, const std::vector<std::string>& lines) {
     if (lines.empty()) return {};
     std::vector<std::pair<std::string, size_t>> groups;
@@ -103,7 +154,7 @@ std::string compactGuestLog(size_t captured, const std::vector<std::string>& lin
     for (const auto& [line, count] : groups) {
         out << "\n| ";
         if (count > 1) out << '[' << count << "x] ";
-        out << line;
+        out << reportSafeGuestLog(line);
     }
     return out.str();
 }
@@ -237,6 +288,9 @@ std::string attemptLaunch(const uint8_t* data, size_t size, const std::string& b
                   "access."
             : run.stop == "CANCELLED"
                 ? "LAUNCH_CANCELLED: the user stopped this bounded guest attempt."
+            : run.stop == "WAITING"
+                ? "LAUNCH_WAITING: UIKit is keeping the app alive, but no guest thread can run "
+                  "until a main-run-loop event is available."
                 : "LAUNCH_ATTEMPT: the guest image actually executed.";
         std::string log;
         if (options.logLines > 0 && services.logSize()) {
