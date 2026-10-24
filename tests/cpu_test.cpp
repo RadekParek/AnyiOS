@@ -314,6 +314,9 @@ int main() {
         assert(faultRun.detail.find("at 0xb000") != std::string::npos);
         assert(faultRun.detail.find("r1=0x00000044") != std::string::npos);
         assert(faultRun.detail.find("r4=0x12345678") != std::string::npos);
+        assert(faultRun.detail.find("instruction at reported PC: ARM 0xe5910000") !=
+               std::string::npos);
+        assert(faultRun.detail.find("fault callback PC register: 0xb000") != std::string::npos);
         // The reported 0x6f000480 was slot 144 in the original service table; adding
         // runtime exports moves later slots, so resolve _exit by symbol rather than pinning
         // a diagnostic address. An explicit exit and an entry-point BX LR must differ.

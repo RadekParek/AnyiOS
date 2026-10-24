@@ -17,6 +17,7 @@ static StubState state;
 extern "C" StubState* stub_state() { return &state; }
 
 static int refuseSurfaceless = 0;
+static uint32_t nextTexture = 1, nextBuffer = 1;
 static uint32_t nextFramebuffer = 3, nextRenderbuffer = 7;
 static uintptr_t displayToken = 1;
 static uintptr_t contextToken = 0;
@@ -24,17 +25,25 @@ static uintptr_t currentContext = 0;
 static uintptr_t surfaceToken = 1;
 static uintptr_t contextConfigToken = 1, alternateConfigToken = 2;
 static void* contextConfig = nullptr;
+static void enableViaProc(uint32_t capability);
 extern "C" void stub_refuse_surfaceless(int refuse) { refuseSurfaceless = refuse; }
 
 extern "C" void stub_reset() {
     std::memset(&state, 0, sizeof(state));
     state.getIntegerValue = 0;
     refuseSurfaceless = 0;
+    nextTexture = 1;
+    nextBuffer = 1;
     nextFramebuffer = 3;
     nextRenderbuffer = 7;
     contextToken = currentContext = 0;
     surfaceToken = 1;
     contextConfig = nullptr;
+}
+
+static void enableViaProc(uint32_t capability) {
+    state.enableCalls++;
+    state.enabledCapability = capability;
 }
 
 extern "C" {
@@ -94,13 +103,46 @@ uint32_t eglDestroyContext(void*, void*) {
     contextConfig = nullptr;
     return 1;
 }
-void* eglGetProcAddress(const char*) { return nullptr; }
+void* eglGetProcAddress(const char* name) {
+    // Simulate implementations that expose a core entry point only after a context is current.
+    if (currentContext && name && std::strcmp(name, "glEnable") == 0)
+        return reinterpret_cast<void*>(&enableViaProc);
+    return nullptr;
+}
 uint32_t eglSwapBuffers(void*, void*) {
     state.swapCalls++;
     return 1;
 }
 
 // --- GL ---
+void glDisable(uint32_t capability) {
+    state.disableCalls++;
+    state.disabledCapability = capability;
+}
+void glFrontFace(uint32_t mode) {
+    state.frontFaceCalls++;
+    state.frontFaceMode = mode;
+}
+void glActiveTexture(uint32_t) {}
+void glClientActiveTexture(uint32_t) {}
+void glBindTexture(uint32_t target, uint32_t name) {
+    state.boundTextureTarget = target;
+    state.boundTexture = name;
+}
+void glBlendFunc(uint32_t, uint32_t) {}
+void glColor4f(float, float, float, float) {}
+void glDepthFunc(uint32_t) {}
+void glDepthMask(uint8_t) {}
+void glLineWidth(float) {}
+void glLoadMatrixf(const float*) {}
+void glLightfv(uint32_t, uint32_t, const float*) {}
+void glMaterialfv(uint32_t, uint32_t, const float*) {}
+void glMatrixMode(uint32_t) {}
+void glPixelStorei(uint32_t, int) {}
+void glScissor(int, int, int, int) {}
+void glTexEnvi(uint32_t, uint32_t, int) {}
+void glTexParameteri(uint32_t, uint32_t, int) {}
+void glTexSubImage2D(uint32_t, int, int, int, int, int, uint32_t, uint32_t, const void*) {}
 void glClear(uint32_t) {}
 void glClearColor(float r, float g, float b, float a) {
     state.clearColourCalls++;
@@ -129,6 +171,12 @@ void glEnableClientState(uint32_t which) {
     if (which == 0x8076) state.clientsEnabled[2]++;
     if (which == 0x8078) state.clientsEnabled[3]++;
 }
+void glDisableClientState(uint32_t which) {
+    if (which == 0x8074) state.clientsEnabled[0]--;
+    if (which == 0x8075) state.clientsEnabled[1]--;
+    if (which == 0x8076) state.clientsEnabled[2]--;
+    if (which == 0x8078) state.clientsEnabled[3]--;
+}
 // The pointer is recorded, not dereferenced: a guest address is not host memory, and the
 // bridge only hands down host memory when it re-sets the array at draw time.
 static const void* vertexPointer = nullptr;
@@ -138,6 +186,9 @@ void glVertexPointer(int size, unsigned type, int stride, const void* pointer) {
     state.vertexStride = stride;
     vertexPointer = pointer;
 }
+void glColorPointer(int, unsigned, int, const void*) {}
+void glNormalPointer(unsigned, int, const void*) {}
+void glTexCoordPointer(int, unsigned, int, const void*) {}
 void glDrawArrays(uint32_t mode, int first, int count) {
     state.drawCalls++;
     state.drawMode = int(mode);
@@ -149,6 +200,12 @@ void glDrawArrays(uint32_t mode, int first, int count) {
     if (address > 0x100000 && state.vertexComponents > 0)
         std::memcpy(state.vertices, vertexPointer,
                     std::min<size_t>(sizeof(state.vertices), size_t(state.vertexComponents) * 4));
+}
+void glDrawElements(uint32_t mode, int count, uint32_t, const void*) {
+    state.drawCalls++;
+    state.drawMode = int(mode);
+    state.drawFirst = 0;
+    state.drawCount = count;
 }
 void glTexImage2D(uint32_t, int, uint32_t internal, int w, int h, int, uint32_t format,
                   uint32_t type, const void* pixels) {
@@ -170,6 +227,24 @@ void glCompressedTexImage2D(uint32_t, int, uint32_t format, int w, int h, int, i
     state.compressedTexImageHeight = h;
     state.compressedTexImageBytes = size_t(imageSize);
 }
+void glGenTextures(int count, uint32_t* names) {
+    for (int i = 0; i < count; i++) {
+        names[i] = nextTexture++;
+        state.lastGeneratedTexture = names[i];
+        state.generatedTextureCalls++;
+    }
+}
+void glDeleteTextures(int, const uint32_t*) {}
+void glBindBuffer(uint32_t, uint32_t name) { state.boundArrayBuffer = name; }
+void glGenBuffers(int count, uint32_t* names) {
+    for (int i = 0; i < count; i++) {
+        names[i] = nextBuffer++;
+        state.lastGeneratedBuffer = names[i];
+        state.generatedBufferCalls++;
+    }
+}
+void glDeleteBuffers(int, const uint32_t*) {}
+void glBufferData(uint32_t, std::ptrdiff_t, const void*, uint32_t) {}
 void glGenRenderbuffers(int count, uint32_t* names) {
     for (int i = 0; i < count; i++) names[i] = nextRenderbuffer++;
 }
@@ -179,6 +254,18 @@ void glRenderbufferStorage(uint32_t, uint32_t format, int w, int h) {
     state.renderbufferWidth = w;
     state.renderbufferHeight = h;
 }
+void glGetRenderbufferParameteriv(uint32_t, uint32_t pname, int32_t* value) {
+    if (!value) return;
+    if (pname == 0x8d42)
+        *value = state.renderbufferWidth;  // GL_RENDERBUFFER_WIDTH
+    else if (pname == 0x8d43)
+        *value = state.renderbufferHeight;  // GL_RENDERBUFFER_HEIGHT
+    else if (pname == 0x8d44)
+        *value = int32_t(state.renderbufferFormat);  // GL_RENDERBUFFER_INTERNAL_FORMAT
+    else
+        *value = 0;
+}
+void glDeleteRenderbuffers(int, const uint32_t*) {}
 void glGenFramebuffers(int count, uint32_t* names) {
     for (int i = 0; i < count; i++) names[i] = nextFramebuffer++;
 }
@@ -192,6 +279,8 @@ void glBindFramebuffer(uint32_t, uint32_t name) {
 void glFramebufferRenderbuffer(uint32_t, uint32_t, uint32_t, uint32_t name) {
     state.attachedRenderbuffer = name;
 }
+void glFramebufferTexture2D(uint32_t, uint32_t, uint32_t, uint32_t, int) {}
+void glDeleteFramebuffers(int, const uint32_t*) {}
 uint32_t glCheckFramebufferStatus(uint32_t) { return 0x8cd5; }
 void glReadPixels(int /*x*/, int y, int w, int h, uint32_t, uint32_t, void* pixels) {
     state.readPixelsCalls++;
@@ -211,5 +300,11 @@ void glReadPixels(int /*x*/, int y, int w, int h, uint32_t, uint32_t, void* pixe
     }
 }
 void glFinish() { state.finishCalls++; }
-void glGetIntegerv(uint32_t, int32_t* values) { values[0] = int32_t(state.getIntegerValue); }
+void glGetIntegerv(uint32_t pname, int32_t* values) {
+    if (!values) return;
+    // The Android game queries this before uploading its splash texture. Returning zero here
+    // makes a 512x1024 texture look unsupported, so report a conservative GLES-sized limit;
+    // this remains a recording test double, not evidence of rendering.
+    values[0] = int32_t(pname == 0x0d33 ? 4096 : state.getIntegerValue);  // GL_MAX_TEXTURE_SIZE
+}
 }

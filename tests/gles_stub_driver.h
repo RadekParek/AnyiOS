@@ -7,6 +7,11 @@
 struct StubState {
     int clearColourCalls;
     float clearColour[4];
+    int enableCalls, disableCalls, frontFaceCalls;
+    uint32_t enabledCapability, disabledCapability, frontFaceMode;
+    int generatedTextureCalls, generatedBufferCalls;
+    uint32_t lastGeneratedTexture, lastGeneratedBuffer, boundTextureTarget, boundTexture,
+        boundArrayBuffer;
     int viewportCalls;
     int viewport[4];
     int colorMaskCalls;
