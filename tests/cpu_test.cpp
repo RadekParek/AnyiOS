@@ -293,7 +293,8 @@ int main() {
         const size_t faultMain = faultGraph.addImage("<faulting guest>");
         faultGraph.setMainExecutable(faultMain);
         std::vector<uint8_t> badLoad(4096, 0), faultStack(4096, 0), faultWx(4096, 0);
-        put(badLoad, 0, 0xe5910000);  // ldr r0, [r1] -> MEMORY_NULL at 0x44
+        put(badLoad, 0, 0xe3a02001);  // mov r2, #1
+        put(badLoad, 4, 0xe5910000);  // ldr r0, [r1] -> MEMORY_NULL at 0x44
         faulting.memory->map({0xB000, 4096, uint8_t(Read | Execute), "faulting guest"},
                              badLoad.data(), badLoad.size());
         faulting.memory->map({0xC000, 4096, uint8_t(Read | Write), "faulting stack"},
@@ -311,12 +312,17 @@ int main() {
         const auto faultRun = runGuest(faulting, faultServices, faultGraph, faultMain, 8, 2.0);
         assert(faultRun.stop == "FAULT" &&
                faultRun.detail.find("MEMORY_NULL") != std::string::npos);
-        assert(faultRun.detail.find("at 0xb000") != std::string::npos);
+        assert(faultRun.detail.find("at 0xb004") != std::string::npos);
         assert(faultRun.detail.find("r1=0x00000044") != std::string::npos);
+        assert(faultRun.detail.find("r2=0x00000001") != std::string::npos);
         assert(faultRun.detail.find("r4=0x12345678") != std::string::npos);
         assert(faultRun.detail.find("instruction at reported PC: ARM 0xe5910000") !=
                std::string::npos);
-        assert(faultRun.detail.find("fault callback PC register: 0xb000") != std::string::npos);
+        assert(faultRun.detail.find(
+                   "fault callback snapshot PC (may be the JIT block entry): 0xb000") !=
+               std::string::npos);
+        assert(faultRun.detail.find("instruction at callback-snapshot PC: ARM 0xe3a02001") !=
+               std::string::npos);
         // The reported 0x6f000480 was slot 144 in the original service table; adding
         // runtime exports moves later slots, so resolve _exit by symbol rather than pinning
         // a diagnostic address. An explicit exit and an entry-point BX LR must differ.

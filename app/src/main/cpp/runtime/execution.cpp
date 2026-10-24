@@ -246,10 +246,11 @@ GuestRun execute(LoadedImage& image, Services& services, const ExportGraph& grap
             run.detail +=
                 instructionAtPc(*image.memory, faulted, stop.pc, "instruction at reported PC: ");
             const uint32_t callbackPc = faulted.registers[15] & ~1u;
-            run.detail += "\nfault callback PC register: " + pointer(callbackPc);
+            run.detail +=
+                "\nfault callback snapshot PC (may be the JIT block entry): " + pointer(callbackPc);
             if (callbackPc != (stop.pc & ~1u))
                 run.detail += instructionAtPc(*image.memory, faulted, callbackPc,
-                                              "instruction at fault-callback PC: ");
+                                              "instruction at callback-snapshot PC: ");
             // The last instructions before the fault: a jump to a value read out of memory is
             // only explainable by the code that produced it.
             std::ostringstream trace;
