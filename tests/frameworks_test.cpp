@@ -71,6 +71,16 @@ int main() {
     cf.invoke("_CFRelease", cpu, memory);
     assert(cf.liveObjects() == 0);
 
+    cpu = {};
+    assert(cf.invoke("_CFRunLoopGetCurrent", cpu, memory));
+    const uint32_t runLoop = cpu.registers[0];
+    assert(runLoop && cf.liveObjects() == 1);
+    assert(cf.invoke("_CFRunLoopGetMain", cpu, memory) && cpu.registers[0] == runLoop);
+    cf.invoke("_CFRetain", cpu, memory);
+    cf.invoke("_CFRelease", cpu, memory);
+    cf.invoke("_CFRelease", cpu, memory);
+    assert(cf.liveObjects() == 0);
+
     // CFArray callbacks retain/release real session-owned objects, while a NULL callback
     // descriptor remains a non-owning pointer array. Values use hooks just as Objective-C
     // Foundation objects do in Services.

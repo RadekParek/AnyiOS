@@ -59,6 +59,18 @@ const char* const LibcxxStringInitSymbols[] = {
     "_ZNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEE6__initEPKcj",
     "__ZNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEE6__initEPKcm",
     "_ZNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEE6__initEPKcm",
+    "__ZNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEE6__initEPKcmm",
+    "_ZNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEE6__initEPKcmm",
+};
+const char* const LibcxxStringCopyCtorSymbols[] = {
+    "__ZNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEEC1ERKS5_",
+    "_ZNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEEC1ERKS5_",
+    "__ZNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEEC2ERKS5_",
+    "_ZNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEEC2ERKS5_",
+};
+const char* const LibcxxStringAppendSymbols[] = {
+    "__ZNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEE6appendEPKcm",
+    "_ZNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEE6appendEPKcm",
 };
 const char* const LibcxxStringDestructorSymbols[] = {
     "__ZNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEED1Ev",
@@ -126,6 +138,8 @@ int64_t signedDivide64(int64_t a, int64_t b) {
 bool CxxRuntime::isCxxSymbol(const std::string& symbol) const {
     return listed(CxxSymbols, symbol) || listed(IosInitSymbols, symbol) ||
            listed(IosDestructorSymbols, symbol) || listed(LibcxxStringInitSymbols, symbol) ||
+           listed(LibcxxStringCopyCtorSymbols, symbol) ||
+           listed(LibcxxStringAppendSymbols, symbol) ||
            listed(LibcxxStringDestructorSymbols, symbol) ||
            listed(LibstdcxxStringLengthCtorSymbols, symbol) ||
            listed(LibstdcxxStringCStringCtorSymbols, symbol) ||
@@ -148,6 +162,8 @@ std::vector<std::string> CxxRuntime::symbols() const {
     append(IosInitSymbols);
     append(IosDestructorSymbols);
     append(LibcxxStringInitSymbols);
+    append(LibcxxStringCopyCtorSymbols);
+    append(LibcxxStringAppendSymbols);
     append(LibcxxStringDestructorSymbols);
     append(LibstdcxxStringLengthCtorSymbols);
     append(LibstdcxxStringCStringCtorSymbols);
@@ -173,10 +189,12 @@ void CxxRuntime::zero(uint32_t address, size_t bytes) {
         done += chunk;
     }
 }
-void CxxRuntime::initializeLibcxxString(uint32_t object, uint32_t source, uint32_t length) {
-    if (length > CopyLimit)
+void CxxRuntime::initializeLibcxxString(uint32_t object, uint32_t source, uint32_t length,
+                                        uint32_t requestedCapacity) {
+    if (length > CopyLimit || requestedCapacity > CopyLimit)
         throw Error("CXX_STRING_LIMIT", "libc++ basic_string input exceeds the call budget",
-                    length);
+                    std::max(length, requestedCapacity));
+    const uint32_t allocationLength = std::max(length, requestedCapacity);
     if (!object || !memory.permits(object, 12, Write))
         throw Error("CXX_STRING", "libc++ basic_string object is not writable", object);
     if (length && !source)
@@ -188,7 +206,7 @@ void CxxRuntime::initializeLibcxxString(uint32_t object, uint32_t source, uint32
     // byte zero is (length << 1), and the inline characters start at byte one. Short
     // capacity is ten bytes plus the terminator. Long strings use {tagged capacity,
     // size, pointer}; capacity is the allocation count, including its NUL byte.
-    if (length < 11) {
+    if (length < 11 && allocationLength < 11) {
         std::array<uint8_t, 12> representation{};
         representation[0] = uint8_t(length << 1);
         if (length) std::memcpy(representation.data() + 1, characters.data(), length);
@@ -197,7 +215,7 @@ void CxxRuntime::initializeLibcxxString(uint32_t object, uint32_t source, uint32
         return;
     }
 
-    uint32_t capacity = length + 1;
+    uint32_t capacity = allocationLength + 1;
     if (capacity & 1) ++capacity;  // the long-capacity bitfield stores capacity / 2
     const uint32_t data = allocate(capacity, "libc++ basic_string");
     if (length) memory.write(data, characters.data(), length);
@@ -878,7 +896,104 @@ bool CxxRuntime::abi(const std::string& name, CpuState& cpu) {
         return true;
     }
     if (listed(LibcxxStringInitSymbols, name)) {
-        initializeLibcxxString(r[0], r[1], r[2]);
+        const uint32_t requestedCapacity =
+            name.find("__initEPKcmm") == std::string::npos ? 0 : r[3];
+        initializeLibcxxString(r[0], r[1], r[2], requestedCapacity);
+        return true;
+    }
+    if (listed(LibcxxStringAppendSymbols, name)) {
+        const uint32_t object = r[0], source = r[1], count = r[2];
+        if (!object || !memory.permits(object, 12, Read | Write))
+            throw Error("CXX_STRING", "libc++ append received an invalid string object", object);
+        const uint32_t tag = memory.read32(object);
+        const bool isLong = (tag & 1) != 0;
+        uint32_t length = 0, capacity = 10, data = object + 1;
+        if (isLong) {
+            capacity = (tag & ~1u) - 1;
+            length = memory.read32(object + 4);
+            data = memory.read32(object + 8);
+            if (!data || length > capacity || (length && !memory.permits(data, length, Read)))
+                throw Error("CXX_STRING", "libc++ append found invalid long-string storage",
+                            object);
+        } else {
+            length = (tag & 0xff) >> 1;
+            if (length > capacity)
+                throw Error("CXX_STRING", "libc++ append found an invalid short-string length",
+                            object);
+        }
+        if (length > CopyLimit || count > CopyLimit - length)
+            throw Error("CXX_STRING_LIMIT", "libc++ appended string exceeds the call budget",
+                        count);
+        if (count && (!source || !memory.permits(source, count, Read)))
+            throw Error("CXX_STRING", "libc++ append received an invalid byte range", source);
+        std::vector<uint8_t> suffix(count), original(length);
+        if (count) memory.read(source, suffix.data(), count);
+        if (length) memory.read(data, original.data(), length);
+        const uint32_t newLength = length + count;
+        if (newLength <= capacity) {
+            if (count) memory.write(data + length, suffix.data(), suffix.size());
+            const char terminator = 0;
+            memory.write(data + newLength, &terminator, 1);
+            if (isLong) {
+                memory.write32(object + 4, newLength);
+            } else {
+                const uint8_t shortTag = uint8_t(newLength << 1);
+                memory.write(object, &shortTag, 1);
+            }
+        } else {
+            std::vector<uint8_t> combined;
+            combined.reserve(newLength);
+            combined.insert(combined.end(), original.begin(), original.end());
+            combined.insert(combined.end(), suffix.begin(), suffix.end());
+            const uint64_t growth = std::max<uint64_t>(16, uint64_t(capacity) * 2);
+            const uint32_t requested =
+                uint32_t(std::min<uint64_t>(CopyLimit, std::max<uint64_t>(newLength, growth)));
+            uint32_t allocationCapacity = requested + 1;
+            if (allocationCapacity & 1) ++allocationCapacity;
+            const uint32_t newData =
+                allocate(allocationCapacity, "libc++ basic_string append", &cpu);
+            try {
+                if (newLength) memory.write(newData, combined.data(), combined.size());
+                const char terminator = 0;
+                memory.write(newData + newLength, &terminator, 1);
+                memory.write32(object, allocationCapacity | 1u);
+                memory.write32(object + 4, newLength);
+                memory.write32(object + 8, newData);
+            } catch (...) {
+                if (heap.owns(newData)) heap.release(newData);
+                throw;
+            }
+            if (isLong && heap.owns(data)) heap.release(data);
+        }
+        r[0] = object;
+        return true;
+    }
+    if (listed(LibcxxStringCopyCtorSymbols, name)) {
+        const uint32_t destination = r[0], sourceObject = r[1];
+        if (!sourceObject || !memory.permits(sourceObject, 12, Read))
+            throw Error("CXX_STRING", "libc++ copy constructor received an invalid source",
+                        sourceObject);
+        if (!destination || !memory.permits(destination, 12, Write))
+            throw Error("CXX_STRING", "libc++ copy constructor received an invalid destination",
+                        destination);
+        if (destination != sourceObject) {
+            const uint32_t tag = memory.read32(sourceObject);
+            uint32_t data = sourceObject + 1;
+            uint32_t length = (tag & 1) ? memory.read32(sourceObject + 4) : ((tag & 0xff) >> 1);
+            if (tag & 1) {
+                const uint32_t capacity = tag & ~1u;
+                data = memory.read32(sourceObject + 8);
+                if (length >= capacity ||
+                    (length && (!data || !memory.permits(data, length, Read))))
+                    throw Error("CXX_STRING", "libc++ long-string source has invalid storage",
+                                sourceObject);
+            } else if (length >= 11) {
+                throw Error("CXX_STRING", "libc++ short-string source has an invalid length",
+                            sourceObject);
+            }
+            initializeLibcxxString(destination, data, length);
+        }
+        r[0] = destination;
         return true;
     }
     if (listed(LibcxxStringDestructorSymbols, name)) {

@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cmath>
 #include <cstdlib>
 #include <optional>
 #include <sstream>
@@ -10,7 +11,6 @@
 #include "abi.h"
 #include "error.h"
 #include "format.h"
-#include "libc.h"
 
 namespace podnative::runtime {
 namespace {
@@ -110,6 +110,7 @@ void ObjC::installGates() {
     classObject("EAGLContext");
     classObject("CAEAGLLayer");
     classObject("CALayer");
+    classObject("AVAudioSession");
 }
 uint32_t ObjC::gateAddress(const std::string& entry) const {
     for (size_t n = 0; n < entries.size(); n++)
@@ -123,6 +124,7 @@ void ObjC::defineSymbols(ExportGraph& graph, size_t foundation, size_t objcLibra
         graph.define(isObjcLibraryEntry(entries[n]) ? objcLibrary : foundation, entries[n],
                      {GateBase + uint32_t(n) * 8});
     for (const auto& [name, address] : classes) {
+        if (name == "AVAudioSession") continue;  // exported by AVFoundation, not Foundation
         graph.define(foundation, "_OBJC_CLASS_$_" + name, {address});
         graph.define(foundation, "_OBJC_METACLASS_$_" + name, {address});
     }
@@ -362,6 +364,14 @@ std::string ObjC::stringOf(uint32_t object) {
         return readText(found->second.text);
     if (auto literal = literalString(object)) return *literal;
     throw Error("OBJC_STRING", "expected a string object", object);
+}
+bool ObjC::isStringValue(uint32_t object) const {
+    if (auto found = objects.find(object); found != objects.end())
+        return found->second.className == "NSString" ||
+               found->second.className == "NSMutableString" ||
+               found->second.className == "NSConstantString" ||
+               found->second.className == "NSCFString";
+    return literalString(object).has_value();
 }
 bool ObjC::stringMessage(const std::string& text, uint32_t bytes, const std::string& method,
                          CpuState& state) {
@@ -883,11 +893,9 @@ void ObjC::drainPools() {
     }
 }
 void ObjC::emitLog(const std::string& text) const {
-    if (logSink) {
-        logSink(text);
-        return;
-    }
-    guestLog(text);
+    // The owning Services instance always supplies a sink. A standalone ObjC unit without
+    // one drops diagnostics rather than leaking guest bytes to the host's stdout protocol.
+    if (logSink) logSink(text);
 }
 bool ObjC::guestSuperMessage(uint32_t receiver, uint32_t classOfMethod, uint32_t selectorAddress,
                              CpuState& state) {
@@ -1923,6 +1931,11 @@ void ObjC::message(CpuState& state) {
             state.registers[0] = object;
             return;
         }
+        if (className == "AVAudioSession" && method == "sharedInstance") {
+            if (!avAudioSession) avAudioSession = makeObject("AVAudioSession");
+            state.registers[0] = avAudioSession;
+            return;
+        }
         if (method == "class") {
             return;
         }
@@ -2193,6 +2206,156 @@ void ObjC::message(CpuState& state) {
         unsupported();
     }
     auto& object = objects[self];
+    if (className == "AVAudioSession") {
+        auto writeNoError = [&](uint32_t address) {
+            if (!address) return;
+            if (!memory.permits(address, 4, Write))
+                throw Error("OBJC_AUDIO_SESSION", "AVAudioSession error output is not writable",
+                            address);
+            memory.write32(address, 0);
+        };
+        auto validCategory = [](const std::string& category) {
+            return category == "AVAudioSessionCategoryAmbient" ||
+                   category == "AVAudioSessionCategorySoloAmbient" ||
+                   category == "AVAudioSessionCategoryPlayback" ||
+                   category == "AVAudioSessionCategoryRecord" ||
+                   category == "AVAudioSessionCategoryPlayAndRecord" ||
+                   category == "AVAudioSessionCategoryMultiRoute";
+        };
+        auto setCategory = [&](uint32_t categoryObject, uint32_t options, uint32_t errorOut) {
+            if (!categoryObject)
+                throw Error("OBJC_AUDIO_SESSION", "AVAudioSession category must not be nil");
+            const std::string category = stringOf(categoryObject);
+            if (!validCategory(category))
+                throw Error("OBJC_AUDIO_SESSION",
+                            "unsupported AVAudioSession category: " + category);
+            constexpr uint32_t KnownOptions = 0x00000001u | 0x00000002u | 0x00000004u |
+                                              0x00000008u | 0x00000011u | 0x00000020u | 0x00000040u;
+            if (options & ~KnownOptions)
+                throw Error("OBJC_AUDIO_SESSION", "unsupported AVAudioSession category options",
+                            options);
+            object.audioCategory = category;
+            object.audioCategoryOptions = options;
+            writeNoError(errorOut);
+            state.registers[0] = 1;
+        };
+        if (method == "init") {
+            state.registers[0] = self;
+            return;
+        }
+        if (method == "delegate") {
+            state.registers[0] = object.audioDelegate;
+            return;
+        }
+        if (method == "setDelegate:") {
+            object.audioDelegate = state.registers[2];
+            return;
+        }
+        if (method == "setCategory:") {
+            setCategory(state.registers[2], 0, 0);
+            return;
+        }
+        if (method == "setCategory:error:") {
+            setCategory(state.registers[2], 0, state.registers[3]);
+            return;
+        }
+        if (method == "setCategory:withOptions:") {
+            setCategory(state.registers[2], state.registers[3], 0);
+            return;
+        }
+        if (method == "setCategory:withOptions:error:") {
+            Arguments args(state, memory, 4);
+            setCategory(state.registers[2], state.registers[3], args.word());
+            return;
+        }
+        if (method == "setActive:error:") {
+            object.audioSessionActive = state.registers[2] != 0;
+            writeNoError(state.registers[3]);
+            state.registers[0] = 1;
+            return;
+        }
+        if (method == "setActive:withOptions:error:") {
+            Arguments args(state, memory, 4);
+            const uint32_t options = state.registers[3];
+            if (options & ~uint32_t(3))
+                throw Error("OBJC_AUDIO_SESSION", "unsupported AVAudioSession activation options",
+                            options);
+            object.audioSessionActive = state.registers[2] != 0;
+            writeNoError(args.word());
+            state.registers[0] = 1;
+            return;
+        }
+        if (method == "isOtherAudioPlaying" || method == "inputAvailable") {
+            state.registers[0] = 0;  // The emulator has no external audio session or input device.
+            return;
+        }
+        if (method == "category") {
+            state.registers[0] =
+                object.audioCategory.empty() ? 0 : makeString(object.audioCategory);
+            return;
+        }
+        if (method == "mode") {
+            state.registers[0] = object.audioMode.empty() ? 0 : makeString(object.audioMode);
+            return;
+        }
+        if (method == "setMode:error:") {
+            const uint32_t modeObject = state.registers[2];
+            if (!modeObject)
+                throw Error("OBJC_AUDIO_SESSION", "AVAudioSession mode must not be nil");
+            const std::string mode = stringOf(modeObject);
+            if (mode != "AVAudioSessionModeDefault" && mode != "AVAudioSessionModeVoiceChat" &&
+                mode != "AVAudioSessionModeVideoChat" && mode != "AVAudioSessionModeGameChat" &&
+                mode != "AVAudioSessionModeMeasurement" &&
+                mode != "AVAudioSessionModeMoviePlayback" &&
+                mode != "AVAudioSessionModeSpokenAudio")
+                throw Error("OBJC_AUDIO_SESSION", "unsupported AVAudioSession mode: " + mode);
+            object.audioMode = mode;
+            writeNoError(state.registers[3]);
+            state.registers[0] = 1;
+            return;
+        }
+        if (method == "recordPermission") {
+            state.registers[0] = 0;  // AVAudioSessionRecordPermissionUndetermined
+            return;
+        }
+        if (method == "preferredSampleRate") {
+            resultF64(state, object.preferredSampleRate);
+            return;
+        }
+        if (method == "setPreferredSampleRate:error:") {
+            Arguments args(state, memory, 2);
+            const double rate = args.f64();
+            const uint32_t errorOut = args.word();
+            if (!std::isfinite(rate) || rate <= 0 || rate > 384000)
+                throw Error("OBJC_AUDIO_SESSION", "preferred sample rate is out of range");
+            object.preferredSampleRate = rate;
+            writeNoError(errorOut);
+            state.registers[0] = 1;
+            return;
+        }
+        if (method == "preferredIOBufferDuration") {
+            resultF64(state, object.preferredIOBufferDuration);
+            return;
+        }
+        if (method == "setPreferredIOBufferDuration:error:") {
+            Arguments args(state, memory, 2);
+            const double duration = args.f64();
+            const uint32_t errorOut = args.word();
+            if (!std::isfinite(duration) || duration <= 0 || duration > 10)
+                throw Error("OBJC_AUDIO_SESSION", "preferred IO buffer duration is out of range");
+            object.preferredIOBufferDuration = duration;
+            writeNoError(errorOut);
+            state.registers[0] = 1;
+            return;
+        }
+        if (method == "description") {
+            state.registers[0] =
+                makeString("<AVAudioSession category=" + object.audioCategory +
+                           (object.audioSessionActive ? " active>" : " inactive>"));
+            return;
+        }
+        unsupported();
+    }
     if (className == "NSRecursiveLock") {
         if (method == "init") {
             ensureRecursiveLock(object);

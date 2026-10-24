@@ -115,6 +115,31 @@ int main() {
     harness.call(msgSend, application, harness.text("setApplicationIconBadgeNumber:"), 17);
     assert(harness.call(msgSend, application, harness.text("applicationIconBadgeNumber")) == 17);
 
+    // AVAudioSession's singleton keeps category and activation state instead of resolving
+    // its class to a trap or reporting unimplemented settings as successful no-ops.
+    const uint32_t avAudioClass = harness.call(getClass, harness.text("AVAudioSession"), 0);
+    const uint32_t avAudioSession =
+        harness.call(msgSend, avAudioClass, harness.text("sharedInstance"));
+    const uint32_t categoryClass = harness.call(getClass, harness.text("NSString"), 0);
+    const uint32_t ambientCategory =
+        harness.call(msgSend, categoryClass, harness.text("stringWithUTF8String:"),
+                     harness.text("AVAudioSessionCategoryAmbient"));
+    assert(avAudioSession && ambientCategory);
+    assert(harness.call(msgSend, avAudioSession, harness.text("setCategory:error:"),
+                        ambientCategory) == 1);
+    const uint32_t storedCategory = harness.call(msgSend, avAudioSession, harness.text("category"));
+    assert(harness.objc.stringValue(storedCategory) == "AVAudioSessionCategoryAmbient");
+    assert(harness.call(msgSend, avAudioSession, harness.text("setActive:error:"), 1) == 1);
+    harness.call(msgSend, avAudioSession, harness.text("setDelegate:"), application);
+    assert(harness.call(msgSend, avAudioSession, harness.text("delegate")) == application);
+    assert(harness.call(msgSend, avAudioSession, harness.text("recordPermission")) == 0);
+    const uint32_t unknownCategory =
+        harness.call(msgSend, categoryClass, harness.text("stringWithUTF8String:"),
+                     harness.text("not-a-category"));
+    fault("OBJC_AUDIO_SESSION", [&] {
+        harness.call(msgSend, avAudioSession, harness.text("setCategory:error:"), unknownCategory);
+    });
+
     // UIViewController owns its view, and assigning a root controller makes that view the
     // window's child. This is the setup path used by older EAGL titles before rendering starts.
     const uint32_t controllerClass = harness.call(getClass, harness.text("UIViewController"), 0);

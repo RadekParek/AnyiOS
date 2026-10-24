@@ -97,6 +97,19 @@ uint32_t CoreFoundation::createPath(std::string path, uint32_t kind) {
     allocated += objects.at(handle).payloadBytes;
     return handle;
 }
+uint32_t CoreFoundation::currentRunLoopObject() {
+    if (currentRunLoop && objects.count(currentRunLoop)) return currentRunLoop;
+    if (objects.size() >= MaxCfObjects || next == 0xfffffffc)
+        throw Error("CF_BUDGET", "CoreFoundation session handle limit");
+    const uint32_t handle = next;
+    Bits runLoop;
+    runLoop.references = 1;
+    runLoop.isRunLoop = true;
+    objects.emplace(handle, std::move(runLoop));
+    next += 4;
+    currentRunLoop = handle;
+    return handle;
+}
 uint32_t CoreFoundation::create(std::vector<uint8_t> bytes, uint32_t bits, bool mutableBits) {
     if (bytes.size() > MaxCfObjectBytes - allocated || objects.size() >= MaxCfObjects ||
         next == 0xfffffffc)
@@ -193,9 +206,11 @@ void CoreFoundation::releaseHandle(uint32_t handle) {
     }
     if (!it->second.references) throw Error("CF_RETAIN", "reference count underflow", handle);
     const bool releasesElements = it->second.isArray && it->second.retainsValues;
+    const bool wasRunLoop = it->second.isRunLoop;
     std::vector<uint32_t> elements = std::move(it->second.elements);
     allocated -= it->second.payloadBytes;
     objects.erase(it);
+    if (wasRunLoop && currentRunLoop == handle) currentRunLoop = 0;
     if (releasesElements)
         for (uint32_t element : elements) releaseValue(element);
 }
@@ -251,7 +266,9 @@ bool CoreFoundation::invoke(const std::string& name, CpuState& cpu, Memory& memo
         if (!array.isArray) throw Error("CF_ARRAY", "object is not a CFArray", handle);
         return array;
     };
-    if (name == "_CFAbsoluteTimeGetCurrent") {
+    if (name == "_CFRunLoopGetCurrent" || name == "_CFRunLoopGetMain") {
+        r[0] = currentRunLoopObject();
+    } else if (name == "_CFAbsoluteTimeGetCurrent") {
         resultF64(cpu, cfAbsoluteTime());
     } else if (name == "_CFStringConvertEncodingToNSStringEncoding") {
         // Common encodings from CoreFoundation and NSString's public encoding constants.

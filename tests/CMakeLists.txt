@@ -55,7 +55,9 @@ add_library(podnative_hle STATIC
     "${RUNTIME}/runtime/pvrtc.cpp"
     "${CMAKE_CURRENT_LIST_DIR}/../third_party/pvrtc/PVRTDecompress.cpp"
     "${RUNTIME}/runtime/frameworks.cpp"
-    "${RUNTIME}/runtime/coregraphics.cpp")
+    "${RUNTIME}/runtime/coregraphics.cpp"
+    "${RUNTIME}/runtime/systemconfiguration.cpp"
+    "${RUNTIME}/runtime/commoncrypto.cpp")
 target_include_directories(podnative_hle PUBLIC "${RUNTIME}" "${CMAKE_CURRENT_LIST_DIR}/../third_party/pvrtc")
 target_link_libraries(podnative_hle PUBLIC podnative_cpu ZLIB::ZLIB)
 target_compile_options(podnative_hle PRIVATE -Wall -Wextra -Werror)
@@ -91,7 +93,7 @@ target_link_libraries(cxx_test PRIVATE podnative_hle)
 target_compile_options(cxx_test PRIVATE -Wall -Wextra -Werror -UNDEBUG)
 add_test(NAME cxx_runtime COMMAND cxx_test)
 
-foreach(test_name IN ITEMS dyld libc objc)
+foreach(test_name IN ITEMS dyld libc objc commoncrypto systemconfiguration)
     add_executable(${test_name}_test ${test_name}_test.cpp)
     target_link_libraries(${test_name}_test PRIVATE podnative_hle)
     target_compile_options(${test_name}_test PRIVATE -Wall -Wextra -Werror -UNDEBUG)

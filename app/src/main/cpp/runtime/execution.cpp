@@ -320,8 +320,15 @@ GuestRun execute(LoadedImage& image, Services& services, const ExportGraph& grap
             if (services.threadSwitchWanted()) {
                 CpuState next = current;
                 if (!services.switchGuestThread(next)) {
-                    run.stop = "TRAPPED";
-                    run.detail = services.guestThreadStall();
+                    if (services.mainRunLoopWaiting()) {
+                        run.stop = "WAITING";
+                        run.detail =
+                            "UIApplicationMain parked the main guest thread; no guest thread is "
+                            "runnable until a run-loop event is queued";
+                    } else {
+                        run.stop = "TRAPPED";
+                        run.detail = services.guestThreadStall();
+                    }
                     run.pc = current.registers[15];
                     return run;
                 }
@@ -404,6 +411,11 @@ void classify(GuestRun& run) {
     if (run.stop == "CANCELLED") {
         run.blockerKind = "Cancelled";
         run.blockerSubject = detail.empty() ? "the user cancelled the guest launch" : detail;
+        return;
+    }
+    if (run.stop == "WAITING") {
+        run.blockerKind = "Idle UIKit run loop";
+        run.blockerSubject = detail.empty() ? "the main run loop has no queued guest work" : detail;
         return;
     }
     run.blockerKind = "Time slice";

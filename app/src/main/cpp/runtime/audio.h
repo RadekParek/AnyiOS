@@ -1,7 +1,9 @@
 #pragma once
 #include <cstdint>
+#include <functional>
 #include <map>
 #include <string>
+#include <utility>
 
 #include "cpu.h"
 #include "memory.h"
@@ -17,12 +19,15 @@ class AudioSession final {
    public:
     explicit AudioSession(Memory& memory) : memory(memory) {}
     bool invoke(const std::string& symbol, CpuState& cpu);
+    void setLogSink(std::function<void(const std::string&)> sink) { logSink = std::move(sink); }
     bool active() const { return isActive; }
     std::string describe() const;
 
    private:
     Memory& memory;
+    std::function<void(const std::string&)> logSink;
     bool initialised = false, isActive = false;
+    void emitLog(const std::string& text) const;
     // Property IDs from AudioToolbox/AudioSession.h, keyed by their numeric value.
     std::map<uint32_t, uint32_t> properties;
     std::string readString(uint32_t address) const;

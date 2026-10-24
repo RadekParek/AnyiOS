@@ -97,6 +97,7 @@ Services::Services(Memory& m)
           "_getenv",
           "_mach_absolute_time",
           "_mach_timebase_info",
+          "dyld_stub_binder",
           "_sysctlbyname",
           "_strtok_r",
           "_atoi",
@@ -151,9 +152,20 @@ Services::Services(Memory& m)
           "_CFArrayReleaseValueCallBack",
           "_CFArrayEqualValueCallBack",
           "_CFStringConvertEncodingToNSStringEncoding",
+          "_CFRunLoopGetCurrent",
+          "_CFRunLoopGetMain",
           "_CFAbsoluteTimeGetCurrent",
           "_CFRetain",
           "_CFRelease",
+          // SystemConfiguration reachability is explicitly offline in this sandbox; valid
+          // callbacks and scheduling are retained as state without a fabricated online event.
+          "_SCNetworkReachabilityCreateWithAddress",
+          "_SCNetworkReachabilityCreateWithAddressPair",
+          "_SCNetworkReachabilityCreateWithName",
+          "_SCNetworkReachabilityGetFlags",
+          "_SCNetworkReachabilityScheduleWithRunLoop",
+          "_SCNetworkReachabilitySetCallback",
+          "_SCNetworkReachabilityUnscheduleFromRunLoop",
           // CoreGraphics geometry and colour spaces, plus QuartzCore media time.
           "_CGAffineTransformMakeTranslation",
           "_CGAffineTransformMakeRotation",
@@ -175,6 +187,17 @@ Services::Services(Memory& m)
           "_CGColorSpaceCreateDeviceGray",
           "_CGColorSpaceRetain",
           "_CGColorSpaceRelease",
+          "_CGBitmapContextCreate",
+          "_CGBitmapContextCreateImage",
+          "_CGContextClearRect",
+          "_CGContextDrawImage",
+          "_CGContextRelease",
+          "_CGContextRetain",
+          "_CGContextTranslateCTM",
+          "_CGImageGetHeight",
+          "_CGImageGetWidth",
+          "_CGImageRelease",
+          "_CGImageRetain",
           "_CACurrentMediaTime",
           // CoreFoundation bundle and URL access, so a title can locate its own assets.
           "_CFBundleGetMainBundle",
@@ -527,6 +550,15 @@ Services::Services(Memory& m)
     for (const std::string& symbol : cxx.symbols())
         if (std::find(symbols.begin(), symbols.end(), symbol) == symbols.end())
             symbols.push_back(symbol);
+    // GLES::invoke already implements every name in its import table. Register the complete
+    // table here as call gates, not only the older hand-selected subset, so dyld can bind a
+    // symbol such as _glFinish before the guest reaches its first frame.
+    for (const std::string& symbol : gles.symbols())
+        if (std::find(symbols.begin(), symbols.end(), symbol) == symbols.end())
+            symbols.push_back(symbol);
+    for (const std::string& symbol : commonCrypto.symbols())
+        if (std::find(symbols.begin(), symbols.end(), symbol) == symbols.end())
+            symbols.push_back(symbol);
     // Two entries for one symbol would define it twice in the same image, which the export
     // graph refuses; catching it here names the symbol instead of failing the launch.
     {
@@ -535,10 +567,15 @@ Services::Services(Memory& m)
             throw Error("HLE_LIMIT", "duplicate service entry point",
                         uint32_t(symbols.size() - unique.size()));
     }
-    if (symbols.size() * 8 > Memory::PageSize)
-        throw Error("HLE_LIMIT", "more service entry points than the gate page holds",
+    const size_t gateBytes = symbols.size() * 8;
+    const size_t mappedGateBytes =
+        (gateBytes + Memory::PageSize - 1) & ~(size_t(Memory::PageSize) - 1);
+    // The second service page follows the first. Keep the RTTI ABI page at 0x6f002000
+    // disjoint; the CoreGraphics constants live on a separate page below.
+    if (!mappedGateBytes || mappedGateBytes > 0x2000)
+        throw Error("HLE_LIMIT", "service gates exceed their reserved two-page region",
                     uint32_t(symbols.size()));
-    std::vector<uint8_t> code(Memory::PageSize);
+    std::vector<uint8_t> code(mappedGateBytes);
     auto put = [&](size_t offset, uint32_t word) {
         for (unsigned n = 0; n < 4; n++) code[offset + n] = uint8_t(word >> (n * 8));
     };
@@ -547,8 +584,8 @@ Services::Services(Memory& m)
         put(n * 8 + 4, 0xe12fff1e);
     }
     // Remaining slots are undefined instructions, not zero-filled ARM no-ops.
-    for (size_t n = symbols.size() * 8; n < code.size(); n += 4) put(n, 0xe7f000f0);
-    memory.map({Base, Memory::PageSize, uint8_t(Read | Execute), "AnyiOS HLE call gates"},
+    for (size_t n = gateBytes; n < code.size(); n += 4) put(n, 0xe7f000f0);
+    memory.map({Base, uint32_t(mappedGateBytes), uint8_t(Read | Execute), "AnyiOS HLE call gates"},
                code.data(), code.size());
     float constants[] = {1,
                          0,
@@ -564,16 +601,41 @@ Services::Services(Memory& m)
                          0,
                          0,
                          0};
-    memory.map({Base + Memory::PageSize, Memory::PageSize, Read, "CoreGraphics constants"},
+    constexpr uint32_t CoreGraphicsConstantsBase = Base + 0x4000;
+    memory.map({CoreGraphicsConstantsBase, Memory::PageSize, Read, "CoreGraphics constants"},
                reinterpret_cast<const uint8_t*>(constants), sizeof(constants));
     posix.setExitGate(address("___podnative_thread_exit"));
+    cg.setHeapHooks(
+        [this](uint32_t bytes, uint32_t alignment) {
+            return libc.guestHeap().allocate(bytes, alignment);
+        },
+        [this](uint32_t address) { libc.guestHeap().release(address); });
     objc.setTrapName([this](uint32_t address) { return trapSymbol(address); });
     objc.setGraphics(&gles);
+    systemConfiguration.setRunLoopValidators(
+        [this](uint32_t runLoop) { return cf.isRunLoopObject(runLoop); },
+        [this](uint32_t mode) { return objc.isStringValue(mode); });
     cf.setExternalObjectHooks(
-        [this](uint32_t value) { return objc.ownsObject(value); },
-        [this](uint32_t value) { objc.retainObject(value); },
-        [this](uint32_t value) { objc.releaseObject(value); },
-        [this](uint32_t left, uint32_t right) { return objc.equalObjects(left, right); });
+        [this](uint32_t value) {
+            return objc.ownsObject(value) || systemConfiguration.owns(value);
+        },
+        [this](uint32_t value) {
+            if (objc.ownsObject(value))
+                objc.retainObject(value);
+            else
+                systemConfiguration.retain(value);
+        },
+        [this](uint32_t value) {
+            if (objc.ownsObject(value))
+                objc.releaseObject(value);
+            else
+                systemConfiguration.release(value);
+        },
+        [this](uint32_t left, uint32_t right) {
+            return (objc.ownsObject(left) && objc.ownsObject(right) &&
+                    objc.equalObjects(left, right)) ||
+                   systemConfiguration.equal(left, right);
+        });
     objc.setRecursiveLockHooks(
         [this] {
             const uint32_t storage = libc.guestHeap().allocate(8, 8);
@@ -600,6 +662,10 @@ Services::Services(Memory& m)
     objc.setThreadSpawn([this](uint32_t target, const std::string& selector, uint32_t argument) {
         return spawnCallbackThread(target, selector, argument);
     });
+    // Install the in-memory console sink before any guest callback can run. This also
+    // prevents Objective-C or audio diagnostics from falling back to host stdout when a
+    // caller does not explicitly provide an external logger.
+    setLogSink({});
 }
 uint32_t Services::address(const std::string& name) const {
     auto it = std::find(symbols.begin(), symbols.end(), name);
@@ -617,6 +683,8 @@ const std::string& Services::libraryOf(const std::string& symbol) const {
         "/System/Library/Frameworks/Foundation.framework/Foundation";
     static const std::string coreFoundation =
         "/System/Library/Frameworks/CoreFoundation.framework/CoreFoundation";
+    static const std::string systemConfiguration =
+        "/System/Library/Frameworks/SystemConfiguration.framework/SystemConfiguration";
     static const std::string coreGraphics =
         "/System/Library/Frameworks/CoreGraphics.framework/CoreGraphics";
     static const std::string quartzCore =
@@ -630,8 +698,10 @@ const std::string& Services::libraryOf(const std::string& symbol) const {
     static const std::string helpers = "/usr/lib/libgcc_s.1.dylib";
     static const std::string objc = "/usr/lib/libobjc.A.dylib";
     static const std::string security = "/System/Library/Frameworks/Security.framework/Security";
+    static const std::string commonCrypto = "/usr/lib/libcommonCrypto.dylib";
     static const std::string uiKit = "/System/Library/Frameworks/UIKit.framework/UIKit";
     if (symbol.rfind("_UI", 0) == 0) return uiKit;
+    if (symbol.rfind("_SCNetworkReachability", 0) == 0) return systemConfiguration;
     if (symbol.rfind("_CF", 0) == 0) return coreFoundation;
     if (symbol.rfind("_CG", 0) == 0) return coreGraphics;
     if (symbol.rfind("_CA", 0) == 0 || symbol.rfind("_kCA", 0) == 0) return quartzCore;
@@ -644,6 +714,7 @@ const std::string& Services::libraryOf(const std::string& symbol) const {
         if (symbol.rfind(prefix, 0) == 0) return openAL;
     if (symbol.rfind("_gl", 0) == 0) return openGLES;
     if (symbol.rfind("_objc_", 0) == 0 || symbol == "___objc_personality_v0") return objc;
+    if (symbol.rfind("_CC", 0) == 0) return commonCrypto;
     if (symbol.rfind("_Sec", 0) == 0 || symbol.rfind("_kSec", 0) == 0) return security;
     if (cxx.isLibcxxSymbol(symbol)) return libcxx;
     if (cxx.isCxxSymbol(symbol)) return standard;
@@ -663,11 +734,18 @@ void Services::install(ExportGraph& graph, const std::vector<std::string>& depen
     auto foundation = imageFor("/System/Library/Frameworks/Foundation.framework/Foundation");
     auto coreFoundation =
         imageFor("/System/Library/Frameworks/CoreFoundation.framework/CoreFoundation");
+    auto systemConfiguration =
+        imageFor("/System/Library/Frameworks/SystemConfiguration.framework/SystemConfiguration");
     auto coreGraphics = imageFor("/System/Library/Frameworks/CoreGraphics.framework/CoreGraphics");
     auto quartzCore = imageFor("/System/Library/Frameworks/QuartzCore.framework/QuartzCore");
     auto audioToolbox = imageFor("/System/Library/Frameworks/AudioToolbox.framework/AudioToolbox");
+    auto avFoundation = imageFor("/System/Library/Frameworks/AVFoundation.framework/AVFoundation");
     auto objcLibrary = imageFor("/usr/lib/libobjc.A.dylib");
     const size_t security = imageFor("/System/Library/Frameworks/Security.framework/Security");
+    const size_t commonCrypto = imageFor("/usr/lib/libcommonCrypto.dylib");
+    for (const char* alias :
+         {"/usr/lib/libCommonCrypto.dylib", "/usr/lib/system/libcommonCrypto.dylib"})
+        if (!graph.index(alias)) graph.alias(commonCrypto, alias);
     // libc++ has its own two-level namespace owner. Accept both historic install-name aliases
     // before registering the image's dependency list, so either ordinal reaches the same gates.
     size_t libcxx;
@@ -696,6 +774,14 @@ void Services::install(ExportGraph& graph, const std::vector<std::string>& depen
     cxx.installTypeInfoVtables(graph, standard);
     for (size_t n = 0; n < symbols.size(); n++)
         graph.define(imageFor(libraryOf(symbols[n])), symbols[n], {Base + uint32_t(n) * 8});
+    // Older iOS SDKs also expose CommonCrypto through Security.framework. Keep these names
+    // available from either two-level ordinal without making them global exports.
+    for (const std::string& symbol : this->commonCrypto.symbols()) {
+        const auto found = std::find(symbols.begin(), symbols.end(), symbol);
+        if (found == symbols.end()) throw Error("HLE_SYMBOL", "CommonCrypto gate is missing");
+        const uint32_t gate = Base + uint32_t(found - symbols.begin()) * 8;
+        if (!graph.strong(security, symbol)) graph.define(security, symbol, {gate});
+    }
     // Which library a shared name is defined in follows the titles, not a guess. AngryBirds
     // 1.0 binds ___cxa_atexit with the libSystem.B ordinal and ___gxx_personality_sj0 with
     // libstdc++'s: on this SDK generation libSystem re-exports the C ABI half of the C++
@@ -703,9 +789,36 @@ void Services::install(ExportGraph& graph, const std::vector<std::string>& depen
     // has no definition in resolves to the unimplemented-import trap, so the owner list per
     // name is what keeps a working implementation reachable.
     const std::pair<const char*, std::vector<size_t>> sharedNames[] = {
-        {"___cxa_atexit", {standard, helpers, system}},
-        {"___cxa_finalize", {standard, helpers, system}},
-        {"___gxx_personality_sj0", {standard, helpers}},
+        {"__Znwm", {standard, libcxx}},
+        {"_Znwm", {standard, libcxx}},
+        {"__Znam", {standard, libcxx}},
+        {"_Znam", {standard, libcxx}},
+        {"__ZdlPv", {standard, libcxx}},
+        {"_ZdlPv", {standard, libcxx}},
+        {"__ZdaPv", {standard, libcxx}},
+        {"_ZdaPv", {standard, libcxx}},
+        {"___cxa_atexit", {standard, helpers, system, libcxx}},
+        {"___cxa_finalize", {standard, helpers, system, libcxx}},
+        {"___cxa_allocate_exception", {standard, libcxx}},
+        {"___cxa_free_exception", {standard, libcxx}},
+        {"___cxa_throw", {standard, libcxx}},
+        {"___cxa_begin_catch", {standard, libcxx}},
+        {"___cxa_end_catch", {standard, libcxx}},
+        {"___cxa_rethrow", {standard, libcxx}},
+        {"___cxa_call_unexpected", {standard, libcxx}},
+        {"___cxa_bad_typeid", {standard, libcxx}},
+        {"___cxa_pure_virtual", {standard, libcxx}},
+        {"___dynamic_cast", {standard, libcxx}},
+        {"___cxa_guard_acquire", {standard, libcxx}},
+        {"___cxa_guard_release", {standard, libcxx}},
+        {"___cxa_guard_abort", {standard, libcxx}},
+        {"___gxx_personality_sj0", {standard, helpers, libcxx}},
+        // These SjLj ABI helpers are re-exported by libSystem on the SDK used by several
+        // ARMv7 games as well as by libgcc_s. Their single service implementation must be
+        // visible through either two-level namespace.
+        {"__Unwind_SjLj_Register", {helpers, system}},
+        {"__Unwind_SjLj_Unregister", {helpers, system}},
+        {"__Unwind_SjLj_Resume", {helpers, system}},
     };
     for (const auto& [sharedName, owners] : sharedNames) {
         const auto found = std::find(symbols.begin(), symbols.end(), sharedName);
@@ -722,6 +835,7 @@ void Services::install(ExportGraph& graph, const std::vector<std::string>& depen
     // UIKit-ordinal bind of `_OBJC_CLASS_$_UIScreen` unresolved, so the guest messaged the
     // unimplemented-import trap instead of the class object.
     auto classOwner = [&](const std::string& name) -> size_t {
+        if (name == "AVAudioSession") return avFoundation;
         if (name.rfind("UI", 0) == 0) return uiKit;
         if (name.rfind("EAGL", 0) == 0 || name.rfind("CAEAGL", 0) == 0) return openGLES;
         if (name.rfind("CA", 0) == 0) return quartzCore;
@@ -763,6 +877,14 @@ void Services::install(ExportGraph& graph, const std::vector<std::string>& depen
     graph.define(system, "___stdinp", {stdio.standardPointerCell(0)});
     graph.define(system, "___stdoutp", {stdio.standardPointerCell(1)});
     graph.define(system, "___stderrp", {stdio.standardPointerCell(2)});
+    const uint32_t stackGuardCell = libc.guestHeap().allocate(4, 4);
+    if (!stackGuardCell) throw Error("HLE_ALLOC", "could not allocate the stack guard cell");
+    std::random_device stackRandom;
+    uint32_t stackGuard = uint32_t(stackRandom()) ^ (uint32_t(stackRandom()) << 16);
+    if (!stackGuard) stackGuard = 0x59a5d00d;
+    memory.write32(stackGuardCell, stackGuard);
+    if (!graph.strong(system, "___stack_chk_guard"))
+        graph.define(system, "___stack_chk_guard", {stackGuardCell});
     graph.define(system, "__DefaultRuneLocale", {runeLocale()});
     // EAGL's drawable keys and colour-format values are CFString globals. A title reads the
     // global and hands the string to -setValue:forKey:, so the value must be a real string.
@@ -794,6 +916,16 @@ void Services::install(ExportGraph& graph, const std::vector<std::string>& depen
              {coreFoundation, "_kCFRunLoopDefaultMode", "kCFRunLoopDefaultMode"},
              {coreFoundation, "_kCFBundleIdentifierKey", "CFBundleIdentifier"},
              {coreFoundation, "_kCFBundleVersionKey", "CFBundleVersion"},
+             {avFoundation, "_AVAudioSessionCategoryAmbient", "AVAudioSessionCategoryAmbient"},
+             {avFoundation, "_AVAudioSessionCategorySoloAmbient",
+              "AVAudioSessionCategorySoloAmbient"},
+             {avFoundation, "_AVAudioSessionCategoryPlayback", "AVAudioSessionCategoryPlayback"},
+             {avFoundation, "_AVAudioSessionCategoryRecord", "AVAudioSessionCategoryRecord"},
+             {avFoundation, "_AVAudioSessionCategoryPlayAndRecord",
+              "AVAudioSessionCategoryPlayAndRecord"},
+             {avFoundation, "_AVAudioSessionCategoryMultiRoute",
+              "AVAudioSessionCategoryMultiRoute"},
+             {avFoundation, "_AVAudioSessionModeDefault", "AVAudioSessionModeDefault"},
              {quartzCore, "_kCAFillModeForwards", "forwards"},
              {quartzCore, "_kCAMediaTimingFunctionLinear", "linear"},
              {security, "_kSecAttrAccessible", "pdmn"},
@@ -818,6 +950,9 @@ void Services::install(ExportGraph& graph, const std::vector<std::string>& depen
          })
         if (!graph.strong(image, symbol))
             graph.define(image, symbol, {constantStringVariable(text)});
+    if (!graph.strong(coreFoundation, "_NSDefaultRunLoopMode"))
+        graph.define(coreFoundation, "_NSDefaultRunLoopMode",
+                     {constantStringVariable("NSDefaultRunLoopMode")});
     // Core Foundation's default allocator is the null handle. UIKit's invalid background-task
     // token is zero; both are data cells whose contents are read by the guest.
     const uint32_t zeroCell = libc.guestHeap().allocate(4, 4);
@@ -851,14 +986,16 @@ void Services::install(ExportGraph& graph, const std::vector<std::string>& depen
         graph.define(security, "_kSecRandomDefault", {zeroCell});
     if (!graph.strong(uiKit, "_UIBackgroundTaskInvalid"))
         graph.define(uiKit, "_UIBackgroundTaskInvalid", {zeroCell});
-    graph.define(coreGraphics, "_CGAffineTransformIdentity", {Base + Memory::PageSize});
-    graph.define(coreGraphics, "_CGRectNull", {Base + Memory::PageSize + 24});
-    graph.define(coreGraphics, "_CGRectZero", {Base + Memory::PageSize + 40});
+    constexpr uint32_t CoreGraphicsConstantsBase = Base + 0x4000;
+    graph.define(coreGraphics, "_CGAffineTransformIdentity", {CoreGraphicsConstantsBase});
+    graph.define(coreGraphics, "_CGRectNull", {CoreGraphicsConstantsBase + 24});
+    graph.define(coreGraphics, "_CGRectZero", {CoreGraphicsConstantsBase + 40});
     // Keep the handles referenced: the images must exist even when nothing is defined in
     // them yet, because the binary's ordinals index this table.
     (void)system;
     (void)foundation;
     (void)coreFoundation;
+    (void)systemConfiguration;
     (void)audioToolbox;
     (void)security;
 }
@@ -1092,6 +1229,11 @@ void Services::invoke(const std::string& name, CpuState& state) {
     // The last symbol the guest asked for, so a stop report can show the calls leading up
     // to it instead of a row of identical trap codes.
     lastSymbol = name;
+    if (name == "dyld_stub_binder")
+        throw Error("DYLD_LAZY_BINDER",
+                    "guest entered dyld_stub_binder after startup, although this runtime eagerly "
+                    "binds every lazy import before guest execution",
+                    state.registers[0]);
     if (name == "_SecRandomCopyBytes") {
         const uint32_t generator = state.registers[0];
         const uint32_t count = state.registers[1];
@@ -1130,6 +1272,8 @@ void Services::invoke(const std::string& name, CpuState& state) {
     if (cxx.invoke(name, state)) return;
     if (cf.invoke(name, state, memory)) return;
     if (cg.invoke(name, state, memory)) return;
+    if (systemConfiguration.invoke(name, state, memory)) return;
+    if (commonCrypto.invoke(name, state, memory)) return;
     throw Error("HLE_SYMBOL", "service has no implementation: " + name);
 }
 }  // namespace podnative::runtime

@@ -47,6 +47,7 @@ class Posix final {
     void blockOnEvent(uint32_t eventId);
     void wakeEvent(uint32_t eventId);
     size_t runnableCount() const;
+    bool mainRunLoopWaiting() const;
     // Threads that have not exited, whether or not they can run right now. A title whose loop
     // thread is sleeping between frames is still a multi-threaded title, so a decision about
     // parking the main thread must look at this, not at the runnable set.

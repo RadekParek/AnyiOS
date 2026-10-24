@@ -55,6 +55,11 @@ int main() {
     assert(memory.fetch32(memcpyGate) == (0xef000000 | ((memcpyGate - 0x6f000000U) / 8 + 1)));
     assert(memory.fetch32(memcpyGate + 4) == 0xe12fff1e);
     assert(services.count() > 7);
+    const uint32_t finishGate = services.address("_glFinish");
+    const uint32_t getStringGate = services.address("_glGetString");
+    assert(finishGate >= 0x6f000000 && getStringGate >= 0x6f000000);
+    assert(memory.fetch32(finishGate) == (0xef000000 | ((finishGate - 0x6f000000U) / 8 + 1)));
+    assert(memory.fetch32(getStringGate) == (0xef000000 | ((getStringGate - 0x6f000000U) / 8 + 1)));
 
     std::vector<uint8_t> text(4096, 0), data(4096, 0);
     memory.map({0x1000, 4096, uint8_t(Read | Execute), "guest return code"}, text.data(),
@@ -72,7 +77,9 @@ int main() {
          "/System/Library/Frameworks/CoreGraphics.framework/CoreGraphics",
          "/System/Library/Frameworks/QuartzCore.framework/QuartzCore",
          "/System/Library/Frameworks/UIKit.framework/UIKit",
-         "/System/Library/Frameworks/OpenGLES.framework/OpenGLES", "/usr/lib/libc++.1.dylib"});
+         "/System/Library/Frameworks/OpenGLES.framework/OpenGLES", "/usr/lib/libc++.1.dylib",
+         "/System/Library/Frameworks/AVFoundation.framework/AVFoundation",
+         "/System/Library/Frameworks/SystemConfiguration.framework/SystemConfiguration"});
     size_t executable = graph.addImage("<executable>");
     // Every dependency image exists before the executable, so no ordinal dangles.
     for (const char* dependency :
@@ -82,10 +89,25 @@ int main() {
           "/System/Library/Frameworks/CoreGraphics.framework/CoreGraphics",
           "/System/Library/Frameworks/QuartzCore.framework/QuartzCore",
           "/System/Library/Frameworks/UIKit.framework/UIKit",
-          "/System/Library/Frameworks/OpenGLES.framework/OpenGLES", "/usr/lib/libc++.1.dylib"})
+          "/System/Library/Frameworks/OpenGLES.framework/OpenGLES", "/usr/lib/libc++.1.dylib",
+          "/System/Library/Frameworks/AVFoundation.framework/AVFoundation",
+          "/System/Library/Frameworks/SystemConfiguration.framework/SystemConfiguration"})
         assert(graph.index(dependency).has_value());
     assert(executable > 9);
     graph.setMainExecutable(executable);
+    const auto openGles =
+        graph.index("/System/Library/Frameworks/OpenGLES.framework/OpenGLES").value();
+    assert(graph.strong(openGles, "_glFinish") && graph.strong(openGles, "_glGetString"));
+    assert(graph.resolve(executable, -2, "_glFinish") == services.address("_glFinish"));
+    assert(graph.resolve(executable, -2, "_glGetString") == services.address("_glGetString"));
+    bool glesUsesSecondPage = false;
+    for (const std::string& name : services.graphics().symbols()) {
+        const uint32_t gate = services.address(name);
+        assert(memory.fetch32(gate) == (0xef000000 | ((gate - 0x6f000000U) / 8 + 1)));
+        assert(memory.fetch32(gate + 4) == 0xe12fff1e);
+        glesUsesSecondPage |= gate >= 0x6f001000;
+    }
+    assert(glesUsesSecondPage);
     assert(!graph.resolve(executable, -1, "_memcpy"));
     graph.define(executable, "_local", {0x999, false});
     assert(graph.resolve(executable, -1, "_local") == 0x999u);
@@ -99,6 +121,7 @@ int main() {
     assert(graph.resolve(executable, -2, "_memcpy") == memcpyGate);
     assert(!graph.resolve(executable, -2, "_missing"));
     assert(graph.strong(coreFoundation, "_CFRelease"));
+    assert(graph.strong(coreFoundation, "_NSDefaultRunLoopMode"));
     assert(graph.resolve(executable, -2, "_CFArrayCreateMutable") ==
            services.address("_CFArrayCreateMutable"));
     const auto cfTypeCallbacks = graph.resolve(executable, -2, "_kCFTypeArrayCallBacks");
@@ -115,7 +138,16 @@ int main() {
     assert(rectZero.has_value());
     assert(memory.read32(*rectZero) == 0 && memory.read32(*rectZero + 4) == 0 &&
            memory.read32(*rectZero + 8) == 0 && memory.read32(*rectZero + 12) == 0);
-    assert(graph.index("/System/Library/Frameworks/Security.framework/Security").has_value());
+    const size_t securityImage =
+        graph.index("/System/Library/Frameworks/Security.framework/Security").value();
+    const size_t commonCryptoImage = graph.index("/usr/lib/libcommonCrypto.dylib").value();
+    assert(graph.strong(commonCryptoImage, "_CCCrypt"));
+    assert(graph.strong(commonCryptoImage, "_CC_MD5"));
+    assert(graph.strong(commonCryptoImage, "_CC_SHA1"));
+    assert(graph.strong(securityImage, "_CCCrypt"));
+    assert(graph.resolve(executable, -2, "_CCCrypt") == services.address("_CCCrypt"));
+    assert(graph.resolve(executable, -2, "_CC_MD5") == services.address("_CC_MD5"));
+    assert(graph.resolve(executable, -2, "_CC_SHA1") == services.address("_CC_SHA1"));
     assert(graph.resolve(executable, -2, "_kSecAttrAccount").has_value());
     const auto cfTrue = graph.resolve(executable, -2, "_kCFBooleanTrue");
     assert(cfTrue.has_value() && memory.read32(*cfTrue) != 0);
@@ -139,8 +171,11 @@ int main() {
          "/System/Library/Frameworks/CoreGraphics.framework/CoreGraphics",
          "/System/Library/Frameworks/QuartzCore.framework/QuartzCore",
          "/System/Library/Frameworks/UIKit.framework/UIKit",
-         "/System/Library/Frameworks/OpenGLES.framework/OpenGLES", "/usr/lib/libc++.1.dylib"});
+         "/System/Library/Frameworks/OpenGLES.framework/OpenGLES", "/usr/lib/libc++.1.dylib",
+         "/System/Library/Frameworks/AVFoundation.framework/AVFoundation",
+         "/System/Library/Frameworks/SystemConfiguration.framework/SystemConfiguration"});
     assert(graph.resolve(executable, 3, "_Znwm") == services.address("_Znwm"));
+    assert(graph.resolve(executable, 11, "__Znwm") == services.address("__Znwm"));
     assert(graph.resolve(executable, 3, "__ZNSt8ios_base4InitC1Ev") ==
            services.address("__ZNSt8ios_base4InitC1Ev"));
     assert(graph.resolve(executable, 3, "__ZNSsC1EPKcRKSaIcE") ==
@@ -148,6 +183,16 @@ int main() {
     assert(graph.resolve(executable, 4, "___divsi3") == services.address("___divsi3"));
     assert(graph.resolve(executable, 4, "__Unwind_SjLj_Register") ==
            services.address("__Unwind_SjLj_Register"));
+    assert(graph.resolve(executable, 1, "__Unwind_SjLj_Register") ==
+           services.address("__Unwind_SjLj_Register"));
+    assert(graph.resolve(executable, 1, "dyld_stub_binder") ==
+           services.address("dyld_stub_binder"));
+    const auto stackGuard = graph.resolve(executable, 1, "___stack_chk_guard");
+    assert(stackGuard && memory.read32(*stackGuard) != 0);
+    assert(graph.resolve(executable, 11, "___cxa_pure_virtual") ==
+           services.address("___cxa_pure_virtual"));
+    assert(graph.resolve(executable, 11, "___cxa_begin_catch") ==
+           services.address("___cxa_begin_catch"));
     assert(graph.resolve(
                executable, 11,
                "__ZNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEE6__initEPKcm") ==
@@ -155,8 +200,28 @@ int main() {
                "__ZNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEE6__initEPKcm"));
     assert(!graph.resolve(executable, 3, "___divsi3"));
     assert(graph.resolve(executable, 6, "_CFRelease") == services.address("_CFRelease"));
+    assert(graph.resolve(executable, 6, "_CFRunLoopGetCurrent") ==
+           services.address("_CFRunLoopGetCurrent"));
     assert(graph.resolve(executable, 7, "_CGColorSpaceCreateDeviceRGB") ==
            services.address("_CGColorSpaceCreateDeviceRGB"));
+    assert(graph.resolve(executable, 7, "_CGBitmapContextCreate") ==
+           services.address("_CGBitmapContextCreate"));
+    assert(graph.resolve(executable, 7, "_CGImageGetWidth") ==
+           services.address("_CGImageGetWidth"));
+    assert(graph.resolve(executable, 13, "_SCNetworkReachabilityCreateWithName") ==
+           services.address("_SCNetworkReachabilityCreateWithName"));
+    assert(graph.resolve(executable, 13, "_SCNetworkReachabilityGetFlags") ==
+           services.address("_SCNetworkReachabilityGetFlags"));
+    const auto avAudioSessionClass = graph.resolve(executable, 12, "_OBJC_CLASS_$_AVAudioSession");
+    assert(avAudioSessionClass && memory.read32(*avAudioSessionClass) == *avAudioSessionClass);
+    const auto ambientCategory = graph.resolve(executable, 12, "_AVAudioSessionCategoryAmbient");
+    assert(ambientCategory);
+    const uint32_t ambientRecord = memory.read32(*ambientCategory);
+    const uint32_t ambientBytes = memory.read32(ambientRecord + 8);
+    assert(memory.read32(ambientRecord + 12) == std::strlen("AVAudioSessionCategoryAmbient"));
+    char ambientText[32]{};
+    memory.read(ambientBytes, ambientText, sizeof(ambientText));
+    assert(std::string(ambientText) == "AVAudioSessionCategoryAmbient");
     // libobjc.A.dylib exports the runtime entry points.
     // objc_msgSend is a runtime gate, not a plain service symbol.
     assert(graph.resolve(executable, 2, "_objc_msgSend") == ObjC::GateBase);
@@ -226,8 +291,9 @@ int main() {
     assert(graph.resolve(executable, 5, "_NSLog"));
     assert(graph.resolve(executable, 10, "_glColorMask") == services.address("_glColorMask"));
     assert(graph.resolve(executable, 10, "_glGenTextures") == services.address("_glGenTextures"));
-    // An unimplemented name in an existing framework remains unresolved, not faked.
-    assert(!graph.resolve(executable, 10, "_glReadPixels"));
+    // The full implemented GLES import table is registered as call gates, including names
+    // outside the hand-maintained legacy subset.
+    assert(graph.resolve(executable, 10, "_glReadPixels") == services.address("_glReadPixels"));
     fault("EXPORT_IMAGE", [&] { graph.addImage("<executable>"); });
 
     ExportGraph deps;

@@ -49,7 +49,7 @@ target_compile_definitions(dynarmic PRIVATE OAKNUT_USE_WX=1)
 add_library(podnative SHARED
     renderer.cpp bridge.cpp macho.cpp macho_info.cpp macho_container.cpp
     runtime/memory.cpp runtime/loader.cpp runtime/dyld.cpp runtime/launch.cpp
-    runtime/frameworks.cpp runtime/coregraphics.cpp runtime/exports.cpp runtime/services.cpp
+    runtime/frameworks.cpp runtime/coregraphics.cpp runtime/systemconfiguration.cpp runtime/commoncrypto.cpp runtime/exports.cpp runtime/services.cpp
     runtime/libc.cpp runtime/cxx.cpp runtime/fs.cpp runtime/stdio.cpp runtime/audio.cpp
     runtime/posix.cpp runtime/openal.cpp runtime/format.cpp runtime/heap.cpp runtime/execution.cpp runtime/objc.cpp runtime/uikit.cpp runtime/gles.cpp runtime/pvrtc.cpp ../../../../third_party/pvrtc/PVRTDecompress.cpp runtime/cpu.cpp runtime/cpu_probe.cpp)
 target_compile_options(podnative PRIVATE -Wall -Wextra -Werror)

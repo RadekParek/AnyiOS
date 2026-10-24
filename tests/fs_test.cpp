@@ -271,6 +271,10 @@ int main() {
     put(memory, 0x1500, "boot=%d");
     check(call("_fprintf", stdio.standardCell(1), 0x1500, 7) == 6, "fprintf to stdout formats");
     check(!log.empty() && log.back() == "boot=7", "stdout output reaches the log sink");
+    put(memory, 0x1500, "raw stdout");
+    check(call("_fwrite", 0x1500, 1, 10, stdio.standardCell(1)) == 10,
+          "fwrite to stdout reports the requested byte count");
+    check(log.back() == "raw stdout", "fwrite to stdout is captured instead of using host stdout");
     check(stdio.openFiles() == 3, "standard streams stay open");
     check(call("_remove", 0x1200) == 0, "remove deletes a container file");
     check(!std::filesystem::exists(root / "container" / "save.dat"), "the file is gone");

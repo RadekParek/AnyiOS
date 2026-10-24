@@ -12,6 +12,8 @@
 #include "runtime/loader.h"
 #include "runtime/memory.h"
 #include "runtime/objc.h"
+#include "runtime/posix.h"
+#include "runtime/services.h"
 using namespace podnative::runtime;
 using Bytes = std::vector<uint8_t>;
 void put(Bytes& b, size_t at, uint32_t v) {
@@ -216,6 +218,52 @@ int main() {
     m.map({0x1000, 4096, uint8_t(Read | Write), "data1"});
     m.map({0x2000, 4096, uint8_t(Read | Write), "data2"});
     m.map({0x3000, 4096, uint8_t(Read | Execute), "code"});
+    Posix threadReport(m);
+    CpuState threadState{};
+    threadState.registers[15] = 0x74da8;
+    threadReport.adoptMainThread(threadState);
+    assert(!threadReport.mainRunLoopWaiting());
+    threadReport.blockInRunLoop();
+    assert(threadReport.mainRunLoopWaiting());
+    const std::string threadSummary = threadReport.describe();
+    assert(threadSummary.find("pc=0x74da8") != std::string::npos);
+    assert(threadSummary.find("pc=0x478632") == std::string::npos);
+    assert(threadSummary.find("parked in the UIKit run loop") != std::string::npos);
+    // Objective-C guest logs must always use Services' capture sink. Turning verbose tracing
+    // on or off must not redirect them to the host process's stdout.
+    {
+        Memory consoleMemory;
+        consoleMemory.map({0x1000, 4096, uint8_t(Read | Execute), "console return"});
+        consoleMemory.map({0x2000, 4096, uint8_t(Read | Write), "console strings"});
+        Services consoleServices(consoleMemory);
+        std::vector<std::string> captured;
+        consoleServices.setLogSink([&](const std::string& line) { captured.push_back(line); });
+        const char format[] = "console log %d";
+        consoleMemory.write(0x2000, format, sizeof(format));
+        CpuState consoleState{};
+        consoleState.cpsr = 0x10;
+        consoleState.registers[0] = 0x2000;
+        consoleState.registers[1] = 7;
+        consoleState.registers[14] = 0x1005;
+        ObjC gateLookup(consoleMemory);
+        const uint32_t gate = gateLookup.gateAddress("_NSLog");
+        const CpuStop consoleStop{StopReason::SupervisorCall, 0, gate, 0, 0, {}, {}};
+        consoleServices.setVerbose(false);
+        consoleState.registers[15] = gate + 4;
+        consoleServices.dispatch(consoleStop, consoleState);
+        assert(captured.size() == 1 && captured.back() == "console log 7");
+        consoleServices.setVerbose(true);
+        consoleState.cpsr = 0x10;
+        consoleState.registers[15] = gate + 4;
+        consoleServices.dispatch(consoleStop, consoleState);
+        assert(captured.size() == 2 && captured.back() == "console log 7");
+        assert(consoleServices.objectiveCTrace().size() == 1);
+        consoleServices.setVerbose(false);
+        consoleState.cpsr = 0x10;
+        consoleState.registers[15] = gate + 4;
+        consoleServices.dispatch(consoleStop, consoleState);
+        assert(captured.size() == 3 && consoleServices.logSize() == 3);
+    }
     m.write32(0x1ffe, 0x12345678);
     assert(m.read32(0x1ffe) == 0x12345678);
     assert(m.read32(0x1000) == 0);

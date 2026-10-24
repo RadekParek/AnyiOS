@@ -5,7 +5,6 @@
 #include "abi.h"
 #include "error.h"
 #include "format.h"
-#include "libc.h"
 
 namespace podnative::runtime {
 namespace {
@@ -21,6 +20,9 @@ constexpr uint32_t kAudioSessionNotInitialized = 0x21696E69;  // '!ini'
 constexpr uint32_t kAudioSessionUnsupportedPropertyError = 0x70747970;
 constexpr uint32_t kAudioSessionBadPropertySizeError = 0x21737A65;
 }  // namespace
+void AudioSession::emitLog(const std::string& text) const {
+    if (logSink) logSink(text);
+}
 std::string AudioSession::readString(uint32_t address) const {
     return readGuestString(memory, address);
 }
@@ -134,8 +136,8 @@ bool AudioSession::invoke(const std::string& symbol, CpuState& cpu) {
             return true;
         }
         // Unknown IDs are refused by name rather than silently accepted.
-        guestLog("AudioSessionSetProperty(" + std::to_string(property) +
-                 ") is not a property this runtime models");
+        emitLog("AudioSessionSetProperty(" + std::to_string(property) +
+                ") is not a property this runtime models");
         r[0] = kAudioSessionUnsupportedPropertyError;
         return true;
     }

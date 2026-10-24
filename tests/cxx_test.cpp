@@ -99,10 +99,13 @@ int main() {
         "__ZNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEE6__initEPKcj";
     const std::string libcxxInitSizeT =
         "__ZNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEE6__initEPKcm";
+    const std::string libcxxCopyCtor =
+        "__ZNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEEC1ERKS5_";
     const std::string libcxxDtor =
         "__ZNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEED1Ev";
     check(cxx.isCxxSymbol(libcxxInit) && cxx.isCxxSymbol(libcxxInitSizeT) &&
-              cxx.isLibcxxSymbol(libcxxInitSizeT) && cxx.isCxxSymbol("_ZNSsC1EPKcj"),
+              cxx.isCxxSymbol(libcxxCopyCtor) && cxx.isLibcxxSymbol(libcxxInitSizeT) &&
+              cxx.isCxxSymbol("_ZNSsC1EPKcj"),
           "libc++ __init size_t and the libstdc++ std::string constructors resolve");
     const uint32_t shortObject = 0x2000, shortSource = 0x2100;
     const char shortText[] = "small";
@@ -115,12 +118,33 @@ int main() {
     check(std::string(read(memory, shortObject + 1, sizeof(shortText)).data()) == shortText,
           "libc++ short strings keep bytes and the terminator inline");
     check(heap.used() == heapBeforeShort, "libc++ short strings do not allocate");
+    const uint32_t shortCopy = 0x2030;
+    check(call(libcxxCopyCtor, shortCopy, shortObject) == shortCopy &&
+              uint8_t(read(memory, shortCopy, 1)[0]) == (sizeof(shortText) - 1) * 2 &&
+              std::string(read(memory, shortCopy + 1, sizeof(shortText)).data()) == shortText,
+          "libc++ copy construction preserves short-string inline storage and returns this");
+    check(heap.used() == heapBeforeShort, "copying a short libc++ string does not allocate");
+    call(libcxxDtor, shortCopy);
     const uint32_t sizeTObject = 0x2010, sizeTSource = 0x2110;
     put(memory, sizeTSource, "size_t ABI");
     call(libcxxInitSizeT, sizeTObject, sizeTSource, uint32_t(std::strlen("size_t ABI")));
     check(uint8_t(read(memory, sizeTObject, 1)[0]) == std::strlen("size_t ABI") * 2,
           "the exact libc++ PKcm size_t import initializes short-string storage");
     call(libcxxDtor, sizeTObject);
+
+    const std::string libcxxInitReserved =
+        "__ZNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEE6__initEPKcmm";
+    const uint32_t reservedObject = 0x2050, reservedSource = 0x2150;
+    put(memory, reservedSource, "room");
+    check(cxx.isCxxSymbol(libcxxInitReserved),
+          "the libc++ PKcmm reserve-capacity initializer is classified");
+    call(libcxxInitReserved, reservedObject, reservedSource, 4, 12);
+    const uint32_t reservedData = memory.read32(reservedObject + 8);
+    check((memory.read32(reservedObject) & 1) && memory.read32(reservedObject + 4) == 4 &&
+              (memory.read32(reservedObject) & ~1u) >= 13 &&
+              std::string(read(memory, reservedData, 5).data()) == "room",
+          "libc++ PKcmm honors a long reserved capacity while keeping the explicit size");
+    call(libcxxDtor, reservedObject);
 
     const uint32_t longObject = 0x2020, longSource = 0x2120;
     const std::string longText = "libc++ string beyond SSO";
@@ -133,10 +157,48 @@ int main() {
           "libc++ long strings publish their tagged capacity, length and guest pointer");
     check(std::string(read(memory, longData, longText.size() + 1).data()) == longText,
           "libc++ long-string storage is copied and terminated in guest memory");
+    const uint32_t longCopyObject = 0x2070;
+    check(call(libcxxCopyCtor, longCopyObject, longObject) == longCopyObject,
+          "libc++ long copy construction returns the destination object");
+    const uint32_t longCopyData = memory.read32(longCopyObject + 8);
+    check((memory.read32(longCopyObject) & 1) && longCopyData != longData &&
+              std::string(read(memory, longCopyData, longText.size() + 1).data()) == longText,
+          "libc++ long-string copy owns independent, terminated guest storage");
     const size_t heapBeforeLongDestroy = heap.used();
+    call(libcxxDtor, longCopyObject);
     call(libcxxDtor, longObject);
-    check(!heap.owns(longData) && heap.used() < heapBeforeLongDestroy,
-          "libc++ long-string destruction releases its guest allocation");
+    check(!heap.owns(longData) && !heap.owns(longCopyData) && heap.used() < heapBeforeLongDestroy,
+          "libc++ long-string destruction releases both independent allocations");
+
+    const uint32_t appendObject = 0x20a0, appendBase = 0x21a0, appendShort = 0x21b0,
+                   appendLong = 0x21c0;
+    put(memory, appendBase, "small");
+    put(memory, appendShort, "!");
+    const std::string appendTail = " plus a long tail";
+    memory.write(appendLong, appendTail.data(), appendTail.size());
+    call(libcxxInit, appendObject, appendBase, 5);
+    check(cxx.isCxxSymbol(
+              "_ZNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEE6appendEPKcm"),
+          "libc++ length-delimited append is classified");
+    call("__ZNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEE6appendEPKcm",
+         appendObject, appendShort, 1);
+    check(uint8_t(read(memory, appendObject, 1)[0]) == 12 &&
+              std::string(read(memory, appendObject + 1, 7).data()) == "small!",
+          "libc++ append updates a short string in place");
+    call("__ZNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEE6appendEPKcm",
+         appendObject, appendLong, uint32_t(appendTail.size()));
+    const uint32_t firstAppendData = memory.read32(appendObject + 8);
+    check((memory.read32(appendObject) & 1) &&
+              std::string(read(memory, firstAppendData, 24).data()) == "small!" + appendTail,
+          "libc++ append grows short-string storage without losing the existing prefix");
+    call("_ZNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEE6appendEPKcm",
+         appendObject, appendShort, 1);
+    const uint32_t secondAppendData = memory.read32(appendObject + 8);
+    check(secondAppendData != firstAppendData && !heap.owns(firstAppendData) &&
+              std::string(read(memory, secondAppendData, 25).data()) == "small!" + appendTail + "!",
+          "libc++ append grows a full long buffer and releases its old owned allocation");
+    call(libcxxDtor, appendObject);
+    check(!heap.owns(secondAppendData), "libc++ append allocation is released by destruction");
 
     // The old libstdc++ ABI stores one data pointer in the object, preceded by a
     // copy-on-write {length,capacity,refcount} header. Explicit lengths preserve embedded NULs.

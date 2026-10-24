@@ -193,11 +193,18 @@ void UIKit::resume(CpuState& state, ObjC& objc) {
             // would on a device: the main thread waits in the run loop instead of returning
             // out of UIApplicationMain. The decision looks at live threads, not runnable ones,
             // because a game loop thread sleeping between frames is still the app running.
-            if (runnableThreads && parkMainThread && runnableThreads() > 1) {
-                outcome =
-                    "the delegate finished launching; the application keeps running on the "
-                    "guest thread it started, while the main thread waits in the run loop for "
-                    "events.";
+            if (liveThreads && parkMainThread) {
+                if (liveThreads() > 1) {
+                    outcome =
+                        "the delegate finished launching; the application keeps running on the "
+                        "guest thread it started, while the main thread waits in the run loop "
+                        "for events.";
+                } else {
+                    outcome =
+                        "the delegate finished launching; UIApplicationMain is waiting in the "
+                        "main run loop. No event source, timer, display link or pending task is "
+                        "currently registered.";
+                }
                 state.registers[0] = 0;
                 state.registers[15] = LifecycleGate;  // re-entered when a task is queued
                 parkMainThread();
@@ -206,12 +213,9 @@ void UIKit::resume(CpuState& state, ObjC& objc) {
             }
             break;
         }
-        // Nothing keeps the application alive yet: no event source, timer or display link
-        // exists, so the bootstrap returns to the guest rather than pretending otherwise.
-        outcome =
-            "the delegate finished launching, but the main run loop has no implemented "
-            "sources: there is no event source, timer or display link to dispatch, so the "
-            "bootstrap returns to the guest instead of pretending to run the app.";
+        // A standalone UIKit module with no scheduler hook can still report its inability to
+        // pump a run loop. The real Services runtime always installs the hook and parks above.
+        outcome = "the delegate finished launching, but no guest run-loop scheduler is wired.";
         stage = Stage::Finished;
         state.registers[15] = launchReturn & ~1u;
         state.cpsr = (state.cpsr & ~0x20u) | (launchReturn & 1u ? 0x20u : 0u);
