@@ -4,9 +4,11 @@
 
 #include <atomic>
 #include <limits>
+#include <memory>
 #include <mutex>
 #include <new>
 #include <stdexcept>
+#include <string>
 #include <vector>
 
 #include "graphics.h"
@@ -17,7 +19,43 @@
 #include "runtime/error.h"
 #include "runtime/launch.h"
 #include "runtime/loader.h"
+#include "runtime/services.h"
 namespace {
+struct ImportCoverageRuntime {
+    std::mutex mutex;
+    std::unique_ptr<podnative::runtime::Memory> memory;
+    std::unique_ptr<podnative::runtime::Services> services;
+    podnative::runtime::ExportGraph graph;
+    std::vector<std::string> libraries;
+    size_t requester = SIZE_MAX;
+
+    std::string summary(const podnative::MachORequirements& requirements) {
+        std::lock_guard<std::mutex> lock(mutex);
+        if (!services || libraries != requirements.libraries) {
+            services.reset();
+            memory.reset();
+            graph = podnative::runtime::ExportGraph();
+            libraries = requirements.libraries;
+            memory = std::make_unique<podnative::runtime::Memory>();
+            services = std::make_unique<podnative::runtime::Services>(*memory);
+            services->install(graph, libraries);
+            requester = graph.addImage("<import report executable>");
+            graph.dependencies(requester, libraries);
+            graph.setMainExecutable(requester);
+        }
+        return requirements.summary([this](const podnative::ImportedSymbol& symbol) {
+            try {
+                return graph.resolve(requester, symbol.libraryOrdinal, symbol.name).has_value();
+            } catch (const podnative::runtime::Error&) {
+                return false;  // an invalid/missing ordinal is an actionable unresolved import
+            }
+        });
+    }
+};
+std::string importCoverageSummary(const podnative::MachORequirements& requirements) {
+    static ImportCoverageRuntime runtime;
+    return runtime.summary(requirements);
+}
 std::unique_ptr<podnative::GraphicsBackend> backend;
 // The Settings switch. It is process-wide on purpose: the report and the guest log must agree
 // about whether deep tracing was on for the run that produced them.
@@ -81,7 +119,8 @@ extern "C" JNIEXPORT jstring JNICALL Java_org_podnative_NativeBridge_inspect(JNI
         std::string report = podnative::inspectMachO(b.data(), b.size());
         if (report.rfind("INSPECTED_ARM32:", 0) == 0) {
             try {
-                report += "\n\n" + podnative::inspectRequirements(b.data(), b.size()).summary();
+                report += "\n\n" +
+                          importCoverageSummary(podnative::inspectRequirements(b.data(), b.size()));
             } catch (const podnative::runtime::Error& e) {
                 report += "\n\nIMPORT_ANALYSIS_BLOCKED: " + std::string(e.what());
             }

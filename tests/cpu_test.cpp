@@ -314,6 +314,47 @@ int main() {
         assert(faultRun.detail.find("at 0xb000") != std::string::npos);
         assert(faultRun.detail.find("r1=0x00000044") != std::string::npos);
         assert(faultRun.detail.find("r4=0x12345678") != std::string::npos);
+        // The reported 0x6f000480 was slot 144 in the original service table; adding
+        // runtime exports moves later slots, so resolve _exit by symbol rather than pinning
+        // a diagnostic address. An explicit exit and an entry-point BX LR must differ.
+        LoadedImage exiting;
+        exiting.memory = std::make_unique<Memory>();
+        Services exitServices(*exiting.memory);
+        ExportGraph exitGraph;
+        exitServices.install(exitGraph);
+        const size_t exitMain = exitGraph.addImage("<exiting guest>");
+        exitGraph.setMainExecutable(exitMain);
+        std::vector<uint8_t> exitCode(4096, 0);
+        put(exitCode, 0, 0xe3a0002a);  // mov r0, #42
+        putMovAddress(exitCode, 4, exitServices.address("_exit"));
+        put(exitCode, 12, 0xe12fff33);  // blx r3 -> _exit
+        exiting.memory->map({0x8000, 4096, uint8_t(Read | Execute), "exiting guest"},
+                            exitCode.data(), exitCode.size());
+        exiting.registers[13] = 0x8ff0;
+        exiting.registers[15] = 0x8000;
+        exiting.cpsr = 0x10;
+        const auto exitRun = runGuest(exiting, exitServices, exitGraph, exitMain, 64, 2.0);
+        assert(exitRun.stop == "EXITED");
+        assert(exitRun.detail.find("_exit with status 42") != std::string::npos);
+
+        LoadedImage returning;
+        returning.memory = std::make_unique<Memory>();
+        Services returnServices(*returning.memory);
+        ExportGraph returnGraph;
+        returnServices.install(returnGraph);
+        const size_t returnMain = returnGraph.addImage("<returning guest>");
+        returnGraph.setMainExecutable(returnMain);
+        std::vector<uint8_t> returnCode(4096, 0);
+        put(returnCode, 0, 0xe12fff1e);  // bx lr, with the process-entry LR still zero
+        returning.memory->map({0x9000, 4096, uint8_t(Read | Execute), "returning guest"},
+                              returnCode.data(), returnCode.size());
+        returning.registers[13] = 0x9ff0;
+        returning.registers[15] = 0x9000;
+        returning.cpsr = 0x10;
+        auto returnRun = runGuest(returning, returnServices, returnGraph, returnMain, 64, 2.0);
+        assert(returnRun.stop == "RETURNED");
+        assert(describeRun(returnRun).find("GUEST_BLOCKER: kind=Unexpected entry-point return") !=
+               std::string::npos);
         std::cout
             << "Bounded guest execution, host service dispatch, cancellation and trap reporting passed\n";
     }

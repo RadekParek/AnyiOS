@@ -1,4 +1,5 @@
 #pragma once
+#include <cstddef>
 #include <functional>
 #include <optional>
 #include <string>
@@ -7,9 +8,12 @@
 #include "exports.h"
 #include "memory.h"
 namespace podnative::runtime {
+constexpr size_t DyldFixupBudget = 1000000;
 struct DyldSegment {
     uint32_t address, size;
     uint8_t permissions;
+    // Final initprot and dyld-time maxprot are distinct for segments such as __DATA_CONST.
+    uint8_t maxPermissions = 0;
 };
 struct DyldFixup {
     uint32_t address;

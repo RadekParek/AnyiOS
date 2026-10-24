@@ -168,9 +168,11 @@ bool Libc::invoke(const std::string& name, CpuState& cpu) {
             name == "_exit" || name == "_Exit" || name == "_exit_group" || name == "exit"
                 ? r[0]
                 : 134;  // abort() raises SIGABRT
+        terminatedBy = name;
+        exitStatusValue = status;
         r[0] = status;
-        r[15] = 0;  // returning to address zero ends the run with the status above.
-        emit("guest exited with status " + std::to_string(status));
+        r[15] = 0;  // the run loop distinguishes this explicit termination from a return.
+        emit("guest exited via " + name + " with status " + std::to_string(status));
         return true;
     }
     if (name == "_malloc") {

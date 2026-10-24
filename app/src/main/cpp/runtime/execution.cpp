@@ -192,10 +192,18 @@ GuestRun execute(LoadedImage& image, Services& services, const ExportGraph& grap
             run.samples.push_back({run.instructions, stop.pc, services.lastCall()});
         }
         if (stop.reason == StopReason::Fault) {
+            const CpuState faulted = cpu.faultState();
+            if (stop.pc == 0 && faulted.registers[14] == 0) {
+                run.stop = "RETURNED";
+                run.detail =
+                    "guest returned from its entry point to address zero without "
+                    "calling _exit, _Exit or exit";
+                run.frames = frames(*image.memory, faulted);
+                return run;
+            }
             // The register state at the fault is what makes a guest fault actionable: it says
             // whether the guest branched to a value it read from memory, returned through a
             // corrupted frame, or was handed a bad pointer by a service.
-            const CpuState faulted = cpu.faultState();
             std::ostringstream registers;
             registers << " (" << std::hex << std::setfill('0');
             for (size_t index = 0; index <= 12; index++) {
@@ -259,8 +267,16 @@ GuestRun execute(LoadedImage& image, Services& services, const ExportGraph& grap
             remember(run, services.lastCall());
             const uint32_t next = current.registers[15];
             if (!next) {
-                run.stop = "EXITED";
-                run.detail = "guest returned from its entry point";
+                if (services.guestExitRequested()) {
+                    run.stop = "EXITED";
+                    run.detail = "guest terminated via " + services.guestExitRoutine() +
+                                 " with status " + std::to_string(services.guestExitStatus());
+                } else {
+                    run.stop = "RETURNED";
+                    run.detail =
+                        "guest service returned control to address zero without an "
+                        "explicit exit routine";
+                }
                 return run;
             }
             cpu.setState(current);
@@ -342,7 +358,13 @@ void classify(GuestRun& run) {
     }
     if (run.stop == "EXITED") {
         run.blockerKind = "Guest exited";
-        run.blockerSubject = detail.empty() ? "the guest returned from its entry point" : detail;
+        run.blockerSubject = detail.empty() ? "the guest called an exit routine" : detail;
+        return;
+    }
+    if (run.stop == "RETURNED") {
+        run.blockerKind = "Unexpected entry-point return";
+        run.blockerSubject =
+            detail.empty() ? "the guest returned without calling an exit routine" : detail;
         return;
     }
     if (run.stop == "CANCELLED") {

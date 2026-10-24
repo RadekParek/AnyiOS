@@ -112,6 +112,14 @@ void marshalling(const std::string& driver) {
               std::fabs(recorded->clearColour[3] - 1.0f) < 1e-6f,
           "glClearColor reads its four GLfloat arguments from the VFP registers");
 
+    Call colorMask(gles, memory);
+    colorMask.ints({1, 0, 1, 0});
+    colorMask("_glColorMask");
+    check(recorded->colorMaskCalls == 1 && recorded->colorMask[0] == 1 &&
+              recorded->colorMask[1] == 0 && recorded->colorMask[2] == 1 &&
+              recorded->colorMask[3] == 0,
+          "glColorMask reaches the driver with all four GLboolean arguments");
+
     // Integers still come from r0-r3 in order.
     Call viewport(gles, memory);
     viewport.ints({1, 2, 3, 4});

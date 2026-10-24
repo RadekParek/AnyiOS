@@ -26,6 +26,9 @@ class Libc final {
     void setEnvironment(const std::map<std::string, std::string>& values);
     GuestHeap& guestHeap() { return heap; }
     const GuestHeap& guestHeap() const { return heap; }
+    bool guestExitRequested() const { return !terminatedBy.empty(); }
+    const std::string& exitRoutine() const { return terminatedBy; }
+    uint32_t exitStatus() const { return exitStatusValue; }
 
    private:
     Memory& memory;
@@ -33,6 +36,8 @@ class Libc final {
     std::function<void(const std::string&)> logSink;
     uint32_t randomState = 1;
     uint32_t strtokCursor = 0;
+    std::string terminatedBy;
+    uint32_t exitStatusValue = 0;
     uint32_t errnoCell = 0;
     uint32_t errorBuffer = 0, errorBufferSize = 0;
     uint32_t tmCell = 0;

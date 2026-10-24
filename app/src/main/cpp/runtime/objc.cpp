@@ -14,6 +14,8 @@
 
 namespace podnative::runtime {
 namespace {
+constexpr int GuestPosixBusy = 16;
+constexpr uint32_t MaxGuestInstanceBytes = 4 * 1024 * 1024;
 // Runtime entry points, in the order their call gates are mapped. The list covers the
 // whole objc_msgSend family a 32-bit iOS title links against plus the Foundation C
 // functions it calls directly.
@@ -77,6 +79,7 @@ void ObjC::installGates() {
     classObject("NSObject");
     classObject("NSString");
     classObject("NSAutoreleasePool");
+    classObject("NSRecursiveLock");
     classObject("NSNumber");
     classObject("NSArray");
     classObject("NSMutableArray");
@@ -283,6 +286,16 @@ uint32_t ObjC::makeHostBoolean(bool value) {
     objects[object].real = value ? 1.0 : 0.0;
     return object;
 }
+void ObjC::ensureRecursiveLock(Object& object) {
+    if (object.className != "NSRecursiveLock")
+        throw Error("OBJC_LOCK", "recursive lock state requested for a different class");
+    if (object.recursiveMutex) return;
+    if (!createRecursiveMutex)
+        throw Error("OBJC_LOCK", "NSRecursiveLock is not connected to the guest scheduler");
+    object.recursiveMutex = createRecursiveMutex();
+    if (!object.recursiveMutex)
+        throw Error("OBJC_LOCK", "could not create NSRecursiveLock's recursive mutex");
+}
 uint32_t ObjC::makeArray(const std::vector<uint32_t>& elements) {
     const uint32_t object = makeObject("NSArray");
     objects[object].elements = elements;
@@ -454,8 +467,12 @@ void ObjC::registerGuestClasses(const std::vector<uint32_t>& classList) {
         if (name.rfind("_Tt", 0) == 0)
             throw Error("OBJC_CLASS_FORMAT", "Swift class metadata is not supported", address);
         info.name = name;
-        if (!info.instanceSize || info.instanceSize > 64 * 1024)
-            throw Error("OBJC_CLASS_FORMAT", "implausible instance size", address);
+        if (info.instanceSize < sizeof(uint32_t) || info.instanceSize % sizeof(uint32_t) != 0 ||
+            info.instanceSize > MaxGuestInstanceBytes)
+            throw Error("OBJC_CLASS_FORMAT",
+                        "implausible instance size " + std::to_string(info.instanceSize) +
+                            " for class " + name,
+                        address);
         guestClasses.emplace(std::move(name), info);
     }
 }
@@ -504,10 +521,12 @@ uint32_t ObjC::allocateGuestInstance(uint32_t classAddress) {
     const GuestClass* info = guestClassAt(classAddress);
     if (!info) throw Error("OBJC_CLASS_MISSING", "alloc of an unknown class", classAddress);
     mapGuestArena();
-    constexpr uint32_t Limit = 0x6f500000 + 8 * 1024 * 1024;
-    const uint32_t size = (info->instanceSize + 7) & ~7u;
-    if (guestInstances.size() >= 16384 || nextGuestObject + size > Limit)
+    constexpr uint64_t Limit = 0x6f500000ULL + 8 * 1024 * 1024;
+    const uint64_t alignedSize = (uint64_t(info->instanceSize) + 7) & ~uint64_t(7);
+    if (guestInstances.size() >= 16384 || alignedSize > MaxGuestInstanceBytes ||
+        uint64_t(nextGuestObject) + alignedSize > Limit)
         throw Error("OBJC_LIMIT", "guest object arena exhausted");
+    const uint32_t size = uint32_t(alignedSize);
     const uint32_t object = nextGuestObject;
     nextGuestObject += size;
     memory.write32(object, info->address);  // isa
@@ -810,6 +829,17 @@ void ObjC::finishMainThreadTask(uint32_t eventId) {
 void ObjC::setGuestPaths(std::string bundle, std::string documents) {
     bundlePath = std::move(bundle);
     documentsPath = std::move(documents);
+}
+void ObjC::setRecursiveLockHooks(std::function<uint32_t()> create,
+                                 std::function<int(uint32_t)> lock,
+                                 std::function<int(uint32_t)> tryLock,
+                                 std::function<int(uint32_t)> unlock,
+                                 std::function<void(uint32_t)> destroy) {
+    createRecursiveMutex = std::move(create);
+    lockRecursiveMutex = std::move(lock);
+    tryLockRecursiveMutex = std::move(tryLock);
+    unlockRecursiveMutex = std::move(unlock);
+    destroyRecursiveMutex = std::move(destroy);
 }
 void ObjC::setScreenSize(int width, int height) {
     if (width < 1 || height < 1 || width > 8192 || height > 8192)
@@ -1478,6 +1508,11 @@ void ObjC::release(uint32_t object) {
         uint32_t ownedView = found->second.className == "UIViewController" ? found->second.view : 0;
         uint32_t rootController =
             found->second.className == "UIWindow" ? found->second.rootViewController : 0;
+        if (found->second.recursiveMutex) {
+            if (!destroyRecursiveMutex)
+                throw Error("OBJC_LOCK", "NSRecursiveLock has no scheduler destroy hook", object);
+            destroyRecursiveMutex(found->second.recursiveMutex);
+        }
         if (found->second.className == "UIWindow")
             for (uint32_t child : found->second.elements) {
                 Object* childState = nullptr;
@@ -1513,6 +1548,64 @@ void ObjC::release(uint32_t object) {
         return;
     }
     throw Error("OBJC_RELEASE", "release of a non-object", object);
+}
+bool ObjC::ownsObject(uint32_t object) const {
+    if (!object || objects.count(object) || guestInstances.count(object) || guestClassAt(object))
+        return true;
+    for (const auto& [name, address] : classes) {
+        (void)name;
+        if (address == object) return true;
+    }
+    return literalString(object).has_value();
+}
+void ObjC::retainObject(uint32_t object) {
+    if (!object || objects.count(object) || guestInstances.count(object)) {
+        retain(object);
+        return;
+    }
+    if (ownsObject(object)) return;  // class objects and constant strings are immortal
+    retain(object);                  // preserve the runtime's named invalid-object error
+}
+void ObjC::releaseObject(uint32_t object) {
+    if (!object || objects.count(object) || guestInstances.count(object)) {
+        release(object);
+        return;
+    }
+    if (ownsObject(object)) return;
+    release(object);  // preserve the runtime's named invalid-object error
+}
+bool ObjC::equalObjects(uint32_t a, uint32_t b) const {
+    auto compare = [&](auto&& self, uint32_t left, uint32_t right, size_t depth) -> bool {
+        if (left == right) return true;
+        if (depth > 32) return false;
+        auto stringValue = [&](uint32_t value) -> std::optional<std::string> {
+            if (auto found = objects.find(value);
+                found != objects.end() && (found->second.className == "NSString" ||
+                                           found->second.className == "NSMutableString"))
+                return readText(found->second.text);
+            return literalString(value);
+        };
+        const auto leftString = stringValue(left), rightString = stringValue(right);
+        if (leftString || rightString)
+            return leftString && rightString && *leftString == *rightString;
+        const auto leftObject = objects.find(left), rightObject = objects.find(right);
+        if (leftObject == objects.end() || rightObject == objects.end() ||
+            leftObject->second.className != rightObject->second.className)
+            return false;
+        const Object& x = leftObject->second;
+        const Object& y = rightObject->second;
+        if (x.className == "NSNumber") return x.integer == y.integer && x.real == y.real;
+        if (x.className == "NSNull") return true;
+        if (x.className == "NSData") return x.bytes == y.bytes;
+        if (x.className == "NSArray" || x.className == "NSMutableArray") {
+            if (x.elements.size() != y.elements.size()) return false;
+            for (size_t i = 0; i < x.elements.size(); ++i)
+                if (!self(self, x.elements[i], y.elements[i], depth + 1)) return false;
+            return true;
+        }
+        return false;
+    };
+    return compare(compare, a, b, 0);
 }
 bool ObjC::collection(const std::string& className, const std::string& method, Object& object,
                       CpuState& state) {
@@ -1806,6 +1899,7 @@ void ObjC::message(CpuState& state) {
         }
         if (method == "new") {
             const uint32_t object = makeObject(className);
+            if (className == "NSRecursiveLock") ensureRecursiveLock(objects.at(object));
             state.registers[0] = object;
             return;
         }
@@ -2079,6 +2173,35 @@ void ObjC::message(CpuState& state) {
         unsupported();
     }
     auto& object = objects[self];
+    if (className == "NSRecursiveLock") {
+        if (method == "init") {
+            ensureRecursiveLock(object);
+            state.registers[0] = self;
+            return;
+        }
+        if (method == "lock" || method == "tryLock" || method == "unlock") {
+            ensureRecursiveLock(object);
+            if (method == "lock") {
+                if (!lockRecursiveMutex || lockRecursiveMutex(object.recursiveMutex) != 0)
+                    throw Error("OBJC_LOCK", "NSRecursiveLock lock failed", self);
+                state.registers[0] = 0;
+                return;
+            }
+            if (method == "tryLock") {
+                if (!tryLockRecursiveMutex)
+                    throw Error("OBJC_LOCK", "NSRecursiveLock tryLock is not connected");
+                const int result = tryLockRecursiveMutex(object.recursiveMutex);
+                if (result != 0 && result != GuestPosixBusy)
+                    throw Error("OBJC_LOCK", "NSRecursiveLock tryLock failed", uint32_t(result));
+                state.registers[0] = result == 0 ? 1 : 0;
+                return;
+            }
+            if (!unlockRecursiveMutex || unlockRecursiveMutex(object.recursiveMutex) != 0)
+                throw Error("OBJC_LOCK", "NSRecursiveLock unlock by a non-owner", self);
+            state.registers[0] = 0;
+            return;
+        }
+    }
     if (className == "NSAutoreleasePool" && method == "init") {
         pools.emplace_back();
         state.registers[0] = self;
@@ -2158,7 +2281,10 @@ void ObjC::invoke(const std::string& entry, CpuState& state) {
                 return;
             }
             const std::string name = classNameOf(r[0]);
-            r[0] = makeObject(name.rfind("class ", 0) == 0 ? name.substr(6) : name);
+            const std::string className = name.rfind("class ", 0) == 0 ? name.substr(6) : name;
+            r[0] = makeObject(className);
+            if (entry == "_objc_alloc_init" && className == "NSRecursiveLock")
+                ensureRecursiveLock(objects.at(r[0]));
             return;
         }
         message(state);

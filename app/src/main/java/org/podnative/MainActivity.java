@@ -632,6 +632,45 @@ public final class MainActivity extends Activity {
         sheet.getWindow().setLayout(-1, -2);
     }
     private void showReport(GameLibrary.Game game) {
+        // Older library entries keep their persisted report across upgrades. Rebuild stale
+        // static-import reports before showing them so implemented bindings are not presented
+        // as unresolved merely because the report predates the runtime export filter.
+        if (game.report.contains("STATIC_IMPORT_EVIDENCE:")
+            && !game.report.contains("IMPORT_REPORT_FILTER: nlist ordinals")) {
+            new AlertDialog.Builder(this)
+                .setTitle("Import report needs refreshing")
+                .setMessage("This saved static import list predates the current runtime-binding "
+                    + "filter. Refresh it before viewing so working imports are not misreported.")
+                .setNegativeButton("Cancel", null)
+                .setPositiveButton("Refresh report",
+                    (dialog, which)
+                        -> library.refreshGame(game,
+                            () -> {
+                                if (isFinishing() || isDestroyed())
+                                    return;
+                                GameLibrary.Game refreshed = null;
+                                for (GameLibrary.Game candidate : library.games())
+                                    if (candidate.id.equals(game.id)) {
+                                        refreshed = candidate;
+                                        break;
+                                    }
+                                if (refreshed != null
+                                    && refreshed.report.contains(
+                                        "IMPORT_REPORT_FILTER: nlist ordinals")) {
+                                    showReport(refreshed);
+                                } else {
+                                    new AlertDialog.Builder(this)
+                                        .setTitle("Import report not refreshed")
+                                        .setMessage("The current static import report could not be "
+                                            + "rebuilt. No stale unresolved-import list was shown. See "
+                                            + "the latest launch report or Diagnostics for the blocker.")
+                                        .setPositiveButton("Done", null)
+                                        .show();
+                                }
+                            }))
+                .show();
+            return;
+        }
         TextView report = text(game.report.length() > 20000 ? game.report.substring(0, 20000)
                     + "\n\nPreview shortened. Export to read the complete report."
                                                             : game.report,

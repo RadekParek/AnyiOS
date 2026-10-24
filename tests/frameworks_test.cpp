@@ -3,6 +3,7 @@
 #include <cassert>
 #include <cmath>
 #include <iostream>
+#include <map>
 
 #include "runtime/error.h"
 using namespace podnative::runtime;
@@ -12,6 +13,7 @@ void fails(const char* code, F f) {
         f();
         assert(false);
     } catch (const Error& e) {
+        if (e.code != code) std::cerr << "Expected " << code << ", got " << e.what() << '\n';
         assert(e.code == code);
     }
 }
@@ -68,6 +70,155 @@ int main() {
     cpu.registers[0] = immutable;
     cf.invoke("_CFRelease", cpu, memory);
     assert(cf.liveObjects() == 0);
+
+    // CFArray callbacks retain/release real session-owned objects, while a NULL callback
+    // descriptor remains a non-owning pointer array. Values use hooks just as Objective-C
+    // Foundation objects do in Services.
+    std::map<uint32_t, int> externalReferences;
+    cf.setTypeArrayCallbacksAddress(0x3000);
+    cf.setExternalObjectHooks([](uint32_t value) { return value == 0x7000 || value == 0x7004; },
+                              [&](uint32_t value) { ++externalReferences[value]; },
+                              [&](uint32_t value) { --externalReferences[value]; },
+                              [](uint32_t left, uint32_t right) { return left == right; });
+    cpu.registers[0] = 0;  // allocator argument is unused by the type callback
+    cpu.registers[1] = 0x7000;
+    cf.invoke("_CFArrayRetainValueCallBack", cpu, memory);
+    assert(cpu.registers[0] == 0x7000 && externalReferences[0x7000] == 1);
+    cpu.registers[0] = 0;
+    cpu.registers[1] = 0x7000;
+    cf.invoke("_CFArrayReleaseValueCallBack", cpu, memory);
+    assert(externalReferences[0x7000] == 0);
+    memory.write32(0x1000, 0x7000);
+    memory.write32(0x1004, 0x7004);
+    cpu.registers[0] = 0;       // default allocator
+    cpu.registers[1] = 2;       // requested capacity, not an initial element count
+    cpu.registers[2] = 0x3000;  // kCFTypeArrayCallBacks
+    cf.invoke("_CFArrayCreateMutable", cpu, memory);
+    const uint32_t array = cpu.registers[0];
+    assert(array && externalReferences[0x7000] == 0 && externalReferences[0x7004] == 0);
+    cpu.registers[0] = array;
+    cpu.registers[1] = 0x7000;
+    cf.invoke("_CFArrayAppendValue", cpu, memory);
+    cpu.registers[0] = array;
+    cpu.registers[1] = 0x7004;
+    cf.invoke("_CFArrayAppendValue", cpu, memory);
+    assert(externalReferences[0x7000] == 1 && externalReferences[0x7004] == 1);
+    cpu.registers[0] = array;
+    cf.invoke("_CFArrayGetCount", cpu, memory);
+    assert(cpu.registers[0] == 2);
+    cpu.registers[0] = array;
+    cpu.registers[1] = 1;
+    cf.invoke("_CFArrayGetValueAtIndex", cpu, memory);
+    assert(cpu.registers[0] == 0x7004);
+    cpu.registers[0] = array;
+    cpu.registers[1] = 1;       // CFRange.location
+    cpu.registers[2] = 1;       // CFRange.length
+    cpu.registers[3] = 0x1020;  // output pointer follows the by-value range
+    cf.invoke("_CFArrayGetValues", cpu, memory);
+    assert(memory.read32(0x1020) == 0x7004);
+    cpu.registers[0] = array;
+    cpu.registers[1] = 2;
+    cpu.registers[2] = 1;
+    cpu.registers[3] = 0x1024;
+    fails("CF_ARRAY_RANGE", [&] { cf.invoke("_CFArrayGetValues", cpu, memory); });
+    cpu.registers[0] = array;
+    cpu.registers[1] = 0x7000;
+    cf.invoke("_CFArrayAppendValue", cpu, memory);
+    assert(externalReferences[0x7000] == 2);
+    cpu.registers[0] = array;
+    cpu.registers[1] = 1;
+    cpu.registers[2] = 0x7004;
+    cf.invoke("_CFArrayInsertValueAtIndex", cpu, memory);
+    assert(externalReferences[0x7004] == 2);
+    cpu.registers[0] = array;
+    cpu.registers[1] = 0x7004;
+    cf.invoke("_CFArrayEqualValueCallBack", cpu, memory);
+    assert(cpu.registers[0] == 0);
+    cpu.registers[0] = 0x7000;
+    cpu.registers[1] = 0x7000;
+    cf.invoke("_CFArrayEqualValueCallBack", cpu, memory);
+    assert(cpu.registers[0] == 1);
+    cpu.registers[0] = array;
+    cpu.registers[1] = 0;
+    cpu.registers[2] = 0x7004;
+    cf.invoke("_CFArraySetValueAtIndex", cpu, memory);
+    assert(externalReferences[0x7000] == 1 && externalReferences[0x7004] == 3);
+    cpu.registers[0] = array;
+    cpu.registers[1] = 1;
+    cf.invoke("_CFArrayRemoveValueAtIndex", cpu, memory);
+    assert(externalReferences[0x7004] == 2);
+    cpu.registers[0] = array;
+    cf.invoke("_CFArrayRemoveAllValues", cpu, memory);
+    assert(externalReferences[0x7000] == 0 && externalReferences[0x7004] == 0);
+    cpu.registers[0] = array;
+    cf.invoke("_CFRelease", cpu, memory);
+    assert(cf.liveObjects() == 0);
+
+    // The immutable constructor takes values/count/callbacks, while the two copy APIs have
+    // different ABIs: CFArrayCreateCopy takes its source in r1; MutableCopy also takes capacity.
+    cpu.registers[0] = 0;
+    cpu.registers[1] = 0x1000;
+    cpu.registers[2] = 2;
+    cpu.registers[3] = 0x3000;
+    cf.invoke("_CFArrayCreate", cpu, memory);
+    const uint32_t immutableArray = cpu.registers[0];
+    assert(immutableArray && externalReferences[0x7000] == 1 && externalReferences[0x7004] == 1);
+    cpu.registers[0] = immutableArray;
+    cpu.registers[1] = 0x7000;
+    fails("CF_IMMUTABLE", [&] { cf.invoke("_CFArrayAppendValue", cpu, memory); });
+    cpu.registers[0] = 0;
+    cpu.registers[1] = immutableArray;
+    cf.invoke("_CFArrayCreateCopy", cpu, memory);
+    const uint32_t immutableCopy = cpu.registers[0];
+    assert(immutableCopy && externalReferences[0x7000] == 2 && externalReferences[0x7004] == 2);
+    cpu.registers[0] = 0;
+    cpu.registers[1] = 4;
+    cpu.registers[2] = immutableArray;
+    cf.invoke("_CFArrayCreateMutableCopy", cpu, memory);
+    const uint32_t mutableCopy = cpu.registers[0];
+    assert(mutableCopy && externalReferences[0x7000] == 3 && externalReferences[0x7004] == 3);
+    cpu.registers[0] = mutableCopy;
+    cpu.registers[1] = 0x7000;
+    cf.invoke("_CFArrayAppendValue", cpu, memory);
+    cpu.registers[0] = mutableCopy;
+    cf.invoke("_CFRelease", cpu, memory);
+    cpu.registers[0] = immutableCopy;
+    cf.invoke("_CFRelease", cpu, memory);
+    cpu.registers[0] = immutableArray;
+    cf.invoke("_CFRelease", cpu, memory);
+    assert(externalReferences[0x7000] == 0 && externalReferences[0x7004] == 0);
+    assert(cf.liveObjects() == 0);
+
+    cpu.registers[0] = 0;
+    cpu.registers[1] = 0;
+    cpu.registers[2] = 0;
+    cpu.registers[3] = 0;
+    cf.invoke("_CFArrayCreateMutable", cpu, memory);
+    const uint32_t nonOwningArray = cpu.registers[0];
+    cpu.registers[0] = nonOwningArray;
+    cpu.registers[1] = 0xdeadbeef;  // intentionally not a retained CFType value
+    cf.invoke("_CFArrayAppendValue", cpu, memory);
+    cpu.registers[0] = nonOwningArray;
+    cpu.registers[1] = 0;
+    cf.invoke("_CFArrayGetValueAtIndex", cpu, memory);
+    assert(cpu.registers[0] == 0xdeadbeef);
+    cpu.registers[0] = nonOwningArray;
+    cf.invoke("_CFRelease", cpu, memory);
+    assert(cf.liveObjects() == 0);
+
+    // A failed retaining constructor rolls back exactly the elements it already retained.
+    memory.write32(0x1000, 0x7000);
+    memory.write32(0x1004, 0x7008);  // not a live object in the hook's ownership table
+    const int referencesBeforeFailure = externalReferences[0x7000];
+    const size_t objectsBeforeFailure = cf.liveObjects();
+    cpu.registers[0] = 0;
+    cpu.registers[1] = 0x1000;
+    cpu.registers[2] = 2;
+    cpu.registers[3] = 0x3000;
+    fails("CF_ARRAY_VALUE", [&] { cf.invoke("_CFArrayCreate", cpu, memory); });
+    assert(externalReferences[0x7000] == referencesBeforeFailure);
+    assert(cf.liveObjects() == objectsBeforeFailure);
+
     cpu.registers[0] = 0;
     cpu.registers[1] = 0xffffffff;
     cpu.registers[2] = 8;

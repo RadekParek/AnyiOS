@@ -4,6 +4,7 @@
 #include <iomanip>
 #include <map>
 #include <sstream>
+#include <utility>
 
 #include "macho.h"
 #include "runtime/error.h"
@@ -45,7 +46,7 @@ MachORequirements inspectRequirements(const uint8_t* data, size_t size) {
     };
     MachORequirements result;
     bool sawSymbols = false;
-    std::map<std::string, size_t> seen;
+    std::map<std::pair<std::string, int>, size_t> seen;
     size_t nameBytes = 0;
     size_t p = 28;
     for (uint32_t i = 0; i < u32(16); i++) {
@@ -73,7 +74,12 @@ MachORequirements inspectRequirements(const uint8_t* data, size_t size) {
                     name(uint64_t(strings) + index, uint64_t(strings) + stringSize);
                 if (symbol.empty()) throw Error("IMPORT_STRING", "empty undefined symbol name");
                 const uint16_t description = uint16_t(data[q + 6]) | uint16_t(data[q + 7]) << 8;
-                const auto existing = seen.find(symbol);
+                const uint8_t rawOrdinal = uint8_t(description >> 8);
+                const int libraryOrdinal = rawOrdinal == 0xfe   ? -2
+                                           : rawOrdinal == 0xff ? -1
+                                                                : rawOrdinal;
+                const auto key = std::make_pair(symbol, libraryOrdinal);
+                const auto existing = seen.find(key);
                 if (existing != seen.end()) {
                     result.imports[existing->second].weak &= bool(description & 0x40);
                     continue;
@@ -81,8 +87,8 @@ MachORequirements inspectRequirements(const uint8_t* data, size_t size) {
                 if (result.imports.size() >= 4096 || symbol.size() > 1024 * 1024 - nameBytes)
                     throw Error("IMPORT_LIMIT", "import-name analysis budget exceeded");
                 nameBytes += symbol.size();
-                seen.emplace(symbol, result.imports.size());
-                result.imports.push_back({symbol, bool(description & 0x40)});
+                seen.emplace(key, result.imports.size());
+                result.imports.push_back({symbol, bool(description & 0x40), libraryOrdinal});
                 if (symbol == "_glMatrixMode" || symbol == "_glVertexPointer" ||
                     symbol == "_glTexEnvf" || symbol == "_glOrthof" || symbol == "_glLightfv")
                     result.fixedFunctionImports = true;
@@ -106,14 +112,33 @@ MachORequirements inspectRequirements(const uint8_t* data, size_t size) {
         }
         p += length;
     }
-    std::sort(result.imports.begin(), result.imports.end(),
-              [](const auto& a, const auto& b) { return a.name < b.name; });
+    std::sort(result.imports.begin(), result.imports.end(), [](const auto& a, const auto& b) {
+        return a.name != b.name ? a.name < b.name : a.libraryOrdinal < b.libraryOrdinal;
+    });
     return result;
 }
-std::string MachORequirements::summary() const {
+std::string MachORequirements::summary() const { return summary({}); }
+std::string MachORequirements::summary(
+    const std::function<bool(const ImportedSymbol&)>& hasRuntimeBinding) const {
+    std::vector<const ImportedSymbol*> missing;
+    missing.reserve(imports.size());
+    size_t implemented = 0;
+    for (const ImportedSymbol& symbol : imports) {
+        if (hasRuntimeBinding && hasRuntimeBinding(symbol))
+            ++implemented;
+        else
+            missing.push_back(&symbol);
+    }
     std::ostringstream out;
-    out << "STATIC_IMPORT_EVIDENCE: " << imports.size() << " unique undefined symbols, "
-        << libraries.size() << " libraries. Not a runtime trace.";
+    out << "STATIC_IMPORT_EVIDENCE: " << imports.size() << " unique undefined symbol bindings";
+    if (hasRuntimeBinding)
+        out << "; " << implemented << " resolve to registered runtime exports and are omitted, "
+            << missing.size() << " remain unresolved";
+    out << "; " << libraries.size() << " libraries. Not a runtime trace.";
+    if (hasRuntimeBinding)
+        out << "\nIMPORT_REPORT_FILTER: nlist ordinals resolved against the runtime export graph."
+            << "\nFilter checks the library ordinal and symbol; dyld binding streams are separately "
+               "validated at launch.";
     out << "\nAbsence of an import is not proof of API absence. This is the static symbol table; see the separate dyld plan for binding streams.";
     out << "\nFixed-function GLES imports=" << fixedFunctionImports
         << " programmable GLES imports=" << programmableImports;
@@ -121,11 +146,35 @@ std::string MachORequirements::summary() const {
         << "; actual formats (including PVRTC) unknown.";
     constexpr size_t Limit = 1024;
     for (size_t i = 0; i < std::min(libraries.size(), Limit); i++)
-        out << "\nlibrary " << printable(libraries[i]);
-    for (size_t i = 0; i < std::min(imports.size(), Limit); i++)
-        out << "\n" << (imports[i].weak ? "weak " : "required ") << printable(imports[i].name);
-    if (imports.size() > Limit || libraries.size() > Limit)
+        out << "\nlibrary ordinal " << i + 1 << ": " << printable(libraries[i]);
+    for (size_t i = 0; i < std::min(missing.size(), Limit); i++) {
+        const ImportedSymbol& symbol = *missing[i];
+        std::string target;
+        if (symbol.libraryOrdinal > 0) {
+            target = "ordinal " + std::to_string(symbol.libraryOrdinal);
+            if (size_t(symbol.libraryOrdinal) <= libraries.size())
+                target += " " + printable(libraries[size_t(symbol.libraryOrdinal) - 1]);
+            else
+                target += " (dependency unavailable)";
+        } else if (symbol.libraryOrdinal == 0) {
+            target = "self image";
+        } else if (symbol.libraryOrdinal == -1) {
+            target = "main executable";
+        } else if (symbol.libraryOrdinal == -2) {
+            target = "flat lookup";
+        } else if (symbol.libraryOrdinal == -3) {
+            target = "weak lookup";
+        } else {
+            target = "invalid ordinal " + std::to_string(symbol.libraryOrdinal);
+        }
+        out << "\n"
+            << (symbol.weak ? "weak " : "required ") << printable(symbol.name) << " [" << target
+            << "]";
+    }
+    if (missing.size() > Limit || libraries.size() > Limit)
         out << "\nDisplay limited to 1024 names per category.";
+    if (missing.empty() && hasRuntimeBinding)
+        out << "\nNo import bindings without a registered runtime export.";
     return out.str();
 }
 }  // namespace podnative

@@ -188,6 +188,18 @@ int main() {
                           guest.text("window")) == customWindow);
     }
 
+    // The old 64 KiB instance-size cap rejected a valid oversized class. The current cap is
+    // still bounded; sizes beyond the 4 MiB policy are rejected with class/size context.
+    {
+        Harness malformed;
+        malformed.memory.map({0x100000, 4096, uint8_t(Read | Write), "oversized guest class"});
+        malformed.memory.write32(0x100000, 0x100040);
+        malformed.memory.write32(0x100010, 0x100100);
+        malformed.memory.write32(0x100108, 4 * 1024 * 1024 + 4);
+        malformed.memory.write32(0x100110, malformed.text("OversizedInstance"));
+        fault("OBJC_CLASS_FORMAT", [&] { malformed.objc.registerGuestClasses({0x100000}); });
+    }
+
     // Unknown class names are refused, not answered with nil (see the NSClassFromString case).
     fault("OBJC_CLASS_MISSING", [&] { harness.call(getClass, harness.text("NoSuchClass"), 0); });
     // A selector is just its interned guest string.
@@ -475,10 +487,10 @@ int main() {
         guest.memory.write32(0x100010, 0x100100);  // class_data_bits_t -> class_ro_t
         guest.memory.write32(0x100040, 0x100040);  // the metaclass is its own isa
         guest.memory.write32(0x100044, 0);
-        guest.memory.write32(0x100050, 0x100180);                  // metaclass ro
-        guest.memory.write32(0x100100, 0x10);                      // flags
-        guest.memory.write32(0x100104, 4);                         // instanceStart
-        guest.memory.write32(0x100108, 16);                        // instanceSize
+        guest.memory.write32(0x100050, 0x100180);   // metaclass ro
+        guest.memory.write32(0x100100, 0x10);       // flags
+        guest.memory.write32(0x100104, 4);          // instanceStart
+        guest.memory.write32(0x100108, 70 * 1024);  // > old 64 KiB cutoff, 4-byte aligned
         guest.memory.write32(0x100110, guest.text("GuestThing"));  // name
         guest.memory.write32(0x100114, 0x100200);                  // baseMethods
         guest.memory.write32(0x100200, 12);                        // entsizeAndFlags

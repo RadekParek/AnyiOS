@@ -1,4 +1,87 @@
-# Continuation progress — 2026-10-23
+# Continuation progress — 2026-10-24
+
+## Targeted startup/import compatibility pass — local implementation; device validation pending
+
+This pass wires the newly reported imports and dyld/Objective-C stop conditions through the
+runtime instead of filtering names as if that were implementation. It does **not** establish
+full iOS compatibility or visible Angry Birds gameplay.
+
+### Implemented and host-tested
+
+* `_glColorMask` is exported and dispatched through the GLES bridge. The recording-driver
+  regression checks the call and its arguments; that driver draws nothing.
+* C++ ABI gates now include `__ZNSt8ios_base4InitC1Ev`, the old libstdc++ COW-string
+  constructors (including `__ZNSsC1EPKcRKSaIcE`), the libc++ `basic_string::__init(PKcm)`
+  entry, and GCC SjLj helpers. The stream initializer tracks guard lifetime only: formatted
+  iostream operations remain unsupported. String allocation/length budgets remain bounded.
+* Dyld fixups distinguish final segment permissions from Mach-O `maxprot`. Loader writes to
+  read-only-at-runtime data are accepted only when `maxprot` permits them, then the guest
+  permissions are restored. `DYLD_TARGET` now reports the target address, segment, and whether
+  it was outside, unaligned, or forbidden by maximum protection. A shared one-million
+  emitted-fixup budget covers dyld stream output, external relocation entries and
+  indirect-pointer entries (each opcode stream also keeps its own work cap); `DYLD_LIMIT` is
+  not bypassed by splitting fixups between sources.
+* `__Unwind_SjLj_Register` validates the complete 44-byte frame plus a writable link word
+  before it reads/writes frame fields. A regression places a 40-byte-readable frame at the
+  end of a region and verifies it is rejected.
+* Objective-C class registration accepts aligned instance sizes through 4 MiB and includes
+  the offending class/size in format errors; synthetic 70 KiB and over-limit cases are tested.
+* Session-owned CoreFoundation now implements the reported `_CFArrayCreateMutable` ABI and
+  wires CFArray constructors, copies, queries and mutation through `Services`. Default and
+  `_kCFTypeArrayCallBacks` ownership are modeled, including Objective-C retain/release;
+  immutable mutation, invalid ranges, allocation budgets and rollback are tested. Custom
+  allocators/callback descriptors and non-object values with retaining callbacks are refused.
+  `CFArrayGetValues` follows ARM32's by-value `CFRange` register ABI.
+* `NSRecursiveLock` is a real Objective-C class backed by the same cooperative recursive
+  mutex table used by guest pthreads. `alloc`/`new`, `init`, `lock`, `tryLock`, and `unlock`
+  use scheduler lock ownership, recursion, blocking and handoff; destroying the object frees
+  its mutex storage. Host tests cover recursion, contention, handoff and non-owner unlock.
+* Explicit `_exit`/`exit` now produce an exit report naming the routine and status. A guest
+  returning to address zero without an exit is separately classified as an unexpected
+  entry-point return. The regression resolves `_exit` by name rather than depending on the
+  old gate address `0x6f000480`.
+* Static import inspection preserves each undefined symbol's Mach-O library ordinal and
+  resolves it against the registered runtime export graph before omitting it from the report.
+  Duplicate names in different libraries remain distinct; duplicate name/ordinal records do
+  not spam the list. Unresolved lines include weak/required status and dependency ordinal/name.
+  The UI re-inspects older persisted static reports before showing them; launch output remains
+  a separate report. Static inspection is evidence, not proof that a path executes.
+
+### Performance evidence and limits
+
+The dyld planner now uses reserved hash lookups for planned fixups and the loader applies
+validated fixups in batches. The existing import-analysis runtime cache avoids rebuilding its
+service/export graph when the dependency list is unchanged. IPA extraction still streams in 64 KiB
+chunks and caches the extracted bundle; Gradle caching/parallelism remain configured from earlier
+work. Neither import nor build time has a before/after benchmark. A one-second synthetic host probe
+reported 2,769.9 MIPS for guest-only code and 2,305.1 MIPS with frequent `memcpy` calls
+(234 ns/call, fastmem enabled, no full cache clears). These figures are host-specific and are
+not a before/after comparison, mobile result, IPA import benchmark, or Angry Birds speed claim.
+
+The `MEMORY_NULL` report still means an access to an unmapped low guest address; it does not
+identify the title's pointer bug. No target binary or fresh device register/PC trace was
+available to trace the pointer source. Likewise, no new Android build/device run or visual
+frame was available. Host replay, zero GL errors, gate resolution and recording-driver draws
+are not proof of a menu or gameplay. No rendering path was copied from HyperHLE-Reborn.
+
+Remaining compatibility limits include standard stream operations, arbitrary C++ allocator
+state, custom CFArray callbacks, Objective-C exception unwinding, virtual-base RTTI cases,
+and untested target-specific dyld counts/metadata. The one-million fixup ceiling is an explicit
+safety bound, not evidence that the target stays below it.
+
+### Verification
+
+* `scripts/check-format.sh`: pass (clang-format 19.1.7 and Ruff formatting/lint checks).
+* `HOST_TEST_JOBS=2 scripts/test-host.sh`: pass (host suites, 25,000 malformed Mach-O inputs,
+  10,000 memory/loader mutations, 20,000 FAT mutations, driver marshalling/emulation checks,
+  and 5 Python tests).
+* `CPU_BUILD_JOBS=2 scripts/test-cpu.sh`: CTest 11/11 passed, including CPU correctness,
+  runtime loader, C++/Objective-C services and throughput-probe structural checks. The sandbox
+  needed a temporary local CMake install because it has no system `cmake`.
+* Android APK build was not run: this checkout environment has no Gradle executable/wrapper,
+  Java runtime, or Android SDK. Consequently the Android-only JNI bridge and Java stale-report
+  UI flow are not compile-verified locally. Converter code and `scripts/test-converter.sh` remain
+  untouched.
 
 ## 0.9.6 — device-reported C++ exception handled; common API gaps filled
 

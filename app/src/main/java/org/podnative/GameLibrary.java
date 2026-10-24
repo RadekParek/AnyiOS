@@ -543,8 +543,14 @@ final class GameLibrary {
         }
     }
     void refreshGame(Game game) {
-        if (!begin("Refreshing app details and artwork…"))
+        refreshGame(game, null);
+    }
+    void refreshGame(Game game, Runnable completed) {
+        if (!begin("Refreshing app details and artwork…")) {
+            if (completed != null)
+                main.post(completed);
             return;
+        }
         worker.execute(() -> {
             File scratch = new File(root, ".pending-refresh-" + UUID.randomUUID());
             try {
@@ -580,6 +586,8 @@ final class GameLibrary {
                 busy = false;
                 progress = "";
                 changed();
+                if (completed != null)
+                    main.post(completed);
             }
         });
     }

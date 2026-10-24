@@ -97,10 +97,13 @@ int main() {
     // The internal __init ABI must preserve both layouts so the guest's inline accessors work.
     const std::string libcxxInit =
         "__ZNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEE6__initEPKcj";
+    const std::string libcxxInitSizeT =
+        "__ZNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEE6__initEPKcm";
     const std::string libcxxDtor =
         "__ZNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEED1Ev";
-    check(cxx.isCxxSymbol(libcxxInit) && cxx.isCxxSymbol("_ZNSsC1EPKcj"),
-          "libc++ __init and the libstdc++ std::string constructor resolve to the C++ runtime");
+    check(cxx.isCxxSymbol(libcxxInit) && cxx.isCxxSymbol(libcxxInitSizeT) &&
+              cxx.isLibcxxSymbol(libcxxInitSizeT) && cxx.isCxxSymbol("_ZNSsC1EPKcj"),
+          "libc++ __init size_t and the libstdc++ std::string constructors resolve");
     const uint32_t shortObject = 0x2000, shortSource = 0x2100;
     const char shortText[] = "small";
     memory.write(shortSource, shortText, sizeof(shortText));
@@ -112,6 +115,12 @@ int main() {
     check(std::string(read(memory, shortObject + 1, sizeof(shortText)).data()) == shortText,
           "libc++ short strings keep bytes and the terminator inline");
     check(heap.used() == heapBeforeShort, "libc++ short strings do not allocate");
+    const uint32_t sizeTObject = 0x2010, sizeTSource = 0x2110;
+    put(memory, sizeTSource, "size_t ABI");
+    call(libcxxInitSizeT, sizeTObject, sizeTSource, uint32_t(std::strlen("size_t ABI")));
+    check(uint8_t(read(memory, sizeTObject, 1)[0]) == std::strlen("size_t ABI") * 2,
+          "the exact libc++ PKcm size_t import initializes short-string storage");
+    call(libcxxDtor, sizeTObject);
 
     const uint32_t longObject = 0x2020, longSource = 0x2120;
     const std::string longText = "libc++ string beyond SSO";
@@ -158,6 +167,15 @@ int main() {
               std::string(read(memory, cStringData, 30).data()) == "null-terminated legacy string",
           "libstdc++ null-terminated constructor computes the string length");
     call("_ZNSsD2Ev", cStringObject);
+    const uint32_t allocatorObject = 0x2080, allocatorSource = 0x2180;
+    put(memory, allocatorSource, "allocator ABI");
+    const std::string allocatorCtor = "__ZNSsC1EPKcRKSaIcE";
+    check(cxx.isCxxSymbol(allocatorCtor), "allocator-taking C-string constructor is classified");
+    call(allocatorCtor, allocatorObject, allocatorSource, 0xdeadbeef);
+    const uint32_t allocatorData = memory.read32(allocatorObject);
+    check(std::string(read(memory, allocatorData, 14).data()) == "allocator ABI",
+          "the allocator-taking constructor initializes the COW string object");
+    call("__ZNSsD1Ev", allocatorObject);
 
     // operator new/delete route through the guest heap, so guest pointers stay contestable.
     const uint32_t block = call("_Znwm", 64);
@@ -407,6 +425,9 @@ int main() {
         check(call("___dynamic_cast", 0x6808, 0x6180, 0x6140, 8) == 0,
               "an unrelated dynamic cast fails with null");
     }
+    // The complete GCC SjLj frame is 44 bytes; 40 readable bytes at the end of this region
+    // must not pass validation before the runtime reads its LSDA and jump-buffer fields.
+    fault("CXX_UNWIND", [&] { call("__Unwind_SjLj_Register", 0x10fd8); });
     fault("CXX_UNCAUGHT", [&] { call("___cxa_throw", 0x1800, 0, 0); });
     fault("CXX_UNWIND", [&] { call("___gxx_personality_sj0", 0, 0, 0, 0); });
     fault("CXX_TERMINATE", [&] { call("_ZSt9terminatev"); });

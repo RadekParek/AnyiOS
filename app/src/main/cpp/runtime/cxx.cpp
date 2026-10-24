@@ -67,14 +67,13 @@ const char* const LibcxxStringDestructorSymbols[] = {
     "_ZNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEED2Ev",
 };
 const char* const LibstdcxxStringLengthCtorSymbols[] = {
-    "__ZNSsC1EPKcj", "_ZNSsC1EPKcj", "__ZNSsC2EPKcj", "_ZNSsC2EPKcj",
-    "__ZNSsC1EPKcm", "_ZNSsC1EPKcm", "__ZNSsC2EPKcm", "_ZNSsC2EPKcm",
+    "__ZNSsC1EPKcj",        "_ZNSsC1EPKcj",        "__ZNSsC2EPKcj",        "_ZNSsC2EPKcj",
+    "__ZNSsC1EPKcm",        "_ZNSsC1EPKcm",        "__ZNSsC2EPKcm",        "_ZNSsC2EPKcm",
+    "__ZNSsC1EPKcmRKSaIcE", "_ZNSsC1EPKcmRKSaIcE", "__ZNSsC2EPKcmRKSaIcE", "_ZNSsC2EPKcmRKSaIcE",
 };
 const char* const LibstdcxxStringCStringCtorSymbols[] = {
-    "__ZNSsC1EPKc",
-    "_ZNSsC1EPKc",
-    "__ZNSsC2EPKc",
-    "_ZNSsC2EPKc",
+    "__ZNSsC1EPKc",        "_ZNSsC1EPKc",        "__ZNSsC2EPKc",        "_ZNSsC2EPKc",
+    "__ZNSsC1EPKcRKSaIcE", "_ZNSsC1EPKcRKSaIcE", "__ZNSsC2EPKcRKSaIcE", "_ZNSsC2EPKcRKSaIcE",
 };
 const char* const LibstdcxxStringDestructorSymbols[] = {
     "__ZNSsD1Ev",
@@ -132,8 +131,29 @@ bool CxxRuntime::isCxxSymbol(const std::string& symbol) const {
            listed(LibstdcxxStringCStringCtorSymbols, symbol) ||
            listed(LibstdcxxStringDestructorSymbols, symbol);
 }
+bool CxxRuntime::isLibcxxSymbol(const std::string& symbol) const {
+    // libc++'s inline namespace is `std::__1`; old libstdc++ names such as `std::string`
+    // (the COW ABI) deliberately stay with libstdc++.6.dylib.
+    return symbol.find("St3__1") != std::string::npos;
+}
 bool CxxRuntime::isCompilerHelper(const std::string& symbol) const {
     return listed(CompilerSymbols, symbol);
+}
+std::vector<std::string> CxxRuntime::symbols() const {
+    std::vector<std::string> result;
+    auto append = [&result](const auto& names) {
+        for (const char* name : names) result.emplace_back(name);
+    };
+    append(CxxSymbols);
+    append(IosInitSymbols);
+    append(IosDestructorSymbols);
+    append(LibcxxStringInitSymbols);
+    append(LibcxxStringDestructorSymbols);
+    append(LibstdcxxStringLengthCtorSymbols);
+    append(LibstdcxxStringCStringCtorSymbols);
+    append(LibstdcxxStringDestructorSymbols);
+    append(CompilerSymbols);
+    return result;
 }
 void CxxRuntime::setLogSink(std::function<void(const std::string&)> sink) {
     logSink = std::move(sink);
@@ -369,8 +389,9 @@ bool CxxRuntime::compilerHelper(const std::string& name, CpuState& cpu) {
         // innermost one instead of guessing.
         const uint32_t context = r[0];
         if (name == "__Unwind_SjLj_Register") {
-            if (!context || !memory.permits(context, 40, Read))
-                throw Error("CXX_UNWIND", "SjLj register without a valid function context",
+            if (!context || !memory.permits(context, FrameLayout::size, Read) ||
+                !memory.permits(context, sizeof(uint32_t), Write))
+                throw Error("CXX_UNWIND", "SjLj register without a valid writable function context",
                             context);
             if (sjljFrames.size() >= 4096) throw Error("CXX_LIMIT", "too many SjLj frames");
             // The frame context is a real linked list in guest memory: libgcc's unwinder
