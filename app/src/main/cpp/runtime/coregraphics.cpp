@@ -65,8 +65,7 @@ bool CoreGraphics::invoke(const std::string& symbol, CpuState& cpu, Memory& memo
         if (!width || !height || width > MaxBitmapDimension || height > MaxBitmapDimension ||
             (bitsPerComponent != 8 && bitsPerComponent != 16 && bitsPerComponent != 32))
             throw Error("CG_BITMAP", "bitmap context dimensions or component depth are invalid");
-        if (contexts.size() >= 64)
-            throw Error("CG_BUDGET", "too many live bitmap contexts");
+        if (contexts.size() >= 64) throw Error("CG_BUDGET", "too many live bitmap contexts");
         const auto color = colorSpaceComponents.find(colorSpace);
         if (color == colorSpaceComponents.end())
             throw Error("CG_COLORSPACE", "bitmap context received an unknown colour space",
@@ -99,7 +98,8 @@ bool CoreGraphics::invoke(const std::string& symbol, CpuState& cpu, Memory& memo
                 std::vector<uint8_t> zeros(4096, 0);
                 uint64_t offset = 0;
                 while (offset < totalBytes) {
-                    const size_t chunk = size_t(std::min<uint64_t>(zeros.size(), totalBytes - offset));
+                    const size_t chunk =
+                        size_t(std::min<uint64_t>(zeros.size(), totalBytes - offset));
                     memory.write(storage + uint32_t(offset), zeros.data(), chunk);
                     offset += chunk;
                 }
@@ -108,8 +108,8 @@ bool CoreGraphics::invoke(const std::string& symbol, CpuState& cpu, Memory& memo
                 throw;
             }
         } else if (!memory.permits(storage, size_t(totalBytes), Read | Write)) {
-            throw Error("CG_BITMAP_MEMORY", "provided bitmap storage is not guest-readable and writable",
-                        storage);
+            throw Error("CG_BITMAP_MEMORY",
+                        "provided bitmap storage is not guest-readable and writable", storage);
         }
         try {
             retainColorSpace(colorSpaces, colorSpace, "bitmap colour space");
@@ -139,8 +139,7 @@ bool CoreGraphics::invoke(const std::string& symbol, CpuState& cpu, Memory& memo
         if (context == contexts.end())
             throw Error("CG_CONTEXT", "image snapshot received an unknown bitmap context",
                         contextHandle);
-        if (images.size() >= 64)
-            throw Error("CG_BUDGET", "too many live bitmap images");
+        if (images.size() >= 64) throw Error("CG_BUDGET", "too many live bitmap images");
         const BitmapContext& source = context->second;
         const size_t bytes = size_t(checkedBitmapSize(source.bytesPerRow, source.height));
         Image image;
@@ -250,21 +249,21 @@ bool CoreGraphics::invoke(const std::string& symbol, CpuState& cpu, Memory& memo
         const uint32_t x1 = uint32_t(std::max(left, right));
         const uint32_t y1 = uint32_t(std::max(top, bottom));
         for (uint32_t y = y0; y < y1; ++y) {
-            uint32_t sourceY = uint32_t(std::min<double>(
-                image->second.height - 1,
-                std::max(0.0, (double(y) + 0.5 - rectangle.y) * image->second.height /
-                                   rectangle.height)));
+            uint32_t sourceY = uint32_t(
+                std::min<double>(image->second.height - 1,
+                                 std::max(0.0, (double(y) + 0.5 - rectangle.y) *
+                                                   image->second.height / rectangle.height)));
             if (rectangle.height < 0) sourceY = image->second.height - 1 - sourceY;
             for (uint32_t x = x0; x < x1; ++x) {
-                uint32_t sourceX = uint32_t(std::min<double>(
-                    image->second.width - 1,
-                    std::max(0.0, (double(x) + 0.5 - rectangle.x) * image->second.width /
-                                       rectangle.width)));
+                uint32_t sourceX = uint32_t(
+                    std::min<double>(image->second.width - 1,
+                                     std::max(0.0, (double(x) + 0.5 - rectangle.x) *
+                                                       image->second.width / rectangle.width)));
                 if (rectangle.width < 0) sourceX = image->second.width - 1 - sourceX;
-                const uint64_t sourceOffset = uint64_t(sourceY) * image->second.bytesPerRow +
-                                              uint64_t(sourceX) * bpp;
-                const uint64_t destinationOffset = uint64_t(y) * context->second.bytesPerRow +
-                                                   uint64_t(x) * bpp;
+                const uint64_t sourceOffset =
+                    uint64_t(sourceY) * image->second.bytesPerRow + uint64_t(sourceX) * bpp;
+                const uint64_t destinationOffset =
+                    uint64_t(y) * context->second.bytesPerRow + uint64_t(x) * bpp;
                 memory.write(context->second.data + uint32_t(destinationOffset),
                              image->second.pixels.data() + sourceOffset, bpp);
             }
@@ -276,7 +275,8 @@ bool CoreGraphics::invoke(const std::string& symbol, CpuState& cpu, Memory& memo
         const auto image = images.find(handle);
         if (image == images.end())
             throw Error("CG_IMAGE", "dimension query received an unknown bitmap image", handle);
-        resultWord(cpu, 0, symbol == "_CGImageGetWidth" ? image->second.width : image->second.height);
+        resultWord(cpu, 0,
+                   symbol == "_CGImageGetWidth" ? image->second.width : image->second.height);
         return true;
     }
     if (symbol == "_CGImageRetain") {
@@ -430,13 +430,15 @@ bool CoreGraphics::invoke(const std::string& symbol, CpuState& cpu, Memory& memo
         return true;
     }
     if (symbol == "_CGColorSpaceCreateDeviceRGB") {
-        resultWord(cpu, 0, createColorSpace(colorSpaces, colorSpaceComponents, nextColorSpace, 3,
-                                            "device RGB colour spaces"));
+        resultWord(cpu, 0,
+                   createColorSpace(colorSpaces, colorSpaceComponents, nextColorSpace, 3,
+                                    "device RGB colour spaces"));
         return true;
     }
     if (symbol == "_CGColorSpaceCreateDeviceGray") {
-        resultWord(cpu, 0, createColorSpace(colorSpaces, colorSpaceComponents, nextColorSpace, 1,
-                                            "device gray colour spaces"));
+        resultWord(cpu, 0,
+                   createColorSpace(colorSpaces, colorSpaceComponents, nextColorSpace, 1,
+                                    "device gray colour spaces"));
         return true;
     }
     if (symbol == "_CGColorSpaceRetain") {

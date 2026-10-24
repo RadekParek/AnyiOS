@@ -38,8 +38,8 @@ CpuState crypt(CommonCrypto& crypto, Memory& memory, uint32_t op, uint32_t alg, 
     state.registers[2] = options;
     state.registers[3] = keyAddress;
     state.registers[13] = Stack;
-    const uint32_t stack[] = {keyLength, ivAddress, inputAddress, inputLength, outputAddress,
-                              outputCapacity, movedAddress};
+    const uint32_t stack[] = {keyLength,     ivAddress,      inputAddress, inputLength,
+                              outputAddress, outputCapacity, movedAddress};
     for (size_t n = 0; n < 7; n++) memory.write32(Stack + uint32_t(n * 4), stack[n]);
     assert(crypto.invoke("_CCCrypt", state, memory));
     return state;
@@ -49,8 +49,8 @@ void checkEcbVector(CommonCrypto& crypto, Memory& memory, const std::string& key
     hex(memory, Key, key);
     hex(memory, Input, "00112233445566778899aabbccddeeff");
     const size_t keyBytes = key.size() / 2;
-    CpuState result = crypt(crypto, memory, 0, 0, 2, Key, uint32_t(keyBytes), 0, Input, 16,
-                            Output, 16);
+    CpuState result =
+        crypt(crypto, memory, 0, 0, 2, Key, uint32_t(keyBytes), 0, Input, 16, Output, 16);
     assert(int32_t(result.registers[0]) == 0 && memory.read32(Moved) == 16);
     std::vector<uint8_t> actual = read(memory, Output, 16);
     std::vector<uint8_t> wanted;
@@ -86,18 +86,18 @@ int main() {
     md5.registers[2] = Output;
     assert(crypto.invoke("_CC_MD5", md5, memory));
     assert(md5.registers[0] == Output);
-    assert(read(memory, Output, 16) == std::vector<uint8_t>({
-        0x90, 0x01, 0x50, 0x98, 0x3c, 0xd2, 0x4f, 0xb0,
-        0xd6, 0x96, 0x3f, 0x7d, 0x28, 0xe1, 0x7f, 0x72}));
+    assert(read(memory, Output, 16) ==
+           std::vector<uint8_t>({0x90, 0x01, 0x50, 0x98, 0x3c, 0xd2, 0x4f, 0xb0, 0xd6, 0x96, 0x3f,
+                                 0x7d, 0x28, 0xe1, 0x7f, 0x72}));
     CpuState sha1;
     sha1.registers[0] = Input;
     sha1.registers[1] = uint32_t(abc.size());
     sha1.registers[2] = Output;
     assert(crypto.invoke("_CC_SHA1", sha1, memory));
     assert(sha1.registers[0] == Output);
-    assert(read(memory, Output, 20) == std::vector<uint8_t>({
-        0xa9, 0x99, 0x3e, 0x36, 0x47, 0x06, 0x81, 0x6a, 0xba, 0x3e,
-        0x25, 0x71, 0x78, 0x50, 0xc2, 0x6c, 0x9c, 0xd0, 0xd8, 0x9d}));
+    assert(read(memory, Output, 20) ==
+           std::vector<uint8_t>({0xa9, 0x99, 0x3e, 0x36, 0x47, 0x06, 0x81, 0x6a, 0xba, 0x3e,
+                                 0x25, 0x71, 0x78, 0x50, 0xc2, 0x6c, 0x9c, 0xd0, 0xd8, 0x9d}));
 
     // NIST SP 800-38A AES-CBC vector.
     hex(memory, Key, "2b7e151628aed2a6abf7158809cf4f3c");
@@ -105,17 +105,16 @@ int main() {
     hex(memory, Input, "6bc1bee22e409f96e93d7e117393172a");
     CpuState encrypted = crypt(crypto, memory, 0, 0, 0, Key, 16, Iv, Input, 16, Output, 16);
     assert(int32_t(encrypted.registers[0]) == 0 && memory.read32(Moved) == 16);
-    const std::vector<uint8_t> cbc = {
-        0x76, 0x49, 0xab, 0xac, 0x81, 0x19, 0xb2, 0x46,
-        0xce, 0xe9, 0x8e, 0x9b, 0x12, 0xe9, 0x19, 0x7d};
+    const std::vector<uint8_t> cbc = {0x76, 0x49, 0xab, 0xac, 0x81, 0x19, 0xb2, 0x46,
+                                      0xce, 0xe9, 0x8e, 0x9b, 0x12, 0xe9, 0x19, 0x7d};
     assert(read(memory, Output, 16) == cbc);
     std::vector<uint8_t> ciphertext = read(memory, Output, 16);
     memory.write(Input, ciphertext.data(), ciphertext.size());
     CpuState decrypted = crypt(crypto, memory, 1, 0, 0, Key, 16, Iv, Input, 16, Output, 16);
     assert(int32_t(decrypted.registers[0]) == 0 && memory.read32(Moved) == 16);
-    assert(read(memory, Output, 16) == std::vector<uint8_t>({
-        0x6b, 0xc1, 0xbe, 0xe2, 0x2e, 0x40, 0x9f, 0x96,
-        0xe9, 0x3d, 0x7e, 0x11, 0x73, 0x93, 0x17, 0x2a}));
+    assert(read(memory, Output, 16) ==
+           std::vector<uint8_t>({0x6b, 0xc1, 0xbe, 0xe2, 0x2e, 0x40, 0x9f, 0x96, 0xe9, 0x3d, 0x7e,
+                                 0x11, 0x73, 0x93, 0x17, 0x2a}));
 
     // FIPS-197 known-answer vectors exercise all three AES key schedules and ECB mode.
     checkEcbVector(crypto, memory, "000102030405060708090a0b0c0d0e0f",

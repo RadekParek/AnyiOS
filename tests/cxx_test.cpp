@@ -177,7 +177,8 @@ int main() {
     const std::string appendTail = " plus a long tail";
     memory.write(appendLong, appendTail.data(), appendTail.size());
     call(libcxxInit, appendObject, appendBase, 5);
-    check(cxx.isCxxSymbol("_ZNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEE6appendEPKcm"),
+    check(cxx.isCxxSymbol(
+              "_ZNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEE6appendEPKcm"),
           "libc++ length-delimited append is classified");
     call("__ZNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEE6appendEPKcm",
          appendObject, appendShort, 1);

@@ -56,10 +56,9 @@ std::array<uint8_t, 16> md5(const uint8_t* data, size_t size) {
         0x6fa87e4f, 0xfe2ce6e0, 0xa3014314, 0x4e0811a1, 0xf7537e82, 0xbd3af235, 0x2ad7d2bb,
         0xeb86d391};
     static constexpr unsigned shifts[64] = {
-        7, 12, 17, 22, 7, 12, 17, 22, 7, 12, 17, 22, 7, 12, 17, 22,
-        5, 9, 14, 20, 5, 9, 14, 20, 5, 9, 14, 20, 5, 9, 14, 20,
-        4, 11, 16, 23, 4, 11, 16, 23, 4, 11, 16, 23, 4, 11, 16, 23,
-        6, 10, 15, 21, 6, 10, 15, 21, 6, 10, 15, 21, 6, 10, 15, 21};
+        7,  12, 17, 22, 7,  12, 17, 22, 7,  12, 17, 22, 7,  12, 17, 22, 5,  9,  14, 20, 5,  9,
+        14, 20, 5,  9,  14, 20, 5,  9,  14, 20, 4,  11, 16, 23, 4,  11, 16, 23, 4,  11, 16, 23,
+        4,  11, 16, 23, 6,  10, 15, 21, 6,  10, 15, 21, 6,  10, 15, 21, 6,  10, 15, 21};
 
     const uint64_t bitLength = uint64_t(size) * 8;
     const size_t paddedSize = ((size + 8) / 64 + 1) * 64;
@@ -73,8 +72,8 @@ std::array<uint8_t, 16> md5(const uint8_t* data, size_t size) {
         uint32_t words[16];
         for (unsigned n = 0; n < 16; n++) {
             const uint8_t* p = padded.data() + offset + n * 4;
-            words[n] = uint32_t(p[0]) | uint32_t(p[1]) << 8 | uint32_t(p[2]) << 16 |
-                       uint32_t(p[3]) << 24;
+            words[n] =
+                uint32_t(p[0]) | uint32_t(p[1]) << 8 | uint32_t(p[2]) << 16 | uint32_t(p[3]) << 24;
         }
         uint32_t a = h0, b = h1, c = h2, d = h3;
         for (unsigned n = 0; n < 64; n++) {
@@ -117,11 +116,9 @@ std::array<uint8_t, 20> sha1(const uint8_t* data, size_t size) {
     std::vector<uint8_t> padded(paddedSize, 0);
     if (size) std::memcpy(padded.data(), data, size);
     padded[size] = 0x80;
-    for (unsigned n = 0; n < 8; n++)
-        padded[paddedSize - 1 - n] = uint8_t(bitLength >> (n * 8));
+    for (unsigned n = 0; n < 8; n++) padded[paddedSize - 1 - n] = uint8_t(bitLength >> (n * 8));
 
-    uint32_t h0 = 0x67452301, h1 = 0xefcdab89, h2 = 0x98badcfe, h3 = 0x10325476,
-             h4 = 0xc3d2e1f0;
+    uint32_t h0 = 0x67452301, h1 = 0xefcdab89, h2 = 0x98badcfe, h3 = 0x10325476, h4 = 0xc3d2e1f0;
     for (size_t offset = 0; offset < padded.size(); offset += 64) {
         uint32_t words[80];
         for (unsigned n = 0; n < 16; n++) {
@@ -271,14 +268,14 @@ void mixColumns(std::array<uint8_t, 16>& state, bool inverse) {
             s[2] = a ^ b ^ tables.multiply[2][c] ^ tables.multiply[3][d];
             s[3] = tables.multiply[3][a] ^ b ^ c ^ tables.multiply[2][d];
         } else {
-            s[0] = tables.multiply[14][a] ^ tables.multiply[11][b] ^
-                   tables.multiply[13][c] ^ tables.multiply[9][d];
-            s[1] = tables.multiply[9][a] ^ tables.multiply[14][b] ^
-                   tables.multiply[11][c] ^ tables.multiply[13][d];
-            s[2] = tables.multiply[13][a] ^ tables.multiply[9][b] ^
-                   tables.multiply[14][c] ^ tables.multiply[11][d];
-            s[3] = tables.multiply[11][a] ^ tables.multiply[13][b] ^
-                   tables.multiply[9][c] ^ tables.multiply[14][d];
+            s[0] = tables.multiply[14][a] ^ tables.multiply[11][b] ^ tables.multiply[13][c] ^
+                   tables.multiply[9][d];
+            s[1] = tables.multiply[9][a] ^ tables.multiply[14][b] ^ tables.multiply[11][c] ^
+                   tables.multiply[13][d];
+            s[2] = tables.multiply[13][a] ^ tables.multiply[9][b] ^ tables.multiply[14][c] ^
+                   tables.multiply[11][d];
+            s[3] = tables.multiply[11][a] ^ tables.multiply[13][b] ^ tables.multiply[9][c] ^
+                   tables.multiply[14][d];
         }
     }
 }
@@ -333,7 +330,9 @@ std::vector<uint8_t> transformAes(const std::vector<uint8_t>& input, const AesKe
 }
 }  // namespace
 
-std::vector<std::string> CommonCrypto::symbols() const { return {"_CCCrypt", "_CC_MD5", "_CC_SHA1"}; }
+std::vector<std::string> CommonCrypto::symbols() const {
+    return {"_CCCrypt", "_CC_MD5", "_CC_SHA1"};
+}
 
 bool CommonCrypto::invoke(const std::string& symbol, CpuState& cpu, Memory& memory) const {
     if (symbol == "_CC_MD5" || symbol == "_CC_SHA1") {
@@ -343,8 +342,7 @@ bool CommonCrypto::invoke(const std::string& symbol, CpuState& cpu, Memory& memo
         const uint32_t outputAddress = args.pointer();
         const std::vector<uint8_t> input =
             copyGuestBytes(memory, inputAddress, inputLength, "digest input");
-        if (!outputAddress)
-            throw Error("CC_ARGUMENT", "digest output is a null guest pointer");
+        if (!outputAddress) throw Error("CC_ARGUMENT", "digest output is a null guest pointer");
         if (symbol == "_CC_MD5") {
             const auto digest = md5(input.data(), input.size());
             requireGuestRange(memory, outputAddress, digest.size(), Write, "MD5 digest output");
@@ -398,8 +396,7 @@ bool CommonCrypto::invoke(const std::string& symbol, CpuState& cpu, Memory& memo
     const bool usePadding = (options & CCOptionPKCS7Padding) != 0;
     const bool ecb = (options & CCOptionECBMode) != 0;
     std::vector<uint8_t> key = copyGuestBytes(memory, keyAddress, keyLength, "AES key");
-    std::vector<uint8_t> input =
-        copyGuestBytes(memory, inputAddress, inputLength, "AES input");
+    std::vector<uint8_t> input = copyGuestBytes(memory, inputAddress, inputLength, "AES input");
     if (!encrypt && (inputLength == 0 || inputLength % 16 != 0)) {
         finish(CCAlignmentError);
         return true;
@@ -437,8 +434,7 @@ bool CommonCrypto::invoke(const std::string& symbol, CpuState& cpu, Memory& memo
         return true;
     }
     if (!output.empty()) {
-        if (!outputAddress)
-            throw Error("CC_ARGUMENT", "CCCrypt output is a null guest pointer");
+        if (!outputAddress) throw Error("CC_ARGUMENT", "CCCrypt output is a null guest pointer");
         requireGuestRange(memory, outputAddress, output.size(), Write, "AES output");
         memory.write(outputAddress, output.data(), output.size());
     }

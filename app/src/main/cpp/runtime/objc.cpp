@@ -2227,11 +2227,10 @@ void ObjC::message(CpuState& state) {
                 throw Error("OBJC_AUDIO_SESSION", "AVAudioSession category must not be nil");
             const std::string category = stringOf(categoryObject);
             if (!validCategory(category))
-                throw Error("OBJC_AUDIO_SESSION", "unsupported AVAudioSession category: " +
-                                                        category);
+                throw Error("OBJC_AUDIO_SESSION",
+                            "unsupported AVAudioSession category: " + category);
             constexpr uint32_t KnownOptions = 0x00000001u | 0x00000002u | 0x00000004u |
-                                              0x00000008u | 0x00000011u | 0x00000020u |
-                                              0x00000040u;
+                                              0x00000008u | 0x00000011u | 0x00000020u | 0x00000040u;
             if (options & ~KnownOptions)
                 throw Error("OBJC_AUDIO_SESSION", "unsupported AVAudioSession category options",
                             options);
@@ -2291,7 +2290,8 @@ void ObjC::message(CpuState& state) {
             return;
         }
         if (method == "category") {
-            state.registers[0] = object.audioCategory.empty() ? 0 : makeString(object.audioCategory);
+            state.registers[0] =
+                object.audioCategory.empty() ? 0 : makeString(object.audioCategory);
             return;
         }
         if (method == "mode") {
@@ -2349,8 +2349,9 @@ void ObjC::message(CpuState& state) {
             return;
         }
         if (method == "description") {
-            state.registers[0] = makeString("<AVAudioSession category=" + object.audioCategory +
-                                            (object.audioSessionActive ? " active>" : " inactive>"));
+            state.registers[0] =
+                makeString("<AVAudioSession category=" + object.audioCategory +
+                           (object.audioSessionActive ? " active>" : " inactive>"));
             return;
         }
         unsupported();

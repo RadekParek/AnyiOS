@@ -190,7 +190,7 @@ void CxxRuntime::zero(uint32_t address, size_t bytes) {
     }
 }
 void CxxRuntime::initializeLibcxxString(uint32_t object, uint32_t source, uint32_t length,
-                                         uint32_t requestedCapacity) {
+                                        uint32_t requestedCapacity) {
     if (length > CopyLimit || requestedCapacity > CopyLimit)
         throw Error("CXX_STRING_LIMIT", "libc++ basic_string input exceeds the call budget",
                     std::max(length, requestedCapacity));
@@ -912,13 +912,14 @@ bool CxxRuntime::abi(const std::string& name, CpuState& cpu) {
             capacity = (tag & ~1u) - 1;
             length = memory.read32(object + 4);
             data = memory.read32(object + 8);
-            if (!data || length > capacity ||
-                (length && !memory.permits(data, length, Read)))
-                throw Error("CXX_STRING", "libc++ append found invalid long-string storage", object);
+            if (!data || length > capacity || (length && !memory.permits(data, length, Read)))
+                throw Error("CXX_STRING", "libc++ append found invalid long-string storage",
+                            object);
         } else {
             length = (tag & 0xff) >> 1;
             if (length > capacity)
-                throw Error("CXX_STRING", "libc++ append found an invalid short-string length", object);
+                throw Error("CXX_STRING", "libc++ append found an invalid short-string length",
+                            object);
         }
         if (length > CopyLimit || count > CopyLimit - length)
             throw Error("CXX_STRING_LIMIT", "libc++ appended string exceeds the call budget",
@@ -945,12 +946,12 @@ bool CxxRuntime::abi(const std::string& name, CpuState& cpu) {
             combined.insert(combined.end(), original.begin(), original.end());
             combined.insert(combined.end(), suffix.begin(), suffix.end());
             const uint64_t growth = std::max<uint64_t>(16, uint64_t(capacity) * 2);
-            const uint32_t requested = uint32_t(std::min<uint64_t>(CopyLimit,
-                                                                   std::max<uint64_t>(newLength, growth)));
+            const uint32_t requested =
+                uint32_t(std::min<uint64_t>(CopyLimit, std::max<uint64_t>(newLength, growth)));
             uint32_t allocationCapacity = requested + 1;
             if (allocationCapacity & 1) ++allocationCapacity;
-            const uint32_t newData = allocate(allocationCapacity, "libc++ basic_string append",
-                                              &cpu);
+            const uint32_t newData =
+                allocate(allocationCapacity, "libc++ basic_string append", &cpu);
             try {
                 if (newLength) memory.write(newData, combined.data(), combined.size());
                 const char terminator = 0;
@@ -982,8 +983,8 @@ bool CxxRuntime::abi(const std::string& name, CpuState& cpu) {
             if (tag & 1) {
                 const uint32_t capacity = tag & ~1u;
                 data = memory.read32(sourceObject + 8);
-                if (length >= capacity || (length &&
-                                           (!data || !memory.permits(data, length, Read))))
+                if (length >= capacity ||
+                    (length && (!data || !memory.permits(data, length, Read))))
                     throw Error("CXX_STRING", "libc++ long-string source has invalid storage",
                                 sourceObject);
             } else if (length >= 11) {

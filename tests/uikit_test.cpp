@@ -64,8 +64,7 @@ int main() {
     uikit.installGates();
     std::vector<std::string> log, mainLoopParks;
     size_t liveThreads = 1;
-    uikit.setThreadHooks([&] { return liveThreads; },
-                         [&] { mainLoopParks.push_back("park"); });
+    uikit.setThreadHooks([&] { return liveThreads; }, [&] { mainLoopParks.push_back("park"); });
     uikit.setLogSink([&](const std::string& line) { log.push_back(line); });
     // The lifecycle gate is a labelled address inside its page, not the page base. A trap
     // written at offset zero of the page is invisible to a guest that returns to

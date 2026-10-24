@@ -29,8 +29,7 @@ uint32_t SystemConfiguration::create(Reachability object) {
     if (reachability.size() >= 128)
         throw Error("SC_LIMIT", "too many live reachability references");
     const uint32_t handle = nextHandle;
-    if (handle > UINT32_MAX - 16)
-        throw Error("SC_LIMIT", "reachability handle space is exhausted");
+    if (handle > UINT32_MAX - 16) throw Error("SC_LIMIT", "reachability handle space is exhausted");
     nextHandle += 16;
     reachability.emplace(handle, std::move(object));
     return handle;
@@ -70,8 +69,7 @@ bool SystemConfiguration::invoke(const std::string& symbol, CpuState& cpu, Memor
             memory.read(address, header, sizeof(header));
             const uint8_t family = header[1];  // Darwin sockaddr: sa_len, then sa_family.
             const uint32_t size = family == 2 ? 16u : family == 30 ? 28u : 0u;
-            if (!size || (header[0] && header[0] < size) ||
-                !memory.permits(address, size, Read))
+            if (!size || (header[0] && header[0] < size) || !memory.permits(address, size, Read))
                 throw Error("SC_REACHABILITY", "sockaddr has an unsupported or truncated family",
                             address);
             std::vector<uint8_t> bytes(size);
@@ -128,8 +126,7 @@ bool SystemConfiguration::invoke(const std::string& symbol, CpuState& cpu, Memor
     }
     if (symbol == "_SCNetworkReachabilityScheduleWithRunLoop") {
         Reachability& object = get(r[0]);
-        if (!object.callback || !r[1] || !r[2] ||
-            (validRunLoop && !validRunLoop(r[1])) ||
+        if (!object.callback || !r[1] || !r[2] || (validRunLoop && !validRunLoop(r[1])) ||
             (validRunLoopMode && !validRunLoopMode(r[2]))) {
             r[0] = 0;
             return true;

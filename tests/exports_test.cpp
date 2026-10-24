@@ -58,10 +58,8 @@ int main() {
     const uint32_t finishGate = services.address("_glFinish");
     const uint32_t getStringGate = services.address("_glGetString");
     assert(finishGate >= 0x6f000000 && getStringGate >= 0x6f000000);
-    assert(memory.fetch32(finishGate) ==
-           (0xef000000 | ((finishGate - 0x6f000000U) / 8 + 1)));
-    assert(memory.fetch32(getStringGate) ==
-           (0xef000000 | ((getStringGate - 0x6f000000U) / 8 + 1)));
+    assert(memory.fetch32(finishGate) == (0xef000000 | ((finishGate - 0x6f000000U) / 8 + 1)));
+    assert(memory.fetch32(getStringGate) == (0xef000000 | ((getStringGate - 0x6f000000U) / 8 + 1)));
 
     std::vector<uint8_t> text(4096, 0), data(4096, 0);
     memory.map({0x1000, 4096, uint8_t(Read | Execute), "guest return code"}, text.data(),
@@ -92,8 +90,8 @@ int main() {
           "/System/Library/Frameworks/QuartzCore.framework/QuartzCore",
           "/System/Library/Frameworks/UIKit.framework/UIKit",
           "/System/Library/Frameworks/OpenGLES.framework/OpenGLES", "/usr/lib/libc++.1.dylib",
-         "/System/Library/Frameworks/AVFoundation.framework/AVFoundation",
-         "/System/Library/Frameworks/SystemConfiguration.framework/SystemConfiguration"})
+          "/System/Library/Frameworks/AVFoundation.framework/AVFoundation",
+          "/System/Library/Frameworks/SystemConfiguration.framework/SystemConfiguration"})
         assert(graph.index(dependency).has_value());
     assert(executable > 9);
     graph.setMainExecutable(executable);
@@ -295,8 +293,7 @@ int main() {
     assert(graph.resolve(executable, 10, "_glGenTextures") == services.address("_glGenTextures"));
     // The full implemented GLES import table is registered as call gates, including names
     // outside the hand-maintained legacy subset.
-    assert(graph.resolve(executable, 10, "_glReadPixels") ==
-           services.address("_glReadPixels"));
+    assert(graph.resolve(executable, 10, "_glReadPixels") == services.address("_glReadPixels"));
     fault("EXPORT_IMAGE", [&] { graph.addImage("<executable>"); });
 
     ExportGraph deps;

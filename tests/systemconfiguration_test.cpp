@@ -37,9 +37,8 @@ int main() {
     memory.map({0x2000, Memory::PageSize, Read | Write, "reachability arguments"});
     SystemConfiguration system;
     CoreFoundation cf;
-    system.setRunLoopValidators(
-        [&](uint32_t runLoop) { return cf.isRunLoopObject(runLoop); },
-        [&](uint32_t mode) { return mode == 0x2500; });
+    system.setRunLoopValidators([&](uint32_t runLoop) { return cf.isRunLoopObject(runLoop); },
+                                [&](uint32_t mode) { return mode == 0x2500; });
     CpuState cpu{};
     const char host[] = "example.invalid";
     memory.write(0x2100, host, sizeof(host));
@@ -68,27 +67,24 @@ int main() {
     assert(runLoop);
     const char runLoopMode[] = "NSDefaultRunLoopMode";
     memory.write(0x2560, runLoopMode, sizeof(runLoopMode));
-    memory.write32(0x2500, 0);       // __CFConstantString class word
+    memory.write32(0x2500, 0);      // __CFConstantString class word
     memory.write32(0x2504, 0x7c8);  // 8-bit constant string
     memory.write32(0x2508, 0x2560);
     memory.write32(0x250c, sizeof(runLoopMode) - 1);
-    call(system, memory, cpu, "_SCNetworkReachabilityScheduleWithRunLoop", byName,
-         runLoop, 0x2510);
+    call(system, memory, cpu, "_SCNetworkReachabilityScheduleWithRunLoop", byName, runLoop, 0x2510);
     assert(cpu.registers[0] == 0);  // a non-string mode is refused
-    call(system, memory, cpu, "_SCNetworkReachabilityScheduleWithRunLoop", byName,
-         runLoop, 0x2500);
+    call(system, memory, cpu, "_SCNetworkReachabilityScheduleWithRunLoop", byName, runLoop, 0x2500);
     assert(cpu.registers[0] == 1);
-    call(system, memory, cpu, "_SCNetworkReachabilityUnscheduleFromRunLoop", byName,
-         runLoop + 4, 0x2500);
+    call(system, memory, cpu, "_SCNetworkReachabilityUnscheduleFromRunLoop", byName, runLoop + 4,
+         0x2500);
     assert(cpu.registers[0] == 0);  // a different run-loop pair stays scheduled
-    call(system, memory, cpu, "_SCNetworkReachabilityUnscheduleFromRunLoop", byName,
-         runLoop, 0x2500);
+    call(system, memory, cpu, "_SCNetworkReachabilityUnscheduleFromRunLoop", byName, runLoop,
+         0x2500);
     assert(cpu.registers[0] == 1);
 
     call(system, memory, cpu, "_SCNetworkReachabilitySetCallback", byName, 0, 0);
     assert(cpu.registers[0] == 1);
-    call(system, memory, cpu, "_SCNetworkReachabilityScheduleWithRunLoop", byName,
-         runLoop, 0x2500);
+    call(system, memory, cpu, "_SCNetworkReachabilityScheduleWithRunLoop", byName, runLoop, 0x2500);
     assert(cpu.registers[0] == 0);  // scheduling without a callback is not claimed as success
 
     // sockaddr on this 32-bit Darwin ABI starts with sa_len and sa_family.

@@ -66,7 +66,8 @@ int main() {
     cg.setHeapHooks(
         [&](uint32_t bytes, uint32_t alignment) {
             const uint32_t address = (nextBitmapAllocation + alignment - 1) & ~(alignment - 1);
-            nextBitmapAllocation = address + ((bytes + Memory::PageSize - 1) & ~(Memory::PageSize - 1));
+            nextBitmapAllocation =
+                address + ((bytes + Memory::PageSize - 1) & ~(Memory::PageSize - 1));
             return address;
         },
         [&](uint32_t address) { releasedBitmapAllocations.push_back(address); });
@@ -259,18 +260,18 @@ int main() {
     // Bitmap contexts hold a colour-space reference, modify only validated guest memory,
     // and snapshot images with independent pixel storage and lifetimes.
     {
-        uint8_t original[] = {1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12,
+        uint8_t original[] = {1,  2,  3,  4,  5,  6,  7,  8,  9,  10, 11, 12,
                               13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24};
         memory.write(0x9000, original, sizeof(original));
         call.state = {};
         call.state.registers[13] = Stack;
-        call.word(0, 0x9000);  // caller-owned data
+        call.word(0, 0x9000);   // caller-owned data
         call.word(1, 3);        // width
         call.word(2, 2);        // height
         call.word(3, 8);        // bits per component
         call.stackWord(0, 12);  // bytes per row
         call.stackWord(1, rgb);
-        call.stackWord(2, 1);   // premultiplied-last RGBA
+        call.stackWord(2, 1);  // premultiplied-last RGBA
         call.invoke("_CGBitmapContextCreate");
         const uint32_t context = call.state.registers[0];
         assert(context && cg.liveBitmapContexts() == 1);
@@ -352,7 +353,8 @@ int main() {
         assert(context && cg.liveBitmapContexts() == 1);
         // The fake guest allocator hands this context 0x10000; it starts cleared.
         const uint8_t zeros[4] = {};
-        assert(std::memcmp(readMemory(memory, 0x10000, sizeof(zeros)).data(), zeros, sizeof(zeros)) == 0);
+        assert(std::memcmp(readMemory(memory, 0x10000, sizeof(zeros)).data(), zeros,
+                           sizeof(zeros)) == 0);
         call.state = {};
         call.word(0, context);
         call.invoke("_CGContextRelease");

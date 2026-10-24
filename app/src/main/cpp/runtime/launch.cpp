@@ -108,9 +108,10 @@ std::string reportSafeGuestLog(const std::string& line) {
             ++i;
         } else if (byte >= 0xc2) {
             const size_t length = byte <= 0xdf ? 2 : byte <= 0xef ? 3 : byte <= 0xf4 ? 4 : 0;
-            uint32_t codepoint = length == 2 ? byte & 0x1f : length == 3 ? byte & 0x0f
-                                                       : length == 4 ? byte & 0x07
-                                                                     : 0;
+            uint32_t codepoint = length == 2   ? byte & 0x1f
+                                 : length == 3 ? byte & 0x0f
+                                 : length == 4 ? byte & 0x07
+                                               : 0;
             bool valid = length && i + length <= line.size();
             for (size_t j = 1; valid && j < length; ++j) {
                 const auto continuation = static_cast<uint8_t>(line[i + j]);

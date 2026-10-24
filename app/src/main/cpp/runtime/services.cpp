@@ -633,7 +633,8 @@ Services::Services(Memory& m)
         },
         [this](uint32_t left, uint32_t right) {
             return (objc.ownsObject(left) && objc.ownsObject(right) &&
-                    objc.equalObjects(left, right)) || systemConfiguration.equal(left, right);
+                    objc.equalObjects(left, right)) ||
+                   systemConfiguration.equal(left, right);
         });
     objc.setRecursiveLockHooks(
         [this] {
@@ -742,8 +743,8 @@ void Services::install(ExportGraph& graph, const std::vector<std::string>& depen
     auto objcLibrary = imageFor("/usr/lib/libobjc.A.dylib");
     const size_t security = imageFor("/System/Library/Frameworks/Security.framework/Security");
     const size_t commonCrypto = imageFor("/usr/lib/libcommonCrypto.dylib");
-    for (const char* alias : {"/usr/lib/libCommonCrypto.dylib",
-                              "/usr/lib/system/libcommonCrypto.dylib"})
+    for (const char* alias :
+         {"/usr/lib/libCommonCrypto.dylib", "/usr/lib/system/libcommonCrypto.dylib"})
         if (!graph.index(alias)) graph.alias(commonCrypto, alias);
     // libc++ has its own two-level namespace owner. Accept both historic install-name aliases
     // before registering the image's dependency list, so either ordinal reaches the same gates.

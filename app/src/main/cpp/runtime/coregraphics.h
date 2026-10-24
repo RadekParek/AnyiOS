@@ -39,10 +39,10 @@ class CoreGraphics final {
         uint32_t bytesPerRow = 0, bitmapInfo = 0, colorSpace = 0;
         std::vector<uint8_t> pixels;
     };
-    std::map<uint32_t, uint32_t> colorSpaces;       // handle -> reference count
+    std::map<uint32_t, uint32_t> colorSpaces;  // handle -> reference count
     std::map<uint32_t, uint32_t> colorSpaceComponents;
-    std::map<uint32_t, BitmapContext> contexts;     // guest handle -> bitmap state
-    std::map<uint32_t, Image> images;               // guest handle -> immutable pixel snapshot
+    std::map<uint32_t, BitmapContext> contexts;  // guest handle -> bitmap state
+    std::map<uint32_t, Image> images;            // guest handle -> immutable pixel snapshot
     uint32_t nextColorSpace = 0xe4000000;
     uint32_t nextContext = 0xe4100000;
     uint32_t nextImage = 0xe4200000;

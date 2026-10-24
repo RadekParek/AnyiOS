@@ -121,9 +121,9 @@ int main() {
     const uint32_t avAudioSession =
         harness.call(msgSend, avAudioClass, harness.text("sharedInstance"));
     const uint32_t categoryClass = harness.call(getClass, harness.text("NSString"), 0);
-    const uint32_t ambientCategory = harness.call(
-        msgSend, categoryClass, harness.text("stringWithUTF8String:"),
-        harness.text("AVAudioSessionCategoryAmbient"));
+    const uint32_t ambientCategory =
+        harness.call(msgSend, categoryClass, harness.text("stringWithUTF8String:"),
+                     harness.text("AVAudioSessionCategoryAmbient"));
     assert(avAudioSession && ambientCategory);
     assert(harness.call(msgSend, avAudioSession, harness.text("setCategory:error:"),
                         ambientCategory) == 1);
@@ -133,8 +133,9 @@ int main() {
     harness.call(msgSend, avAudioSession, harness.text("setDelegate:"), application);
     assert(harness.call(msgSend, avAudioSession, harness.text("delegate")) == application);
     assert(harness.call(msgSend, avAudioSession, harness.text("recordPermission")) == 0);
-    const uint32_t unknownCategory = harness.call(
-        msgSend, categoryClass, harness.text("stringWithUTF8String:"), harness.text("not-a-category"));
+    const uint32_t unknownCategory =
+        harness.call(msgSend, categoryClass, harness.text("stringWithUTF8String:"),
+                     harness.text("not-a-category"));
     fault("OBJC_AUDIO_SESSION", [&] {
         harness.call(msgSend, avAudioSession, harness.text("setCategory:error:"), unknownCategory);
     });
