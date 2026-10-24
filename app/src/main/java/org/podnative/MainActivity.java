@@ -14,6 +14,8 @@ import android.graphics.drawable.GradientDrawable;
 import android.graphics.drawable.RippleDrawable;
 import android.net.Uri;
 import android.os.Bundle;
+import android.os.Handler;
+import android.os.Looper;
 import android.text.TextUtils;
 import android.view.Gravity;
 import android.view.View;
@@ -39,6 +41,8 @@ public final class MainActivity extends Activity {
     private SharedPreferences prefs;
     private boolean landscapeRequested = false;
     private GameLibrary library;
+    private final Handler guestFrameHandler = new Handler(Looper.getMainLooper());
+    private int guestFrameGeneration;
     private PrototypeView prototype;
     private TextView liveStatus, progressLabel;
     private String tab = "Library", exportGame = "";
@@ -52,9 +56,11 @@ public final class MainActivity extends Activity {
         if (isFinishing() || isDestroyed())
             return;
         if (showingBoot && liveStatus != null) {
-            liveStatus.setText(library.progress.isEmpty()
-                    ? "Running the bounded guest startup probe…"
-                    : library.progress);
+            String status = library.progress.isEmpty() ? "Running the bounded guest startup probe…"
+                                                       : library.progress;
+            if (showingGuestFrame)
+                status += "\nLive preview · touch input is not forwarded yet.";
+            liveStatus.setText(status);
             return;
         }
         if (prototype != null)
@@ -1102,7 +1108,7 @@ public final class MainActivity extends Activity {
         setContentView(frame);
         chrome.requestApplyInsets();
     }
-    /** Bounded ARM32 guest startup, followed by the captured guest framebuffer when available. */
+    /** Bounded ARM32 startup probe with progressive EAGL frame previews when available. */
     private void attempt(GameLibrary.Game game) {
         if (isFinishing() || isDestroyed())
             return;
@@ -1114,7 +1120,9 @@ public final class MainActivity extends Activity {
         // Angry Birds and the other early iPhone titles use a landscape design space. The
         // ANGLE host surface remains at panel resolution; UIKit sees the legacy 480x320 points.
         NativeBridge.setGuestScreenSize(480, 320);
+        GameInspector.resetGuestFrameReporting();
         NativeBridge.beginGuestLaunch();
+        guestFrameGeneration = 0;
         FrameLayout boot = new FrameLayout(this);
         boot.setBackgroundColor(Color.BLACK);
         LinearLayout content = new LinearLayout(this);
@@ -1142,7 +1150,20 @@ public final class MainActivity extends Activity {
                 return;
             showingBoot = false;
             if (result != null && result.hasFrame()) {
-                showGuestFrame(game, result);
+                if (prototype != null) {
+                    prototype.updateGuestFrame(
+                        result.frameWidth, result.frameHeight, result.guestFrame);
+                    if (liveStatus != null)
+                        liveStatus.setText(
+                            "Startup probe finished · showing the final guest frame. "
+                            + "Touch input is not forwarded yet.");
+                } else {
+                    showGuestFrame(game, result);
+                }
+            } else if (prototype != null) {
+                if (liveStatus != null)
+                    liveStatus.setText("Guest stopped before a final frame. The last live frame "
+                        + "remains visible; see the launch report for details.");
             } else {
                 String report = result == null ? "LAUNCH_BLOCKED: no native result" : result.report;
                 stop();
@@ -1152,7 +1173,47 @@ public final class MainActivity extends Activity {
         if (!accepted) {
             showingBoot = false;
             stop();
+        } else {
+            guestFrameHandler.postDelayed(() -> pollGuestFrame(generation, game), 100);
         }
+    }
+    private void pollGuestFrame(int generation, GameLibrary.Game game) {
+        if (isFinishing() || isDestroyed() || generation != launchGeneration || !showingBoot)
+            return;
+        GameInspector.GuestFrame frame = GameInspector.pollGuestFrame(guestFrameGeneration);
+        if (frame != null) {
+            guestFrameGeneration = frame.generation;
+            if (prototype == null)
+                showLiveGuestFrame(game, frame);
+            else
+                prototype.updateGuestFrame(frame);
+        }
+        if (showingBoot && generation == launchGeneration)
+            guestFrameHandler.postDelayed(() -> pollGuestFrame(generation, game), 100);
+    }
+    private void showLiveGuestFrame(GameLibrary.Game game, GameInspector.GuestFrame guestFrame) {
+        showingGuestFrame = true;
+        FrameLayout frame = new FrameLayout(this);
+        frame.setBackgroundColor(Color.BLACK);
+        prototype = new PrototypeView(
+            this, guestFrame, prefs.getInt("fps", 60), prefs.getInt("resolution", 1080), info -> {
+                if (liveStatus != null)
+                    liveStatus.setText(info + "\nLive EAGL preview · touch input not forwarded.");
+            });
+        frame.addView(prototype, new FrameLayout.LayoutParams(-1, -1));
+        LinearLayout chrome = new LinearLayout(this);
+        chrome.setOrientation(LinearLayout.VERTICAL);
+        chrome.setBackgroundColor(Color.parseColor("#CC0B1020"));
+        chrome.setPadding(dp(16), dp(8), dp(16), dp(10));
+        chrome.addView(text(game.title + " · LIVE GUEST PREVIEW", 12, Color.WHITE, true));
+        liveStatus = text("Frames stream while startup runs · touch input is not forwarded yet.",
+            11, Color.parseColor("#B9C7D8"), false);
+        liveStatus.setMaxLines(2);
+        chrome.addView(liveStatus);
+        chrome.addView(
+            action("Stop / back", false, this::stop), new LinearLayout.LayoutParams(-2, -2));
+        frame.addView(chrome, new FrameLayout.LayoutParams(-1, -2, Gravity.TOP));
+        setContentView(frame);
     }
     /** Displays read-back guest RGBA through the Android ANGLE surface; this is a snapshot. */
     private void showGuestFrame(GameLibrary.Game game, GameLibrary.LaunchResult result) {

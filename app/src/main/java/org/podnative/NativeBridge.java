@@ -9,7 +9,7 @@ final class NativeBridge {
     private NativeBridge() {}
     static native String start(Surface surface, int width, int height);
     static native void frame(float seconds);
-    static native void image(byte[] rgba, int width, int height);
+    static native void image(byte[] rgba, int width, int height, int rgbaOffset);
     static native void stop();
     static native String inspect(byte[] bytes);
     static native String cpuProbe();
@@ -19,8 +19,9 @@ final class NativeBridge {
     static native void beginGuestLaunch();
     static native void cancelGuestLaunch();
     static native void setGuestScreenSize(int width, int height);
-    // Header is little-endian width/height followed by tightly packed RGBA8 pixels.
-    static native byte[] takeGuestFrame();
+    // Header is little-endian width/height/generation followed by tightly packed RGBA8 pixels.
+    // Pass the last generation already shown, or -1 to retrieve the latest frame unconditionally.
+    static native byte[] takeGuestFrame(int afterGeneration);
     // Settings ▸ "Verbose logging": names every service the guest calls, every unwind
     // decision and every GL error in the launch report. Off by default.
     static native void setVerbose(boolean on);

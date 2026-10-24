@@ -3,6 +3,7 @@
 #include <jni.h>
 
 #include <atomic>
+#include <chrono>
 #include <limits>
 #include <memory>
 #include <mutex>
@@ -68,6 +69,7 @@ std::atomic<bool> guestLaunchCancelled{false};
 std::mutex guestFrameMutex;
 std::vector<uint8_t> guestFrame;
 int guestFrameWidth = 0, guestFrameHeight = 0;
+uint32_t guestFrameGeneration = 0;
 void fail(JNIEnv* env, const std::exception& e) {
     __android_log_print(ANDROID_LOG_ERROR, "PodNative", "%s", e.what());
     env->ThrowNew(env->FindClass("java/lang/IllegalStateException"), e.what());
@@ -182,6 +184,7 @@ extern "C" JNIEXPORT void JNICALL Java_org_podnative_NativeBridge_beginGuestLaun
     std::lock_guard<std::mutex> lock(guestFrameMutex);
     guestFrame.clear();
     guestFrameWidth = guestFrameHeight = 0;
+    guestFrameGeneration = 0;
 }
 
 extern "C" JNIEXPORT void JNICALL Java_org_podnative_NativeBridge_cancelGuestLaunch(JNIEnv*,
@@ -201,10 +204,12 @@ extern "C" JNIEXPORT void JNICALL Java_org_podnative_NativeBridge_setGuestScreen
     guestScreenHeight.store(height, std::memory_order_relaxed);
 }
 
-extern "C" JNIEXPORT jbyteArray JNICALL Java_org_podnative_NativeBridge_takeGuestFrame(JNIEnv* env,
-                                                                                       jclass) {
+extern "C" JNIEXPORT jbyteArray JNICALL
+Java_org_podnative_NativeBridge_takeGuestFrame(JNIEnv* env, jclass, jint afterGeneration) {
     std::lock_guard<std::mutex> lock(guestFrameMutex);
-    if (guestFrame.empty()) return env->NewByteArray(0);
+    if (guestFrame.empty() ||
+        (afterGeneration >= 0 && uint32_t(afterGeneration) == guestFrameGeneration))
+        return env->NewByteArray(0);
     if (guestFrameWidth <= 0 || guestFrameHeight <= 0 ||
         guestFrame.size() != size_t(guestFrameWidth) * size_t(guestFrameHeight) * 4) {
         env->ThrowNew(env->FindClass("java/lang/IllegalStateException"),
@@ -212,24 +217,24 @@ extern "C" JNIEXPORT jbyteArray JNICALL Java_org_podnative_NativeBridge_takeGues
         return nullptr;
     }
     const size_t payload = guestFrame.size();
-    if (payload > size_t(std::numeric_limits<jsize>::max()) - 8) {
+    if (payload > size_t(std::numeric_limits<jsize>::max()) - 12) {
         env->ThrowNew(env->FindClass("java/lang/IllegalStateException"),
                       "GUEST_FRAME: readback exceeds the JNI array limit");
         return nullptr;
     }
-    jbyteArray result = env->NewByteArray(jsize(payload + 8));
+    jbyteArray result = env->NewByteArray(jsize(payload + 12));
     if (!result) return nullptr;
     const uint32_t width = uint32_t(guestFrameWidth), height = uint32_t(guestFrameHeight);
-    const jbyte header[8] = {jbyte(width),        jbyte(width >> 8),  jbyte(width >> 16),
-                             jbyte(width >> 24),  jbyte(height),      jbyte(height >> 8),
-                             jbyte(height >> 16), jbyte(height >> 24)};
-    env->SetByteArrayRegion(result, 0, 8, header);
-    env->SetByteArrayRegion(result, 8, jsize(payload),
+    const uint32_t generation = guestFrameGeneration;
+    const jbyte header[12] = {
+        jbyte(width),           jbyte(width >> 8),       jbyte(width >> 16),
+        jbyte(width >> 24),     jbyte(height),           jbyte(height >> 8),
+        jbyte(height >> 16),    jbyte(height >> 24),     jbyte(generation),
+        jbyte(generation >> 8), jbyte(generation >> 16), jbyte(generation >> 24)};
+    env->SetByteArrayRegion(result, 0, 12, header);
+    env->SetByteArrayRegion(result, 12, jsize(payload),
                             reinterpret_cast<const jbyte*>(guestFrame.data()));
-    if (env->ExceptionCheck()) return nullptr;
-    guestFrame.clear();
-    guestFrameWidth = guestFrameHeight = 0;
-    return result;
+    return env->ExceptionCheck() ? nullptr : result;
 }
 
 extern "C" JNIEXPORT jstring JNICALL Java_org_podnative_NativeBridge_attemptLaunch(
@@ -255,6 +260,7 @@ extern "C" JNIEXPORT jstring JNICALL Java_org_podnative_NativeBridge_attemptLaun
             std::lock_guard<std::mutex> lock(guestFrameMutex);
             guestFrame.clear();
             guestFrameWidth = guestFrameHeight = 0;
+            guestFrameGeneration = 0;
         }
         podnative::runtime::LaunchOptions options;
         options.seconds =
@@ -268,7 +274,13 @@ extern "C" JNIEXPORT jstring JNICALL Java_org_podnative_NativeBridge_attemptLaun
         options.bundleArchivePrefix = archivePrefix;
         options.bundleCache = cache;
         options.bundleOverlay = overlay;
-        options.frameSink = [](int width, int height, const std::vector<uint8_t>& pixels) {
+        options.frameSink = [lastFrame = std::chrono::steady_clock::time_point{},
+                             firstFrame = true](int width, int height,
+                                                const std::vector<uint8_t>& pixels) mutable {
+            const auto now = std::chrono::steady_clock::now();
+            if (!firstFrame && now - lastFrame < std::chrono::milliseconds(100)) return;
+            firstFrame = false;
+            lastFrame = now;
             if (width <= 0 || height <= 0 || width > 2048 || height > 2048 ||
                 pixels.size() != size_t(width) * size_t(height) * 4)
                 return;
@@ -277,9 +289,10 @@ extern "C" JNIEXPORT jstring JNICALL Java_org_podnative_NativeBridge_attemptLaun
                 guestFrame = pixels;
                 guestFrameWidth = width;
                 guestFrameHeight = height;
+                ++guestFrameGeneration;
+                if (guestFrameGeneration == 0) ++guestFrameGeneration;
             } catch (const std::bad_alloc&) {
-                guestFrame.clear();
-                guestFrameWidth = guestFrameHeight = 0;
+                // Keep the most recently delivered preview if another frame cannot be copied.
             }
         };
         const std::string report =
@@ -303,14 +316,19 @@ extern "C" JNIEXPORT void JNICALL Java_org_podnative_NativeBridge_setNativeGles(
 
 extern "C" JNIEXPORT void JNICALL Java_org_podnative_NativeBridge_image(JNIEnv* env, jclass,
                                                                         jbyteArray pixels,
-                                                                        jint width, jint height) {
+                                                                        jint width, jint height,
+                                                                        jint rgbaOffset) {
     try {
-        if (width <= 0 || height <= 0 || width > 2048 || height > 2048 ||
-            env->GetArrayLength(pixels) != width * height * 4)
+        if (!pixels || width <= 0 || height <= 0 || width > 2048 || height > 2048 || rgbaOffset < 0)
+            throw std::runtime_error("IMAGE_BOUNDS");
+        const jsize arrayLength = env->GetArrayLength(pixels);
+        const size_t payload = size_t(width) * size_t(height) * 4;
+        if (size_t(rgbaOffset) > size_t(arrayLength) ||
+            payload > size_t(arrayLength) - size_t(rgbaOffset))
             throw std::runtime_error("IMAGE_BOUNDS");
         if (!backend) throw std::runtime_error("BACKEND_NOT_READY");
-        std::vector<uint8_t> rgba(size_t(width) * height * 4);
-        env->GetByteArrayRegion(pixels, 0, jsize(rgba.size()),
+        std::vector<uint8_t> rgba(payload);
+        env->GetByteArrayRegion(pixels, rgbaOffset, jsize(rgba.size()),
                                 reinterpret_cast<jbyte*>(rgba.data()));
         if (env->ExceptionCheck()) return;
         backend->image(rgba.data(), width, height);

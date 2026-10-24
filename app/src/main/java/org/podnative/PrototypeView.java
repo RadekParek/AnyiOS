@@ -10,8 +10,17 @@ import java.util.function.Consumer;
 final class PrototypeView extends SurfaceView implements SurfaceHolder.Callback {
     private volatile boolean running;
     private java.util.List<java.io.File> images = java.util.Collections.emptyList();
-    private byte[] guestFrame;
-    private int guestFrameWidth, guestFrameHeight;
+    private volatile GuestImage guestFrame;
+    private static final class GuestImage {
+        final int width, height, rgbaOffset;
+        final byte[] rgba;
+        GuestImage(int width, int height, byte[] rgba, int rgbaOffset) {
+            this.width = width;
+            this.height = height;
+            this.rgba = rgba;
+            this.rgbaOffset = rgbaOffset;
+        }
+    }
     private Runnable completed;
     private Thread worker;
     private final Consumer<String> status;
@@ -34,12 +43,27 @@ final class PrototypeView extends SurfaceView implements SurfaceHolder.Callback 
     PrototypeView(Context context, int width, int height, byte[] rgba, int fps, int shortEdge,
         Consumer<String> status) {
         this(context, fps, shortEdge, status);
+        updateGuestFrame(width, height, rgba);
+    }
+    PrototypeView(Context context, GameInspector.GuestFrame frame, int fps, int shortEdge,
+        Consumer<String> status) {
+        this(context, fps, shortEdge, status);
+        updateGuestFrame(frame);
+    }
+    void updateGuestFrame(GameInspector.GuestFrame frame) {
+        updateGuestFrame(frame.width, frame.height, frame.rgba, frame.rgbaOffset);
+    }
+    void updateGuestFrame(int width, int height, byte[] rgba) {
+        updateGuestFrame(width, height, rgba, 0);
+    }
+    private void updateGuestFrame(int width, int height, byte[] rgba, int rgbaOffset) {
+        long payload = (long) width * height * 4;
         if (width <= 0 || height <= 0 || width > 2048 || height > 2048 || rgba == null
-            || rgba.length != width * height * 4)
+            || rgbaOffset < 0 || (long) rgbaOffset + payload > rgba.length)
             throw new IllegalArgumentException("Invalid guest framebuffer pixels");
-        guestFrameWidth = width;
-        guestFrameHeight = height;
-        guestFrame = rgba.clone();
+        // These frame arrays are immutable snapshots owned by the guest-frame parser; avoid
+        // copying several hundred KiB again before the render thread uploads them.
+        guestFrame = new GuestImage(width, height, rgba, rgbaOffset);
     }
     private void upload(java.io.File file) {
         android.graphics.Bitmap bitmap = android.graphics.BitmapFactory.decodeFile(file.getPath());
@@ -58,7 +82,7 @@ final class PrototypeView extends SurfaceView implements SurfaceHolder.Callback 
                 rgba[i * 4 + 2] = (byte) argb[i];
                 rgba[i * 4 + 3] = (byte) (argb[i] >>> 24);
             }
-            NativeBridge.image(rgba, w, h);
+            NativeBridge.image(rgba, w, h, 0);
         } finally {
             bitmap.recycle();
         }
@@ -84,11 +108,16 @@ final class PrototypeView extends SurfaceView implements SurfaceHolder.Callback 
                 post(() -> status.accept(info));
                 int imageIndex = 0;
                 long imagePresented = 0;
-                if (guestFrame != null)
-                    NativeBridge.image(guestFrame, guestFrameWidth, guestFrameHeight);
-                else if (!images.isEmpty())
+                GuestImage uploadedGuestFrame = null;
+                if (guestFrame == null && !images.isEmpty())
                     upload(images.get(0));
                 while (running) {
+                    GuestImage currentGuestFrame = guestFrame;
+                    if (currentGuestFrame != null && currentGuestFrame != uploadedGuestFrame) {
+                        NativeBridge.image(currentGuestFrame.rgba, currentGuestFrame.width,
+                            currentGuestFrame.height, currentGuestFrame.rgbaOffset);
+                        uploadedGuestFrame = currentGuestFrame;
+                    }
                     if (!images.isEmpty() && imagePresented != 0
                         && System.nanoTime() - imagePresented
                             >= LaunchImages.DISPLAY_MILLIS * 1_000_000L) {

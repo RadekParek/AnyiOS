@@ -4651,6 +4651,18 @@ bool GLES::present() {
                     &frame[size_t(height - 1 - row) * size_t(width) * 4], size_t(width) * 4);
     frame.swap(flipped);
     frameCallCount = calls;
+    if (frameSink) {
+        try {
+            frameSink(width, height, frame);
+        } catch (...) {
+            // A failed host preview must not interrupt the guest's own render loop.
+            try {
+                if (logSink) logSink("GUEST_FRAME stream callback failed");
+            } catch (...) {
+            }
+            frameSink = {};
+        }
+    }
     // The guest owns a surfaceless EGL context (or a one-pixel pbuffer fallback), not an
     // Android window surface. The host UI consumes this RGBA frame on its own ANGLE surface;
     // swapping the pbuffer would not present the game and can mask a failed readback.

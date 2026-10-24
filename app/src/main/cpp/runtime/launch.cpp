@@ -206,6 +206,7 @@ std::string attemptLaunch(const uint8_t* data, size_t size, const std::string& b
         services.setPrecise(options.precise);
         services.setNativeGles(options.nativeGles);
         services.setScreenSize(options.screenWidth, options.screenHeight);
+        if (options.frameSink) services.graphics().setFrameSink(options.frameSink);
         services.setEnvironment({{"HOME", "/var/mobile"},
                                  {"TMPDIR", "/var/mobile/Documents"},
                                  {"PATH", "/usr/bin:/bin:/usr/sbin:/sbin"}});
@@ -255,15 +256,8 @@ std::string attemptLaunch(const uint8_t* data, size_t size, const std::string& b
                     const int width = graphics.drawableWidth(), height = graphics.drawableHeight();
                     if (width > 0 && height > 0 &&
                         pixels.size() == size_t(width) * size_t(height) * 4) {
-                        try {
-                            options.frameSink(width, height, pixels);
-                            guestFrameStatus = "\nGUEST_FRAME: captured " + std::to_string(width) +
-                                               "x" + std::to_string(height) +
-                                               " RGBA8 drawable pixels.";
-                        } catch (const std::exception& e) {
-                            guestFrameStatus =
-                                "\nGUEST_FRAME: host transfer failed: " + std::string(e.what());
-                        }
+                        guestFrameStatus = "\nGUEST_FRAME: captured " + std::to_string(width) +
+                                           "x" + std::to_string(height) + " RGBA8 drawable pixels.";
                     } else {
                         guestFrameStatus = "\nGUEST_FRAME: readback dimensions were invalid.";
                     }
