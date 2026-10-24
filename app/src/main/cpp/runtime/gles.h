@@ -95,6 +95,11 @@ class GLES final {
     // Copies the active EAGL drawable (or the private fallback framebuffer) into a tightly
     // packed RGBA8 host frame. Presentation onto Android's surface is handled by the UI backend.
     bool present();
+    // Called on every successful EAGL presentation; the host can stream a bounded preview
+    // while the guest keeps running instead of waiting for the probe to finish.
+    void setFrameSink(std::function<void(int, int, const std::vector<uint8_t>&)> sink) {
+        frameSink = std::move(sink);
+    }
     // Host-visible copy of the last presented frame (RGBA8, top row first).
     const std::vector<uint8_t>& lastFrame() const { return frame; }
     bool frameCurrent() const { return !frame.empty() && frameCallCount == calls; }
@@ -161,6 +166,7 @@ class GLES final {
     int clientApi = 1;  // kEAGLRenderingAPIOpenGLES1 until the guest asks otherwise
     int width = 0, height = 0, fallbackWidth = 0, fallbackHeight = 0;
     std::vector<uint8_t> frame;
+    std::function<void(int, int, const std::vector<uint8_t>&)> frameSink;
     size_t frameCallCount = 0;
     // Client-side array state, one set per active client texture unit.
     ClientArray vertex, colour, normal;

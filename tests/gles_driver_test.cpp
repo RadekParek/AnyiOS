@@ -239,8 +239,19 @@ void drawable(const std::string& driver) {
           "a driver without the RGBA8 extension gets the ES-required RGBA4 format");
     check(recorded->boundFramebuffer == 3 && recorded->attachedRenderbuffer == 7,
           "the colour renderbuffer is attached to the framebuffer");
+    int streamedFrames = 0, streamedWidth = 0, streamedHeight = 0;
+    std::vector<uint8_t> streamedPixels;
+    gles.setFrameSink([&](int width, int height, const std::vector<uint8_t>& pixels) {
+        ++streamedFrames;
+        streamedWidth = width;
+        streamedHeight = height;
+        streamedPixels = pixels;
+    });
 
     check(gles.present(), "present reads the drawable back: " + gles.describe());
+    check(streamedFrames == 1 && streamedWidth == 8 && streamedHeight == 4 &&
+              streamedPixels == gles.lastFrame(),
+          "successful EAGL presents stream their top-row-first RGBA frame immediately");
     check(recorded->finishCalls == 1, "present finishes the driver first");
     check(recorded->readPixelsCalls == 1 && recorded->readPixelsWidth == 8 &&
               recorded->readPixelsHeight == 4,

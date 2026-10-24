@@ -15,6 +15,7 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipFile;
 
@@ -22,6 +23,7 @@ import java.util.zip.ZipFile;
 final class GameInspector {
     private static final int MAX_EXECUTABLE = 64 * 1024 * 1024;
     private static final long MAX_CONTAINER = 512L * 1024 * 1024;
+    private static final AtomicBoolean guestFrameErrorReported = new AtomicBoolean();
     static final class Result {
         String kind = "Executable";
         String title, version = "Unknown version", bundleId = "", executable = "", report = "";
@@ -35,6 +37,17 @@ final class GameInspector {
         byte[] guestFrame;
         File bundleRoot, containerRoot, bundleArchive, bundleCacheRoot, bundleOverlayRoot;
         String bundleArchivePrefix = "";
+    }
+    static final class GuestFrame {
+        final int width, height, generation, rgbaOffset;
+        final byte[] rgba;
+        GuestFrame(int width, int height, int generation, byte[] rgba, int rgbaOffset) {
+            this.width = width;
+            this.height = height;
+            this.generation = generation;
+            this.rgba = rgba;
+            this.rgbaOffset = rgbaOffset;
+        }
     }
     private GameInspector() {}
     static byte[] bounded(InputStream in, int limit) throws IOException {
@@ -258,26 +271,44 @@ final class GameInspector {
         }
     }
     private static void takeGuestFrame(Result result) {
+        GuestFrame frame = pollGuestFrame(-1);
+        if (frame == null)
+            return;
+        result.guestFrameWidth = frame.width;
+        result.guestFrameHeight = frame.height;
+        result.guestFrame =
+            java.util.Arrays.copyOfRange(frame.rgba, frame.rgbaOffset, frame.rgba.length);
+    }
+    static GuestFrame pollGuestFrame(int afterGeneration) {
         try {
-            byte[] packed = NativeBridge.takeGuestFrame();
-            if (packed == null || packed.length < 8)
-                return;
-            int width = (packed[0] & 255) | (packed[1] & 255) << 8 | (packed[2] & 255) << 16
-                | (packed[3] & 255) << 24;
-            int height = (packed[4] & 255) | (packed[5] & 255) << 8 | (packed[6] & 255) << 16
-                | (packed[7] & 255) << 24;
-            long expected = 8L + (long) width * height * 4;
-            if (width < 1 || height < 1 || width > 2048 || height > 2048
+            byte[] packed = NativeBridge.takeGuestFrame(afterGeneration);
+            if (packed == null || packed.length < 12)
+                return null;
+            int width = readFrameInt(packed, 0);
+            int height = readFrameInt(packed, 4);
+            int generation = readFrameInt(packed, 8);
+            long expected = 12L + (long) width * height * 4;
+            if (width < 1 || height < 1 || width > 2048 || height > 2048 || generation <= 0
                 || expected != packed.length) {
-                Diagnostics.record("GUEST_FRAME", "ignored invalid frame dimensions/length");
-                return;
+                reportGuestFrameError("ignored invalid frame dimensions/length");
+                return null;
             }
-            result.guestFrameWidth = width;
-            result.guestFrameHeight = height;
-            result.guestFrame = java.util.Arrays.copyOfRange(packed, 8, packed.length);
+            return new GuestFrame(width, height, generation, packed, 12);
         } catch (RuntimeException | LinkageError e) {
-            Diagnostics.record("GUEST_FRAME", "readback transfer failed: " + e);
+            reportGuestFrameError("readback transfer failed: " + e);
+            return null;
         }
+    }
+    static void resetGuestFrameReporting() {
+        guestFrameErrorReported.set(false);
+    }
+    private static void reportGuestFrameError(String message) {
+        if (guestFrameErrorReported.compareAndSet(false, true))
+            Diagnostics.record("GUEST_FRAME", message);
+    }
+    private static int readFrameInt(byte[] bytes, int offset) {
+        return (bytes[offset] & 255) | (bytes[offset + 1] & 255) << 8
+            | (bytes[offset + 2] & 255) << 16 | (bytes[offset + 3] & 255) << 24;
     }
     private static void analyzeArchive(File archive, File scratch, Result result)
         throws IOException {

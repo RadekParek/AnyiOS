@@ -37,7 +37,8 @@ struct LaunchOptions {
     // caches verified files on first access; guest writes land in the private overlay.
     std::string bundleArchive, bundleArchivePrefix, bundleCache, bundleOverlay;
     // Optional host cancellation and rendered-frame delivery used by the Android game view. A
-    // null callback keeps command-line/host diagnostics unchanged and avoids pixel readback.
+    // non-null callback receives each successful EAGL present so the host can stream a preview
+    // during a bounded probe; null leaves command-line/host diagnostics without a frame stream.
     const std::atomic<bool>* cancelRequested = nullptr;
     std::function<void(int, int, const std::vector<uint8_t>&)> frameSink;
 };
