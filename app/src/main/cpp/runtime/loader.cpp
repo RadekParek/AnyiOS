@@ -71,9 +71,7 @@ LoadedImage loadMachO(const uint8_t* data, size_t size, size_t budget) {
         bool lazy, stub;
     };
     std::vector<IndirectSection> indirectSections;
-    // Sections whose contents describe guest Objective-C metadata or initializer pointers;
-    // read after mapping, and after dyld fixups for the latter.
-    std::vector<std::pair<uint32_t, uint32_t>> classListSections;
+    // Initializer function pointers are read only after mapping and dyld fixups.
     size_t initializerFunctionCount = 0;
     size_t dynamicSymbols = 0;
     bool hasDyldInfo = false;
@@ -106,7 +104,7 @@ LoadedImage loadMachO(const uint8_t* data, size_t size, size_t budget) {
                                type = r.u32(q + 56) & 0xff;
                 if (type == 0 && r.fixed(q, 16) == "__objc_classlist") {
                     if (sectionSize % 4) throw Error("LOAD_OBJECTIVE_C", "unaligned class list");
-                    classListSections.emplace_back(address, sectionSize);
+                    result.objcClassListSections.emplace_back(address, sectionSize);
                 }
                 if (type == 9) {  // S_MOD_INIT_FUNC_POINTERS (`__mod_init_func`).
                     if (sectionSize % 4)
@@ -597,19 +595,16 @@ LoadedImage loadMachO(const uint8_t* data, size_t size, size_t budget) {
         if (s.region.permissions) result.memory->map(s.region, data + s.offset, s.fileSize);
     if (!result.memory->permits(pc, thumb ? 2 : 4, Execute))
         throw Error("LOAD_ENTRY_ACCESS", "entry is not executable", pc);
-    // Guest-defined Objective-C classes, read from the mapped list. A pointer outside a
-    // readable region means the file is not self-consistent, so it is refused here instead
-    // of being dereferenced on the first message.
-    for (const auto& [listAddress, listBytes] : classListSections) {
-        const uint32_t count = listBytes / 4;
-        if (count > 4096 - result.objcClasses.size())
-            throw Error("LOAD_OBJECTIVE_C", "class list exceeds budget");
-        for (uint32_t index = 0; index < count; index++) {
-            const uint32_t entry = result.memory->read32(listAddress + index * 4);
-            if (!result.memory->permits(entry, 40, Read))
-                throw Error("LOAD_OBJECTIVE_C", "class object is outside the image", entry);
-            result.objcClasses.push_back(entry);
-        }
+    // Validate the class-list storage now, but defer reading its pointer slots until after
+    // dyld. Rebased class-list entries and class_ro_t pointers are not valid before fixups.
+    size_t classCount = 0;
+    for (const auto& [listAddress, listBytes] : result.objcClassListSections) {
+        const size_t count = listBytes / 4;
+        if (count > 4096 - classCount)
+            throw Error("LOAD_OBJECTIVE_C", "class list exceeds budget", listAddress);
+        classCount += count;
+        if (!result.memory->permits(listAddress, listBytes, Read))
+            throw Error("LOAD_OBJECTIVE_C", "class list storage is outside the image", listAddress);
     }
     constexpr uint32_t StackBase = 0x70000000, StackSize = 1024 * 1024;
     // Guard segments must also remain unmapped; a backed-only overlap check is insufficient.
@@ -625,6 +620,27 @@ LoadedImage loadMachO(const uint8_t* data, size_t size, size_t budget) {
     result.registers[15] = pc;
     result.cpsr = (result.cpsr & ~0x20u) | (thumb ? 0x20 : 0);
     return result;
+}
+std::vector<uint32_t> LoadedImage::objcClassAddresses() const {
+    if (!memory) throw Error("LOAD_OBJECTIVE_C", "class-list read needs mapped image storage");
+    std::vector<uint32_t> addresses;
+    for (const auto& [listAddress, listBytes] : objcClassListSections) {
+        const size_t count = listBytes / sizeof(uint32_t);
+        if (listBytes % sizeof(uint32_t) || count > 4096 - addresses.size())
+            throw Error("LOAD_OBJECTIVE_C", "class list exceeds its safe bounds", listAddress);
+        if (!memory->permits(listAddress, listBytes, Read))
+            throw Error("LOAD_OBJECTIVE_C", "class list storage is outside the image", listAddress);
+        for (size_t index = 0; index < count; index++) {
+            const uint64_t slot = uint64_t(listAddress) + index * sizeof(uint32_t);
+            if (slot > std::numeric_limits<uint32_t>::max())
+                throw Error("LOAD_OBJECTIVE_C", "class list slot exceeds ARM32 address space");
+            const uint32_t address = memory->read32(uint32_t(slot));
+            if (!memory->permits(address, 40, Read))
+                throw Error("LOAD_OBJECTIVE_C", "class object is outside the image", address);
+            addresses.push_back(address);
+        }
+    }
+    return addresses;
 }
 void bindLegacyStubs(LoadedImage& image, const ExportGraph& graph, size_t requester,
                      const std::function<uint32_t(const std::string&)>& trap) {

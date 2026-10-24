@@ -1,5 +1,28 @@
 # Continuation progress — 2026-10-24
 
+## IPA archive filesystem, Objective-C fixup ordering, and game data — host-tested; device validation pending
+
+### Changes in this follow-up
+
+* **IPA launches no longer extract every app-bundle file.** The launcher indexes ZIP/ZIP64 central-directory entries, reads stored/DEFLATE members on demand, CRC-checks each newly materialized member, and keeps that disk cache under `game-<UUID>/sandbox/ZipCache`. Bundle writes go to `BundleOverrides`; deletes use persistent whiteouts, and rename/remove/create behavior is routed through the guest stdio filesystem. The imported IPA is never modified. Extracted `.app` folder imports keep their copied bundle-directory behavior.
+* **Objective-C metadata now waits for dyld.** The loader previously read `__objc_classlist` pointer slots before fixups, and class registration could consume pre-fixup `class_data_bits_t`, fall back to the legacy layout, and treat a neighboring pointer word as `instanceSize`. It now records class-list section ranges, applies dyld first, then reads class pointers and registers classes. A regression rebases both the class-list entry and class-data pointer; another reproduces the pre-fixup `AppController` garbage-size error and verifies it disappears after fixups. Both then allocate an `AppController` with the valid 210-byte instance size. Bounds remain enforced; allocation rounds the byte size to the required alignment. This addresses a concrete source of varying garbage sizes, but no fresh device trace has yet confirmed that it was the exact Angry Birds failure.
+* **Persistent per-game data is organized and exportable.** `sandbox/Documents` stores saves, `sandbox/ZipCache` is rebuildable, and `sandbox/BundleOverrides` stores IPA app-resource writes. Existing `container/` data is migrated without overwriting conflicting saves. Game details can export the sandbox as a ZIP; for an imported extracted `.app`, the modified private bundle is included. The cache is excluded.
+* **Archive regressions cover** stored and compressed reads, lazy cache population, CRC failures, malformed archives, traversal names, copy-on-write, whiteouts, rename, new bundle files, and preservation of the original IPA.
+
+### Measurements (host only; not an Android/gameplay claim)
+
+The local sample `tests/AngryBirds_v1.0_os30.ipa` has 549 ZIP entries; its app contains 268 files totaling 16,602,764 uncompressed bytes, versus a 9,769,211-byte IPA. A seven-trial Linux host microbenchmark with the new C++ filesystem reported a median 1.08 ms to index the archive and 20.23 ms to materialize five representative files (Info.plist, executable, a PVR, PNG, and Lua file; 4,160,684 cached bytes). The same implementation took 109.30 ms median to index and materialize all 268 app files. This indicates lower work/storage for that selected subset on this host, not an old-versus-new Android import or launch benchmark; the actual guest’s resource set is not represented.
+
+Three one-second synthetic Dynarmic probe runs had medians of 1,857 MIPS guest-only and 1,533 MIPS with frequent service calls; observed ranges were 1,433–1,877 and 1,458–1,552 MIPS. These are host throughput probes, not a real-game workload or before/after speedup. Importing the original IPA still copies its bytes, guest CPU execution was not changed in this pass, and no device startup/rendering measurement was available.
+
+### Verification and remaining gaps
+
+* `HOST_TEST_JOBS=2 scripts/test-host.sh`: pass, including archive and rebased Objective-C regressions, sanitizer/strict-warning suites, malformed-input tests, graphics-driver marshalling tests, and Python tests.
+* `CPU_BUILD_JOBS=2 scripts/test-cpu.sh`: CTest **11/11** passed, including real CPU/HLE, Objective-C, loader, and throughput-probe checks. The local environment needed temporary CMake and zlib development files.
+* `scripts/check-format.sh`: pass with the repository-pinned clang-format 19.1.7 and Ruff 0.8.4.
+* Android/JNI compilation and device tests are still pending because this sandbox has no JDK, Gradle, or Android SDK. No fresh `MEMORY_NULL` PC/register trace was available, and visible Angry Birds menu/gameplay is still unverified. A host test, passing APK build, or graphics-driver call count is not rendering proof.
+* A brief source-based comparison with HyperHLE-Reborn is in [`HYPERHLE_COMPARISON.md`](HYPERHLE_COMPARISON.md); it separates its broader README-listed game compatibility from the filesystem trade-offs measured here.
+
 ## Targeted startup/import compatibility pass — local implementation; device validation pending
 
 This pass wires the newly reported imports and dyld/Objective-C stop conditions through the
@@ -24,8 +47,9 @@ full iOS compatibility or visible Angry Birds gameplay.
 * `__Unwind_SjLj_Register` validates the complete 44-byte frame plus a writable link word
   before it reads/writes frame fields. A regression places a 40-byte-readable frame at the
   end of a region and verifies it is rejected.
-* Objective-C class registration accepts aligned instance sizes through 4 MiB and includes
-  the offending class/size in format errors; synthetic 70 KiB and over-limit cases are tested.
+* Objective-C class registration accepts bounded byte-sized instance sizes (including
+  non-pointer-aligned layouts), includes the offending class/size in format errors, and retains
+  the 4 MiB cap. Synthetic fixup, 210-byte, 70 KiB, and over-limit cases are covered.
 * Session-owned CoreFoundation now implements the reported `_CFArrayCreateMutable` ABI and
   wires CFArray constructors, copies, queries and mutation through `Services`. Default and
   `_kCFTypeArrayCallBacks` ownership are modeled, including Objective-C retain/release;
@@ -49,14 +73,15 @@ full iOS compatibility or visible Angry Birds gameplay.
 
 ### Performance evidence and limits
 
-The dyld planner now uses reserved hash lookups for planned fixups and the loader applies
-validated fixups in batches. The existing import-analysis runtime cache avoids rebuilding its
-service/export graph when the dependency list is unchanged. IPA extraction still streams in 64 KiB
-chunks and caches the extracted bundle; Gradle caching/parallelism remain configured from earlier
-work. Neither import nor build time has a before/after benchmark. A one-second synthetic host probe
-reported 2,769.9 MIPS for guest-only code and 2,305.1 MIPS with frequent `memcpy` calls
-(234 ns/call, fastmem enabled, no full cache clears). These figures are host-specific and are
-not a before/after comparison, mobile result, IPA import benchmark, or Angry Birds speed claim.
+The dyld planner uses reserved hash lookups for planned fixups and applies validated fixups in
+batches. The import-analysis runtime cache avoids rebuilding its service/export graph when the
+dependency list is unchanged. Before the ZIP-backed follow-up above, launch extracted and cached
+the whole app bundle; that behavior is superseded for new IPA launches. Gradle caching/parallelism
+remain configured from earlier work. The one-second synthetic host probe from the previous pass
+reported 2,769.9 MIPS guest-only and 2,305.1 MIPS with frequent `memcpy` calls (234 ns/call,
+fastmem enabled, no full cache clears). The newer measurements above differ and illustrate host
+variation; neither set is a before/after comparison, mobile result, IPA import benchmark, or Angry
+Birds speed claim.
 
 The `MEMORY_NULL` report still means an access to an unmapped low guest address; it does not
 identify the title's pointer bug. No target binary or fresh device register/PC trace was
@@ -125,9 +150,10 @@ Security-random APIs described below rather than mapping unknown imports to succ
   `vprintf`/`vfprintf` are implemented too, over the same guest `va_list` cursor.
 * **The bundle is writable, like the iOS 3 directory it stands for.** This title writes
   `data/bundleIndex.idx` next to its resources on first run and treats a failure as fatal;
-  a read-only mount turned a normal first launch into an error. The host directory is a
-  private extraction of the IPA and the path sandbox is unchanged, so nothing outside the
-  mounts is reachable (`..`, symlinks and absolute escapes are still refused).
+  a read-only mount turned a normal first launch into an error. At the time of this historical
+  note, the host directory was a private extraction of the IPA; the ZIP-backed follow-up above
+  now routes those writes to a private overlay while keeping the path sandbox in place, so
+  nothing outside the mounts is reachable (`..`, symlinks and absolute escapes are refused).
 * **The stop report names what happened.** `HOST_CALLS` used to repeat `CPU_SVC` twelve
   times; it now shows the last 24 *services* the guest called (a ring, so the tail is the
   part that survives). A C++ throw reports the thrown type by reading the Itanium

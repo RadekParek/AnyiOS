@@ -47,6 +47,7 @@ struct GuestRun {
 // stops by itself: a fault, an unimplemented import, or its own exit.
 GuestRun runGuest(LoadedImage& image, Services& services, const ExportGraph& graph,
                   size_t requester, uint64_t instructionBudget, double seconds,
-                  const std::atomic<bool>* cancelRequested = nullptr);
+                  const std::atomic<bool>* cancelRequested = nullptr,
+                  bool fixupsAlreadyApplied = false);
 std::string describeRun(GuestRun& run, bool includeRecentCalls = false);
 }  // namespace podnative::runtime

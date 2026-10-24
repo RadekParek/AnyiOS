@@ -35,7 +35,7 @@ import java.util.List;
 
 public final class MainActivity extends Activity {
     private static final int IMPORT_FILE = 10, EXPORT = 11, IMPORT_FOLDER = 12,
-                             IMPORT_APP_FOLDER = 13;
+                             IMPORT_APP_FOLDER = 13, EXPORT_SANDBOX = 14;
     private SharedPreferences prefs;
     private boolean landscapeRequested = false;
     private GameLibrary library;
@@ -507,7 +507,7 @@ public final class MainActivity extends Activity {
         });
         gap(content, 14);
         content.addView(text(
-            "Import game folder searches for IPAs. An IPA is a ZIP archive, so AnyiOS unpacks the .app into a private cache before loading its executable and assets, then emulates ARM32 code and selected iOS APIs. This is a partial iOS runtime, not Apple's full iOS Simulator or a native game port. Use Import extracted app folder for an existing .app bundle.",
+            "Import game folder searches for IPAs. AnyiOS reads each IPA as a ZIP, inspects the executable and metadata, and loads app resources on demand rather than extracting the entire bundle. Writable game data is kept in a separate per-game sandbox and can be exported from game details. This is a partial iOS runtime, not Apple's full iOS Simulator or a native game port. Use Import extracted app folder for an existing .app bundle.",
             12, muted, false));
         sheet.setContentView(content);
         sheet.show();
@@ -552,8 +552,22 @@ public final class MainActivity extends Activity {
         content.addView(text(!game.blockReason.isEmpty() ? game.blockReason
                 : game.status.equals("Encrypted")
                 ? "The game was added, but its executable is protected. This build does not bypass DRM."
-                : "Boot game extracts IPA resources to the private bundle cache, runs validated ARM32 guest code for up to 60 seconds, and displays the last readable EAGL frame when available. Missing iOS services or graphics setup can still stop startup; this is experimental and does not claim full gameplay.",
+                : game.kind.equals("IPA")
+                ? "Boot game reads IPA resources from the ZIP on demand, caches only files the guest opens, and keeps bundle writes in a private overlay. It then runs validated ARM32 guest code for up to 60 seconds and displays the last readable EAGL frame when available. Missing iOS services or graphics setup can still stop startup; this is experimental and does not claim full gameplay."
+                : game.kind.equals("Folder")
+                ? "Boot game uses the private extracted .app copy. Persistent Documents data stays in the sandbox; app-bundle writes remain in bundle/ and are included when you export sandbox data. Missing iOS services or graphics setup can still stop startup; this is experimental and does not claim full gameplay."
+                : "Boot game runs the executable-only import as validated ARM32 guest code for up to 60 seconds. No app resources are present, and missing iOS services or graphics setup can still stop startup; this is experimental and does not claim full gameplay.",
             14, muted, false));
+        gap(content, 16);
+        content.addView(text("GAME SANDBOX", 11, muted, true));
+        gap(content, 6);
+        TextView sandboxInfo = text("sandbox/Documents · persistent game saves\n"
+                + "sandbox/BundleOverrides · IPA app-resource writes\n"
+                + "sandbox/ZipCache · rebuildable files opened from an IPA (not exported)\n"
+                + "For extracted .app imports and legacy extracted caches, bundle/ is the private app copy and is included in exports.",
+            12, muted, false);
+        sandboxInfo.setTextIsSelectable(true);
+        content.addView(sandboxInfo);
         Button launch = action("Boot game · experimental", true, () -> {
             sheet.dismiss();
             java.lang.ref.WeakReference<MainActivity> owner =
@@ -586,6 +600,7 @@ public final class MainActivity extends Activity {
         }
         button(content, "View import report", false, () -> showReport(game));
         button(content, "Export report", false, () -> exportReport(game));
+        button(content, "Export sandbox data", false, () -> exportSandbox(game));
         button(content, "Refresh details & artwork", false, () -> {
             sheet.dismiss();
             library.refreshGame(game);
@@ -697,6 +712,16 @@ public final class MainActivity extends Activity {
                     game == null ? "AnyiOS-diagnostics.txt" : "AnyiOS-game-report.txt"),
             EXPORT);
     }
+    private void exportSandbox(GameLibrary.Game game) {
+        exportGame = game.id;
+        String safeTitle = game.title.replaceAll("[^A-Za-z0-9._-]+", "_");
+        startActivityForResult(
+            new Intent(Intent.ACTION_CREATE_DOCUMENT)
+                .setType("application/zip")
+                .addCategory(Intent.CATEGORY_OPENABLE)
+                .putExtra(Intent.EXTRA_TITLE, "AnyiOS-" + safeTitle + "-sandbox.zip"),
+            EXPORT_SANDBOX);
+    }
     private void settingRow(
         LinearLayout parent, String title, String description, String value, Runnable callback) {
         LinearLayout container = row();
@@ -769,7 +794,7 @@ public final class MainActivity extends Activity {
             16, ink, true));
         gap(storage, 8);
         storage.addView(text(
-            "Imports include all IPA bytes or selected folder resources. Remove a game from its details to free its private copy. No fixed source-size or game-count quota; free-space and traversal/parser safety limits apply.",
+            "Each game's sandbox/Documents holds persistent saves; sandbox/BundleOverrides holds app-bundle writes, and sandbox/ZipCache is rebuildable. Export sandbox data from game details to back it up. Imports keep the original IPA privately; remove a game from its details to free its copy. No fixed game-count quota; free-space and parser safety limits apply.",
             13, muted, false));
         LinearLayout about = card(parent);
         about.addView(text("AnyiOS " + BuildConfig.VERSION_NAME, 16, ink, true));
@@ -1327,6 +1352,20 @@ public final class MainActivity extends Activity {
                                       .show());
                 }
             }, "AnyiOS-export").start();
+        } else if (request == EXPORT_SANDBOX) {
+            GameLibrary.Game selected = null;
+            for (GameLibrary.Game game : library.games())
+                if (game.id.equals(exportGame))
+                    selected = game;
+            if (selected == null) {
+                new AlertDialog.Builder(this)
+                    .setTitle("Game no longer available")
+                    .setMessage("The game was removed before its sandbox could be exported.")
+                    .setPositiveButton("OK", null)
+                    .show();
+                return;
+            }
+            library.exportSandbox(selected, uri);
         }
     }
 }

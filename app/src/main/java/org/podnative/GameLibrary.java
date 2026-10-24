@@ -16,6 +16,7 @@ import java.io.FileInputStream;
 import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
+import java.io.OutputStream;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Comparator;
@@ -26,10 +27,13 @@ import java.util.UUID;
 import java.util.concurrent.CancellationException;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.zip.ZipEntry;
+import java.util.zip.ZipOutputStream;
 import org.json.JSONObject;
 
-/** App-scoped storage worker: imports survive Activity recreation, not process termination. */
+/** App-scoped asynchronous worker for the durable app-private game library and sandboxes. */
 final class GameLibrary {
+    private static final long MAX_SANDBOX_EXPORT_BYTES = 4L * 1024 * 1024 * 1024;
     private static GameLibrary instance;
     static synchronized GameLibrary get(Context context) {
         if (instance == null)
@@ -149,6 +153,7 @@ final class GameLibrary {
             || !directory.getName().matches("game-[0-9a-f-]{36}"))
             throw new IOException("Invalid shared source directory");
         File source = new File(directory, "source.bin");
+        ensureSandbox(directory);
         GameInspector.Result result = GameInspector.analyze(source, originalName, directory);
         JSONObject metadata = new JSONObject();
         metadata.put("title", result.title);
@@ -224,6 +229,96 @@ final class GameLibrary {
         if (!directory.isDirectory() && !directory.mkdirs())
             throw new IOException("Could not create private game storage");
     }
+    private static final class SandboxPaths {
+        final File root, documents, bundleCache, bundleOverlay;
+        SandboxPaths(File root) {
+            this.root = root;
+            documents = new File(root, "Documents");
+            bundleCache = new File(root, "ZipCache");
+            bundleOverlay = new File(root, "BundleOverrides");
+        }
+    }
+    private static void ensurePrivateDirectory(File root, File directory) throws IOException {
+        if (java.nio.file.Files.isSymbolicLink(directory.toPath()))
+            throw new IOException("Sandbox path refused a symbolic link");
+        mkdir(directory);
+        if (!directory.getCanonicalFile().toPath().startsWith(root.getCanonicalFile().toPath()))
+            throw new IOException("Sandbox directory escaped its private root");
+    }
+    private SandboxPaths ensureSandbox(File gameDirectory) throws IOException {
+        File sandbox = new File(gameDirectory, "sandbox");
+        ensurePrivateDirectory(gameDirectory, sandbox);
+        SandboxPaths paths = new SandboxPaths(sandbox);
+        ensurePrivateDirectory(sandbox, paths.documents);
+        ensurePrivateDirectory(sandbox, paths.bundleCache);
+        ensurePrivateDirectory(sandbox, paths.bundleOverlay);
+        File legacyContainer = new File(gameDirectory, "container");
+        if (java.nio.file.Files.isSymbolicLink(legacyContainer.toPath()))
+            throw new IOException("Legacy game data refused a symbolic link");
+        if (legacyContainer.isDirectory()) {
+            mergeLegacyContainer(legacyContainer, paths.documents);
+            deleteTree(legacyContainer);
+        }
+        return paths;
+    }
+    private static void mergeLegacyContainer(File source, File destination) throws IOException {
+        mkdir(destination);
+        File[] children = source.listFiles();
+        if (children == null)
+            throw new IOException("Could not read the previous game-data folder");
+        for (File child : children) {
+            if (java.nio.file.Files.isSymbolicLink(child.toPath()))
+                throw new IOException("Legacy game data refused a symbolic link");
+            File target = new File(destination, child.getName());
+            if (java.nio.file.Files.isSymbolicLink(target.toPath()))
+                throw new IOException("Existing game data refused a symbolic link");
+            if (child.isDirectory()) {
+                if (target.exists() && !target.isDirectory())
+                    throw new IOException("Legacy game data conflicts with a sandbox file");
+                if (!target.exists()) {
+                    if (!child.renameTo(target))
+                        mergeLegacyContainer(child, target);
+                } else {
+                    mergeLegacyContainer(child, target);
+                }
+            } else {
+                if (target.exists()) {
+                    if (!target.isFile())
+                        throw new IOException(
+                            "Legacy game data conflicts with a sandbox directory");
+                    if (sameFileContents(child, target))
+                        continue;
+                    target =
+                        new File(destination, child.getName() + ".legacy-" + UUID.randomUUID());
+                }
+                if (!child.renameTo(target)) {
+                    try {
+                        java.nio.file.Files.copy(child.toPath(), target.toPath());
+                    } catch (java.nio.file.FileAlreadyExistsException ignored) {
+                        // A concurrent/partial migration already published this copy.
+                    }
+                }
+            }
+        }
+    }
+    private static boolean sameFileContents(File first, File second) throws IOException {
+        if (first.length() != second.length())
+            return false;
+        try (InputStream a = new FileInputStream(first);
+            InputStream b = new FileInputStream(second)) {
+            byte[] left = new byte[65536], right = new byte[65536];
+            while (true) {
+                int n = a.read(left), m = b.read(right);
+                if (n != m)
+                    return false;
+                if (n < 0)
+                    return true;
+                for (int i = 0; i < n; i++)
+                    if (left[i] != right[i])
+                        return false;
+            }
+        }
+    }
     private void copy(InputStream in, File destination) throws IOException {
         if (in == null)
             throw new IOException("The selected provider did not open the file");
@@ -231,7 +326,7 @@ final class GameLibrary {
             throw new IOException("Import exceeds 30,000 files");
         checkCancelled();
         try (FileOutputStream out = new FileOutputStream(destination)) {
-            byte[] buffer = new byte[65536];
+            byte[] buffer = new byte[262144];
             int count;
             while ((count = in.read(buffer)) != -1) {
                 checkCancelled();
@@ -405,6 +500,7 @@ final class GameLibrary {
             changed();
             GameInspector.Result result = GameInspector.analyze(source, name, pending);
             checkCancelled();
+            ensureSandbox(pending);
             JSONObject metadata = new JSONObject();
             metadata.put("title", result.title);
             metadata.put("originalName", name);
@@ -676,55 +772,6 @@ final class GameLibrary {
             }
         });
     }
-    private File ensureIpaBundle(
-        Game game, File source, java.util.function.BooleanSupplier isCancelled) throws IOException {
-        String executable = LibraryRules.fileName(game.executable);
-        File bundle = new File(game.directory, "bundle");
-        File marker = new File(game.directory, "bundle-cache");
-        String fingerprint = source.length() + "\\n" + source.lastModified() + "\\n" + executable;
-        if (isCancelled.getAsBoolean())
-            throw new CancellationException("Guest startup cancelled before IPA extraction");
-        if (bundleCacheValid(bundle, marker, fingerprint, executable))
-            return bundle;
-        File staging = new File(game.directory, ".pending-bundle-" + UUID.randomUUID());
-        File ready = new File(game.directory, ".bundle-ready-" + UUID.randomUUID());
-        try {
-            progress = "Unpacking the iOS app bundle for guest launch…";
-            changed();
-            File extracted =
-                GameInspector.extractAppBundle(source, staging, executable, isCancelled);
-            if (isCancelled.getAsBoolean())
-                throw new CancellationException("Guest startup cancelled after IPA extraction");
-            if (!extracted.renameTo(ready))
-                throw new IOException("Could not stage the extracted app bundle");
-            if (bundle.exists())
-                deleteTree(bundle);
-            if (!ready.renameTo(bundle))
-                throw new IOException("Could not publish the extracted app bundle cache");
-            AtomicFile atomic = new AtomicFile(marker);
-            FileOutputStream out = null;
-            try {
-                out = atomic.startWrite();
-                out.write(fingerprint.getBytes(StandardCharsets.UTF_8));
-                atomic.finishWrite(out);
-            } catch (IOException e) {
-                if (out != null)
-                    atomic.failWrite(out);
-                throw e;
-            }
-            Diagnostics.record("IPA_RESOURCES", "extracted app bundle into the private game cache");
-            return bundle;
-        } finally {
-            try {
-                if (staging.exists())
-                    deleteTree(staging);
-                if (ready.exists())
-                    deleteTree(ready);
-            } catch (IOException e) {
-                Diagnostics.record("IPA_EXTRACTION_CLEANUP", e.toString());
-            }
-        }
-    }
     private static boolean bundleCacheValid(
         File bundle, File marker, String fingerprint, String executable) {
         try {
@@ -763,17 +810,29 @@ final class GameLibrary {
                     throw new CancellationException("Guest startup cancelled before analysis");
                 File source =
                     new File(game.directory, game.kind.equals("Folder") ? "bundle" : "source.bin");
-                File bundleRoot = game.kind.equals("Folder") ? source
-                    : game.kind.equals("IPA") ? ensureIpaBundle(game, source, () -> launchCancelled)
-                                              : null;
-                File containerRoot = new File(game.directory, "container");
-                if (bundleRoot != null && !containerRoot.isDirectory() && !containerRoot.mkdirs())
-                    throw new IOException("Could not create the writable guest container");
+                SandboxPaths sandbox = ensureSandbox(game.directory);
+                File bundleRoot = game.kind.equals("Folder") ? source : null;
+                File bundleArchiveCache = null, bundleOverlay = null;
+                if (game.kind.equals("IPA")) {
+                    File legacyBundle = new File(game.directory, "bundle");
+                    File legacyMarker = new File(game.directory, "bundle-cache");
+                    String fingerprint = source.length() + "\\n" + source.lastModified() + "\\n"
+                        + LibraryRules.fileName(game.executable);
+                    if (bundleCacheValid(
+                            legacyBundle, legacyMarker, fingerprint, game.executable)) {
+                        // Keep saves/caches created by earlier versions alive. New imports skip
+                        // this eager bundle and use the ZIP-backed read-through mount instead.
+                        bundleRoot = legacyBundle;
+                    } else {
+                        bundleArchiveCache = sandbox.bundleCache;
+                        bundleOverlay = sandbox.bundleOverlay;
+                    }
+                }
                 if (launchCancelled)
                     throw new CancellationException(
                         "Guest startup cancelled before guest analysis");
-                GameInspector.Result result = GameInspector.analyze(
-                    source, game.title, scratch, true, bundleRoot, containerRoot);
+                GameInspector.Result result = GameInspector.analyze(source, game.title, scratch,
+                    true, bundleRoot, sandbox.documents, bundleArchiveCache, bundleOverlay);
                 outcome = result.launchOutcome;
                 guestFrame = result.guestFrame;
                 frameWidth = result.guestFrameWidth;
@@ -848,6 +907,97 @@ final class GameLibrary {
                 changed();
             }
         });
+    }
+    void exportSandbox(Game game, Uri destination) {
+        if (!begin("Preparing sandbox export…"))
+            return;
+        cancellable = true;
+        worker.execute(() -> {
+            try {
+                if (!game.directory.getCanonicalFile().getParentFile().equals(
+                        root.getCanonicalFile()))
+                    throw new IOException("Invalid library entry");
+                SandboxPaths sandbox = ensureSandbox(game.directory);
+                OutputStream raw = context.getContentResolver().openOutputStream(destination, "wt");
+                if (raw == null)
+                    throw new IOException("The selected provider did not open the ZIP destination");
+                try (ZipOutputStream zip = new ZipOutputStream(raw)) {
+                    addSandboxDirectory(sandbox.root, sandbox.documents, "Documents/", zip, 0);
+                    addSandboxDirectory(
+                        sandbox.root, sandbox.bundleOverlay, "BundleOverrides/", zip, 0);
+                    File importedBundle = new File(game.directory, "bundle");
+                    if (game.kind.equals("Folder") || importedBundle.isDirectory())
+                        addSandboxDirectory(game.directory, importedBundle, "Bundle/", zip, 0);
+                }
+                notice = "Sandbox data exported. The ZIP contains Documents and bundle overrides; "
+                    + "an imported .app copy is included when applicable, while the rebuildable "
+                    + "IPA resource cache is excluded.";
+                error = false;
+                Diagnostics.record("SANDBOX_EXPORT", game.title + " · " + formatBytes(copied));
+            } catch (CancellationException e) {
+                notice = "Sandbox export cancelled.";
+            } catch (Exception e) {
+                error = true;
+                notice = "Sandbox export failed: " + e.getMessage();
+                Diagnostics.record("SANDBOX_EXPORT_ERROR", e.toString());
+            } finally {
+                SharedCatalog.end();
+                busy = false;
+                cancellable = false;
+                progress = "";
+                changed();
+            }
+        });
+    }
+    private void addSandboxDirectory(File sandboxRoot, File directory, String archivePath,
+        ZipOutputStream zip, int depth) throws IOException {
+        checkCancelled();
+        if (depth > 32 || ++files > 30000)
+            throw new IOException("Sandbox exceeds safe depth or 30,000-entry export limit");
+        if (java.nio.file.Files.isSymbolicLink(directory.toPath()))
+            throw new IOException("Sandbox export refused a symbolic-link directory");
+        File canonicalRoot = sandboxRoot.getCanonicalFile();
+        File canonicalDirectory = directory.getCanonicalFile();
+        if (!canonicalDirectory.toPath().startsWith(canonicalRoot.toPath()))
+            throw new IOException("Sandbox directory escaped its private root");
+        zip.putNextEntry(new ZipEntry(archivePath));
+        zip.closeEntry();
+        File[] children = directory.listFiles();
+        if (children == null)
+            throw new IOException("Could not read a sandbox directory");
+        java.util.Arrays.sort(children, Comparator.comparing(File::getName));
+        byte[] buffer = new byte[65536];
+        for (File child : children) {
+            checkCancelled();
+            if (java.nio.file.Files.isSymbolicLink(child.toPath()))
+                throw new IOException("Sandbox export refused a symbolic link");
+            if (child.isDirectory()) {
+                addSandboxDirectory(
+                    sandboxRoot, child, archivePath + child.getName() + "/", zip, depth + 1);
+                continue;
+            }
+            if (!child.isFile())
+                continue;
+            if (++files > 30000)
+                throw new IOException("Sandbox exceeds the 30,000-file export limit");
+            File canonicalChild = child.getCanonicalFile();
+            if (!canonicalChild.toPath().startsWith(canonicalRoot.toPath()))
+                throw new IOException("Sandbox file escaped its private root");
+            String name = archivePath + child.getName();
+            zip.putNextEntry(new ZipEntry(name));
+            try (InputStream in = new FileInputStream(canonicalChild)) {
+                int count;
+                while ((count = in.read(buffer)) != -1) {
+                    checkCancelled();
+                    copied = LibraryRules.addCopiedBytes(copied, count);
+                    if (copied > MAX_SANDBOX_EXPORT_BYTES)
+                        throw new IOException("Sandbox export exceeds the 4 GiB safety limit");
+                    zip.write(buffer, 0, count);
+                    tick(name);
+                }
+            }
+            zip.closeEntry();
+        }
     }
     void remove(Game game) {
         if (!begin("Removing local copy…"))

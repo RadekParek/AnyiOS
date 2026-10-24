@@ -45,10 +45,10 @@ struct LoadedImage {
     // S_MOD_INIT_FUNC_POINTERS sections (`__mod_init_func` on iOS). Their function
     // pointers are read only after dyld rebases and binds the mapped image.
     std::vector<std::pair<uint32_t, uint32_t>> initializerSections;
-    // Classes the image itself defines, taken from its `__objc_classlist` section. Their
-    // metadata stays guest-owned: the runtime reads it in place instead of copying it, so
-    // a class a title looks up by name is the same object its own code uses.
-    std::vector<uint32_t> objcClasses;
+    // Address ranges of the image's `__objc_classlist` sections. The pointer slots are
+    // rebased by dyld; class addresses must not be read until those fixups have run.
+    std::vector<std::pair<uint32_t, uint32_t>> objcClassListSections;
+    std::vector<uint32_t> objcClassAddresses() const;
     std::vector<std::pair<std::string, ExportDefinition>> exports;
     uint32_t cpuSubtype = 9;  // CPU_SUBTYPE_ARM_V7 unless the header says otherwise.
     IsaArch arch = IsaArch::ArmV7;

@@ -17,7 +17,10 @@ jobs:
           python-version: '3.12'
           cache: pip
       - name: Install host test tools
-        run: python3 -m pip install 'capstone==5.0.7' 'unicorn==2.1.4' pyyaml
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes zlib1g-dev
+          python3 -m pip install 'capstone==5.0.7' 'unicorn==2.1.4' pyyaml
       # Both suites below compile the pinned dynarmic tree from scratch on every run.
       # ccache is content-addressed, so a wide restore key still only ever returns an
       # object file that was produced from identical preprocessed input.
@@ -128,6 +131,7 @@ jobs:
             mingw-w64-ucrt-x86_64-cmake
             mingw-w64-ucrt-x86_64-ninja
             mingw-w64-ucrt-x86_64-python
+            mingw-w64-ucrt-x86_64-zlib
       - name: Verify the Windows toolchain
         run: |
           cmake --version

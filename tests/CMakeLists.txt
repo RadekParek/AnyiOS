@@ -1,5 +1,6 @@
 cmake_minimum_required(VERSION 3.22)
 project(PodNativeRuntimeTests LANGUAGES C CXX)
+find_package(ZLIB REQUIRED)
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 if(NOT DYNARMIC_ROOT)
@@ -56,7 +57,7 @@ add_library(podnative_hle STATIC
     "${RUNTIME}/runtime/frameworks.cpp"
     "${RUNTIME}/runtime/coregraphics.cpp")
 target_include_directories(podnative_hle PUBLIC "${RUNTIME}" "${CMAKE_CURRENT_LIST_DIR}/../third_party/pvrtc")
-target_link_libraries(podnative_hle PUBLIC podnative_cpu)
+target_link_libraries(podnative_hle PUBLIC podnative_cpu ZLIB::ZLIB)
 target_compile_options(podnative_hle PRIVATE -Wall -Wextra -Werror)
 add_executable(cpu_test cpu_test.cpp)
 target_link_libraries(cpu_test PRIVATE podnative_cpu podnative_hle)

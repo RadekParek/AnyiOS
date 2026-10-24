@@ -123,14 +123,15 @@ uint32_t installInitializerTrampoline(Memory& memory, const std::vector<uint32_t
 namespace {
 GuestRun execute(LoadedImage& image, Services& services, const ExportGraph& graph, size_t requester,
                  uint64_t instructionBudget, double seconds,
-                 const std::atomic<bool>* cancelRequested) {
+                 const std::atomic<bool>* cancelRequested, bool fixupsAlreadyApplied) {
     GuestRun run;
     if (!image.memory) throw Error("GUEST_MEMORY", "image has no mapped memory");
     // Unimplemented required imports bind to a faulting gate, so the guest starts and
     // stops at the first missing API rather than being refused up front. Weak imports
     // keep C semantics and stay null when nothing defines them.
-    image.dyld.applyWithGraph(*image.memory, 0, graph, requester,
-                              [&](const std::string& name) { return services.trapFor(name); });
+    if (!fixupsAlreadyApplied)
+        image.dyld.applyWithGraph(*image.memory, 0, graph, requester,
+                                  [&](const std::string& name) { return services.trapFor(name); });
     run.trappedImports = services.trapCount();
     const std::vector<uint32_t> initializers = initializerFunctions(image);
     const uint32_t entry = image.registers[15] | ((image.cpsr & 0x20) ? 1u : 0u);
@@ -322,9 +323,9 @@ GuestRun execute(LoadedImage& image, Services& services, const ExportGraph& grap
 }  // namespace
 GuestRun runGuest(LoadedImage& image, Services& services, const ExportGraph& graph,
                   size_t requester, uint64_t instructionBudget, double seconds,
-                  const std::atomic<bool>* cancelRequested) {
-    GuestRun run =
-        execute(image, services, graph, requester, instructionBudget, seconds, cancelRequested);
+                  const std::atomic<bool>* cancelRequested, bool fixupsAlreadyApplied) {
+    GuestRun run = execute(image, services, graph, requester, instructionBudget, seconds,
+                           cancelRequested, fixupsAlreadyApplied);
     run.pcSymbol = image.nearestSymbol(run.pc);
     for (uint32_t address : run.frames) {
         const std::string symbol = image.nearestSymbol(address);

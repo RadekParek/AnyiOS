@@ -157,11 +157,10 @@ std::string attemptLaunch(const uint8_t* data, size_t size, const std::string& b
         services.setEnvironment({{"HOME", "/var/mobile"},
                                  {"TMPDIR", "/var/mobile/Documents"},
                                  {"PATH", "/usr/bin:/bin:/usr/sbin:/sbin"}});
-        if (!bundleHost.empty() && !containerHost.empty())
-            services.mountSandbox(bundleHost, containerHost);
-        // The image's own Objective-C classes are registered before the first message is
-        // sent, so a title's delegate and view classes are the objects its own code finds.
-        services.registerGuestClasses(image.objcClasses);
+        if ((!bundleHost.empty() || !options.bundleArchive.empty()) && !containerHost.empty())
+            services.mountSandbox(bundleHost, containerHost, options.bundleArchive,
+                                  options.bundleArchivePrefix, options.bundleCache,
+                                  options.bundleOverlay);
         ExportGraph graph;
         services.install(graph, image.dependencies);
         auto main = graph.addImage("<executable>");
@@ -177,6 +176,12 @@ std::string attemptLaunch(const uint8_t* data, size_t size, const std::string& b
                    "Darwin process bootstrap is not implemented.\nDYLD_EXPORT_AUDIT: " +
                    report + "\n" + image.summary();
         }
+        // Objective-C class pointers and class_ro_t data can still be rebased or bound at this
+        // point. Resolve the image's dyld plan before reading instanceSize/name metadata; doing
+        // so prevents startup from interpreting pre-fixup bytes as a changing class size.
+        image.dyld.applyWithGraph(*image.memory, 0, graph, main,
+                                  [&](const std::string& name) { return services.trapFor(name); });
+        services.registerGuestClasses(image.objcClassAddresses());
         // Redirect every classic symbol stub before the first instruction: to the real
         // implementation when one exists, otherwise to a trap gate that names the symbol.
         if (!image.stubs.empty())
@@ -188,7 +193,7 @@ std::string attemptLaunch(const uint8_t* data, size_t size, const std::string& b
         std::string guestFrameStatus;
         try {
             run = runGuest(image, services, graph, main, options.instructions, options.seconds,
-                           options.cancelRequested);
+                           options.cancelRequested, true);
             if (options.frameSink) {
                 GLES& graphics = services.graphics();
                 bool captured = graphics.frameCurrent();

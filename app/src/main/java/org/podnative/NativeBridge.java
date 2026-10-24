@@ -13,7 +13,9 @@ final class NativeBridge {
     static native void stop();
     static native String inspect(byte[] bytes);
     static native String cpuProbe();
-    static native String attemptLaunch(byte[] bytes, String bundlePath, String containerPath);
+    static native String attemptLaunch(byte[] bytes, String bundlePath, String containerPath,
+        String bundleArchivePath, String bundleArchivePrefix, String bundleCachePath,
+        String bundleOverlayPath);
     static native void beginGuestLaunch();
     static native void cancelGuestLaunch();
     static native void setGuestScreenSize(int width, int height);

@@ -434,15 +434,15 @@ bool ObjC::stringMessage(const std::string& text, uint32_t bytes, const std::str
     return false;
 }
 const ObjC::GuestClass* ObjC::guestClassAt(uint32_t address) const {
-    for (const auto& [name, info] : guestClasses)
-        if (info.address == address || info.meta == address) return &info;
-    return nullptr;
+    const auto found = guestClassesByAddress.find(address);
+    return found == guestClassesByAddress.end() ? nullptr : found->second;
 }
 std::string ObjC::guestClassName(uint32_t classAddress) const {
     if (auto info = guestClassAt(classAddress)) return info->name;
     return {};
 }
 void ObjC::registerGuestClasses(const std::vector<uint32_t>& classList) {
+    guestMethodCache.clear();
     for (uint32_t address : classList) {
         if (guestClasses.size() >= 4096)
             throw Error("OBJC_LIMIT", "the image defines too many classes");
@@ -453,6 +453,7 @@ void ObjC::registerGuestClasses(const std::vector<uint32_t>& classList) {
         std::string name;
         // Modern layout: class_data_bits_t at +16 hides a class_ro_t pointer whose name is
         // at +16. Legacy layout: the class carries name/version/info/instance_size directly.
+        // Registration runs only after dyld has rebased/bound the class data pointer.
         const uint32_t bits = memory.read32(address + 16);
         const uint32_t ro = bits & ~3u;
         if (memory.permits(ro, 40, Read) && printableName(memory, memory.read32(ro + 16), name)) {
@@ -467,13 +468,31 @@ void ObjC::registerGuestClasses(const std::vector<uint32_t>& classList) {
         if (name.rfind("_Tt", 0) == 0)
             throw Error("OBJC_CLASS_FORMAT", "Swift class metadata is not supported", address);
         info.name = name;
-        if (info.instanceSize < sizeof(uint32_t) || info.instanceSize % sizeof(uint32_t) != 0 ||
-            info.instanceSize > MaxGuestInstanceBytes)
+        // Objective-C records the instance size in bytes; it need not be a multiple of the
+        // ARM32 pointer width (AppController can legitimately be 210 bytes). Allocation below
+        // rounds the reserved extent up to the host/guest object's 8-byte alignment.
+        if (info.instanceSize < sizeof(uint32_t) || info.instanceSize > MaxGuestInstanceBytes)
             throw Error("OBJC_CLASS_FORMAT",
                         "implausible instance size " + std::to_string(info.instanceSize) +
-                            " for class " + name,
+                            " for class " + name + " (" +
+                            (info.modern ? "modern class_ro_t" : "legacy class") + ")",
                         address);
-        guestClasses.emplace(std::move(name), info);
+        auto existing = guestClasses.find(name);
+        if (existing != guestClasses.end()) {
+            if (existing->second.address == info.address) continue;
+            throw Error("OBJC_CLASS_FORMAT", "duplicate guest class name " + name, address);
+        }
+        auto [stored, inserted] = guestClasses.emplace(name, std::move(info));
+        if (!inserted) throw Error("OBJC_CLASS_FORMAT", "duplicate guest class name " + name);
+        auto addAddress = [&](uint32_t classAddress) {
+            if (!classAddress) return;
+            auto [known, unique] = guestClassesByAddress.emplace(classAddress, &stored->second);
+            if (!unique && known->second != &stored->second)
+                throw Error("OBJC_CLASS_FORMAT", "two guest classes share an Objective-C address",
+                            classAddress);
+        };
+        addAddress(stored->second.address);
+        addAddress(stored->second.meta);
     }
 }
 void ObjC::mapGuestArena() {
@@ -557,17 +576,18 @@ std::string ObjC::hostAncestorOf(uint32_t classAddress) const {
 }
 uint32_t ObjC::guestMethod(uint32_t classAddress, bool classMethod, const std::string& name) const {
     const GuestClass* start = guestClassAt(classAddress);
-    if (!start) {
-        // A metaclass is not part of __objc_classlist, so +method lookups arrive with the
-        // metaclass address rather than the class it belongs to. Find its owner.
-        for (const auto& [className, info] : guestClasses)
-            if (info.meta == classAddress) {
-                start = &info;
-                classMethod = true;
-                break;
-            }
-    }
     if (!start) return 0;
+    // A metaclass is also in the address index, and its receiver implies +method lookup.
+    if (start->meta == classAddress) classMethod = true;
+    const uint64_t cacheKey = (uint64_t(classAddress) << 1) | uint64_t(classMethod);
+    if (auto byClass = guestMethodCache.find(cacheKey); byClass != guestMethodCache.end()) {
+        if (auto method = byClass->second.find(name); method != byClass->second.end())
+            return method->second;
+    }
+    auto remember = [&](uint32_t implementation) {
+        guestMethodCache[cacheKey].emplace(name, implementation);
+        return implementation;
+    };
     // Scans one method_list_t: {entsizeAndFlags, count, methods[]} in the modern layout,
     // {obsolete, count, methods[]} in the legacy one. Both store {SEL, types, IMP} triples.
     auto scan = [&](uint32_t list) -> uint32_t {
@@ -595,19 +615,19 @@ uint32_t ObjC::guestMethod(uint32_t classAddress, bool classMethod, const std::s
             // The modern layout stores one method list pointer, not an array of them.
             const uint32_t ro = memory.read32(info->address + 16) & ~3u;
             if (memory.permits(ro + 20, 4, Read))
-                if (uint32_t imp = scan(memory.read32(ro + 20))) return imp;
+                if (uint32_t imp = scan(memory.read32(ro + 20))) return remember(imp);
         } else if (memory.permits(info->address + 28, 4, Read)) {
             // The legacy layout stores a nil-terminated array of method list pointers.
             const uint32_t lists = memory.read32(info->address + 28);
             for (size_t index = 0; lists && index < 256; index++) {
                 const uint32_t list = memory.read32(lists + uint32_t(index * 4));
                 if (!list) break;
-                if (uint32_t imp = scan(list)) return imp;
+                if (uint32_t imp = scan(list)) return remember(imp);
             }
         }
         current = superclassOf(*info);
     }
-    return 0;
+    return remember(0);
 }
 bool ObjC::guestChainContains(uint32_t classAddress, uint32_t candidate) const {
     uint32_t current = classAddress;
