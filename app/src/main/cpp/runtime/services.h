@@ -22,7 +22,10 @@ class Services final {
     // Guest file access is refused until the launcher mounts the directories that back
     // the game. `/var/mobile` is the read-only extracted bundle, the container below it
     // is writable.
-    void mountSandbox(const std::string& bundleHost, const std::string& containerHost);
+    void mountSandbox(const std::string& bundleHost, const std::string& containerHost,
+                      const std::string& bundleArchive = {},
+                      const std::string& bundleArchivePrefix = {},
+                      const std::string& bundleCache = {}, const std::string& bundleOverlay = {});
     // Guest console output (guest printf/NSLog) destination.
     void setLogSink(std::function<void(const std::string&)> sink) {
         externalLog = std::move(sink);

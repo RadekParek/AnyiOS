@@ -191,6 +191,11 @@ class ObjC final {
         bool modern = true;  // class_ro_t metadata rather than the legacy class layout
     };
     std::map<std::string, GuestClass> guestClasses;
+    // Class/message dispatch is in the guest hot path. Address lookup and resolved method
+    // lookup use direct indexes rather than rescanning every image-defined class per send.
+    std::unordered_map<uint32_t, GuestClass*> guestClassesByAddress;
+    mutable std::unordered_map<uint64_t, std::unordered_map<std::string, uint32_t>>
+        guestMethodCache;
     std::map<uint32_t, uint32_t> guestInstances;  // instance address -> class address
     // View state for instances whose class the image defines but which inherit from a
     // UIView/UIWindow the runtime models.
@@ -198,9 +203,8 @@ class ObjC final {
     std::map<uint32_t, uint32_t> guestRefs;  // instance address -> retain count
     uint32_t nextGuestObject = 0x6f500000;
     bool guestArena = false;
-    // A class's superclass is an extern bind, not a rebase, so it is still zero when the
-    // image is first registered (dyld has not run yet). Read it from guest memory on use so
-    // a class defined by the image inherits from UIView once fixups are applied.
+    // Class metadata remains guest-owned. Read the superclass word from guest memory on use
+    // so the indexed metadata follows the exact pointer dyld fixed before registration.
     uint32_t superclassOf(const GuestClass& info) const;
     void traceSend(const std::string& receiver, const std::string& method);
     // Name of the nearest runtime-modelled class in an image-defined class's superclass

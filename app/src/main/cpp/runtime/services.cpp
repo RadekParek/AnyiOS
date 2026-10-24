@@ -918,16 +918,26 @@ uint32_t Services::runeLocale() {
     memory.write(runeLocaleCell, table.data(), table.size());
     return runeLocaleCell;
 }
-void Services::mountSandbox(const std::string& bundleHost, const std::string& containerHost) {
-    if (bundleHost.empty() || containerHost.empty())
-        throw Error("FS_MOUNT", "the bundle and container directories are both required");
+void Services::mountSandbox(const std::string& bundleHost, const std::string& containerHost,
+                            const std::string& bundleArchive,
+                            const std::string& bundleArchivePrefix, const std::string& bundleCache,
+                            const std::string& bundleOverlay) {
+    if (containerHost.empty() || (bundleHost.empty() == bundleArchive.empty()))
+        throw Error("FS_MOUNT", "mount exactly one app bundle source and a writable container");
     files.mount("/var/mobile/Documents", containerHost, true);
-    // The bundle is writable on purpose. This image targets iOS 3, where the app's own
-    // directory under /var/mobile/Applications/... was writable and titles really did write
-    // caches next to their resources (AngryBirds writes data/bundleIndex.idx on first run).
-    // The host directory is a private extraction of the IPA, so allowing those writes keeps
-    // the game working without opening anything outside the sandbox.
-    files.mount("/var/mobile", bundleHost, true);
+    if (!bundleArchive.empty()) {
+        if (bundleArchivePrefix.empty() || bundleCache.empty() || bundleOverlay.empty())
+            throw Error("FS_MOUNT", "IPA mounts need an app root, file cache and write overlay");
+        files.mountArchive("/var/mobile", bundleArchive, bundleArchivePrefix, bundleCache,
+                           bundleOverlay, true);
+    } else {
+        // Extracted .app imports and pre-existing bundle caches stay directory-backed. New IPA
+        // imports use a ZIP index and materialize only entries the guest actually opens.
+        files.mount("/var/mobile", bundleHost, true);
+    }
+    // The bundle is writable on purpose. iOS 3 titles wrote caches next to their resources
+    // (AngryBirds creates data/bundleIndex.idx on first run). For an IPA, writes live in the
+    // private overlay; the original ZIP and its resources remain unchanged.
     // NSBundle/NSHomeDirectory/NSSearchPath answer with the guest paths of those mounts,
     // and only report a resource path when the file really exists inside the sandbox.
     objc.setGuestPaths("/var/mobile", "/var/mobile/Documents");

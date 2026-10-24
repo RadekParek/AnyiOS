@@ -1,14 +1,20 @@
 #include "runtime/fs.h"
 
 #include <sys/stat.h>
+#include <zlib.h>
 
+#include <array>
+#include <cassert>
+#include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <iterator>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "runtime/error.h"
@@ -60,6 +66,97 @@ std::string readText(Memory& memory, uint32_t address, size_t size) {
 std::string hostText(const std::filesystem::path& path) {
     std::ifstream input(path, std::ios::binary);
     return std::string(std::istreambuf_iterator<char>(input), std::istreambuf_iterator<char>());
+}
+void put16(std::ofstream& output, uint16_t value) {
+    const char bytes[] = {char(value), char(value >> 8)};
+    output.write(bytes, sizeof(bytes));
+}
+void put32(std::ofstream& output, uint32_t value) {
+    const char bytes[] = {char(value), char(value >> 8), char(value >> 16), char(value >> 24)};
+    output.write(bytes, sizeof(bytes));
+}
+std::string deflateRaw(const std::string& input) {
+    z_stream stream{};
+    assert(deflateInit2(&stream, Z_DEFAULT_COMPRESSION, Z_DEFLATED, -MAX_WBITS, 8,
+                        Z_DEFAULT_STRATEGY) == Z_OK);
+    std::string output(compressBound(uLong(input.size())), '\0');
+    stream.next_in = reinterpret_cast<Bytef*>(const_cast<char*>(input.data()));
+    stream.avail_in = uInt(input.size());
+    stream.next_out = reinterpret_cast<Bytef*>(output.data());
+    stream.avail_out = uInt(output.size());
+    assert(deflate(&stream, Z_FINISH) == Z_STREAM_END);
+    output.resize(stream.total_out);
+    assert(deflateEnd(&stream) == Z_OK);
+    return output;
+}
+struct ZipItem {
+    std::string name, data;
+    uint16_t method;
+};
+void writeZip(const std::filesystem::path& path, const std::vector<ZipItem>& items) {
+    struct DirectoryItem {
+        std::string name, compressed;
+        uint32_t crc = 0, offset = 0;
+        uint16_t method = 0;
+        uint32_t plainSize = 0;
+    };
+    std::ofstream output(path, std::ios::binary | std::ios::trunc);
+    std::vector<DirectoryItem> directory;
+    for (const ZipItem& item : items) {
+        DirectoryItem entry;
+        entry.name = item.name;
+        entry.method = item.method;
+        entry.plainSize = uint32_t(item.data.size());
+        entry.compressed = item.method == 8 ? deflateRaw(item.data) : item.data;
+        entry.crc = uint32_t(
+            crc32(0L, reinterpret_cast<const Bytef*>(item.data.data()), uInt(item.data.size())));
+        entry.offset = uint32_t(output.tellp());
+        put32(output, 0x04034b50);
+        put16(output, 20);
+        put16(output, 0);
+        put16(output, entry.method);
+        put16(output, 0);
+        put16(output, 0);
+        put32(output, entry.crc);
+        put32(output, uint32_t(entry.compressed.size()));
+        put32(output, entry.plainSize);
+        put16(output, uint16_t(entry.name.size()));
+        put16(output, 0);
+        output.write(entry.name.data(), std::streamsize(entry.name.size()));
+        output.write(entry.compressed.data(), std::streamsize(entry.compressed.size()));
+        directory.push_back(std::move(entry));
+    }
+    const uint32_t centralOffset = uint32_t(output.tellp());
+    for (const DirectoryItem& entry : directory) {
+        put32(output, 0x02014b50);
+        put16(output, 20);
+        put16(output, 20);
+        put16(output, 0);
+        put16(output, entry.method);
+        put16(output, 0);
+        put16(output, 0);
+        put32(output, entry.crc);
+        put32(output, uint32_t(entry.compressed.size()));
+        put32(output, entry.plainSize);
+        put16(output, uint16_t(entry.name.size()));
+        put16(output, 0);
+        put16(output, 0);
+        put16(output, 0);
+        put16(output, 0);
+        put32(output, 0);
+        put32(output, entry.offset);
+        output.write(entry.name.data(), std::streamsize(entry.name.size()));
+    }
+    const uint32_t centralSize = uint32_t(output.tellp()) - centralOffset;
+    put32(output, 0x06054b50);
+    put16(output, 0);
+    put16(output, 0);
+    put16(output, uint16_t(directory.size()));
+    put16(output, uint16_t(directory.size()));
+    put32(output, centralSize);
+    put32(output, centralOffset);
+    put16(output, 0);
+    assert(output.good());
 }
 }  // namespace
 int main() {
@@ -177,6 +274,126 @@ int main() {
     check(stdio.openFiles() == 3, "standard streams stay open");
     check(call("_remove", 0x1200) == 0, "remove deletes a container file");
     check(!std::filesystem::exists(root / "container" / "save.dat"), "the file is gone");
+
+    // The IPA is mounted as a ZIP: opening one compressed member populates only that cache file.
+    const auto ipa = root / "sample.ipa";
+    const std::string zippedLevel = "archive-compressed-level";
+    writeZip(ipa, {{"Payload/Example.app/data/level.txt", zippedLevel, 8},
+                   {"Payload/Example.app/data/unused.bin", "not opened", 0},
+                   {"Payload/Other.app/ignored.txt", "other app", 0}});
+    const std::string originalIpaBytes = [&] {
+        std::ifstream input(ipa, std::ios::binary);
+        return std::string(std::istreambuf_iterator<char>(input), std::istreambuf_iterator<char>());
+    }();
+    const auto zipCache = root / "zip-cache";
+    const auto zipOverlay = root / "zip-overlay";
+    std::filesystem::create_directories(zipCache);
+    std::filesystem::create_directories(zipOverlay);
+    const uint64_t ipaSize = std::filesystem::file_size(ipa);
+    FileSystem zipFiles;
+    zipFiles.mountArchive("/var/mobile", ipa.string(), "Payload/Example.app/", zipCache.string(),
+                          zipOverlay.string(), true);
+    Memory zipMemory;
+    std::vector<uint8_t> zipPage(65536, 0);
+    zipMemory.map({0x1000, 65536, uint8_t(Read | Write), "archive guest data"}, zipPage.data(),
+                  zipPage.size());
+    GuestHeap zipHeap(zipMemory);
+    Stdio zipStdio(zipMemory, zipHeap, zipFiles);
+    Call zipCall{zipMemory, zipStdio, {}};
+    put(zipMemory, 0x5000, "/var/mobile/data/level.txt");
+    put(zipMemory, 0x5100, "rb");
+    const uint32_t zippedFile = zipCall("_fopen", 0x5000, 0x5100);
+    check(zippedFile != 0, "fopen reads a ZIP-backed app member");
+    check(zipCall("_fread", 0x5200, 1, uint32_t(zippedLevel.size()), zippedFile) ==
+              zippedLevel.size(),
+          "fread returns decompressed archive bytes");
+    check(readText(zipMemory, 0x5200, zippedLevel.size()) == zippedLevel,
+          "DEFLATE member contents reach the guest memory");
+    check(zipCall("_fclose", zippedFile) == 0, "ZIP-backed guest stream closes");
+    check(hostText(zipCache / "data" / "level.txt") == zippedLevel,
+          "the opened IPA member is cached and CRC-verified");
+    check(!std::filesystem::exists(zipCache / "data" / "unused.bin"),
+          "an unopened IPA member is not extracted");
+
+    std::string zipReason;
+    const std::string writableMember =
+        zipFiles.resolve("/var/mobile/data/level.txt", true, zipReason, false);
+    check(!writableMember.empty() && writableMember.find("zip-overlay") != std::string::npos,
+          "opening an archive member for writing creates a private copy-on-write file");
+    std::ofstream(writableMember, std::ios::binary | std::ios::trunc) << "modified by guest";
+    check(hostText(zipFiles.resolve("/var/mobile/data/level.txt", false, zipReason)) ==
+              "modified by guest",
+          "bundle reads prefer the writable overlay over the IPA member");
+    check(zipFiles.rename("/var/mobile/data/level.txt", "/var/mobile/data/renamed.txt", zipReason),
+          "renaming an IPA member moves its copy-on-write data into the overlay");
+    check(zipFiles.resolve("/var/mobile/data/level.txt", false, zipReason).empty(),
+          "renaming an IPA member leaves a whiteout at its old path");
+    check(hostText(zipFiles.resolve("/var/mobile/data/renamed.txt", false, zipReason)) ==
+              "modified by guest",
+          "the renamed overlay file preserves guest writes");
+    check(zipFiles.remove("/var/mobile/data/renamed.txt", zipReason),
+          "remove deletes an overlay copy without touching the source archive");
+    check(!zipFiles.rename("/var/mobile/data/level.txt", "/var/mobile/data/revived.txt", zipReason),
+          "rename cannot resurrect an archive member hidden by a whiteout");
+    const std::string newMember =
+        zipFiles.resolve("/var/mobile/data/bundleIndex.idx", true, zipReason, true);
+    check(!newMember.empty() && newMember.find("zip-overlay") != std::string::npos,
+          "truncate can create a new bundle file without extracting an archive member");
+    std::ofstream(newMember, std::ios::binary) << "index";
+    check(!zipFiles.resolve("/var/mobile/data/bundleIndex.idx", false, zipReason).empty(),
+          "new bundle files are visible to subsequent guest reads");
+    check(std::filesystem::file_size(ipa) == ipaSize, "guest writes never change the IPA size");
+    {
+        std::ifstream input(ipa, std::ios::binary);
+        const std::string currentIpaBytes{std::istreambuf_iterator<char>(input),
+                                          std::istreambuf_iterator<char>()};
+        check(currentIpaBytes == originalIpaBytes, "guest writes leave the source IPA unchanged");
+    }
+    zipStdio.closeAll();
+
+    // Malformed archives, unsafe member paths, and CRC damage fail closed.
+    const auto brokenArchive = root / "broken.ipa";
+    std::ofstream(brokenArchive, std::ios::binary) << "not a ZIP";
+    FileSystem brokenFiles;
+    fault("FS_ARCHIVE", [&] {
+        brokenFiles.mountArchive("/var/mobile", brokenArchive.string(), "Payload/Example.app/",
+                                 (root / "broken-cache").string(),
+                                 (root / "broken-overlay").string(), true);
+    });
+    const auto unsafeArchive = root / "unsafe.ipa";
+    writeZip(unsafeArchive, {{"Payload/Example.app/../../escape", "unsafe", 0}});
+    FileSystem unsafeFiles;
+    fault("FS_ARCHIVE", [&] {
+        unsafeFiles.mountArchive("/var/mobile", unsafeArchive.string(), "Payload/Example.app/",
+                                 (root / "unsafe-cache").string(),
+                                 (root / "unsafe-overlay").string(), true);
+    });
+    const auto crcArchive = root / "bad-crc.ipa";
+    writeZip(crcArchive, {{"Payload/Example.app/data/crc.bin", "CRC-protected", 0}});
+    {
+        std::fstream damaged(crcArchive, std::ios::in | std::ios::out | std::ios::binary);
+        std::array<char, 30> header{};
+        damaged.read(header.data(), header.size());
+        const uint16_t nameLength = uint8_t(header[26]) | uint16_t(uint8_t(header[27])) << 8;
+        const uint16_t extraLength = uint8_t(header[28]) | uint16_t(uint8_t(header[29])) << 8;
+        damaged.seekg(std::streamoff(header.size() + nameLength + extraLength));
+        char byte = 0;
+        damaged.read(&byte, 1);
+        byte ^= 1;
+        damaged.seekp(std::streamoff(header.size() + nameLength + extraLength));
+        damaged.write(&byte, 1);
+        assert(damaged.good());
+    }
+    const auto crcCache = root / "crc-cache";
+    const auto crcOverlay = root / "crc-overlay";
+    std::filesystem::create_directories(crcCache);
+    std::filesystem::create_directories(crcOverlay);
+    FileSystem crcFiles;
+    crcFiles.mountArchive("/var/mobile", crcArchive.string(), "Payload/Example.app/",
+                          crcCache.string(), crcOverlay.string(), true);
+    check(crcFiles.resolve("/var/mobile/data/crc.bin", false, zipReason).empty() &&
+              zipReason.find("CRC") != std::string::npos,
+          "corrupted member bytes are rejected instead of cached");
 
     // A stale FILE object is refused instead of being dereferenced.
     fault("STDIO_BAD_FILE", [&] { call("_fclose", 0x4000); });

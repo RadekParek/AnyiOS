@@ -233,16 +233,24 @@ extern "C" JNIEXPORT jbyteArray JNICALL Java_org_podnative_NativeBridge_takeGues
 }
 
 extern "C" JNIEXPORT jstring JNICALL Java_org_podnative_NativeBridge_attemptLaunch(
-    JNIEnv* env, jclass, jbyteArray bytes, jstring bundlePath, jstring containerPath) {
+    JNIEnv* env, jclass, jbyteArray bytes, jstring bundlePath, jstring containerPath,
+    jstring bundleArchivePath, jstring bundleArchivePrefix, jstring bundleCachePath,
+    jstring bundleOverlayPath) {
     try {
-        const auto n = env->GetArrayLength(bytes);
+        const jsize n = env->GetArrayLength(bytes);
         if (n > 64 * 1024 * 1024)
             throw std::runtime_error("LAUNCH_SIZE: ARM32 slice exceeds inspection budget");
-        std::vector<uint8_t> data(n);
-        env->GetByteArrayRegion(bytes, 0, n, reinterpret_cast<jbyte*>(data.data()));
-        if (env->ExceptionCheck()) return nullptr;
+        std::vector<uint8_t> data(static_cast<size_t>(n), uint8_t{});
+        if (n) {
+            env->GetByteArrayRegion(bytes, 0, n, reinterpret_cast<jbyte*>(data.data()));
+            if (env->ExceptionCheck()) return nullptr;
+        }
         const std::string bundle = pathFrom(env, bundlePath);
         const std::string container = pathFrom(env, containerPath);
+        const std::string archive = pathFrom(env, bundleArchivePath);
+        const std::string archivePrefix = pathFrom(env, bundleArchivePrefix);
+        const std::string cache = pathFrom(env, bundleCachePath);
+        const std::string overlay = pathFrom(env, bundleOverlayPath);
         {
             std::lock_guard<std::mutex> lock(guestFrameMutex);
             guestFrame.clear();
@@ -256,6 +264,10 @@ extern "C" JNIEXPORT jstring JNICALL Java_org_podnative_NativeBridge_attemptLaun
         options.screenWidth = guestScreenWidth.load(std::memory_order_relaxed);
         options.screenHeight = guestScreenHeight.load(std::memory_order_relaxed);
         options.cancelRequested = &guestLaunchCancelled;
+        options.bundleArchive = archive;
+        options.bundleArchivePrefix = archivePrefix;
+        options.bundleCache = cache;
+        options.bundleOverlay = overlay;
         options.frameSink = [](int width, int height, const std::vector<uint8_t>& pixels) {
             if (width <= 0 || height <= 0 || width > 2048 || height > 2048 ||
                 pixels.size() != size_t(width) * size_t(height) * 4)
@@ -270,7 +282,7 @@ extern "C" JNIEXPORT jstring JNICALL Java_org_podnative_NativeBridge_attemptLaun
                 guestFrameWidth = guestFrameHeight = 0;
             }
         };
-        const auto report =
+        const std::string report =
             podnative::runtime::attemptLaunch(data.data(), data.size(), bundle, container, options);
         return env->NewStringUTF(report.c_str());
     } catch (const std::exception& e) {

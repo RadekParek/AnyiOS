@@ -418,7 +418,8 @@ uint32_t Stdio::openStream(uint32_t pathAddress, uint32_t modeAddress) {
         return 0;
     }
     std::string reason;
-    const std::string host = files.resolve(path, write, reason);
+    const bool truncate = !mode.empty() && mode.front() == 'w';
+    const std::string host = files.resolve(path, write, reason, truncate);
     if (host.empty()) {
         emit("fopen(\"" + path + "\") refused: " + reason);
         return 0;
@@ -605,26 +606,17 @@ bool Stdio::invoke(const std::string& name, CpuState& cpu) {
     if (name == "_remove") {
         std::string reason;
         const std::string guest = readString(r[0]);
-        const std::string host = files.resolve(guest, true, reason);
-        if (host.empty()) {
-            emit("remove(\"" + guest + "\") refused: " + reason);
-            r[0] = uint32_t(-1);
-            return true;
-        }
-        r[0] = std::remove(host.c_str()) == 0 ? 0 : uint32_t(-1);
+        const bool removed = files.remove(guest, reason);
+        if (!removed && verbose) emit("remove(\"" + guest + "\") failed: " + reason);
+        r[0] = removed ? 0 : uint32_t(-1);
         return true;
     }
     if (name == "_rename") {
         std::string reason;
         const std::string from = readString(r[0]), to = readString(r[1]);
-        const std::string fromHost = files.resolve(from, true, reason),
-                          toHost = files.resolve(to, true, reason);
-        if (fromHost.empty() || toHost.empty()) {
-            emit("rename(\"" + from + "\", \"" + to + "\") refused: " + reason);
-            r[0] = uint32_t(-1);
-            return true;
-        }
-        r[0] = std::rename(fromHost.c_str(), toHost.c_str()) == 0 ? 0 : uint32_t(-1);
+        const bool renamed = files.rename(from, to, reason);
+        if (!renamed && verbose) emit("rename(\"" + from + "\", \"" + to + "\") failed: " + reason);
+        r[0] = renamed ? 0 : uint32_t(-1);
         return true;
     }
     if (name == "_freopen") {
@@ -731,14 +723,35 @@ bool Stdio::invoke(const std::string& name, CpuState& cpu) {
         const std::string path = readString(pathAddress);
         // O_RDONLY 0, O_WRONLY 1, O_RDWR 2, O_APPEND 8, O_CREAT 0x200, O_TRUNC 0x400.
         const int flags = name == "_creat" ? (1 | 0x200 | 0x400) : int(r[1]);
-        const char* mode = (flags & 3) == 0   ? "r"
-                           : (flags & 3) == 1 ? ((flags & 8) ? "a" : "w")
-                                              : "r+";
+        const int access = flags & 3;
+        const bool create = (flags & 0x200) != 0;
+        const bool truncate = (flags & 0x400) != 0;
+        const bool append = (flags & 8) != 0;
+        std::string mode = access == 0 ? "r"
+                           : append    ? (access == 2 ? "a+" : "a")
+                           : truncate  ? (access == 2 ? "w+" : "w")
+                                       : "r+";
         if (verbose) emit("stdio: open(\"" + path + "\") flags=0x" + std::to_string(flags));
-        const uint32_t modeAddress = heap.allocate(4, 1);
+        const uint32_t modeAddress = heap.allocate(8, 1);
         if (!modeAddress) throw Error("STDIO_ALLOC", "could not hold an open mode");
-        memory.write(modeAddress, mode, std::strlen(mode) + 1);
-        const uint32_t object = openStream(pathAddress, modeAddress);
+        memory.write(modeAddress, mode.c_str(), mode.size() + 1);
+        uint32_t object = openStream(pathAddress, modeAddress);
+        // O_CREAT without O_TRUNC preserves an existing file; if it did not exist, create it
+        // only after the non-truncating open failed. For an archive-backed bundle this first
+        // attempt either opens the ZIP member through the writable overlay or reports missing.
+        if (!object && create && !truncate && !append) {
+            mode = access == 2 ? "w+" : "w";
+            memory.write(modeAddress, mode.c_str(), mode.size() + 1);
+            object = openStream(pathAddress, modeAddress);
+            if (object && access == 0) {
+                CpuState closeState = cpu;
+                closeState.registers[0] = object;
+                invoke("_fclose", closeState);
+                mode = "r";
+                memory.write(modeAddress, mode.c_str(), mode.size() + 1);
+                object = openStream(pathAddress, modeAddress);
+            }
+        }
         heap.release(modeAddress);
         if (!object) {
             r[0] = uint32_t(-1);

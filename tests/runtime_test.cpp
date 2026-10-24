@@ -11,6 +11,7 @@
 #include "runtime/launch.h"
 #include "runtime/loader.h"
 #include "runtime/memory.h"
+#include "runtime/objc.h"
 using namespace podnative::runtime;
 using Bytes = std::vector<uint8_t>;
 void put(Bytes& b, size_t at, uint32_t v) {
@@ -104,6 +105,56 @@ Bytes combinedFixupBudgetFixture() {
     put(b, 136, 24);
     put(b, 140, 0x100);
     put(b, 148, 0);
+    return b;
+}
+Bytes executableWithRebasedObjectiveC(bool rebaseClassList = true) {
+    Bytes b(8192, 0);
+    put(b, 0, 0xfeedface);
+    put(b, 4, 12);
+    put(b, 8, 9);
+    put(b, 12, 2);
+    put(b, 16, 4);
+    put(b, 20, 252);
+    put(b, 28, 1);
+    put(b, 32, 56);
+    std::memcpy(b.data() + 36, "__TEXT", 6);
+    put(b, 52, 0x1000);
+    put(b, 56, 4096);
+    put(b, 60, 0);
+    put(b, 64, 4096);
+    put(b, 68, 5);
+    put(b, 72, 5);
+    put(b, 84, 1);
+    put(b, 88, 124);
+    std::memcpy(b.data() + 92, "__DATA", 6);
+    put(b, 108, 0x2000);
+    put(b, 112, 4096);
+    put(b, 116, 4096);
+    put(b, 120, 4096);
+    put(b, 124, 7);
+    put(b, 128, 3);
+    put(b, 132, 1);
+    std::memcpy(b.data() + 140, "__objc_classlist", 16);
+    std::memcpy(b.data() + 156, "__DATA", 6);
+    put(b, 172, 0x2000);
+    put(b, 176, 4);
+    put(b, 180, 4096);
+    put(b, 184, 2);
+    put(b, 208, 0x80000022);
+    put(b, 212, 48);
+    put(b, 216, rebaseClassList ? 0x300 : 0);
+    put(b, 220, rebaseClassList ? 4 : 0);
+    put(b, 256, 0x80000028);
+    put(b, 260, 24);
+    put(b, 264, 0x400);
+    put(b, 4096, rebaseClassList ? 0x3000 : 0x4000);
+    if (rebaseClassList) {
+        // The list slot initially points outside mapped memory; the rebase fixes it to 0x4000.
+        const uint8_t rebase[] = {0x21, 0x00, 0x51, 0x00};
+        std::copy(std::begin(rebase), std::end(rebase), b.begin() + 0x300);
+    }
+    put(b, 0x400, 0xe3a0002a);
+    put(b, 0x404, 0xef000000);
     return b;
 }
 Bytes readOnlyFixupFixture(uint32_t maximumProtection = uint32_t(Read | Write)) {
@@ -215,6 +266,56 @@ int main() {
     image.dyld.apply(*image.memory, 0x100, {});
     assert(image.memory->read32(0x2000) == 0x1334);
     assert(!image.memory->permits(0x2000, 4, Write));
+    b = executableWithRebasedObjectiveC();
+    image = loadMachO(b.data(), b.size());
+    assert(image.objcClassListSections.size() == 1);
+    fault("LOAD_OBJECTIVE_C", [&] { (void)image.objcClassAddresses(); });
+    image.memory->map({0x4000, 4096, uint8_t(Read | Write), "rebased guest class"});
+    image.memory->map({0x5000, 4096, uint8_t(Read | Write), "rebased class metadata"});
+    image.memory->write32(0x4000, 0);       // isa
+    image.memory->write32(0x4004, 0);       // superclass
+    image.memory->write32(0x4010, 0x4000);  // class_data_bits_t before its rebase
+    image.memory->write32(0x5008, 210);     // byte-sized modern class_ro_t instanceSize
+    image.memory->write32(0x5010, 0x5100);
+    const char appController[] = "AppController";
+    image.memory->write(0x5100, appController, sizeof(appController));
+    image.dyld.fixups.push_back({0x4010, true, false, false, 0, 0, {}});
+    image.dyld.apply(*image.memory, 0x1000, {});
+    assert(image.memory->read32(0x2000) == 0x4000);
+    assert(image.memory->read32(0x4010) == 0x5000);
+    ObjC guestObjC(*image.memory);
+    guestObjC.registerGuestClasses(image.objcClassAddresses());
+    assert(guestObjC.guestClassSummary().find("AppController") != std::string::npos);
+    const uint32_t guestInstance = guestObjC.allocateGuestInstance(0x4000);
+    assert(guestInstance && image.memory->read32(guestInstance) == 0x4000);
+
+    // With a readable class-list entry but an unfixed class_data_bits_t, the old ordering
+    // fell back to the legacy layout and reported the garbage vtable word as AppController's
+    // implausible instance size. Once dyld rebases the class-data pointer, the same class is
+    // correctly read as modern class_ro_t metadata.
+    b = executableWithRebasedObjectiveC(false);
+    image = loadMachO(b.data(), b.size());
+    image.memory->map({0x4000, 4096, uint8_t(Read | Write), "unfixed Objective-C class"});
+    image.memory->map({0x5000, 4096, uint8_t(Read | Write), "fixed Objective-C class data"});
+    image.memory->write32(0x4008, 0x5100);      // legacy fallback looks like AppController
+    image.memory->write32(0x4010, 0x4000);      // pre-dyld class_data_bits_t is not class_ro_t
+    image.memory->write32(0x4014, 0x80000000);  // legacy fallback sees an implausible size
+    image.memory->write32(0x5008, 210);
+    image.memory->write32(0x5010, 0x5100);
+    image.memory->write(0x5100, appController, sizeof(appController));
+    ObjC orderedObjC(*image.memory);
+    try {
+        orderedObjC.registerGuestClasses(image.objcClassAddresses());
+        std::cerr << "pre-dyld class data was accepted as Objective-C metadata\n";
+        std::abort();
+    } catch (const Error& e) {
+        assert(e.code == "OBJC_CLASS_FORMAT");
+        assert(std::string(e.what()).find("AppController") != std::string::npos);
+    }
+    image.dyld.fixups.push_back({0x4010, true, false, false, 0, 0, {}});
+    image.dyld.apply(*image.memory, 0x1000, {});
+    orderedObjC.registerGuestClasses(image.objcClassAddresses());
+    assert(orderedObjC.guestClassSummary().find("AppController") != std::string::npos);
     b = readOnlyFixupFixture(uint32_t(Read));
     fault("DYLD_TARGET", [&] { loadMachO(b.data(), b.size()); });
     b = executableWithInitializer();

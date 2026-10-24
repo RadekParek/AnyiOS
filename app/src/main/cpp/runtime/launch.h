@@ -33,6 +33,9 @@ struct LaunchOptions {
     // generally expect 480x320 points even when the physical panel has a different resolution.
     int screenWidth = 320;
     int screenHeight = 480;
+    // New IPA imports stay ZIP-backed. The runtime indexes the selected Payload/*.app and
+    // caches verified files on first access; guest writes land in the private overlay.
+    std::string bundleArchive, bundleArchivePrefix, bundleCache, bundleOverlay;
     // Optional host cancellation and rendered-frame delivery used by the Android game view. A
     // null callback keeps command-line/host diagnostics unchanged and avoids pixel readback.
     const std::atomic<bool>* cancelRequested = nullptr;

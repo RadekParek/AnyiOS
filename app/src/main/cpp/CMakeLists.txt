@@ -19,6 +19,7 @@ if(PODNATIVE_BUILD_TYPE STREQUAL "DEBUG")
     add_compile_options(-O2 -g)
     add_compile_definitions(NDEBUG)
 endif()
+find_library(ZLIB_LIBRARY z REQUIRED)
 set(ANGLE_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/../../../../third_party/angle")
 # AGP packages linked CMake IMPORTED shared libraries. Keep them outside jniLibs
 # to avoid packaging the same native library twice.
@@ -55,4 +56,4 @@ target_compile_options(podnative PRIVATE -Wall -Wextra -Werror)
 target_compile_definitions(podnative PRIVATE PODNATIVE_CPU_IN_APP=1)
 target_include_directories(podnative PRIVATE "${ANGLE_ROOT}/include"
     "${CMAKE_CURRENT_SOURCE_DIR}/../../../../third_party/pvrtc")
-target_link_libraries(podnative PRIVATE angle_EGL angle_GLESv2 android log vulkan dynarmic dl)
+target_link_libraries(podnative PRIVATE angle_EGL angle_GLESv2 android log vulkan dynarmic dl ${ZLIB_LIBRARY})

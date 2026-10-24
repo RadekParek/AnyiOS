@@ -12,7 +12,7 @@ plan() { printf 'c++ %s\n' "$*" >> "$PLAN"; }
 plan "${FLAGS[*]}" tests/macho_test.cpp app/src/main/cpp/macho.cpp -o .local/tests/macho-test
 plan "${FLAGS[*]}" tests/runtime_test.cpp app/src/main/cpp/macho.cpp \
   app/src/main/cpp/runtime/{memory,loader,launch,dyld,exports,services,frameworks,coregraphics,libc,cxx,fs,stdio,audio,posix,openal,format,heap,objc,uikit,gles,pvrtc}.cpp \
-  third_party/pvrtc/PVRTDecompress.cpp -o .local/tests/runtime-test
+  third_party/pvrtc/PVRTDecompress.cpp -lz -o .local/tests/runtime-test
 plan "${FLAGS[*]}" tests/imports_test.cpp app/src/main/cpp/{macho,macho_info}.cpp -o .local/tests/imports-test
 plan "${FLAGS[*]}" tests/fat_test.cpp app/src/main/cpp/macho_container.cpp -o .local/tests/fat-test
 plan "${FLAGS[*]}" tests/frameworks_test.cpp app/src/main/cpp/runtime/{memory,frameworks}.cpp -o .local/tests/frameworks-test
@@ -20,7 +20,7 @@ plan "${FLAGS[*]}" tests/coregraphics_test.cpp app/src/main/cpp/runtime/{memory,
 plan "${FLAGS[*]}" tests/dyld_test.cpp app/src/main/cpp/runtime/{memory,dyld,exports}.cpp -o .local/tests/dyld-test
 plan "${FLAGS[*]}" tests/exports_test.cpp \
   app/src/main/cpp/runtime/{memory,exports,services,frameworks,coregraphics,dyld,libc,cxx,fs,stdio,audio,posix,openal,format,heap,objc,uikit,gles,pvrtc}.cpp \
-  third_party/pvrtc/PVRTDecompress.cpp -o .local/tests/exports-test
+  third_party/pvrtc/PVRTDecompress.cpp -lz -o .local/tests/exports-test
 plan "${FLAGS[*]}" tests/objc_test.cpp app/src/main/cpp/runtime/{memory,objc,exports,format,libc,heap,gles,pvrtc}.cpp third_party/pvrtc/PVRTDecompress.cpp -o .local/tests/objc-test
 plan "${FLAGS[*]}" tests/libc_test.cpp app/src/main/cpp/runtime/{memory,libc,format,heap}.cpp -o .local/tests/libc-test
 plan "${FLAGS[*]}" tests/cxx_test.cpp app/src/main/cpp/runtime/{memory,cxx,exports,format,heap}.cpp -o .local/tests/cxx-test
@@ -39,7 +39,7 @@ plan "${FLAGS[*]} -Itests" tests/gles_driver_test.cpp app/src/main/cpp/runtime/{
 plan "${FLAGS[*]} -Itests" tests/gles_es2_stub_driver.cpp -shared -fPIC -o .local/tests-es2/libGLESv2_podnative.so
 plan "${FLAGS[*]} -Itests" tests/gles_emulation_test.cpp app/src/main/cpp/runtime/{memory,heap,gles,pvrtc}.cpp third_party/pvrtc/PVRTDecompress.cpp -o .local/tests/gles-emulation-test
 plan "${FLAGS[*]}" tests/audio_test.cpp app/src/main/cpp/runtime/{memory,audio,openal,format,libc,heap}.cpp -o .local/tests/audio-test
-plan "${FLAGS[*]}" tests/fs_test.cpp app/src/main/cpp/runtime/{memory,fs,stdio,audio,libc,format,heap}.cpp -o .local/tests/fs-test
+plan "${FLAGS[*]}" tests/fs_test.cpp app/src/main/cpp/runtime/{memory,fs,stdio,audio,libc,format,heap}.cpp -lz -o .local/tests/fs-test
 xargs -a "$PLAN" -d '\n' -P "$JOBS" -n 1 -I {} bash -c '{}'
 # Development tools are compiled here too, so they cannot rot: the guest runner is the
 # entry point the compatibility work is measured with, and the host GL harness is a

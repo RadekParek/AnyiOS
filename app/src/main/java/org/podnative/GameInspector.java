@@ -15,8 +15,6 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
-import java.util.concurrent.CancellationException;
-import java.util.function.BooleanSupplier;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipFile;
 
@@ -24,11 +22,6 @@ import java.util.zip.ZipFile;
 final class GameInspector {
     private static final int MAX_EXECUTABLE = 64 * 1024 * 1024;
     private static final long MAX_CONTAINER = 512L * 1024 * 1024;
-    static final long MAX_EXTRACTED_APP_BUNDLE = 4L * 1024 * 1024 * 1024;
-
-    static boolean exceedsExtractedBundleLimit(long total, int nextBytes) {
-        return total < 0 || nextBytes < 0 || total > MAX_EXTRACTED_APP_BUNDLE - nextBytes;
-    }
     static final class Result {
         String kind = "Executable";
         String title, version = "Unknown version", bundleId = "", executable = "", report = "";
@@ -40,7 +33,8 @@ final class GameInspector {
         String launchOutcome = "";
         int guestFrameWidth, guestFrameHeight;
         byte[] guestFrame;
-        File bundleRoot, containerRoot;
+        File bundleRoot, containerRoot, bundleArchive, bundleCacheRoot, bundleOverlayRoot;
+        String bundleArchivePrefix = "";
     }
     private GameInspector() {}
     static byte[] bounded(InputStream in, int limit) throws IOException {
@@ -65,17 +59,26 @@ final class GameInspector {
         return analyze(source, displayName, scratch, launchAttempt, null, null);
     }
     /**
-     * @param bundleRoot extracted .app directory mounted at the guest's /var/mobile; legacy
-     *     titles may write first-run caches there, but only inside this private app bundle cache.
-     *     Null when the import has no persistent bundle on disk.
+     * @param bundleRoot extracted .app directory mounted at the guest's /var/mobile, when one
+     *     already exists from an older release or the user imported an extracted folder.
      * @param containerRoot writable directory that becomes the guest's /var/mobile/Documents.
+     * @param bundleCacheRoot on-demand materialized IPA resources, used only for ZIP-backed apps.
+     * @param bundleOverlayRoot copy-on-write bundle files created by guest code.
      */
     static Result analyze(File source, String displayName, File scratch, boolean launchAttempt,
         File bundleRoot, File containerRoot) throws IOException {
+        return analyze(
+            source, displayName, scratch, launchAttempt, bundleRoot, containerRoot, null, null);
+    }
+    static Result analyze(File source, String displayName, File scratch, boolean launchAttempt,
+        File bundleRoot, File containerRoot, File bundleCacheRoot, File bundleOverlayRoot)
+        throws IOException {
         Result result = new Result();
         result.launchAttempt = launchAttempt;
         result.bundleRoot = bundleRoot;
         result.containerRoot = containerRoot;
+        result.bundleCacheRoot = bundleCacheRoot;
+        result.bundleOverlayRoot = bundleOverlayRoot;
         result.title = LibraryRules.title(displayName);
         if (displayName.toLowerCase(java.util.Locale.ROOT).endsWith(".ipa"))
             result.kind = "IPA";
@@ -136,6 +139,47 @@ final class GameInspector {
             : build.isEmpty() ? "Unknown version"
                               : build;
     }
+    private static String topLevelAppRoot(String entry) {
+        if (!entry.startsWith("Payload/"))
+            return null;
+        int appEnd = entry.indexOf('/', "Payload/".length());
+        if (appEnd < 0 || appEnd == "Payload/".length())
+            return null;
+        String appName = entry.substring("Payload/".length(), appEnd);
+        return appName.endsWith(".app") && appName.length() > 4 && appEnd + 1 < entry.length()
+            ? entry.substring(0, appEnd + 1)
+            : null;
+    }
+    static final class ArchiveEntries {
+        final String bundlePrefix;
+        final Set<String> names;
+        ArchiveEntries(String bundlePrefix, Set<String> names) {
+            this.bundlePrefix = bundlePrefix;
+            this.names = names;
+        }
+    }
+    static ArchiveEntries listArchiveEntries(ZipFile zip) throws IOException {
+        Set<String> names = new HashSet<>();
+        Set<String> bundles = new LinkedHashSet<>();
+        Enumeration<? extends ZipEntry> entries = zip.entries();
+        while (entries.hasMoreElements()) {
+            ZipEntry entry = entries.nextElement();
+            String name = entry.getName();
+            if (!names.add(name))
+                throw new IOException("IPA contains duplicate entry names");
+            if (names.size() > 30000)
+                throw new IOException("IPA exceeds the 30,000-entry limit");
+            if (!entry.isDirectory()) {
+                String appRoot = topLevelAppRoot(name);
+                if (appRoot != null)
+                    bundles.add(appRoot);
+            }
+        }
+        if (bundles.size() != 1)
+            throw new IOException(
+                "Choose an IPA with one top-level app in Payload, or import the exact .app folder");
+        return new ArchiveEntries(bundles.iterator().next(), names);
+    }
     private static boolean executableMagic(InputStream in) throws IOException {
         byte[] b = new byte[4];
         int n = 0, read;
@@ -195,9 +239,16 @@ final class GameInspector {
             if (report.startsWith("MACHO_ENCRYPTED:"))
                 result.status = "Encrypted";
             if (result.launchAttempt) {
+                boolean archiveMount = result.bundleRoot == null && result.bundleArchive != null
+                    && result.bundleCacheRoot != null && result.bundleOverlayRoot != null
+                    && result.containerRoot != null;
                 result.launchOutcome = NativeBridge.attemptLaunch(bytes,
                     result.bundleRoot == null ? "" : result.bundleRoot.getAbsolutePath(),
-                    result.containerRoot == null ? "" : result.containerRoot.getAbsolutePath());
+                    result.containerRoot == null ? "" : result.containerRoot.getAbsolutePath(),
+                    archiveMount ? result.bundleArchive.getAbsolutePath() : "",
+                    archiveMount ? result.bundleArchivePrefix : "",
+                    archiveMount ? result.bundleCacheRoot.getAbsolutePath() : "",
+                    archiveMount ? result.bundleOverlayRoot.getAbsolutePath() : "");
                 takeGuestFrame(result);
                 report += "\n\n" + result.launchOutcome;
             }
@@ -232,23 +283,11 @@ final class GameInspector {
         throws IOException {
         result.kind = "IPA";
         try (ZipFile zip = new ZipFile(archive)) {
-            Set<String> names = new HashSet<>();
-            Set<String> bundles = new LinkedHashSet<>();
-            Enumeration<? extends ZipEntry> entries = zip.entries();
-            while (entries.hasMoreElements()) {
-                ZipEntry entry = entries.nextElement();
-                String name = entry.getName();
-                if (!names.add(name))
-                    throw new IOException("IPA contains duplicate entry names");
-                if (names.size() > 30000)
-                    throw new IOException("IPA exceeds the 30,000-entry limit");
-                if (!entry.isDirectory() && name.matches("Payload/[^/]+\\.app/[^/]+"))
-                    bundles.add(name.substring(0, name.lastIndexOf('/') + 1));
-            }
-            if (bundles.size() != 1)
-                throw new IOException(
-                    "Choose an IPA with one top-level app in Payload, or import the exact .app folder");
-            String root = bundles.iterator().next();
+            ArchiveEntries archiveEntries = listArchiveEntries(zip);
+            Set<String> names = archiveEntries.names;
+            String root = archiveEntries.bundlePrefix;
+            result.bundleArchive = archive;
+            result.bundleArchivePrefix = root;
             Map<String, Object> info = Collections.emptyMap();
             ZipEntry plist = zip.getEntry(root + "Info.plist");
             if (plist != null)
@@ -413,115 +452,6 @@ final class GameInspector {
                 "No Mach-O executable found. Select the extracted .app folder, not a folder of IPA downloads");
         inspectExecutable(executable, result);
         result.executable = folder.toPath().relativize(executable.toPath()).toString();
-    }
-    /**
-     * Materializes the sole top-level Payload/*.app from an IPA for the guest file sandbox.
-     * The source archive is never modified. The caller uses a fresh staging directory and only
-     * publishes the returned bundle after extraction completes.
-     */
-    static File extractAppBundle(File archive, File destination, String executableName)
-        throws IOException {
-        return extractAppBundle(archive, destination, executableName, () -> false);
-    }
-    static File extractAppBundle(File archive, File destination, String executableName,
-        BooleanSupplier isCancelled) throws IOException {
-        if (!archive.isFile() || destination.exists())
-            throw new IOException("IPA extraction needs a source file and a new staging directory");
-        checkExtractionCancelled(isCancelled);
-        if (!destination.mkdirs())
-            throw new IOException("Could not create the temporary IPA extraction directory");
-        Set<String> names = new HashSet<>();
-        Set<String> bundles = new LinkedHashSet<>();
-        try (ZipFile zip = new ZipFile(archive)) {
-            Enumeration<? extends ZipEntry> entries = zip.entries();
-            while (entries.hasMoreElements()) {
-                checkExtractionCancelled(isCancelled);
-                ZipEntry entry = entries.nextElement();
-                String name = entry.getName();
-                if (!names.add(name))
-                    throw new IOException("IPA contains duplicate entry names");
-                if (names.size() > 30000)
-                    throw new IOException("IPA exceeds the 30,000-entry extraction limit");
-                if (!entry.isDirectory() && name.matches("Payload/[^/]+\\.app/[^/]+"))
-                    bundles.add(name.substring(0, name.lastIndexOf('/') + 1));
-            }
-            if (bundles.size() != 1)
-                throw new IOException("IPA must contain exactly one top-level app bundle");
-            String root = bundles.iterator().next();
-            String appName = root.substring("Payload/".length(), root.length() - 1);
-            File appBundle = new File(destination, LibraryRules.fileName(appName));
-            if (!appBundle.mkdirs())
-                throw new IOException("Could not create the extracted app bundle directory");
-            String canonicalRoot = appBundle.getCanonicalPath() + File.separator;
-            long total = 0, nextSpaceCheck = 0;
-            byte[] buffer = new byte[65536];
-            entries = zip.entries();
-            while (entries.hasMoreElements()) {
-                checkExtractionCancelled(isCancelled);
-                ZipEntry entry = entries.nextElement();
-                String name = entry.getName();
-                if (!name.startsWith(root))
-                    continue;
-                String relative = name.substring(root.length());
-                if (relative.isEmpty())
-                    continue;
-                if (relative.startsWith("/") || relative.indexOf('\\') >= 0
-                    || relative.indexOf(0) >= 0)
-                    throw new IOException("IPA contains an unsafe app resource path");
-                String[] components = relative.split("/", -1);
-                for (int index = 0; index < components.length; index++) {
-                    String component = components[index];
-                    boolean trailingDirectorySeparator = entry.isDirectory()
-                        && index == components.length - 1 && component.isEmpty();
-                    if (component.equals(".") || component.equals("..")
-                        || component.isEmpty() && !trailingDirectorySeparator)
-                        throw new IOException("IPA app resource path escapes the bundle");
-                }
-                File output = new File(appBundle, relative);
-                String canonicalOutput = output.getCanonicalPath();
-                if (!canonicalOutput.startsWith(canonicalRoot))
-                    throw new IOException("IPA app resource path escapes the extraction directory");
-                if (entry.isDirectory()) {
-                    if (!output.isDirectory() && !output.mkdirs())
-                        throw new IOException(
-                            "Could not create an extracted app resource directory");
-                    continue;
-                }
-                File parent = output.getParentFile();
-                if (parent == null || (!parent.isDirectory() && !parent.mkdirs()))
-                    throw new IOException("Could not create an extracted app resource parent");
-                try (InputStream in = zip.getInputStream(entry);
-                    FileOutputStream out = new FileOutputStream(output)) {
-                    int read;
-                    while ((read = in.read(buffer)) != -1) {
-                        checkExtractionCancelled(isCancelled);
-                        if (exceedsExtractedBundleLimit(total, read))
-                            throw new IOException(
-                                "Extracted app bundle exceeds the 4 GiB safety limit");
-                        total += read;
-                        if (total >= nextSpaceCheck) {
-                            if (destination.getUsableSpace() < 64L * 1024 * 1024 + read)
-                                throw new IOException(
-                                    "Not enough free storage to extract IPA resources");
-                            nextSpaceCheck = total + 4L * 1024 * 1024;
-                        }
-                        out.write(buffer, 0, read);
-                    }
-                }
-            }
-            checkExtractionCancelled(isCancelled);
-            String executable = LibraryRules.fileName(executableName);
-            if (!new File(appBundle, executable).isFile())
-                throw new IOException(
-                    "The selected executable is missing from the extracted IPA app");
-            if (!new File(appBundle, "Info.plist").isFile())
-                throw new IOException("The extracted app bundle has no Info.plist");
-            return appBundle;
-        }
-    }
-    private static void checkExtractionCancelled(BooleanSupplier isCancelled) {
-        if (isCancelled.getAsBoolean())
-            throw new CancellationException("Guest startup cancelled during IPA extraction");
     }
     @SuppressWarnings("unchecked")
     private static List<String> iconCandidates(Map<String, Object> info) {
