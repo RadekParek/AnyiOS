@@ -6,7 +6,7 @@
 * Fixed the game's GL argument ABI: its ARMv6 code uses base AAPCS, so `float` arguments arrive in core registers/stack, not VFP registers. Both recording-driver and ES 1.1-to-ES 2.0 emulation tests now encode that ABI.
 * The guest renders in a 320×480 logical buffer and its `LandscapeLeft` output is rotated to 480×320. `PrototypeView` already aspect-fits frames, so the landscape artwork keeps its 3:2 ratio instead of being stretched across a wider phone display. A reused scratch buffer avoids a new full-frame allocation for both the vertical flip and rotation on every frame.
 * `tests/AngryBirds_v1.0_os30.ipa` was run for 12 seconds through the actual host guest runner with Mesa GLES. The captured 480×320 frame visibly shows the Angry Birds title menu; the guest stayed in its UIKit update loop and no unimplemented imports trapped. This proves host execution and readback, not the Android ANGLE device path.
-* Verification: `scripts/test-host.sh` passed; `scripts/test-cpu.sh` passed 13/13; `scripts/check-format.sh` passed. The VM has no Android SDK/JDK or device emulator, so Android packaging and S23 visual validation remain pending. Touch input is not forwarded yet, so the menu is visible but not interactive. No converter source or tests were changed.
+* Verification: `scripts/test-host.sh` passed; `scripts/test-cpu.sh` passed 13/13; `scripts/check-format.sh` passed. Android release lint, unit tests and APK packaging passed in Android-only CI run `40170214485` for commit `3cb3aa1`; the VM has no Android device or emulator, so S23 visual validation remains pending. Touch input is not forwarded yet, so the menu is visible but not interactive. No converter source or tests were changed.
 
 # Continuation progress — 2026-10-24
 
