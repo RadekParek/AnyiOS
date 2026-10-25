@@ -280,8 +280,19 @@ jobs:
           import xml.etree.ElementTree as ET
           for path in Path('.local/logs').glob('*.log'):
               all_lines = path.read_text(errors='replace').splitlines()
-              errors = [line for line in all_lines if any(token in line for token in ('e: file:', 'error:', ' FAILED', ' > ', 'Duplicate class', 'FAILURES!!!'))][:30]
-              lines = errors + all_lines[-12:]
+              markers = (
+                  'e: file:', 'error:', ' failed', 'failure', 'exception', 'caused by:',
+                  'could not', 'cannot ', 'unable to', 'not found', 'no such file',
+                  'permission denied', 'unresolved reference', 'undefined reference',
+                  'linker', 'panic', 'what went wrong:', 'execution failed for task',
+                  'non-zero exit', 'duplicate class', 'failures!!!',
+              )
+              matching = [i for i, line in enumerate(all_lines)
+                          if any(marker in line.lower() for marker in markers)]
+              errors = []
+              for index in matching[-15:]:
+                  errors.extend(all_lines[max(0, index - 1):min(len(all_lines), index + 4)])
+              lines = list(dict.fromkeys(errors + all_lines[-20:]))
               message = (path.name + ': ' + '\n'.join(lines)).replace('%', '%25').replace('\r', '%0D').replace('\n', '%0A')
               print('::warning::' + message)
           for root in ('app/build/test-results', 'converter/app/build/test-results'):
