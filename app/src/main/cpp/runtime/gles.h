@@ -169,6 +169,7 @@ class GLES final {
     uint32_t framebuffer = 0, renderbuffer = 0;
     bool pbufferDrawable = false;
     uint32_t pbufferFallbackStatus = 0;
+    bool drawableFramebufferRepairAttempted = false;
     // Guest-visible names are kept separate from the private fallback FBO/RBO. Binding guest
     // framebuffer 0 maps to `framebuffer`; a guest-created EAGL framebuffer stays a real driver
     // object and is selected when its drawable renderbuffer is attached.

@@ -256,6 +256,10 @@ void glRenderbufferStorage(uint32_t, uint32_t format, int w, int h) {
     state.renderbufferFormat = format;
     state.renderbufferWidth = w;
     state.renderbufferHeight = h;
+    if (state.repairFramebufferOnRgba4Storage && format == 0x8056) {
+        state.framebufferStatus = 0x8cd5;
+        state.repairFramebufferOnRgba4Storage = 0;
+    }
 }
 void glGetRenderbufferParameteriv(uint32_t, uint32_t pname, int32_t* value) {
     if (!value) return;

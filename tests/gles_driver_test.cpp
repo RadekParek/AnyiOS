@@ -350,6 +350,9 @@ void drawable(const std::string& driver) {
 
 void pbufferFallback(const std::string& driver) {
     Memory memory(1024 * 1024);
+    std::vector<uint8_t> guestPage(65536, 0);
+    memory.map({0x10000, 65536, uint8_t(Read | Write), "guest framebuffer names"}, guestPage.data(),
+               guestPage.size());
     GLES gles(memory);
     check(gles.load(), "the recording driver is resolved for the pbuffer fallback test");
     check(gles.backend() == driver, "the pbuffer fallback stays on the selected driver");
@@ -370,6 +373,33 @@ void pbufferFallback(const std::string& driver) {
     check(recorded->framebufferAtRead == 0 && gles.frameWidth() == 16 && gles.frameHeight() == 24 &&
               gles.frameCurrent(),
           "readback uses the complete EGL default framebuffer at native dimensions");
+    recorded->framebufferStatus = 0x8cd6;
+    recorded->repairFramebufferOnRgba4Storage = 1;
+    Call genFramebuffer(gles, memory);
+    genFramebuffer.ints({1, 0x10000});
+    genFramebuffer("_glGenFramebuffersOES");
+    const uint32_t guestFramebuffer = memory.read32(0x10000);
+    Call bindFramebuffer(gles, memory);
+    bindFramebuffer.ints({GL_FRAMEBUFFER, guestFramebuffer});
+    bindFramebuffer("_glBindFramebufferOES");
+    Call genRenderbuffer(gles, memory);
+    genRenderbuffer.ints({1, 0x10004});
+    genRenderbuffer("_glGenRenderbuffersOES");
+    const uint32_t guestRenderbuffer = memory.read32(0x10004);
+    Call bindRenderbuffer(gles, memory);
+    bindRenderbuffer.ints({GL_RENDERBUFFER, guestRenderbuffer});
+    bindRenderbuffer("_glBindRenderbufferOES");
+    check(gles.renderbufferStorageFromDrawable(16, 24),
+          "the guest EAGL colour renderbuffer receives drawable storage");
+    Call attach(gles, memory);
+    attach.ints({GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_RENDERBUFFER, guestRenderbuffer});
+    attach("_glFramebufferRenderbufferOES");
+    check(gles.present(),
+          "an incomplete EAGL framebuffer is repaired with a renderable RGBA4 attachment");
+    check(recorded->renderbufferFormat == 0x8056 &&
+              recorded->framebufferAtRead == guestFramebuffer &&
+              gles.describe().find("last error:") == std::string::npos,
+          "repaired guest FBO storage is presented and clears the stale error");
 }
 
 void pvrtcUploads(const std::string& driver) {

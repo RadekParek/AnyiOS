@@ -33,6 +33,7 @@ struct StubState {
     int renderbufferWidth, renderbufferHeight;
     uint32_t renderbufferFormat, framebufferStatus;
     int pbufferWidth, pbufferHeight;
+    int repairFramebufferOnRgba4Storage;
     unsigned boundRenderbuffer, boundFramebuffer, attachedRenderbuffer;
     int framebufferBindCalls;
     unsigned framebufferBinds[32], framebufferAtRead;

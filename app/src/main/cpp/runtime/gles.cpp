@@ -4617,6 +4617,7 @@ bool GLES::createPbufferDrawable(int w, int h) {
     lastFrameWidth = lastFrameHeight = 0;
     frame.clear();
     pbufferDrawable = true;
+    drawableFramebufferRepairAttempted = false;
     lastError.clear();
     auto viewport = glFn<void (*)(int, int, int, int)>("glViewport");
     if (viewport) viewport(0, 0, w, h);
@@ -4631,6 +4632,7 @@ bool GLES::createDrawable(int w, int h) {
     }
     pbufferDrawable = false;
     pbufferFallbackStatus = 0;
+    drawableFramebufferRepairAttempted = false;
     auto genRenderbuffers = glFn<void (*)(int, uint32_t*)>("glGenRenderbuffers");
     auto bindRenderbuffer = glFn<void (*)(uint32_t, uint32_t)>("glBindRenderbuffer");
     auto renderbufferStorage =
@@ -4692,6 +4694,7 @@ bool GLES::renderbufferStorageFromDrawable(int w, int h) {
     bindRenderbuffer(Renderbuffer, boundGuestRenderbuffer);
     storage(Renderbuffer, drawableColorFormat(), w, h);
     drawableRenderbuffer = boundGuestRenderbuffer;
+    drawableFramebufferRepairAttempted = false;
     width = w;
     height = h;
     frame.clear();
@@ -4723,11 +4726,36 @@ bool GLES::present() {
                                                     : framebuffer;
     bindFramebuffer(GL_FRAMEBUFFER, source);
     auto check = glFn<uint32_t (*)(uint32_t)>("glCheckFramebufferStatus");
-    if (check && check(GL_FRAMEBUFFER) != 0x8cd5) {
+    auto framebufferStatus = [&]() { return check ? check(GL_FRAMEBUFFER) : uint32_t(0x8cd5); };
+    uint32_t status = framebufferStatus();
+    if (status != 0x8cd5 && drawableFramebuffer && drawableRenderbuffer &&
+        !drawableFramebufferRepairAttempted) {
+        drawableFramebufferRepairAttempted = true;
+        auto bindRenderbuffer = glFn<void (*)(uint32_t, uint32_t)>("glBindRenderbuffer");
+        auto renderbufferStorage =
+            glFn<void (*)(uint32_t, uint32_t, int, int)>("glRenderbufferStorage");
+        auto framebufferRenderbuffer =
+            glFn<void (*)(uint32_t, uint32_t, uint32_t, uint32_t)>("glFramebufferRenderbuffer");
+        if (bindRenderbuffer && renderbufferStorage && framebufferRenderbuffer) {
+            constexpr uint32_t Renderbuffer = 0x8d41, ColorAttachment0 = 0x8ce0;
+            bindRenderbuffer(Renderbuffer, drawableRenderbuffer);
+            renderbufferStorage(Renderbuffer, 0x8056, width, height);
+            framebufferRenderbuffer(GL_FRAMEBUFFER, ColorAttachment0, Renderbuffer,
+                                    drawableRenderbuffer);
+            status = framebufferStatus();
+        }
+    }
+    if (status != 0x8cd5) {
         bindFramebuffer(GL_FRAMEBUFFER, restore);
-        setError("the active EAGL framebuffer is incomplete at presentation");
+        std::ostringstream message;
+        message << "the active EAGL framebuffer is incomplete at presentation (status=0x"
+                << std::hex << status << ", framebuffer=" << source
+                << ", renderbuffer=" << drawableRenderbuffer << ", size=" << width << 'x' << height
+                << ')';
+        setError(message.str());
         return false;
     }
+    lastError.clear();
     auto finish = glFn<void (*)()>("glFinish");
     if (finish) finish();
     frame.resize(size_t(width) * size_t(height) * 4);
