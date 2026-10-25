@@ -564,8 +564,9 @@ public final class MainActivity extends Activity {
                 ? "Boot game reads IPA resources from the ZIP on demand, caches only files the guest opens, and keeps bundle writes in a private overlay. It runs validated ARM32 guest code as a live session and streams rendered EAGL frames through ANGLE. Missing iOS services or graphics setup can still stop startup; touch input is not forwarded yet."
                 : game.kind.equals("Folder")
                 ? "Boot game uses the private extracted .app copy. Persistent Documents data stays in the sandbox; app-bundle writes remain in bundle/ and are included when you export sandbox data. Missing iOS services or graphics setup can still stop startup; this is experimental and does not claim full gameplay."
-                : "Boot game runs the executable-only import as a live ARM32 guest session. No app resources are present; missing iOS services or graphics setup can still stop startup." 14,
-            muted, false));
+                : "Boot game runs the executable-only import as a live ARM32 guest session. "
+                        + "No app resources are present; missing iOS services or graphics setup can still stop startup.",
+                14, muted, false));
         gap(content, 16);
         content.addView(text("GAME SANDBOX", 11, muted, true));
         gap(content, 6);
