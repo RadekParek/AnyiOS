@@ -33,7 +33,7 @@ if locked[0].get("source") != packages[0].get("source"):
 source = packages[0].get("source") or ""
 if not source.startswith("git+https://github.com/touchHLE/rust-sdl2?tag=touchHLE-3#"):
     raise SystemExit(f"Unexpected sdl2-sys source: {source}")
-print(f"{packages[0]['manifest_path']}\t{source}")
+print("{}\t{}".format(packages[0]["manifest_path"], source))
 ' "$HLE/Cargo.lock")
 IFS=$'\t' read -r S2_MANIFEST S2_SOURCE <<< "$PACKAGE_INFO"
 RUST_SDL2=$(cd "$(dirname "$S2_MANIFEST")/.." && pwd)
