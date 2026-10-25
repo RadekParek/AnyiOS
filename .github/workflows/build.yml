@@ -307,6 +307,16 @@ jobs:
                       for failure in case.findall('failure') + case.findall('error'):
                           message = (str(path) + ': ' + case.get('name', '') + ': ' + (failure.text or failure.get('message', '')))[:5000]
                           print('::warning::' + message.replace('%', '%25').replace('\r', '%0D').replace('\n', '%0A'))
+          # Gradle's failure summary prints only the first Android lint finding;
+          # surface every finding so CI diagnostics are actionable without fetching artifacts.
+          for path in Path('app/build/intermediates/lint_intermediate_text_report').rglob('lint-results-*.txt'):
+              report = path.read_text(errors='replace').splitlines()
+              for index, line in enumerate(report):
+                  if ': Error:' not in line:
+                      continue
+                  detail = '\n'.join(report[index:min(len(report), index + 4)])
+                  message = (str(path) + ': ' + detail)[:5000]
+                  print('::warning::' + message.replace('%', '%25').replace('\r', '%0D').replace('\n', '%0A'))
           PYCODE
       # Only published on failure: a successful run produces exactly the APK artifact.
       - name: Preserve build logs and test reports
@@ -318,6 +328,7 @@ jobs:
           path: |
             .local/logs/
             app/build/reports/
+            app/build/intermediates/lint_intermediate_text_report/
             app/build/test-results/
             converter/app/build/reports/
             converter/app/build/test-results/
