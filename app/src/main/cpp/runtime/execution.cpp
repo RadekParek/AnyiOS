@@ -334,6 +334,7 @@ GuestRun execute(LoadedImage& image, Services& services, const ExportGraph& grap
                 }
                 cpu.setState(next);
             }
+            services.captureFrameIfDue();
             continue;
         }
         // The end of a quantum is a scheduling point when more than one guest thread exists:
@@ -347,6 +348,7 @@ GuestRun execute(LoadedImage& image, Services& services, const ExportGraph& grap
             }
             cpu.setState(slice);
         }
+        services.captureFrameIfDue();
         // A slice that simply ran out of instruction budget is not the end of the run:
         // the loop continues until the caller's total budget or the wall clock stops it.
         // Returning here used to cut every guest off at the 200,000-instruction slice.

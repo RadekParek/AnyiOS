@@ -588,5 +588,33 @@ int main() {
                   << (cpu.counters().fastMemory ? "hardware fastmem" : "checked page table") << ", "
                   << cpu.counters().callbackReads << " checked reads)\n";
     }
+    {
+        LoadedImage live;
+        live.memory = std::make_unique<Memory>();
+        Services liveServices(*live.memory);
+        ExportGraph liveGraph;
+        liveServices.install(liveGraph);
+        const size_t liveMain = liveGraph.addImage("<live framebuffer guest>");
+        liveGraph.setMainExecutable(liveMain);
+        std::vector<uint8_t> liveCode(4096, 0);
+        put(liveCode, 0, 0xeafffffe);
+        live.memory->map({0x8000, 4096, uint8_t(Read | Execute), "live framebuffer spin"},
+                         liveCode.data(), liveCode.size());
+        live.registers[13] = 0x8ff0;
+        live.registers[15] = 0x8000;
+        live.cpsr = 0x10;
+        assert(liveServices.graphics().createDrawable(8, 8));
+        std::atomic<bool> captured{false}, cancelLive{false};
+        liveServices.setFrameSink([&](int width, int height, const std::vector<uint8_t>& pixels) {
+            if (width == 8 && height == 8 && pixels.size() == 8 * 8 * 4) {
+                captured.store(true, std::memory_order_relaxed);
+                cancelLive.store(true, std::memory_order_relaxed);
+            }
+        });
+        const GuestRun streamed =
+            runGuest(live, liveServices, liveGraph, liveMain, 0, 0, &cancelLive);
+        assert(streamed.stop == "CANCELLED" && captured.load(std::memory_order_relaxed));
+        std::cout << "Live GLES frames stream without UIKit run-loop updates\n";
+    }
     std::cout << "Real Dynarmic ARM/Thumb, memory, service-trap, budget and fault tests passed\n";
 }

@@ -7,7 +7,7 @@
 //
 //   guest-runner [--seconds N] [--instructions N] [--screen-size WIDTHxHEIGHT]
 //                [--verbose] [--precise] [--log-lines N] [--native-gles]
-//                [--frame-out screenshot.ppm]
+//                [--frame-out screenshot.ppm] [--stop-after-first-frame]
 //                [--bundle-archive IPA --bundle-prefix Payload/App.app/
 //                 --bundle-cache DIR --bundle-overlay DIR]
 //                <bundle.app|executable> [container dir]
@@ -20,6 +20,7 @@
 // writable storage. Nothing here is a claim of rendering or gameplay: the report says what
 // the guest executed and where it stopped.
 #include <algorithm>
+#include <atomic>
 #include <cstdint>
 #include <cstdio>
 #include <filesystem>
@@ -76,6 +77,8 @@ int main(int argc, char** argv) {
     podnative::runtime::LaunchOptions options;
     fs::path frameOutput;
     std::vector<std::string> positional;
+    bool stopAfterFirstFrame = false;
+    std::atomic<bool> cancelRequested{false};
     for (int i = 1; i < argc; i++) {
         const std::string argument = argv[i];
         if (argument == "--seconds" && i + 1 < argc) {
@@ -96,6 +99,8 @@ int main(int argc, char** argv) {
             options.nativeGles = true;
         } else if (argument == "--frame-out" && i + 1 < argc) {
             frameOutput = argv[++i];
+        } else if (argument == "--stop-after-first-frame") {
+            stopAfterFirstFrame = true;
         } else if (argument == "--screen-size" && i + 1 < argc) {
             const std::string dimensions = argv[++i];
             const size_t separator = dimensions.find('x');
@@ -129,6 +134,7 @@ int main(int argc, char** argv) {
         std::cerr << "usage: guest-runner [--seconds N] [--instructions N] "
                      "[--screen-size WIDTHxHEIGHT] [--orientation 1..4] [--verbose] [--precise] "
                      "[--log-lines N] [--native-gles] [--frame-out screenshot.ppm] "
+                     "[--stop-after-first-frame] "
                      "[--bundle-archive IPA --bundle-prefix Payload/App.app/ "
                      "--bundle-cache DIR --bundle-overlay DIR] "
                      "<bundle.app|executable> [container directory]\n"
@@ -136,6 +142,11 @@ int main(int argc, char** argv) {
         return 2;
     }
     const bool archiveMount = !options.bundleArchive.empty();
+    if (stopAfterFirstFrame && frameOutput.empty()) {
+        std::cerr << "guest-runner: --stop-after-first-frame requires --frame-out\n";
+        return 2;
+    }
+    if (stopAfterFirstFrame) options.cancelRequested = &cancelRequested;
     const bool hasArchiveDetails = !options.bundleArchivePrefix.empty() ||
                                    !options.bundleCache.empty() || !options.bundleOverlay.empty();
     if (archiveMount != hasArchiveDetails ||
@@ -167,10 +178,13 @@ int main(int argc, char** argv) {
                 capturedWidth = width;
                 capturedHeight = height;
                 capturedPixels = pixels;
+                if (stopAfterFirstFrame) cancelRequested.store(true, std::memory_order_relaxed);
             };
         }
         const std::string report = podnative::runtime::attemptLaunch(
             image.data(), image.size(), bundleHost, container, options);
+        if (stopAfterFirstFrame && report.find("LAUNCH_CANCELLED:") == std::string::npos)
+            throw std::runtime_error("no framebuffer was streamed before the guest stopped");
         if (!frameOutput.empty()) {
             if (capturedPixels.empty())
                 throw std::runtime_error("the guest did not present a framebuffer");

@@ -110,7 +110,7 @@ set_target_properties(gles_test_driver PROPERTIES
     WINDOWS_EXPORT_ALL_SYMBOLS ON)
 add_dependencies(objc_test gles_test_driver)
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
-    set_tests_properties(objc_runtime PROPERTIES
+    set_tests_properties(cpu_correctness objc_runtime PROPERTIES
         ENVIRONMENT "LD_LIBRARY_PATH=$<TARGET_FILE_DIR:gles_test_driver>")
 endif()
 

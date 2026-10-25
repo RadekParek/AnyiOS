@@ -1,4 +1,7 @@
 #pragma once
+
+#include <chrono>
+
 #include "audio.h"
 #include "commoncrypto.h"
 #include "coregraphics.h"
@@ -85,6 +88,7 @@ class Services final {
     }
     void setInterfaceOrientation(int orientation) { objc.setInterfaceOrientation(orientation); }
     void setFrameSink(std::function<void(int, int, const std::vector<uint8_t>&)> sink);
+    void captureFrameIfDue();
     bool isVerbose() const { return verbose; }
     const std::vector<std::string>& objectiveCTrace() const { return objcTrace; }
     void setPrecise(bool on) { precise = on; }
@@ -158,6 +162,9 @@ class Services final {
     std::vector<std::string> guestLog;
     std::map<std::string, size_t> serviceTraceCalls, serviceTraceSuppressed;
     size_t logCapacity = 512;
+    bool frameCaptureEnabled = false;
+    bool frameCaptureFailureLogged = false;
+    std::chrono::steady_clock::time_point lastFrameCapture;
     std::function<void(const std::string&)> externalLog;
     void traceSymbol(const std::string& name, const CpuState& state);
     CoreFoundation cf;

@@ -1188,21 +1188,33 @@ void Services::runThreadStart(CpuState& state) {
                                               " does not implement " + start.selector);
 }
 void Services::setFrameSink(std::function<void(int, int, const std::vector<uint8_t>&)> sink) {
+    frameCaptureEnabled = bool(sink);
+    frameCaptureFailureLogged = false;
+    lastFrameCapture = {};
     if (!sink) {
         gles.setFrameSink({});
         uikit.setFrameCapture({});
         return;
     }
     gles.setFrameSink(std::move(sink));
-    uikit.setFrameCapture([this, lastCapture = std::chrono::steady_clock::time_point{}]() mutable {
-        const auto now = std::chrono::steady_clock::now();
-        if (lastCapture != std::chrono::steady_clock::time_point{} &&
-            now - lastCapture < std::chrono::milliseconds(33))
-            return;
-        lastCapture = now;
-        if (!gles.frameCurrent() && !gles.present())
-            log("GUEST_FRAME: update-loop readback failed: " + gles.describe());
-    });
+    uikit.setFrameCapture([this]() { captureFrameIfDue(); });
+}
+
+void Services::captureFrameIfDue() {
+    if (!frameCaptureEnabled || !gles.drawableConfigured()) return;
+    const auto now = std::chrono::steady_clock::now();
+    if (lastFrameCapture != std::chrono::steady_clock::time_point{} &&
+        now - lastFrameCapture < std::chrono::milliseconds(33))
+        return;
+    lastFrameCapture = now;
+    if (gles.frameCurrent() || gles.present()) {
+        frameCaptureFailureLogged = false;
+        return;
+    }
+    if (!frameCaptureFailureLogged) {
+        log("GUEST_FRAME: live framebuffer readback failed: " + gles.describe());
+        frameCaptureFailureLogged = true;
+    }
 }
 
 void Services::log(const std::string& line) {

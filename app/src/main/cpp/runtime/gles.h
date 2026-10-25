@@ -115,6 +115,7 @@ class GLES final {
     int drawableHeight() const { return height; }
     int frameWidth() const { return lastFrameWidth; }
     int frameHeight() const { return lastFrameHeight; }
+    bool drawableConfigured() const { return width > 0 && height > 0; }
 
    private:
     using Entry = void (*)();
