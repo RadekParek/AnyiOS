@@ -33,12 +33,12 @@ struct LaunchOptions {
     // generally expect 480x320 points even when the physical panel has a different resolution.
     int screenWidth = 320;
     int screenHeight = 480;
+    int interfaceOrientation = 0;
     // New IPA imports stay ZIP-backed. The runtime indexes the selected Payload/*.app and
     // caches verified files on first access; guest writes land in the private overlay.
     std::string bundleArchive, bundleArchivePrefix, bundleCache, bundleOverlay;
     // Optional host cancellation and rendered-frame delivery used by the Android game view. A
-    // non-null callback receives each successful EAGL present so the host can stream a preview
-    // during a bounded probe; null leaves command-line/host diagnostics without a frame stream.
+    // non-null callback receives guest EAGL presents and sampled UIKit update-loop frames.
     const std::atomic<bool>* cancelRequested = nullptr;
     std::function<void(int, int, const std::vector<uint8_t>&)> frameSink;
 };

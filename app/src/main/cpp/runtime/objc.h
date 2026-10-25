@@ -39,6 +39,7 @@ class ObjC final {
     // paths; the file probe decides whether a bundle resource actually exists.
     void setGuestPaths(std::string bundle, std::string documents);
     void setScreenSize(int width, int height);
+    void setInterfaceOrientation(int orientation);
     void setFileProbe(std::function<bool(const std::string&)> probe) {
         fileExists = std::move(probe);
     }
@@ -248,6 +249,7 @@ class ObjC final {
                          CpuState& state);
     std::string bundlePath = "/var/mobile", documentsPath = "/var/mobile/Documents";
     int screenWidth = 320, screenHeight = 480;
+    int interfaceOrientation = 0;
     std::function<bool(const std::string&)> fileExists;
     std::function<std::string(uint32_t)> trapName;
     std::function<size_t()> liveThreads;

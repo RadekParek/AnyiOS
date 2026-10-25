@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <chrono>
 #include <cstdio>
 #include <cstring>
 #include <filesystem>
@@ -1186,6 +1187,24 @@ void Services::runThreadStart(CpuState& state) {
         throw Error("OBJC_UNIMPLEMENTED", "thread target " + objc.stringValue(start.target) +
                                               " does not implement " + start.selector);
 }
+void Services::setFrameSink(std::function<void(int, int, const std::vector<uint8_t>&)> sink) {
+    if (!sink) {
+        gles.setFrameSink({});
+        uikit.setFrameCapture({});
+        return;
+    }
+    gles.setFrameSink(std::move(sink));
+    uikit.setFrameCapture([this, lastCapture = std::chrono::steady_clock::time_point{}]() mutable {
+        const auto now = std::chrono::steady_clock::now();
+        if (lastCapture != std::chrono::steady_clock::time_point{} &&
+            now - lastCapture < std::chrono::milliseconds(33))
+            return;
+        lastCapture = now;
+        if (!gles.frameCurrent() && !gles.present())
+            log("GUEST_FRAME: update-loop readback failed: " + gles.describe());
+    });
+}
+
 void Services::log(const std::string& line) {
     guestLog.push_back(line);
     if (guestLog.size() > logCapacity) guestLog.erase(guestLog.begin());

@@ -206,7 +206,11 @@ std::string attemptLaunch(const uint8_t* data, size_t size, const std::string& b
         services.setPrecise(options.precise);
         services.setNativeGles(options.nativeGles);
         services.setScreenSize(options.screenWidth, options.screenHeight);
-        if (options.frameSink) services.graphics().setFrameSink(options.frameSink);
+        if (options.interfaceOrientation != 0)
+            services.setInterfaceOrientation(options.interfaceOrientation);
+        if (options.interfaceOrientation != 0)
+            services.setInterfaceOrientation(options.interfaceOrientation);
+        if (options.frameSink) services.setFrameSink(options.frameSink);
         services.setEnvironment({{"HOME", "/var/mobile"},
                                  {"TMPDIR", "/var/mobile/Documents"},
                                  {"PATH", "/usr/bin:/bin:/usr/sbin:/sbin"}});
@@ -253,11 +257,12 @@ std::string attemptLaunch(const uint8_t* data, size_t size, const std::string& b
                 if (!captured) captured = graphics.present();
                 if (captured) {
                     const auto& pixels = graphics.lastFrame();
-                    const int width = graphics.drawableWidth(), height = graphics.drawableHeight();
+                    const int width = graphics.frameWidth(), height = graphics.frameHeight();
                     if (width > 0 && height > 0 &&
                         pixels.size() == size_t(width) * size_t(height) * 4) {
                         guestFrameStatus = "\nGUEST_FRAME: captured " + std::to_string(width) +
-                                           "x" + std::to_string(height) + " RGBA8 drawable pixels.";
+                                           "x" + std::to_string(height) +
+                                           " RGBA8 oriented display-frame pixels.";
                     } else {
                         guestFrameStatus = "\nGUEST_FRAME: readback dimensions were invalid.";
                     }
@@ -281,8 +286,7 @@ std::string attemptLaunch(const uint8_t* data, size_t size, const std::string& b
             : run.stop == "FAULT"
                 ? "LAUNCH_BLOCKED: GUEST_FAULT: the guest hit an invalid instruction or memory "
                   "access."
-            : run.stop == "CANCELLED"
-                ? "LAUNCH_CANCELLED: the user stopped this bounded guest attempt."
+            : run.stop == "CANCELLED" ? "LAUNCH_CANCELLED: the user stopped the live guest session."
             : run.stop == "WAITING"
                 ? "LAUNCH_WAITING: UIKit is keeping the app alive, but no guest thread can run "
                   "until a main-run-loop event is available."

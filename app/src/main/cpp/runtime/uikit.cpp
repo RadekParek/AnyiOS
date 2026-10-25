@@ -187,6 +187,7 @@ void UIKit::resume(CpuState& state, ObjC& objc) {
                 state.registers[0] = 0;
                 objc.sendGuestMessage(task.target, task.selector, state, {task.argument},
                                       LifecycleGate);
+                if (task.selector == "update" && frameCapture) frameCapture();
                 return;
             }
             // A title that started its own guest threads keeps running on them, exactly as it

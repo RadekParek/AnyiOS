@@ -5,8 +5,9 @@
 // which names the exact API the guest stopped at. It is a development tool — the PC
 // artifact ships it so a report can be reproduced without a phone.
 //
-//   guest-runner [--seconds N] [--instructions N] [--verbose] [--precise] [--log-lines N]
-//                [--native-gles]
+//   guest-runner [--seconds N] [--instructions N] [--screen-size WIDTHxHEIGHT]
+//                [--verbose] [--precise] [--log-lines N] [--native-gles]
+//                [--frame-out screenshot.ppm]
 //                [--bundle-archive IPA --bundle-prefix Payload/App.app/
 //                 --bundle-cache DIR --bundle-overlay DIR]
 //                <bundle.app|executable> [container dir]
@@ -70,7 +71,10 @@ std::vector<uint8_t> readBundle(const fs::path& path, fs::path& bundle) {
 }  // namespace
 
 int main(int argc, char** argv) {
+    int capturedWidth = 0, capturedHeight = 0;
+    std::vector<uint8_t> capturedPixels;
     podnative::runtime::LaunchOptions options;
+    fs::path frameOutput;
     std::vector<std::string> positional;
     for (int i = 1; i < argc; i++) {
         const std::string argument = argv[i];
@@ -90,6 +94,17 @@ int main(int argc, char** argv) {
             // The Settings ▸ "Native OpenGL ES" switch, reproducible on a host: resolve GL
             // against the machine's own driver first instead of the bundled ANGLE.
             options.nativeGles = true;
+        } else if (argument == "--frame-out" && i + 1 < argc) {
+            frameOutput = argv[++i];
+        } else if (argument == "--screen-size" && i + 1 < argc) {
+            const std::string dimensions = argv[++i];
+            const size_t separator = dimensions.find('x');
+            if (separator == std::string::npos)
+                throw std::runtime_error("screen size must be WIDTHxHEIGHT");
+            options.screenWidth = std::stoi(dimensions.substr(0, separator));
+            options.screenHeight = std::stoi(dimensions.substr(separator + 1));
+        } else if (argument == "--orientation" && i + 1 < argc) {
+            options.interfaceOrientation = std::stoi(argv[++i]);
         } else if (argument == "--bundle-archive" && i + 1 < argc) {
             options.bundleArchive = argv[++i];
         } else if (argument == "--bundle-prefix" && i + 1 < argc) {
@@ -111,8 +126,10 @@ int main(int argc, char** argv) {
         }
     }
     if (positional.empty() || positional.size() > 2) {
-        std::cerr << "usage: guest-runner [--seconds N] [--instructions N] [--verbose] "
-                     "[--native-gles] [--bundle-archive IPA --bundle-prefix Payload/App.app/ "
+        std::cerr << "usage: guest-runner [--seconds N] [--instructions N] "
+                     "[--screen-size WIDTHxHEIGHT] [--orientation 1..4] [--verbose] [--precise] "
+                     "[--log-lines N] [--native-gles] [--frame-out screenshot.ppm] "
+                     "[--bundle-archive IPA --bundle-prefix Payload/App.app/ "
                      "--bundle-cache DIR --bundle-overlay DIR] "
                      "<bundle.app|executable> [container directory]\n"
                      "  no --seconds/--instructions: run until the guest stops by itself\n";
@@ -142,9 +159,36 @@ int main(int argc, char** argv) {
             options.bundleOverlay = fs::absolute(options.bundleOverlay).lexically_normal().string();
         }
         const std::string bundleHost = archiveMount ? std::string() : bundle.string();
-        std::cout << podnative::runtime::attemptLaunch(image.data(), image.size(), bundleHost,
-                                                       container, options)
-                  << '\n';
+        if (!frameOutput.empty()) {
+            frameOutput = fs::absolute(frameOutput).lexically_normal();
+            options.frameSink = [&](int width, int height, const std::vector<uint8_t>& pixels) {
+                if (width <= 0 || height <= 0 || pixels.size() != size_t(width) * height * 4)
+                    throw std::runtime_error("invalid guest framebuffer dimensions");
+                capturedWidth = width;
+                capturedHeight = height;
+                capturedPixels = pixels;
+            };
+        }
+        const std::string report = podnative::runtime::attemptLaunch(
+            image.data(), image.size(), bundleHost, container, options);
+        if (!frameOutput.empty()) {
+            if (capturedPixels.empty())
+                throw std::runtime_error("the guest did not present a framebuffer");
+            std::ofstream output(frameOutput, std::ios::binary | std::ios::trunc);
+            if (!output) throw std::runtime_error("cannot write " + frameOutput.string());
+            output << "P6\n" << capturedWidth << ' ' << capturedHeight << "\n255\n";
+            std::vector<uint8_t> rgb(size_t(capturedWidth) * capturedHeight * 3);
+            for (size_t pixel = 0; pixel < size_t(capturedWidth) * capturedHeight; pixel++) {
+                rgb[pixel * 3] = capturedPixels[pixel * 4];
+                rgb[pixel * 3 + 1] = capturedPixels[pixel * 4 + 1];
+                rgb[pixel * 3 + 2] = capturedPixels[pixel * 4 + 2];
+            }
+            output.write(reinterpret_cast<const char*>(rgb.data()), std::streamsize(rgb.size()));
+            if (!output) throw std::runtime_error("failed while writing " + frameOutput.string());
+            std::cerr << "guest-runner: captured " << capturedWidth << 'x' << capturedHeight
+                      << " guest framebuffer to " << frameOutput << '\n';
+        }
+        std::cout << report << '\n';
         return 0;
     } catch (const std::exception& e) {
         std::cerr << "guest-runner: " << e.what() << '\n';

@@ -791,7 +791,7 @@ final class GameLibrary {
     void attemptLaunch(Game game) {
         attemptLaunch(game, null);
     }
-    /** Runs a bounded launch attempt; {@code onOutcome} receives the result on the UI thread. */
+    /** Runs the guest until it stops; {@code onOutcome} receives the result on the UI thread. */
     boolean attemptLaunch(Game game, java.util.function.Consumer<LaunchResult> onOutcome) {
         if (!begin("Opening the game with the native loader…"))
             return false;

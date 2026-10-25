@@ -877,6 +877,12 @@ void ObjC::setScreenSize(int width, int height) {
     screenWidth = width;
     screenHeight = height;
 }
+void ObjC::setInterfaceOrientation(int orientation) {
+    if (orientation < 0 || orientation > 4)
+        throw Error("UIKIT_ORIENTATION", "guest interface orientation is out of range");
+    interfaceOrientation = orientation;
+    if (gles) gles->setInterfaceOrientation(orientation);
+}
 bool ObjC::activateEaglContext() {
     // EAGLContext::setCurrentContext only activates the EGL context. The guest creates and
     // binds its own framebuffer/renderbuffer, then asks renderbufferStorage:fromDrawable: to
@@ -1124,6 +1130,7 @@ bool ObjC::uiKitMessage(const std::string& className, uint32_t object, const std
         }
         if (method == "setStatusBarOrientation:" || method == "setStatusBarOrientation:animated:") {
             value.integer = int32_t(r[2]);
+            setInterfaceOrientation(value.integer);
             return true;
         }
         if (method == "setStatusBarHidden:" || method == "setStatusBarHidden:animated:" ||
@@ -1133,7 +1140,9 @@ bool ObjC::uiKitMessage(const std::string& className, uint32_t object, const std
             return true;
         if (method == "statusBarOrientation") {
             r[0] = value.integer ? uint32_t(value.integer)
-                                 : uint32_t(screenWidth > screenHeight ? 3 : 1);
+                                 : uint32_t(interfaceOrientation         ? interfaceOrientation
+                                            : screenWidth > screenHeight ? 3
+                                                                         : 1);
             return true;
         }
         if (method == "statusBarHidden" || method == "isStatusBarHidden") {

@@ -33,6 +33,7 @@ class UIKit final {
     // Called at that gate. Either enters the next guest callback or finishes the bootstrap.
     void resume(CpuState& state, ObjC& objc);
     void setLogSink(std::function<void(const std::string&)> sink) { logSink = std::move(sink); }
+    void setFrameCapture(std::function<void()> capture) { frameCapture = std::move(capture); }
     // The bootstrap needs the number of live guest threads and a way to park the main thread.
     // A title that runs its game loop on a worker keeps running there while UIKit waits for
     // main-thread work; a single-threaded app also remains in its idle run loop.
@@ -52,6 +53,7 @@ class UIKit final {
     // queues one with performSelectorOnMainThread:.
     std::function<void()> parkMainThread;
     std::function<void(const std::string&)> logSink;
+    std::function<void()> frameCapture;
     std::string applicationDescription = "none";
     std::string delegateDescription = "none";
     std::string outcome = "not started";

@@ -69,31 +69,41 @@ std::string guestString(const Memory& memory, uint32_t address) {
     return text;
 }
 
-// One guest call through the bridge, in the AAPCS-VFP layout: integers in r0-r3 then on the
-// stack at sp, floats in s0-s15 numbered independently of the integers.
+// One guest call through the bridge in base AAPCS word order: all values use r0-r3, then sp.
 struct Call {
     GLES& gles;
     Memory& memory;
     CpuState state;
+    size_t nextWord = 0;
     explicit Call(GLES& gles, Memory& memory) : gles(gles), memory(memory) {
         state = {};
         state.registers[13] = kStack;
     }
-    bool operator()(const std::string& symbol) { return gles.invoke(symbol, state); }
+    bool operator()(const std::string& symbol) {
+        const bool handled = gles.invoke(symbol, state);
+        nextWord = 0;
+        return handled;
+    }
     void must(const std::string& symbol) {
         check((*this)(symbol), "the bridge answers " + symbol + " over an ES 2.0-only driver");
     }
+    void word(uint32_t value) {
+        if (nextWord < 4)
+            state.registers[nextWord] = value;
+        else
+            memory.write32(kStack + uint32_t((nextWord - 4) * 4), value);
+        nextWord++;
+    }
     void ints(std::initializer_list<uint32_t> values) {
-        size_t index = 0;
-        for (uint32_t value : values) state.registers[index++] = value;
+        for (uint32_t value : values) word(value);
     }
     void floats(std::initializer_list<float> values) {
-        size_t index = 0;
-        for (float value : values) state.extensionRegisters[index++] = bitsOf(value);
+        for (float value : values) word(bitsOf(value));
     }
     void stack(std::initializer_list<uint32_t> values) {
         size_t index = 0;
         for (uint32_t value : values) memory.write32(kStack + uint32_t(index++ * 4), value);
+        nextWord = 4 + index;
     }
     static constexpr uint32_t kStack = 0x10100;
 };
@@ -759,7 +769,7 @@ void shaderUniformAndGenericAttributeImports() {
     uniform3f.must("_glUniform3f");
     check(recorded->scalarUniformCalls == 1 && recorded->scalarUniformComponents == 3 &&
               recorded->scalarUniformInteger == 0 && near(recorded->scalarUniformValues[2], 0.75f),
-          "glUniform3f reads independent AAPCS-VFP float registers in order");
+          "glUniform3f reads its location and float arguments in base AAPCS word order");
     Call uniform2i(gles, memory);
     uniform2i.ints({4, 12, 34});
     uniform2i.must("_glUniform2i");

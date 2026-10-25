@@ -142,7 +142,7 @@ final class PrototypeView extends SurfaceView implements SurfaceHolder.Callback 
                                                        : "imported launch artwork")
                                 + " draw and eglSwapBuffers returned successfully; visual confirmation still required"
                                 + (guestFrame != null
-                                        ? "; bounded guest execution preceded this readback"
+                                        ? "; readbacks come from the live guest session"
                                         : "; not guest execution"));
                         first = false;
                     }

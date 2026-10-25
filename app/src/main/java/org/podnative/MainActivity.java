@@ -38,6 +38,8 @@ import java.util.List;
 public final class MainActivity extends Activity {
     private static final int IMPORT_FILE = 10, EXPORT = 11, IMPORT_FOLDER = 12,
                              IMPORT_APP_FOLDER = 13, EXPORT_SANDBOX = 14;
+    private static final int GUEST_SCREEN_WIDTH = 320, GUEST_SCREEN_HEIGHT = 480,
+                             GUEST_INTERFACE_ORIENTATION_LANDSCAPE_LEFT = 3;
     private SharedPreferences prefs;
     private boolean landscapeRequested = false;
     private GameLibrary library;
@@ -56,8 +58,8 @@ public final class MainActivity extends Activity {
         if (isFinishing() || isDestroyed())
             return;
         if (showingBoot && liveStatus != null) {
-            String status = library.progress.isEmpty() ? "Running the bounded guest startup probe…"
-                                                       : library.progress;
+            String status =
+                library.progress.isEmpty() ? "Running the guest session…" : library.progress;
             if (showingGuestFrame)
                 status += "\nLive preview · touch input is not forwarded yet.";
             liveStatus.setText(status);
@@ -98,7 +100,7 @@ public final class MainActivity extends Activity {
         accent = dev.radek.conventor.SharedTheme.accent(this);
         soft = color(dark ? "#203E30" : "#DDF3E7");
         Diagnostics.record(
-            "APP", "library ready; boot attempts run bounded ARM32 guest code and report blockers");
+            "APP", "library ready; guest sessions run ARM32 code and stream ANGLE-backed frames");
         home();
         if (state == null && getIntent().getBooleanExtra("importIpaFolder", false))
             selectFolder(IMPORT_FOLDER);
@@ -559,11 +561,11 @@ public final class MainActivity extends Activity {
                 : game.status.equals("Encrypted")
                 ? "The game was added, but its executable is protected. This build does not bypass DRM."
                 : game.kind.equals("IPA")
-                ? "Boot game reads IPA resources from the ZIP on demand, caches only files the guest opens, and keeps bundle writes in a private overlay. It then runs validated ARM32 guest code for up to 60 seconds and displays the last readable EAGL frame when available. Missing iOS services or graphics setup can still stop startup; this is experimental and does not claim full gameplay."
+                ? "Boot game reads IPA resources from the ZIP on demand, caches only files the guest opens, and keeps bundle writes in a private overlay. It runs validated ARM32 guest code as a live session and streams rendered EAGL frames through ANGLE. Missing iOS services or graphics setup can still stop startup; touch input is not forwarded yet."
                 : game.kind.equals("Folder")
                 ? "Boot game uses the private extracted .app copy. Persistent Documents data stays in the sandbox; app-bundle writes remain in bundle/ and are included when you export sandbox data. Missing iOS services or graphics setup can still stop startup; this is experimental and does not claim full gameplay."
-                : "Boot game runs the executable-only import as validated ARM32 guest code for up to 60 seconds. No app resources are present, and missing iOS services or graphics setup can still stop startup; this is experimental and does not claim full gameplay.",
-            14, muted, false));
+                : "Boot game runs the executable-only import as a live ARM32 guest session. No app resources are present; missing iOS services or graphics setup can still stop startup." 14,
+            muted, false));
         gap(content, 16);
         content.addView(text("GAME SANDBOX", 11, muted, true));
         gap(content, 6);
@@ -955,8 +957,8 @@ public final class MainActivity extends Activity {
      * ANGLE surface is resized in place instead of the emulator being torn down.
      */
     private void enterEmulatorDisplay() {
-        // Games take the whole screen in landscape, defaulting to landscape-left: the same
-        // holding position an iPhone title expects (home button to the right). SENSOR_LANDSCAPE
+        // Games take the whole screen in landscape, matching UIKit LandscapeRight (home button
+        // to the right). SENSOR_LANDSCAPE
         // would start whichever way the phone happens to be lying at launch, which made an
         // iPhone game boot upside down on a perfectly normal grip.
         if (!landscapeRequested) {
@@ -1108,7 +1110,7 @@ public final class MainActivity extends Activity {
         setContentView(frame);
         chrome.requestApplyInsets();
     }
-    /** Bounded ARM32 startup probe with progressive EAGL frame previews when available. */
+    /** Runs a live ARM32 guest session and streams its rendered frames to the ANGLE surface. */
     private void attempt(GameLibrary.Game game) {
         if (isFinishing() || isDestroyed())
             return;
@@ -1117,9 +1119,10 @@ public final class MainActivity extends Activity {
         showingBoot = true;
         final int generation = ++launchGeneration;
         enterEmulatorDisplay();
-        // Angry Birds and the other early iPhone titles use a landscape design space. The
-        // ANGLE host surface remains at panel resolution; UIKit sees the legacy 480x320 points.
-        NativeBridge.setGuestScreenSize(480, 320);
+        // UIKit uses portrait logical coordinates; the guest's LandscapeLeft frame is rotated
+        // into the Android landscape view, which preserves its aspect ratio instead of stretching.
+        NativeBridge.setGuestScreenSize(
+            GUEST_SCREEN_WIDTH, GUEST_SCREEN_HEIGHT, GUEST_INTERFACE_ORIENTATION_LANDSCAPE_LEFT);
         GameInspector.resetGuestFrameReporting();
         NativeBridge.beginGuestLaunch();
         guestFrameGeneration = 0;
@@ -1139,7 +1142,7 @@ public final class MainActivity extends Activity {
         content.addView(liveStatus);
         ProgressBar spinner = new ProgressBar(this);
         content.addView(spinner);
-        Button cancel = action("Stop startup", false, this::stop);
+        Button cancel = action("Stop", false, this::stop);
         LinearLayout.LayoutParams cancelLp = new LinearLayout.LayoutParams(-2, -2);
         cancelLp.topMargin = dp(24);
         content.addView(cancel, cancelLp);
@@ -1154,8 +1157,7 @@ public final class MainActivity extends Activity {
                     prototype.updateGuestFrame(
                         result.frameWidth, result.frameHeight, result.guestFrame);
                     if (liveStatus != null)
-                        liveStatus.setText(
-                            "Startup probe finished · showing the final guest frame. "
+                        liveStatus.setText("Guest session ended · showing its last frame. "
                             + "Touch input is not forwarded yet.");
                 } else {
                     showGuestFrame(game, result);
@@ -1174,7 +1176,7 @@ public final class MainActivity extends Activity {
             showingBoot = false;
             stop();
         } else {
-            guestFrameHandler.postDelayed(() -> pollGuestFrame(generation, game), 100);
+            guestFrameHandler.postDelayed(() -> pollGuestFrame(generation, game), 33);
         }
     }
     private void pollGuestFrame(int generation, GameLibrary.Game game) {
@@ -1189,7 +1191,7 @@ public final class MainActivity extends Activity {
                 prototype.updateGuestFrame(frame);
         }
         if (showingBoot && generation == launchGeneration)
-            guestFrameHandler.postDelayed(() -> pollGuestFrame(generation, game), 100);
+            guestFrameHandler.postDelayed(() -> pollGuestFrame(generation, game), 33);
     }
     private void showLiveGuestFrame(GameLibrary.Game game, GameInspector.GuestFrame guestFrame) {
         showingGuestFrame = true;
@@ -1198,21 +1200,23 @@ public final class MainActivity extends Activity {
         prototype = new PrototypeView(
             this, guestFrame, prefs.getInt("fps", 60), prefs.getInt("resolution", 1080), info -> {
                 if (liveStatus != null)
-                    liveStatus.setText(info + "\nLive EAGL preview · touch input not forwarded.");
+                    liveStatus.setText(info
+                        + "\nLive guest framebuffer through ANGLE · touch input not forwarded.");
             });
         frame.addView(prototype, new FrameLayout.LayoutParams(-1, -1));
         LinearLayout chrome = new LinearLayout(this);
         chrome.setOrientation(LinearLayout.VERTICAL);
         chrome.setBackgroundColor(Color.parseColor("#CC0B1020"));
         chrome.setPadding(dp(16), dp(8), dp(16), dp(10));
-        chrome.addView(text(game.title + " · LIVE GUEST PREVIEW", 12, Color.WHITE, true));
-        liveStatus = text("Frames stream while startup runs · touch input is not forwarded yet.",
-            11, Color.parseColor("#B9C7D8"), false);
+        chrome.addView(text(game.title + " · LIVE GUEST SESSION", 12, Color.WHITE, true));
+        liveStatus = text("Live guest frames · touch input is not forwarded yet.", 11,
+            Color.parseColor("#B9C7D8"), false);
         liveStatus.setMaxLines(2);
         chrome.addView(liveStatus);
         chrome.addView(
             action("Stop / back", false, this::stop), new LinearLayout.LayoutParams(-2, -2));
-        frame.addView(chrome, new FrameLayout.LayoutParams(-1, -2, Gravity.TOP));
+        if (prefs.getBoolean("showConsole", false))
+            frame.addView(chrome, new FrameLayout.LayoutParams(-1, -2, Gravity.TOP));
         setContentView(frame);
     }
     /** Displays read-back guest RGBA through the Android ANGLE surface; this is a snapshot. */
@@ -1236,9 +1240,8 @@ public final class MainActivity extends Activity {
             chrome.setPadding(dp(16), dp(8), dp(16), dp(10));
             TextView label = text(game.title + " · GUEST FRAME SNAPSHOT", 12, Color.WHITE, true);
             chrome.addView(label);
-            liveStatus =
-                text("Captured from the guest EAGL framebuffer after a bounded startup probe.", 11,
-                    Color.parseColor("#B9C7D8"), false);
+            liveStatus = text("Last guest EAGL frame captured before the session stopped.", 11,
+                Color.parseColor("#B9C7D8"), false);
             liveStatus.setMaxLines(2);
             chrome.addView(liveStatus);
             Button back = action("Stop", false, this::stop);

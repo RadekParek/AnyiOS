@@ -31,10 +31,9 @@ class GuestHeap;
 //
 // Two details are easy to get wrong and are handled explicitly:
 //
-//  * Argument registers. ARM iOS code uses the VFP variant of AAPCS, so integer and
-//    pointer arguments live in r0-r3 (then the stack) while `float` arguments live in
-//    s0-s15, each kind numbered independently. A mis-marshalled glClearColor would
-//    clear to a colour read out of a pointer register.
+//  * Argument registers. This runtime's iOS ARM32 call gates use the base AAPCS
+//    convention: floats and pointers share r0-r3, then the stack. Reading GLES floats
+//    from VFP registers corrupts colour, matrices and vertex state on ARMv6 titles.
 //  * Guest pointers. Client-side vertex/colour/normal/texcoord arrays are only read
 //    when the draw happens, so they are copied into host memory at draw time; pixel
 //    uploads and `glGet*` results are copied in and out of guest memory around the call.
@@ -83,6 +82,16 @@ class GLES final {
     // ANGLE has no 1.1 context to give, so when this bridge is the one emulating the
     // fixed function it asks for a 2.0 context and answers those calls itself.
     void setClientApi(int api);
+    void setScreenSize(int width, int height) {
+        screenWidth = width;
+        screenHeight = height;
+    }
+    void setInterfaceOrientation(int orientation) {
+        if (orientation >= 0 && orientation <= 4 && orientation != interfaceOrientation) {
+            interfaceOrientation = orientation;
+            frameCallCount = 0;
+        }
+    }
     int clientApiVersion() const { return clientApi; }
     bool makeCurrent();
     // Creates the colour renderbuffer and the framebuffer an EAGL drawable backs onto.
@@ -95,8 +104,7 @@ class GLES final {
     // Copies the active EAGL drawable (or the private fallback framebuffer) into a tightly
     // packed RGBA8 host frame. Presentation onto Android's surface is handled by the UI backend.
     bool present();
-    // Called on every successful EAGL presentation; the host can stream a bounded preview
-    // while the guest keeps running instead of waiting for the probe to finish.
+    // Called on successful EAGL presentations and sampled UIKit update-loop readbacks.
     void setFrameSink(std::function<void(int, int, const std::vector<uint8_t>&)> sink) {
         frameSink = std::move(sink);
     }
@@ -105,6 +113,8 @@ class GLES final {
     bool frameCurrent() const { return !frame.empty() && frameCallCount == calls; }
     int drawableWidth() const { return width; }
     int drawableHeight() const { return height; }
+    int frameWidth() const { return lastFrameWidth; }
+    int frameHeight() const { return lastFrameHeight; }
 
    private:
     using Entry = void (*)();
@@ -118,13 +128,12 @@ class GLES final {
         bool buffered = false;  // the pointer is an offset into a bound buffer object
         bool normalized = false;
     };
-    // Reads the guest's argument registers the way AAPCS-VFP lays them out: integers and
-    // pointers from r0-r3 and then the stack, floats from s0-s15, each numbered separately.
+    // Reads guest words in base AAPCS order: r0-r3, then the stack. Floats use the same
+    // word stream as integers and pointers.
     struct Marshal {
         const CpuState& cpu;
         const Memory& memory;
         size_t core = 0;
-        size_t fp = 0;
         uint32_t word();
         float f32();
     };
@@ -165,7 +174,10 @@ class GLES final {
     uint32_t drawableFramebuffer = 0, drawableRenderbuffer = 0;
     int clientApi = 1;  // kEAGLRenderingAPIOpenGLES1 until the guest asks otherwise
     int width = 0, height = 0, fallbackWidth = 0, fallbackHeight = 0;
-    std::vector<uint8_t> frame;
+    int screenWidth = 320, screenHeight = 480;
+    int interfaceOrientation = 0;
+    int lastFrameWidth = 0, lastFrameHeight = 0;
+    std::vector<uint8_t> frame, frameScratch;
     std::function<void(int, int, const std::vector<uint8_t>&)> frameSink;
     size_t frameCallCount = 0;
     // Client-side array state, one set per active client texture unit.

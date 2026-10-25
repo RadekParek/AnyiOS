@@ -526,10 +526,7 @@ uint32_t GLES::Marshal::word() {
 }
 
 float GLES::Marshal::f32() {
-    // s0-s15 are the low words of d0-d7 in the guest's VFP register file.
-    const size_t index = fp++;
-    if (index >= 16) return 0;
-    const uint32_t bits = cpu.extensionRegisters[index];
+    const uint32_t bits = word();
     float value = 0;
     std::memcpy(&value, &bits, sizeof(value));
     return value;
@@ -737,6 +734,7 @@ std::string GLES::describe() const {
         out << ", PVRTC1 software-decoded uploads=" << pvrtcDecodedUploads << " ("
             << pvrtcDecodedPixels << " texels)";
     if (width && height) out << ", drawable " << width << 'x' << height;
+    if (interfaceOrientation) out << ", UIKit interface orientation " << interfaceOrientation;
     if (!lastError.empty()) out << ", last error: " << lastError;
     if (!traceSuppressed.empty()) {
         out << "\nGLES_TRACE_SUMMARY: sampled calls";
@@ -1557,6 +1555,10 @@ bool GLES::invokeEntry(const std::string& symbol, CpuState& state) {
     if (name == "glClear") {
         auto f = fn<void (*)(uint32_t)>("glClear");
         if (!f) return false;
+        if (!framebuffer && !boundGuestFramebuffer && width == 0 && height == 0 &&
+            !createDrawable(screenWidth, screenHeight))
+            throw Error("GLES_DRAWABLE",
+                        "could not create the default EAGL drawable: " + describe());
         f(m.word());
         return true;
     }
@@ -1575,9 +1577,7 @@ bool GLES::invokeEntry(const std::string& symbol, CpuState& state) {
     if (name == "glClearColor") {
         auto f = fn<void (*)(float, float, float, float)>("glClearColor");
         if (!f) return false;
-        // Four GLfloat arguments: s0-s3 under AAPCS-VFP, not r0-r3. They are read into
-        // locals first because the evaluation order of function arguments is unspecified:
-        // `f(m.f32(), ...)` can consume s0-s3 right-to-left and reverse the colour.
+        // Read into locals first because function-argument evaluation order is unspecified.
         const float red = m.f32(), green = m.f32(), blue = m.f32(), alpha = m.f32();
         f(red, green, blue, alpha);
         return true;
@@ -3462,8 +3462,7 @@ bool GLES::fixedFunctionEntry(const std::string& name, Marshal& m) {
         return true;
     }
     if (name == "glColor4f") {
-        // Read into locals first: the order the arguments are evaluated in is unspecified,
-        // and `f(m.f32(), ...)` can consume s0-s3 right-to-left and reverse the colour.
+        // Read into locals first because function-argument evaluation order is unspecified.
         const float red = m.f32(), green = m.f32(), blue = m.f32(), alpha = m.f32();
         currentColour[0] = red;
         currentColour[1] = green;
@@ -4614,7 +4613,11 @@ bool GLES::renderbufferStorageFromDrawable(int w, int h) {
 }
 
 bool GLES::present() {
-    if (!makeCurrent() || !framebuffer || width <= 0 || height <= 0) {
+    if (!makeCurrent()) return false;
+    if (!framebuffer && !boundGuestFramebuffer && width == 0 && height == 0 &&
+        !createDrawable(screenWidth, screenHeight))
+        return false;
+    if (width <= 0 || height <= 0) {
         setError("no drawable to present");
         return false;
     }
@@ -4644,16 +4647,33 @@ bool GLES::present() {
     frame.resize(size_t(width) * size_t(height) * 4);
     readPixels(0, 0, width, height, GL_RGBA, GL_UNSIGNED_BYTE, frame.data());
     bindFramebuffer(GL_FRAMEBUFFER, restore);
-    // GL's origin is bottom-left; keep the host copy top-row-first.
-    std::vector<uint8_t> flipped(frame.size());
-    for (int row = 0; row < height; row++)
-        std::memcpy(&flipped[size_t(row) * size_t(width) * 4],
-                    &frame[size_t(height - 1 - row) * size_t(width) * 4], size_t(width) * 4);
-    frame.swap(flipped);
+    frameScratch.resize(frame.size());
+    lastFrameWidth = interfaceOrientation == 3 || interfaceOrientation == 4 ? height : width;
+    lastFrameHeight = interfaceOrientation == 3 || interfaceOrientation == 4 ? width : height;
+    for (int y = 0; y < lastFrameHeight; y++) {
+        for (int x = 0; x < lastFrameWidth; x++) {
+            int sourceX = x, sourceY = y;
+            if (interfaceOrientation == 2) {
+                sourceX = width - 1 - x;
+                sourceY = height - 1 - y;
+            } else if (interfaceOrientation == 3) {
+                sourceX = width - 1 - y;
+                sourceY = x;
+            } else if (interfaceOrientation == 4) {
+                sourceX = y;
+                sourceY = height - 1 - x;
+            }
+            const size_t source =
+                (size_t(height - 1 - sourceY) * size_t(width) + size_t(sourceX)) * 4;
+            const size_t target = (size_t(y) * size_t(lastFrameWidth) + size_t(x)) * 4;
+            std::memcpy(&frameScratch[target], &frame[source], 4);
+        }
+    }
+    frame.swap(frameScratch);
     frameCallCount = calls;
     if (frameSink) {
         try {
-            frameSink(width, height, frame);
+            frameSink(lastFrameWidth, lastFrameHeight, frame);
         } catch (...) {
             // A failed host preview must not interrupt the guest's own render loop.
             try {

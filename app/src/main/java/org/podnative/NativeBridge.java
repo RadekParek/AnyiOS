@@ -18,7 +18,7 @@ final class NativeBridge {
         String bundleOverlayPath);
     static native void beginGuestLaunch();
     static native void cancelGuestLaunch();
-    static native void setGuestScreenSize(int width, int height);
+    static native void setGuestScreenSize(int width, int height, int orientation);
     // Header is little-endian width/height/generation followed by tightly packed RGBA8 pixels.
     // Pass the last generation already shown, or -1 to retrieve the latest frame unconditionally.
     static native byte[] takeGuestFrame(int afterGeneration);

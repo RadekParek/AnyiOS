@@ -1,7 +1,7 @@
 // Drives the GL bridge against tests/gles_stub_driver.cpp, a recording driver.
 //
-// The unit proves the parts of the bridge that do not need a GPU: the AAPCS-VFP register
-// split (floats in s0-s15, integers in r0-r3 then the stack), the draw-time copy of client
+// The unit proves the parts of the bridge that do not need a GPU: base AAPCS word slots
+// (integers and float bit-patterns share r0-r3, then the stack), the draw-time copy of client
 // arrays, the texel-size computation for pixel uploads, the EAGL drawable (renderbuffer +
 // framebuffer over EGL), and the bottom-left → top-row-first flip in present(). The driver
 // itself records rather than renders, so nothing here claims a frame was drawn.
@@ -48,14 +48,14 @@ uint32_t bitsOf(float value) {
 }
 float floatAt(const float* values, int index) { return values[index]; }
 
-// One guest call through the bridge. Integer/pointer arguments are placed in r0-r3 and
-// then on the guest stack at sp; float arguments go to s0-s15, numbered independently —
-// exactly the AAPCS-VFP layout the bridge has to read.
+// One guest call through the bridge. Every word-sized argument, including float bit-patterns,
+// uses r0-r3 before continuing on the guest stack at sp.
 struct Call {
     GLES& gles;
     Memory& memory;
     CpuState state;
     uint32_t stackWords = 0;
+    size_t nextWord = 0;
     explicit Call(GLES& gles, Memory& memory) : gles(gles), memory(memory) {
         state = {};
         state.registers[13] = kStack;
@@ -63,22 +63,28 @@ struct Call {
     void operator()(const std::string& symbol) {
         const bool handled = gles.invoke(symbol, state);
         check(handled, "bridge answers " + symbol);
+        nextWord = 0;
+    }
+    void word(uint32_t value) {
+        if (nextWord < 4)
+            state.registers[nextWord] = value;
+        else
+            memory.write32(kStack + uint32_t((nextWord - 4) * 4), value);
+        nextWord++;
     }
     void ints(std::initializer_list<uint32_t> values) {
-        size_t index = 0;
-        for (uint32_t value : values) state.registers[index++] = value;
+        for (uint32_t value : values) word(value);
     }
     void floats(std::initializer_list<float> values) {
-        size_t index = 0;
-        for (float value : values) state.extensionRegisters[index++] = bitsOf(value);
+        for (float value : values) word(bitsOf(value));
     }
-    // Words the 5th and later integer arguments arrive in, written where sp points.
     void stack(std::initializer_list<uint32_t> values) {
         uint32_t offset = 0;
         for (uint32_t value : values) {
             memory.write32(kStack + offset, value);
             offset += 4;
         }
+        nextWord = 4 + offset / 4;
         stackWords = offset;
     }
     static constexpr uint32_t kStack = 0x10100;
@@ -112,10 +118,7 @@ void marshalling(const std::string& driver) {
           "an unresolved driver entry point is named instead of becoming an HLE_SYMBOL trap");
     check(gles.makeCurrent(), "a context can supply delayed eglGetProcAddress entry points");
 
-    // Floats come from s0-s3 even though the integers r0-r3 are also set: a bridge that
-    // read colours out of r0-r3 would see the sentinel values instead of the colour.
     Call call(gles, memory);
-    call.ints({0xdeadbeef, 0xdeadbeef, 0xdeadbeef, 0xdeadbeef});
     call.floats({0.25f, 0.5f, 0.75f, 1.0f});
     call("_glClearColor");
     check(recorded->clearColourCalls == 1, "glClearColor reaches the driver once");
@@ -123,7 +126,7 @@ void marshalling(const std::string& driver) {
               std::fabs(recorded->clearColour[1] - 0.5f) < 1e-6f &&
               std::fabs(recorded->clearColour[2] - 0.75f) < 1e-6f &&
               std::fabs(recorded->clearColour[3] - 1.0f) < 1e-6f,
-          "glClearColor reads its four GLfloat arguments from the VFP registers");
+          "glClearColor reads float bit-patterns from the base AAPCS argument words");
 
     Call colorMask(gles, memory);
     colorMask.ints({1, 0, 1, 0});
@@ -227,6 +230,12 @@ void drawable(const std::string& driver) {
     StubState* recorded = stub();
 
     check(gles.clientApiVersion() == 1, "an ES 1.1 title starts on an ES 1.1 context");
+    gles.setScreenSize(8, 4);
+    Call firstClear(gles, memory);
+    firstClear.ints({0x00004000});
+    firstClear("_glClear");
+    check(gles.drawableWidth() == 8 && gles.drawableHeight() == 4,
+          "the first clear lazily creates the default EAGL drawable at screen size");
     check(gles.createDrawable(8, 4), "the drawable framebuffer is created: " + gles.describe());
     check(recorded->platformDisplayCalls == 1 && recorded->platformDisplay == 0x3202 &&
               recorded->angleDisplayType == 0x3450,
@@ -263,6 +272,17 @@ void drawable(const std::string& driver) {
     check(frame[0] == 0 && frame[1] == 3 && frame[3] == 255,
           "the first host row is the last GL row (top row first)");
     check(frame[size_t(3) * 8 * 4 + 1] == 0, "the last host row is GL row 0");
+
+    gles.setInterfaceOrientation(3);
+    check(gles.present(), "landscape-left readback applies the UIKit rotation");
+    check(gles.frameWidth() == 4 && gles.frameHeight() == 8,
+          "landscape orientation swaps frame dimensions for aspect-correct display");
+    const std::vector<uint8_t>& rotated = gles.lastFrame();
+    check(rotated[0] == 7 && rotated[1] == 3,
+          "landscape-left maps the output's top-left pixel to the source's top-right");
+    const size_t bottomRight = (size_t(3) * 8 + 7) * 4;
+    check(rotated[bottomRight] == 0 && rotated[bottomRight + 1] == 0,
+          "landscape-left maps the output's bottom-right pixel to the source's bottom-left");
 
     // EAGL storage belongs to the renderbuffer the guest bound, and the drawable FBO remains
     // the source of readback even if the guest later binds framebuffer zero.
@@ -387,7 +407,7 @@ int main(int argc, char** argv) {
     marshalling(driver);
     drawable(driver);
     pvrtcUploads(driver);
-    std::cout << "gles driver: AAPCS-VFP marshalling, client arrays, texel copies, EAGL drawable, "
-                 "frame flip and PVRTC1 software decoding verified through "
+    std::cout << "gles driver: base AAPCS marshalling, client arrays, texel copies, EAGL drawable, "
+                 "frame flip, UIKit orientation and PVRTC1 software decoding verified through "
               << driver << '\n';
 }

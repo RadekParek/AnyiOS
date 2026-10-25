@@ -65,6 +65,7 @@ bool verboseLogging = false;
 // resolved once, so the switch has to be settled before the guest makes its first GL call.
 bool nativeGles = false;
 std::atomic<int> guestScreenWidth{320}, guestScreenHeight{480};
+std::atomic<int> guestScreenOrientation{1};
 std::atomic<bool> guestLaunchCancelled{false};
 std::mutex guestFrameMutex;
 std::vector<uint8_t> guestFrame;
@@ -192,16 +193,19 @@ extern "C" JNIEXPORT void JNICALL Java_org_podnative_NativeBridge_cancelGuestLau
     guestLaunchCancelled.store(true, std::memory_order_relaxed);
 }
 
-extern "C" JNIEXPORT void JNICALL Java_org_podnative_NativeBridge_setGuestScreenSize(JNIEnv* env,
-                                                                                     jclass,
-                                                                                     jint width,
-                                                                                     jint height) {
+extern "C" JNIEXPORT void JNICALL Java_org_podnative_NativeBridge_setGuestScreenSize(
+    JNIEnv* env, jclass, jint width, jint height, jint orientation) {
     if (width <= 0 || height <= 0 || width > 2048 || height > 2048) {
         env->ThrowNew(env->FindClass("java/lang/IllegalArgumentException"), "UIKIT_SCREEN");
         return;
     }
+    if (orientation < 1 || orientation > 4) {
+        env->ThrowNew(env->FindClass("java/lang/IllegalArgumentException"), "UIKIT_ORIENTATION");
+        return;
+    }
     guestScreenWidth.store(width, std::memory_order_relaxed);
     guestScreenHeight.store(height, std::memory_order_relaxed);
+    guestScreenOrientation.store(orientation, std::memory_order_relaxed);
 }
 
 extern "C" JNIEXPORT jbyteArray JNICALL
@@ -263,12 +267,11 @@ extern "C" JNIEXPORT jstring JNICALL Java_org_podnative_NativeBridge_attemptLaun
             guestFrameGeneration = 0;
         }
         podnative::runtime::LaunchOptions options;
-        options.seconds =
-            60.0;  // bounded main-menu startup probe; the screen shows its final frame
         options.verbose = verboseLogging;
         options.nativeGles = nativeGles;
         options.screenWidth = guestScreenWidth.load(std::memory_order_relaxed);
         options.screenHeight = guestScreenHeight.load(std::memory_order_relaxed);
+        options.interfaceOrientation = guestScreenOrientation.load(std::memory_order_relaxed);
         options.cancelRequested = &guestLaunchCancelled;
         options.bundleArchive = archive;
         options.bundleArchivePrefix = archivePrefix;
@@ -278,7 +281,7 @@ extern "C" JNIEXPORT jstring JNICALL Java_org_podnative_NativeBridge_attemptLaun
                              firstFrame = true](int width, int height,
                                                 const std::vector<uint8_t>& pixels) mutable {
             const auto now = std::chrono::steady_clock::now();
-            if (!firstFrame && now - lastFrame < std::chrono::milliseconds(100)) return;
+            if (!firstFrame && now - lastFrame < std::chrono::milliseconds(33)) return;
             firstFrame = false;
             lastFrame = now;
             if (width <= 0 || height <= 0 || width > 2048 || height > 2048 ||
