@@ -151,8 +151,10 @@ android.applicationVariants.all { variant ->
     // cargo-ndk-android attaches its ABI-specific Cargo build to this task.
     tasks["merge${capitalized}Assets"].dependsOn(nativeBuildTask)
     tasks["merge${capitalized}Assets"].dependsOn(collectNotices)
-    // Lint snapshots variant assets too, so it must wait for generated notices.
-    tasks.matching { it.name == "generate${capitalized}LintReportModel" }.configureEach {
+    // Lint model and analysis tasks snapshot variant assets; wait for generated notices.
+    tasks.matching {
+        it.name.contains(capitalized) && it.name.toLowerCase().contains('lint')
+    }.configureEach {
         dependsOn(collectNotices)
     }
 }
