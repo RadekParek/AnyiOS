@@ -31,7 +31,16 @@ jobs:
     steps:
       - uses: actions/checkout@v5
         with:
-          submodules: recursive
+          # Prepare Gradle before initializing SDL's unused nested wrapper JAR below;
+          # the app build uses the pinned installed Gradle distribution, not SDL's wrapper.
+          submodules: false
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.11.1'
       - name: Prepare pinned AnyiOSEMU engine source
         run: scripts/prepare-hyperhle.sh
       - name: Cache pinned AnyiOSEMU Boost headers
@@ -60,10 +69,6 @@ jobs:
           key: ${{ runner.os }}-android-ndk-27.2.12479018-anyiose-rust-${{ hashFiles('third_party/hyperhle-revision.txt', 'third_party/hyperhle-patches/AnyiOSEMU.patch', 'third_party/hyperhle/Cargo.lock', 'third_party/hyperhle/**/Cargo.toml') }}
           restore-keys: |
             ${{ runner.os }}-android-ndk-27.2.12479018-anyiose-rust-
-      - uses: actions/setup-java@v5
-        with:
-          distribution: temurin
-          java-version: '17'
       # Development keys only, never release signing material. Cache eviction can
       # change this certificate; durable distribution requires configured signing secrets.
       - name: Reuse development signing identity when cached
@@ -82,9 +87,6 @@ jobs:
           } 2>&1 | tee .local/logs/environment.log
           test -x "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"
           echo "$ANDROID_HOME/cmdline-tools/latest/bin" >> "$GITHUB_PATH"
-      - uses: gradle/actions/setup-gradle@v4
-        with:
-          gradle-version: '8.11.1'
       - name: Install application SDK
         run: |
           set -o pipefail
