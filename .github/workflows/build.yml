@@ -66,7 +66,7 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             third_party/hyperhle/target
-          key: ${{ runner.os }}-android-ndk-27.2.12479018-anyiose-rust-${{ hashFiles('third_party/hyperhle-revision.txt', 'third_party/hyperhle-patches/AnyiOSEMU.patch', 'third_party/hyperhle/Cargo.lock', 'third_party/hyperhle/**/Cargo.toml') }}
+          key: ${{ runner.os }}-android-ndk-27.2.12479018-anyiose-rust-${{ hashFiles('third_party/hyperhle-revision.txt', 'third_party/hyperhle-patches/AnyiOSEMU.patch', 'third_party/hyperhle-patches/SDL-Android-NDK-27.patch', 'third_party/hyperhle/Cargo.lock', 'third_party/hyperhle/**/Cargo.toml') }}
           restore-keys: |
             ${{ runner.os }}-android-ndk-27.2.12479018-anyiose-rust-
       # Development keys only, never release signing material. Cache eviction can
@@ -93,6 +93,10 @@ jobs:
           sdkmanager 'platforms;android-35' 'build-tools;35.0.0' 'ndk;27.2.12479018' 'cmake;3.22.1' 2>&1 | tee .local/logs/sdk-install.log
           # cargo-ndk-android unconditionally reads local.properties for ndk.dir.
           printf 'sdk.dir=%s\nndk.dir=%s/ndk/27.2.12479018\n' "$ANDROID_HOME" "$ANDROID_HOME" > local.properties
+      - name: Prepare Cargo SDL source for Android NDK 27
+        run: |
+          set -o pipefail
+          scripts/prepare-hyperhle-rust-sdl.sh 2>&1 | tee .local/logs/rust-sdl-prepare.log
       - name: Formatting and script lint
         run: |
           pipx install clang-format==19.1.7
