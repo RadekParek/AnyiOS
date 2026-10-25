@@ -735,6 +735,11 @@ std::string GLES::describe() const {
             << pvrtcDecodedPixels << " texels)";
     if (width && height) out << ", drawable " << width << 'x' << height;
     if (interfaceOrientation) out << ", UIKit interface orientation " << interfaceOrientation;
+    if (pbufferDrawable) {
+        out << ", default drawable uses an EGL pbuffer";
+        if (pbufferFallbackStatus)
+            out << " after framebuffer status 0x" << std::hex << pbufferFallbackStatus << std::dec;
+    }
     if (!lastError.empty()) out << ", last error: " << lastError;
     if (!traceSuppressed.empty()) {
         out << "\nGLES_TRACE_SUMMARY: sampled calls";
@@ -4375,6 +4380,8 @@ void GLES::setClientApi(int api) {
     boundGuestFramebuffer = boundGuestRenderbuffer = 0;
     drawableFramebuffer = drawableRenderbuffer = 0;
     width = height = fallbackWidth = fallbackHeight = 0;
+    pbufferDrawable = false;
+    pbufferFallbackStatus = 0;
     frame.clear();
     frameCallCount = 0;
 }
@@ -4546,12 +4553,84 @@ uint32_t GLES::drawableColorFormat() {
     return GL_RGBA4;
 }
 
+bool GLES::createPbufferDrawable(int w, int h) {
+    if (!makeCurrent()) return false;
+    using Display = void*;
+    using Config = void*;
+    using Surface = void*;
+    using Context = void*;
+    using Boolean = uint32_t;
+    using Int = int32_t;
+    auto createPbuffer = egl<Surface (*)(Display, Config, const Int*)>("eglCreatePbufferSurface");
+    auto makeCurrentFn = egl<Boolean (*)(Display, Surface, Surface, Context)>("eglMakeCurrent");
+    auto destroySurface = egl<Boolean (*)(Display, Surface)>("eglDestroySurface");
+    if (!createPbuffer || !makeCurrentFn) {
+        setError("EGL cannot create a pbuffer for the default drawable");
+        return false;
+    }
+    Config config = static_cast<Config>(eglConfig);
+    if (!config) {
+        auto chooseConfig =
+            egl<Boolean (*)(Display, const Int*, Config*, Int, Int*)>("eglChooseConfig");
+        if (chooseConfig) {
+            const Int attributes[] = {EGL_SURFACE_TYPE, EGL_PBUFFER_BIT, EGL_RENDERABLE_TYPE,
+                                      clientApi == 2 ? EGL_OPENGL_ES2_BIT : EGL_OPENGL_ES_BIT,
+                                      EGL_NONE};
+            Int count = 0;
+            if (!chooseConfig(display, attributes, &config, 1, &count) || !count) config = nullptr;
+        }
+    }
+    if (!config) {
+        setError("EGL has no pbuffer-compatible config for the default drawable");
+        return false;
+    }
+    const Int attributes[] = {EGL_WIDTH, w, EGL_HEIGHT, h, EGL_NONE};
+    Surface nextSurface = createPbuffer(display, config, attributes);
+    if (!nextSurface) {
+        setError("eglCreatePbufferSurface failed for the default drawable");
+        return false;
+    }
+    if (!makeCurrentFn(display, nextSurface, nextSurface, context)) {
+        if (destroySurface) destroySurface(display, nextSurface);
+        setError("eglMakeCurrent failed for the default drawable pbuffer");
+        return false;
+    }
+    if (surface && surface != nextSurface && destroySurface) destroySurface(display, surface);
+    surface = nextSurface;
+
+    constexpr uint32_t Framebuffer = 0x8d40, Renderbuffer = 0x8d41;
+    auto bindFramebuffer = glFn<void (*)(uint32_t, uint32_t)>("glBindFramebuffer");
+    auto bindRenderbuffer = glFn<void (*)(uint32_t, uint32_t)>("glBindRenderbuffer");
+    if (bindFramebuffer) bindFramebuffer(Framebuffer, 0);
+    if (bindRenderbuffer) bindRenderbuffer(Renderbuffer, 0);
+    if (framebuffer) {
+        auto remove = glFn<void (*)(int, const uint32_t*)>("glDeleteFramebuffers");
+        if (remove) remove(1, &framebuffer);
+    }
+    if (renderbuffer) {
+        auto remove = glFn<void (*)(int, const uint32_t*)>("glDeleteRenderbuffers");
+        if (remove) remove(1, &renderbuffer);
+    }
+    framebuffer = renderbuffer = drawableFramebuffer = drawableRenderbuffer = 0;
+    width = fallbackWidth = w;
+    height = fallbackHeight = h;
+    lastFrameWidth = lastFrameHeight = 0;
+    frame.clear();
+    pbufferDrawable = true;
+    lastError.clear();
+    auto viewport = glFn<void (*)(int, int, int, int)>("glViewport");
+    if (viewport) viewport(0, 0, w, h);
+    return true;
+}
+
 bool GLES::createDrawable(int w, int h) {
     if (!makeCurrent()) return false;
     if (w <= 0 || h <= 0 || w > 8192 || h > 8192) {
         setError("drawable size is out of range");
         return false;
     }
+    pbufferDrawable = false;
+    pbufferFallbackStatus = 0;
     auto genRenderbuffers = glFn<void (*)(int, uint32_t*)>("glGenRenderbuffers");
     auto bindRenderbuffer = glFn<void (*)(uint32_t, uint32_t)>("glBindRenderbuffer");
     auto renderbufferStorage =
@@ -4574,8 +4653,15 @@ bool GLES::createDrawable(int w, int h) {
     bindFramebuffer(Framebuffer, framebuffer);
     framebufferRenderbuffer(Framebuffer, ColorAttachment0, Renderbuffer, renderbuffer);
     auto check = glFn<uint32_t (*)(uint32_t)>("glCheckFramebufferStatus");
-    if (check && check(Framebuffer) != 0x8cd5) {
-        setError("the fallback drawable framebuffer is incomplete");
+    const uint32_t status = check ? check(Framebuffer) : 0x8cd5;
+    if (status != 0x8cd5) {
+        pbufferFallbackStatus = status;
+        if (createPbufferDrawable(w, h)) return true;
+        const std::string pbufferError = lastError;
+        std::ostringstream message;
+        message << "fallback drawable framebuffer is incomplete (status=0x" << std::hex << status;
+        if (!pbufferError.empty()) message << "; " << pbufferError;
+        setError(message.str());
         return false;
     }
     width = fallbackWidth = w;

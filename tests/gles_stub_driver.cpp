@@ -31,6 +31,7 @@ extern "C" void stub_refuse_surfaceless(int refuse) { refuseSurfaceless = refuse
 extern "C" void stub_reset() {
     std::memset(&state, 0, sizeof(state));
     state.getIntegerValue = 0;
+    state.framebufferStatus = 0x8cd5;
     refuseSurfaceless = 0;
     nextTexture = 1;
     nextBuffer = 1;
@@ -89,10 +90,12 @@ uint32_t eglMakeCurrent(void*, void* draw, void*, void* context) {
     currentContext = context ? 1 : 0;
     return 1;
 }
-void* eglCreatePbufferSurface(void*, void* config, const int*) {
+void* eglCreatePbufferSurface(void*, void* config, const int* attributes) {
     state.pbufferCreated++;
-    // EGL_BAD_MATCH: a pbuffer created from an incompatible config cannot be attached to
-    // the context selected earlier. This catches the exact fallback mistake on real drivers.
+    for (int i = 0; attributes && attributes[i] != 0x3038; i += 2) {
+        if (attributes[i] == 0x3057) state.pbufferWidth = attributes[i + 1];
+        if (attributes[i] == 0x3056) state.pbufferHeight = attributes[i + 1];
+    }
     if (config != contextConfig) return nullptr;
     return &surfaceToken;
 }
@@ -281,7 +284,9 @@ void glFramebufferRenderbuffer(uint32_t, uint32_t, uint32_t, uint32_t name) {
 }
 void glFramebufferTexture2D(uint32_t, uint32_t, uint32_t, uint32_t, int) {}
 void glDeleteFramebuffers(int, const uint32_t*) {}
-uint32_t glCheckFramebufferStatus(uint32_t) { return 0x8cd5; }
+uint32_t glCheckFramebufferStatus(uint32_t) {
+    return state.boundFramebuffer == 0 ? 0x8cd5 : state.framebufferStatus;
+}
 void glReadPixels(int /*x*/, int y, int w, int h, uint32_t, uint32_t, void* pixels) {
     state.readPixelsCalls++;
     state.readPixelsWidth = w;

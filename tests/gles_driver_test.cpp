@@ -348,6 +348,30 @@ void drawable(const std::string& driver) {
           "a pbuffer surface was created and made current");
 }
 
+void pbufferFallback(const std::string& driver) {
+    Memory memory(1024 * 1024);
+    GLES gles(memory);
+    check(gles.load(), "the recording driver is resolved for the pbuffer fallback test");
+    check(gles.backend() == driver, "the pbuffer fallback stays on the selected driver");
+    resetStub();
+    StubState* recorded = stub();
+    recorded->framebufferStatus = 0x8cd6;
+    gles.setScreenSize(16, 24);
+    check(gles.createDrawable(16, 24),
+          "an incomplete ANGLE FBO falls back to an EGL pbuffer: " + gles.describe());
+    check(recorded->pbufferCreated == 1 && recorded->pbufferWidth == 16 &&
+              recorded->pbufferHeight == 24,
+          "the default drawable pbuffer uses the guest's requested pixel dimensions");
+    check(gles.describe().find("default drawable uses an EGL pbuffer after framebuffer status "
+                               "0x8cd6") != std::string::npos &&
+              gles.describe().find("last error:") == std::string::npos,
+          "the report names the incomplete FBO status without a stale error");
+    check(gles.present(), "the pbuffer default framebuffer remains readable");
+    check(recorded->framebufferAtRead == 0 && gles.frameWidth() == 16 && gles.frameHeight() == 24 &&
+              gles.frameCurrent(),
+          "readback uses the complete EGL default framebuffer at native dimensions");
+}
+
 void pvrtcUploads(const std::string& driver) {
     Memory memory(1024 * 1024);
     std::vector<uint8_t> page(65536, 0);
@@ -406,6 +430,7 @@ int main(int argc, char** argv) {
     const std::string driver = argv[1];
     marshalling(driver);
     drawable(driver);
+    pbufferFallback(driver);
     pvrtcUploads(driver);
     std::cout << "gles driver: base AAPCS marshalling, client arrays, texel copies, EAGL drawable, "
                  "frame flip, UIKit orientation and PVRTC1 software decoding verified through "

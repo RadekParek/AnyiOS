@@ -167,6 +167,8 @@ class GLES final {
     void* context = nullptr;
     void* surface = nullptr;
     uint32_t framebuffer = 0, renderbuffer = 0;
+    bool pbufferDrawable = false;
+    uint32_t pbufferFallbackStatus = 0;
     // Guest-visible names are kept separate from the private fallback FBO/RBO. Binding guest
     // framebuffer 0 maps to `framebuffer`; a guest-created EAGL framebuffer stays a real driver
     // object and is selected when its drawable renderbuffer is attached.
@@ -275,6 +277,7 @@ class GLES final {
     bool resolve(const char* name);
     void resolveMissingImports();
     uint32_t drawableColorFormat();
+    bool createPbufferDrawable(int width, int height);
     // Takes a handle on a driver library, preferring one the linker already loaded.
     static void* openLibrary(const char* name);
     // One lookup in a handle, then through eglGetProcAddress, then the other handle.

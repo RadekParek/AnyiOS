@@ -31,7 +31,8 @@ struct StubState {
     size_t texImageBytes;
     unsigned char texels[1024];
     int renderbufferWidth, renderbufferHeight;
-    uint32_t renderbufferFormat;
+    uint32_t renderbufferFormat, framebufferStatus;
+    int pbufferWidth, pbufferHeight;
     unsigned boundRenderbuffer, boundFramebuffer, attachedRenderbuffer;
     int framebufferBindCalls;
     unsigned framebufferBinds[32], framebufferAtRead;
