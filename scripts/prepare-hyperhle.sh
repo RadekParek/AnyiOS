@@ -1,10 +1,12 @@
 #!/usr/bin/env bash
-# Initialize the pinned AnyiOSEMU engine source and apply its reviewed source patch.
+# Initialize pinned AnyiOSEMU engine sources and apply reviewed compatibility patches.
 set -euo pipefail
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 HLE="$ROOT/third_party/hyperhle"
 PIN_FILE="$ROOT/third_party/hyperhle-revision.txt"
 PATCH="$ROOT/third_party/hyperhle-patches/AnyiOSEMU.patch"
+SDL="$HLE/vendor/SDL"
+SDL_PATCH="$ROOT/third_party/hyperhle-patches/SDL-Android-NDK-27.patch"
 
 [[ -f "$PIN_FILE" ]] || { echo "Missing engine revision pin: $PIN_FILE" >&2; exit 1; }
 PIN=$(tr -d '\r\n' < "$PIN_FILE")
@@ -32,10 +34,11 @@ else
 fi
 
 ACTUAL_PATCH=$(mktemp "${TMPDIR:-/tmp}/anyiose-patch.XXXXXX")
-trap 'rm -f "$ACTUAL_PATCH"' EXIT
+ACTUAL_SDL_PATCH=$(mktemp "${TMPDIR:-/tmp}/anyiose-sdl-patch.XXXXXX")
+trap 'rm -f "$ACTUAL_PATCH" "$ACTUAL_SDL_PATCH"' EXIT
 # Full object IDs keep this exact patch check stable across Git versions and
 # shallow/full clones, whose default abbreviated hashes may differ in length.
-git -C "$HLE" diff --binary --full-index HEAD > "$ACTUAL_PATCH"
+git -C "$HLE" diff --binary --full-index --ignore-submodules=all HEAD > "$ACTUAL_PATCH"
 if ! cmp -s "$PATCH" "$ACTUAL_PATCH"; then
   echo "Pinned engine worktree contains changes outside the reviewed AnyiOSEMU patch" >&2
   exit 1
@@ -45,6 +48,23 @@ SUBMODULE_STATUS=$(git -C "$HLE" submodule status --recursive)
 if printf '%s\n' "$SUBMODULE_STATUS" | grep -Eq '^[-+U]'; then
   echo "AnyiOSEMU contains missing or mismatched nested submodules:" >&2
   printf '%s\n' "$SUBMODULE_STATUS" >&2
+  exit 1
+fi
+[[ -f "$SDL_PATCH" ]] || { echo "Missing reviewed SDL compatibility patch: $SDL_PATCH" >&2; exit 1; }
+
+if git -C "$SDL" apply --reverse --check "$SDL_PATCH" >/dev/null 2>&1; then
+  echo "SDL Android NDK compatibility patch is already applied"
+elif git -C "$SDL" apply --check "$SDL_PATCH" >/dev/null 2>&1; then
+  git -C "$SDL" apply "$SDL_PATCH"
+  echo "Applied SDL Android NDK compatibility patch"
+else
+  echo "SDL compatibility patch does not apply to the pinned submodule revision" >&2
+  exit 1
+fi
+
+git -C "$SDL" diff --binary --full-index HEAD > "$ACTUAL_SDL_PATCH"
+if ! cmp -s "$SDL_PATCH" "$ACTUAL_SDL_PATCH"; then
+  echo "Pinned SDL worktree contains changes outside the reviewed compatibility patch" >&2
   exit 1
 fi
 required_files=(
@@ -65,4 +85,5 @@ for path in "${required_files[@]}"; do
     exit 1
   }
 done
-git -C "$HLE" diff --check
+git -C "$HLE" diff --check --ignore-submodules=all
+git -C "$SDL" diff --check
