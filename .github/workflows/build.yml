@@ -91,6 +91,8 @@ jobs:
         run: |
           set -o pipefail
           sdkmanager 'platforms;android-35' 'build-tools;35.0.0' 'ndk;27.2.12479018' 'cmake;3.22.1' 2>&1 | tee .local/logs/sdk-install.log
+          # cargo-ndk-android unconditionally reads local.properties for ndk.dir.
+          printf 'sdk.dir=%s\nndk.dir=%s/ndk/27.2.12479018\n' "$ANDROID_HOME" "$ANDROID_HOME" > local.properties
       - name: Formatting and script lint
         run: |
           pipx install clang-format==19.1.7
