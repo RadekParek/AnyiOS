@@ -27,7 +27,7 @@ index 65c5a42370f28be3290ea3153f6261120ccfce7e..fbe18495ef4c6105d7159feba120fc02
          private enum Operation {
              CHR_READ,
 diff --git a/android/app/src/main/java/org/libsdl/app/HIDDeviceManager.java b/android/app/src/main/java/org/libsdl/app/HIDDeviceManager.java
-index cf3c9267fbd94e01113a939c37340aae44693215..22a15950240eaf0b554930d53f31bd97fc14294d 100644
+index cf3c9267fbd94e01113a939c37340aae44693215..419d9697d796b02e1b1c9ae358463a171c7b8b08 100644
 --- a/android/app/src/main/java/org/libsdl/app/HIDDeviceManager.java
 +++ b/android/app/src/main/java/org/libsdl/app/HIDDeviceManager.java
 @@ -1,5 +1,6 @@
@@ -47,6 +47,45 @@ index cf3c9267fbd94e01113a939c37340aae44693215..22a15950240eaf0b554930d53f31bd97
  public class HIDDeviceManager {
      private static final String TAG = "hidapi";
      private static final String ACTION_USB_PERMISSION = "org.libsdl.app.USB_PERMISSION";
+@@ -193,7 +197,11 @@ public class HIDDeviceManager {
+         filter.addAction(UsbManager.ACTION_USB_DEVICE_ATTACHED);
+         filter.addAction(UsbManager.ACTION_USB_DEVICE_DETACHED);
+         filter.addAction(HIDDeviceManager.ACTION_USB_PERMISSION);
+-        mContext.registerReceiver(mUsbBroadcast, filter);
++        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
++            mContext.registerReceiver(mUsbBroadcast, filter, Context.RECEIVER_NOT_EXPORTED);
++        } else {
++            mContext.registerReceiver(mUsbBroadcast, filter);
++        }
+ 
+         for (UsbDevice usbDevice : mUsbManager.getDeviceList().values()) {
+             handleUsbDeviceAttached(usbDevice);
+diff --git a/android/app/src/main/java/org/libsdl/app/SDLAudioManager.java b/android/app/src/main/java/org/libsdl/app/SDLAudioManager.java
+index 2bfc71860900556ce0ac1481e7162d2d216cb706..3c0ac5e4fb5917adb293b7377ea53a9218cd3d8a 100644
+--- a/android/app/src/main/java/org/libsdl/app/SDLAudioManager.java
++++ b/android/app/src/main/java/org/libsdl/app/SDLAudioManager.java
+@@ -1,5 +1,7 @@
+ package org.libsdl.app;
+ 
++import android.Manifest;
++import android.content.pm.PackageManager;
+ import android.media.AudioFormat;
+ import android.media.AudioManager;
+ import android.media.AudioRecord;
+@@ -36,6 +38,13 @@ public class SDLAudioManager
+     }
+ 
+     protected static int[] open(boolean isCapture, int sampleRate, int audioFormat, int desiredChannels, int desiredFrames) {
++        if (isCapture && Build.VERSION.SDK_INT >= Build.VERSION_CODES.M
++                && SDLActivity.getContext().checkSelfPermission(Manifest.permission.RECORD_AUDIO)
++                        != PackageManager.PERMISSION_GRANTED) {
++            Log.w(TAG, "Microphone permission is not granted");
++            return null;
++        }
++
+         int channelConfig;
+         int sampleSize;
+         int frameSize;
 diff --git a/android/app/src/main/java/org/touchhle/android/DocumentsProvider.kt b/android/app/src/main/java/org/touchhle/android/DocumentsProvider.kt
 index 29142ee5b4946ad57abae61336598686bfd9f24e..32d31edbb92ff20dcb0e536912f52b57fed2a513 100644
 --- a/android/app/src/main/java/org/touchhle/android/DocumentsProvider.kt
