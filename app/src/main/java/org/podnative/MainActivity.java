@@ -1115,6 +1115,10 @@ public final class MainActivity extends Activity {
     private void attempt(GameLibrary.Game game) {
         if (isFinishing() || isDestroyed())
             return;
+        if (prototype != null) {
+            prototype.halt();
+            prototype = null;
+        }
         showingSplashes = false;
         showingGuestFrame = false;
         showingBoot = true;
@@ -1186,9 +1190,9 @@ public final class MainActivity extends Activity {
         GameInspector.GuestFrame frame = GameInspector.pollGuestFrame(guestFrameGeneration);
         if (frame != null) {
             guestFrameGeneration = frame.generation;
-            if (prototype == null)
+            if (!showingGuestFrame)
                 showLiveGuestFrame(game, frame);
-            else
+            else if (prototype != null)
                 prototype.updateGuestFrame(frame);
         }
         if (showingBoot && generation == launchGeneration)
