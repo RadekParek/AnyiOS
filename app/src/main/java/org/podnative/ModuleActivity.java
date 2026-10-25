@@ -57,8 +57,8 @@ public final class ModuleActivity extends Activity {
         label(body,
             "Choose how you want to work with your iOS apps. Original files stay untouched.", 16,
             muted, false);
-        module(body, "01  /  PLAY & EXPLORE", "Emulator",
-            "Your game library, ANGLE graphics and ARM32 runtime diagnostics. Game compatibility is still in development.",
+        module(body, "01  /  PLAY & EXPLORE", "AnyiOSEMU",
+            "Try eligible ARM32 iPhone and iPad apps in the experimental runtime. Universal ARM32+ARM64 apps use ARM32; ARM64-only apps remain unsupported. Compatibility and device rendering require game-by-game validation.",
             MainActivity.class, 0);
         module(body, "02  /  ANALYZE & BUILD", "Converter",
             "Inspect an IPA, convert supported code, or build an explicitly experimental runtime APK. Conversion is not a promise of playability.",

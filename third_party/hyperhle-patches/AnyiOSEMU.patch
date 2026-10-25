@@ -1,0 +1,1357 @@
+diff --git a/android/app/src/main/java/org/touchhle/android/DocumentsProvider.kt b/android/app/src/main/java/org/touchhle/android/DocumentsProvider.kt
+index 29142ee..32d31ed 100644
+--- a/android/app/src/main/java/org/touchhle/android/DocumentsProvider.kt
++++ b/android/app/src/main/java/org/touchhle/android/DocumentsProvider.kt
+@@ -17,6 +17,8 @@ import android.os.ParcelFileDescriptor
+ import android.provider.DocumentsContract
+ import android.provider.DocumentsProvider
+ import android.webkit.MimeTypeMap
++import org.podnative.BuildConfig
++import org.podnative.AnyiOSEmuActivity
+ //import emu.skyline.BuildConfig
+ //import emu.skyline.R
+ //import emu.skyline.SkylineApplication
+@@ -55,7 +57,27 @@ class DocumentsProvider : DocumentsProvider() {
+     }
+ 
+     private fun getBaseDirectory() : File {
+-        return context!!.getExternalFilesDir(null)!!
++        val appContext = context ?: throw FileNotFoundException("AnyiOSEMU context is unavailable")
++        val savedPath = appContext.getSharedPreferences(
++            "anyiose_runtime", android.content.Context.MODE_PRIVATE
++        ).getString("last_data_path", null)
++        val configured = AnyiOSEmuActivity.userDataPath?.takeIf {
++            it.isNotEmpty() && File(it).isDirectory
++        } ?: savedPath?.takeIf { File(it).isDirectory }
++        val base = if (configured.isNullOrEmpty())
++            File(appContext.filesDir, "AnyiOSEMU")
++        else
++            File(configured)
++        if (!base.isDirectory && !base.mkdirs())
++            throw FileNotFoundException("Couldn't create AnyiOSEMU data directory")
++        if (java.nio.file.Files.isSymbolicLink(base.toPath()))
++            throw FileNotFoundException("AnyiOSEMU data root cannot be a symbolic link")
++        val canonical = base.canonicalFile
++        val privateFiles = appContext.filesDir.canonicalFile
++        if (!canonical.isDirectory || canonical == privateFiles
++            || !canonical.toPath().startsWith(privateFiles.toPath()))
++            throw FileNotFoundException("AnyiOSEMU data directory is outside private app storage")
++        return canonical
+     }
+ 
+     override fun onCreate() : Boolean {
+@@ -65,21 +87,43 @@ class DocumentsProvider : DocumentsProvider() {
+     /**
+      * @return The [File] that corresponds to the document ID supplied by [getDocumentId]
+      */
+-    private fun getFile(documentId : String) : File {
+-        if (documentId.startsWith(ROOT_ID)) {
+-            val file = getBaseDirectory().resolve(documentId.drop(ROOT_ID.length + 1))
+-            if (!file.exists()) throw FileNotFoundException("${file.absolutePath} ($documentId) not found")
+-            return file
+-        } else {
+-            throw FileNotFoundException("'$documentId' is not in any known root")
++    private fun getFile(documentId : String?) : File {
++        val prefix = "$ROOT_ID/"
++        if (documentId == null || !documentId.startsWith(prefix))
++            throw FileNotFoundException("'$documentId' is not in AnyiOSEMU's private root")
++        val relative = documentId.substring(prefix.length)
++        val parts = relative.split('/')
++        if (relative.isEmpty() || parts.any {
++                it.isEmpty() || it == ".." || it.indexOf('\u0000') >= 0
++            })
++            throw FileNotFoundException("Invalid private document ID")
++        val base = getBaseDirectory()
++        var file = base
++        for (part in parts) {
++            if (part == ".") continue
++            file = File(file, part)
++            if (java.nio.file.Files.isSymbolicLink(file.toPath()))
++                throw FileNotFoundException("Symbolic links are not exposed by AnyiOSEMU")
+         }
++        val canonical = file.canonicalFile
++        if (!canonical.toPath().startsWith(base.toPath()))
++            throw FileNotFoundException("Document path escapes AnyiOSEMU's private data root")
++        if (!canonical.exists())
++            throw FileNotFoundException("${canonical.absolutePath} ($documentId) not found")
++        return canonical
+     }
+ 
+     /**
+      * @return A unique ID for the provided [File]
+      */
+     private fun getDocumentId(file : File) : String {
+-        return "$ROOT_ID/${file.toRelativeString(getBaseDirectory())}"
++        if (java.nio.file.Files.isSymbolicLink(file.toPath()))
++            throw FileNotFoundException("Symbolic links are not exposed by AnyiOSEMU")
++        val base = getBaseDirectory()
++        val canonical = file.canonicalFile
++        if (!canonical.toPath().startsWith(base.toPath()))
++            throw FileNotFoundException("Document path escapes AnyiOSEMU's private data root")
++        return "$ROOT_ID/${canonical.toRelativeString(base)}"
+     }
+ 
+     override fun queryRoots(projection : Array<out String>?) : Cursor {
+@@ -93,7 +137,6 @@ class DocumentsProvider : DocumentsProvider() {
+             add(DocumentsContract.Root.COLUMN_DOCUMENT_ID, getDocumentId(getBaseDirectory()))
+             add(DocumentsContract.Root.COLUMN_MIME_TYPES, "*/*")
+             add(DocumentsContract.Root.COLUMN_AVAILABLE_BYTES, getBaseDirectory().freeSpace)
+-            add(DocumentsContract.Root.COLUMN_ICON, BuildConfig.APP_ICON)
+         }
+ 
+         return cursor
+@@ -105,13 +148,26 @@ class DocumentsProvider : DocumentsProvider() {
+     }
+ 
+     override fun isChildDocument(parentDocumentId : String?, documentId : String?) : Boolean {
+-        return documentId?.startsWith(parentDocumentId!!) ?: false
++        return try {
++            val parent = getFile(parentDocumentId).toPath()
++            val child = getFile(documentId).toPath()
++            child != parent && child.startsWith(parent)
++        } catch (e : IOException) {
++            false
++        }
+     }
+ 
+     /**
+      * @return A new [File] with a unique name based off the supplied [name], not conflicting with any existing file
+      */
++    private fun validateDisplayName(name : String) {
++        if (name.isEmpty() || name == "." || name == ".." || name.contains('/')
++            || name.contains('\\') || name.indexOf('\u0000') >= 0)
++            throw FileNotFoundException("Invalid document name")
++    }
++
+     fun File.resolveWithoutConflict(name : String) : File {
++        validateDisplayName(name)
+         var file = resolve(name)
+         if (file.exists()) {
+             var noConflictId = 1 // Makes sure two files don't have the same name by adding a number to the end
+@@ -124,7 +180,9 @@ class DocumentsProvider : DocumentsProvider() {
+     }
+ 
+     override fun createDocument(parentDocumentId : String?, mimeType : String?, displayName : String) : String? {
+-        val parentFile = getFile(parentDocumentId!!)
++        val parentFile = getFile(parentDocumentId)
++        if (!parentFile.isDirectory)
++            throw FileNotFoundException("The requested parent is not a directory")
+         val newFile = parentFile.resolveWithoutConflict(displayName)
+ 
+         try {
+@@ -143,38 +201,36 @@ class DocumentsProvider : DocumentsProvider() {
+     }
+ 
+     override fun deleteDocument(documentId : String?) {
+-        val file = getFile(documentId!!)
++        val file = getFile(documentId)
++        if (file == getBaseDirectory())
++            throw FileNotFoundException("Cannot delete the AnyiOSEMU data root")
+         if (!file.delete())
+             throw FileNotFoundException("Couldn't delete document with ID '$documentId'")
+     }
+ 
+     override fun removeDocument(documentId : String, parentDocumentId : String?) {
+-        val parent = getFile(parentDocumentId!!)
++        val parent = getFile(parentDocumentId)
+         val file = getFile(documentId)
+-
+-        if (parent == file || file.parentFile == null || file.parentFile!! == parent) {
+-            if (!file.delete())
+-                throw FileNotFoundException("Couldn't delete document with ID '$documentId'")
+-        } else {
++        if (file == getBaseDirectory() || file.parentFile?.canonicalFile != parent.canonicalFile)
++            throw FileNotFoundException("Couldn't delete document with ID '$documentId'")
++        if (!file.delete())
+             throw FileNotFoundException("Couldn't delete document with ID '$documentId'")
+-        }
+     }
+ 
+     override fun renameDocument(documentId : String?, displayName : String?) : String? {
+         if (displayName == null)
+             throw FileNotFoundException("Couldn't rename document '$documentId' as the new name is null")
+-
+-        val sourceFile = getFile(documentId!!)
+-        val sourceParentFile = sourceFile.parentFile ?: throw FileNotFoundException("Couldn't rename document '$documentId' as it has no parent")
+-        val destFile = sourceParentFile.resolve(displayName)
+-
+-        try {
+-            if (!sourceFile.renameTo(destFile))
+-                throw FileNotFoundException("Couldn't rename document from '${sourceFile.name}' to '${destFile.name}'")
+-        } catch (e : Exception) {
+-            throw FileNotFoundException("Couldn't rename document from '${sourceFile.name}' to '${destFile.name}': ${e.message}")
+-        }
+-
++        val sourceFile = getFile(documentId)
++        if (sourceFile == getBaseDirectory())
++            throw FileNotFoundException("Cannot rename the AnyiOSEMU data root")
++        validateDisplayName(displayName)
++        val sourceParentFile = sourceFile.parentFile
++            ?: throw FileNotFoundException("Couldn't rename document '$documentId' as it has no parent")
++        val destFile = File(sourceParentFile, displayName)
++        if (destFile.exists())
++            throw FileNotFoundException("A document named '$displayName' already exists")
++        if (!sourceFile.renameTo(destFile))
++            throw FileNotFoundException("Couldn't rename document from '${sourceFile.name}' to '${destFile.name}'")
+         return getDocumentId(destFile)
+     }
+ 
+@@ -189,8 +245,12 @@ class DocumentsProvider : DocumentsProvider() {
+     }
+ 
+     override fun copyDocument(sourceDocumentId : String, targetParentDocumentId : String?) : String? {
+-        val parent = getFile(targetParentDocumentId!!)
++        val parent = getFile(targetParentDocumentId)
++        if (!parent.isDirectory)
++            throw FileNotFoundException("The requested copy destination is not a directory")
+         val oldFile = getFile(sourceDocumentId)
++        if (!oldFile.isFile)
++            throw FileNotFoundException("Only regular files can be copied")
+         val newFile = parent.resolveWithoutConflict(oldFile.name)
+ 
+         try {
+@@ -277,15 +337,23 @@ class DocumentsProvider : DocumentsProvider() {
+     override fun queryChildDocuments(parentDocumentId : String?, projection : Array<out String>?, sortOrder : String?) : Cursor {
+         var cursor = MatrixCursor(projection ?: DEFAULT_DOCUMENT_PROJECTION)
+ 
+-        val parent = getFile(parentDocumentId!!)
+-        for (file in parent.listFiles()!!)
++        val parent = getFile(parentDocumentId)
++        if (!parent.isDirectory)
++            throw FileNotFoundException("The requested parent is not a directory")
++        val children = parent.listFiles()
++            ?: throw FileNotFoundException("Couldn't list the requested directory")
++        val base = getBaseDirectory().toPath()
++        for (file in children) {
++            if (java.nio.file.Files.isSymbolicLink(file.toPath())) continue
++            if (!file.canonicalFile.toPath().startsWith(base)) continue
+             cursor = includeFile(cursor, null, file)
++        }
+ 
+         return cursor
+     }
+ 
+     override fun openDocument(documentId : String?, mode : String?, signal : CancellationSignal?) : ParcelFileDescriptor {
+-        val file = documentId?.let { getFile(it) }
++        val file = getFile(documentId)
+         val accessMode = ParcelFileDescriptor.parseMode(mode)
+         return ParcelFileDescriptor.open(file, accessMode)
+     }
+diff --git a/android/app/src/main/java/org/touchhle/android/HostMedia.java b/android/app/src/main/java/org/touchhle/android/HostMedia.java
+index 670dc38..c1ff168 100644
+--- a/android/app/src/main/java/org/touchhle/android/HostMedia.java
++++ b/android/app/src/main/java/org/touchhle/android/HostMedia.java
+@@ -226,7 +226,7 @@ public class HostMedia {
+             }
+             final CountDownLatch done = new CountDownLatch(1);
+             final AtomicReference<byte[]> photo = new AtomicReference<byte[]>(null);
+-            HandlerThread ht = new HandlerThread("HyperHLECamera");
++            HandlerThread ht = new HandlerThread("AnyiOSEMUCamera");
+             ht.start();
+             final Handler handler = new Handler(ht.getLooper());
+ 
+@@ -443,7 +443,7 @@ public class HostMedia {
+                     }
+                 }
+             }
+-        }, "HyperHLE-Mic");
++        }, "AnyiOSEMU-Mic");
+         micThread.start();
+         return true;
+     }
+diff --git a/android/app/src/main/java/org/touchhle/android/MainActivity.java b/android/app/src/main/java/org/touchhle/android/MainActivity.java
+index 7803c18..dd52911 100644
+--- a/android/app/src/main/java/org/touchhle/android/MainActivity.java
++++ b/android/app/src/main/java/org/touchhle/android/MainActivity.java
+@@ -30,7 +30,7 @@ import java.io.InputStream;
+  */
+ 
+ public class MainActivity extends SDLActivity {
+-    private static final String TAG = "touchHLE";
++    private static final String TAG = "AnyiOSEMU";
+ 
+     // Public accessor for SDLActivity's protected static mSingleton, so
+     // helper classes in this package (HostMedia) can reach the Activity.
+@@ -55,7 +55,7 @@ public class MainActivity extends SDLActivity {
+                     (android.net.wifi.WifiManager) getApplicationContext()
+                             .getSystemService(android.content.Context.WIFI_SERVICE);
+             if (wm != null && multicastLock == null) {
+-                multicastLock = wm.createMulticastLock("touchHLE_mdns");
++                multicastLock = wm.createMulticastLock("AnyiOSEMU_mdns");
+                 multicastLock.setReferenceCounted(false);
+                 multicastLock.acquire();
+                 Log.i(TAG, "Wi-Fi multicast lock acquired (mDNS discovery enabled)");
+@@ -510,9 +510,9 @@ public class MainActivity extends SDLActivity {
+     }
+ 
+     private void copyIpa(Uri uri, String name) {
+-        // touchHLE lists apps from this directory (see APPS_DIR in paths.rs);
++        // AnyiOSEMU lists apps from this directory (see APPS_DIR in paths.rs);
+         // it matches SDL_AndroidGetExternalStoragePath() on Android.
+-        File appsDir = new File(getExternalFilesDir(null), "touchHLE_apps");
++        File appsDir = new File(getExternalFilesDir(null), "AnyiOSEMU_apps");
+         if (!appsDir.exists() && !appsDir.mkdirs()) {
+             Log.e(TAG, "Couldn't create " + appsDir);
+             return;
+diff --git a/src/audio/mic.rs b/src/audio/mic.rs
+index d416bb7..9521dea 100644
+--- a/src/audio/mic.rs
++++ b/src/audio/mic.rs
+@@ -229,7 +229,7 @@ pub fn start() -> bool {
+     // counter advancing with silence at the real-time rate.
+     THREAD_ALIVE.store(true, Ordering::SeqCst);
+     match std::thread::Builder::new()
+-        .name("touchHLE mic capture".to_string())
++        .name("AnyiOSEMU mic capture".to_string())
+         .spawn(mic_thread)
+     {
+         Ok(handle) => *lock(&THREAD) = Some(handle),
+diff --git a/src/bin.rs b/src/bin.rs
+index 51498da..dba2a53 100644
+--- a/src/bin.rs
++++ b/src/bin.rs
+@@ -13,7 +13,7 @@ fn main() -> std::process::ExitCode {
+             std::process::ExitCode::from(termination.map_or(0, |result| result.exit_code()) as u8)
+         }
+         Err(error) => {
+-            eprintln!("touchHLE failed: {error}");
++            eprintln!("AnyiOSEMU failed: {error}");
+             std::process::ExitCode::FAILURE
+         }
+     }
+diff --git a/src/crash_handler.rs b/src/crash_handler.rs
+index e8a2cad..78b70c2 100644
+--- a/src/crash_handler.rs
++++ b/src/crash_handler.rs
+@@ -85,7 +85,7 @@ pub fn install_panic_hook() {
+             let thread = std::thread::current();
+             let thread_name = thread.name().unwrap_or("<unnamed>");
+             let msg = format!(
+-                "touchHLE: PANIC in thread \"{}\" at {}: {}\n(panic is followed by unwinding; if this appears right before a FATAL SIGNAL line, the panic crossed a coroutine boundary and aborted the process)",
++                "AnyiOSEMU: PANIC in thread \"{}\" at {}: {}\n(panic is followed by unwinding; if this appears right before a FATAL SIGNAL line, the panic crossed a coroutine boundary and aborted the process)",
+                 thread_name,
+                 info.location()
+                     .map(|l| format!("{}:{}", l.file(), l.line()))
+@@ -351,7 +351,7 @@ mod imp {
+             format!(" at address {:#x}", addr)
+         };
+         let msg = format!(
+-            "touchHLE: FATAL: native host crash: {}{} — the signal alone does not identify the root cause. Check preceding panic, loader and guest-fault messages. The process will now terminate.\n",
++            "AnyiOSEMU: FATAL: native host crash: {}{} — the signal alone does not identify the root cause. Check preceding panic, loader and guest-fault messages. The process will now terminate.\n",
+             std::str::from_utf8(&name[..name.len() - 1]).unwrap_or("SIGNAL"),
+             location
+         );
+@@ -548,7 +548,7 @@ mod win_imp {
+ 
+         let mut msg = String::new();
+         msg.push_str(&format!(
+-            "\ntouchHLE: FATAL host exception {} ({:#010x}) at host addr {:?}",
++            "\nAnyiOSEMU: FATAL host exception {} ({:#010x}) at host addr {:?}",
+             kind, code, rec.exception_address
+         ));
+         if code == EXCEPTION_ACCESS_VIOLATION {
+diff --git a/src/environment.rs b/src/environment.rs
+index 0d50bc9..5373b4e 100644
+--- a/src/environment.rs
++++ b/src/environment.rs
+@@ -1366,19 +1366,19 @@ impl Environment {
+         }
+     }
+ 
+-    /// Get a shared reference to the window. Panics if touchHLE is running in
+-    /// headless mode.
++    /// Get a shared reference to the window. Panics if AnyiOSEMU is running
++    /// in headless mode.
+     pub fn window(&self) -> &window::Window {
+         self.window.as_ref().expect(
+-            "Tried to do something that needs a window, but touchHLE is running in headless mode!",
++            "Tried to do something that needs a window, but AnyiOSEMU is running headless!",
+         )
+     }
+ 
+-    /// Get a mutable reference to the window. Panics if touchHLE is running
++    /// Get a mutable reference to the window. Panics if AnyiOSEMU is running
+     /// in headless mode.
+     pub fn window_mut(&mut self) -> &mut window::Window {
+         self.window.as_mut().expect(
+-            "Tried to do something that needs a window, but touchHLE is running in headless mode!",
++            "Tried to do something that needs a window, but AnyiOSEMU is running headless!",
+         )
+     }
+ 
+@@ -1599,7 +1599,7 @@ impl Environment {
+         let thread_routine =
+             Coroutine::with_stack(thread_stack, move |yielder, mut env: Environment| {
+                 log_dbg!(
+-                    "touchHLE: guest worker thread now running (start_routine={:#x})",
++                    "AnyiOSEMU: guest worker thread now running (start_routine={:#x})",
+                     start_routine.addr_with_thumb_bit()
+                 );
+                 let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+@@ -4244,7 +4244,7 @@ impl Environment {
+         unsafe impl Send for WindowWrapper<'_> {}
+ 
+         const NO_WINDOW_MSG: &str =
+-            "on_parent_stack_in_coroutine() was called while touchHLE is running in \
++            "on_parent_stack_in_coroutine() was called while AnyiOSEMU is running in \
+              headless mode (no window). This function is only for code paths that \
+              need a real window (e.g. OpenGL ES, text input, dialogs); headless-safe \
+              callers must check env.window.is_none() first and skip the window-only \
+diff --git a/src/environment/app_picker.rs b/src/environment/app_picker.rs
+index 52b6a64..007cca8 100644
+--- a/src/environment/app_picker.rs
++++ b/src/environment/app_picker.rs
+@@ -76,7 +76,7 @@ struct AppInfo {
+     icon_ui_image: Option<id>,
+ }
+ 
+-const LAST_APP_FILE: &str = "touchHLE_last_app.txt";
++const LAST_APP_FILE: &str = "AnyiOSEMU_last_app.txt";
+ 
+ fn last_app_record_path() -> PathBuf {
+     paths::user_data_base_path().join(LAST_APP_FILE)
+@@ -97,7 +97,7 @@ pub fn app_picker(options: Options, show_lock_screen: bool) -> Result<(PathBuf,
+     let apps_dir = paths::user_data_base_path().join(paths::APPS_DIR);
+ 
+     let apps: Result<Vec<AppInfo>, String> = if !apps_dir.is_dir() {
+-        Err(format!("The {} directory couldn't be found. Check you're running touchHLE from the right directory.", apps_dir.display()))
++        Err(format!("The {} directory couldn't be found. Check you're running AnyiOSEMU from the right directory.", apps_dir.display()))
+     } else {
+         enumerate_apps(&apps_dir).map_err(|err| {
+             format!(
+@@ -2578,7 +2578,7 @@ fn make_status_bar(
+     let carrier = new_label(
+         env,
+         rect(27.0, 1.0, width * 0.35, height - 2.0),
+-        "HyperHLE",
++        "AnyiOSEMU",
+         12.0,
+         true,
+         white,
+diff --git a/src/environment/app_picker/archive_store.rs b/src/environment/app_picker/archive_store.rs
+index 94831a9..74cb6da 100644
+--- a/src/environment/app_picker/archive_store.rs
++++ b/src/environment/app_picker/archive_store.rs
+@@ -2108,7 +2108,7 @@ fn download_task_status(task: &DownloadTask) -> String {
+             if task.already_present {
+                 format!("Already installed • {name}")
+             } else {
+-                format!("Installed in touchHLE_apps • {name}")
++                format!("Installed in AnyiOSEMU_apps • {name}")
+             }
+         }
+         TaskState::Failed => task
+@@ -2323,7 +2323,7 @@ fn request_catalog(
+ ) {
+     let worker_sender = sender.clone();
+     let spawn = std::thread::Builder::new()
+-        .name("HyperHLE archive catalog".to_string())
++        .name("AnyiOSEMU archive catalog".to_string())
+         .spawn(move || {
+             let result = network::fetch_catalog(scope, &query, page, rows, sort, fuzzy);
+             let _ = worker_sender.send(StoreMessage::Catalog { generation, result });
+@@ -2340,7 +2340,7 @@ fn request_artwork(sender: &Sender<StoreMessage>, identifier: String) {
+     let worker_sender = sender.clone();
+     let request_identifier = identifier.clone();
+     let spawn = std::thread::Builder::new()
+-        .name("HyperHLE archive artwork".to_string())
++        .name("AnyiOSEMU archive artwork".to_string())
+         .spawn(move || {
+             let result = network::fetch_artwork(&request_identifier);
+             let _ = worker_sender.send(StoreMessage::Artwork { identifier, result });
+@@ -2356,7 +2356,7 @@ fn request_artwork(sender: &Sender<StoreMessage>, identifier: String) {
+ fn request_details(sender: &Sender<StoreMessage>, generation: u64, identifier: String) {
+     let worker_sender = sender.clone();
+     let spawn = std::thread::Builder::new()
+-        .name("HyperHLE archive metadata".to_string())
++        .name("AnyiOSEMU archive metadata".to_string())
+         .spawn(move || {
+             let result = network::fetch_details(&identifier);
+             let _ = worker_sender.send(StoreMessage::Details { generation, result });
+@@ -2380,7 +2380,7 @@ fn request_download(
+     let worker_sender = sender.clone();
+     let progress_sender = sender.clone();
+     let spawn = std::thread::Builder::new()
+-        .name("HyperHLE IPA download".to_string())
++        .name("AnyiOSEMU IPA download".to_string())
+         .spawn(move || {
+             let result = network::download_ipa(
+                 &apps_dir,
+diff --git a/src/environment/app_picker/archive_store/network.rs b/src/environment/app_picker/archive_store/network.rs
+index cfd9d53..a0bc9ad 100644
+--- a/src/environment/app_picker/archive_store/network.rs
++++ b/src/environment/app_picker/archive_store/network.rs
+@@ -170,7 +170,7 @@ pub(super) fn fetch_artwork(identifier: &str) -> Result<Vec<u8>, String> {
+         .get(&url)
+         .set(
+             "User-Agent",
+-            concat!("HyperHLE-Reborn/", env!("CARGO_PKG_VERSION")),
++            concat!("AnyiOSEMU/", env!("CARGO_PKG_VERSION")),
+         )
+         .call();
+     let response = check_response(response)?;
+@@ -317,7 +317,7 @@ pub(super) fn download_ipa(
+             .get(&url)
+             .set(
+                 "User-Agent",
+-                concat!("HyperHLE-Reborn/", env!("CARGO_PKG_VERSION")),
++                concat!("AnyiOSEMU/", env!("CARGO_PKG_VERSION")),
+             )
+             .call();
+         let response = check_response(response)?;
+@@ -533,7 +533,7 @@ fn fetch_json(url: &str) -> Result<Value, String> {
+         .set("Accept", "application/json")
+         .set(
+             "User-Agent",
+-            concat!("HyperHLE-Reborn/", env!("CARGO_PKG_VERSION")),
++            concat!("AnyiOSEMU/", env!("CARGO_PKG_VERSION")),
+         )
+         .call();
+     let response = check_response(response)?;
+diff --git a/src/frameworks/avfoundation/av_capture.rs b/src/frameworks/avfoundation/av_capture.rs
+index 6815788..5cd2d58 100644
+--- a/src/frameworks/avfoundation/av_capture.rs
++++ b/src/frameworks/avfoundation/av_capture.rs
+@@ -359,7 +359,7 @@ struct AVCaptureDeviceHostObject {
+     media_type: id,
+     /// Position (front/back). 1=back (default), 2=front.
+     position: i32,
+-    /// Localized display name. Always "HyperHLE Stub Camera" in this stub.
++    /// Localized display name. Always "AnyiOSEMU Stub Camera" in this stub.
+     localized_name: id,
+     /// Unique device id.
+     unique_id: id,
+@@ -425,7 +425,7 @@ pub const CLASSES: ClassExports = objc_classes! {
+         let host = env.objc.borrow_mut::<AVCaptureSessionHostObject>(this);
+         host.preset = preset;
+     }
+-    log!("[(AVCaptureSession*){:?} init] (HyperHLE stub)", this);
++    log!("[(AVCaptureSession*){:?} init] (AnyiOSEMU stub)", this);
+     this
+ }
+ 
+@@ -533,7 +533,7 @@ pub const CLASSES: ClassExports = objc_classes! {
+ // MARK: Lifecycle
+ 
+ - (())startRunning {
+-    log!("[(AVCaptureSession*){:?} startRunning] (HyperHLE stub)", this);
++    log!("[(AVCaptureSession*){:?} startRunning] (AnyiOSEMU stub)", this);
+     env.objc.borrow_mut::<AVCaptureSessionHostObject>(this).running = true;
+     if !env.framework_state.avfoundation.av_capture.running_sessions.contains(&this) {
+         env.framework_state.avfoundation.av_capture.running_sessions.push(this);
+@@ -545,7 +545,7 @@ pub const CLASSES: ClassExports = objc_classes! {
+ }
+ 
+ - (())stopRunning {
+-    log!("[(AVCaptureSession*){:?} stopRunning] (HyperHLE stub)", this);
++    log!("[(AVCaptureSession*){:?} stopRunning] (AnyiOSEMU stub)", this);
+     env.objc.borrow_mut::<AVCaptureSessionHostObject>(this).running = false;
+     env.framework_state.avfoundation.av_capture.running_sessions.retain(|&s| s != this);
+     let nc: id = msg_class![env; NSNotificationCenter defaultCenter];
+@@ -716,7 +716,7 @@ pub const CLASSES: ClassExports = objc_classes! {
+ }
+ 
+ - (id)init {
+-    log!("[(AVCaptureVideoDataOutput*){:?} init] (HyperHLE stub)", this);
++    log!("[(AVCaptureVideoDataOutput*){:?} init] (AnyiOSEMU stub)", this);
+     this
+ }
+ 
+@@ -780,7 +780,7 @@ pub const CLASSES: ClassExports = objc_classes! {
+ }
+ 
+ - (id)init {
+-    log!("[(AVCaptureMetadataOutput*){:?} init] (HyperHLE stub)", this);
++    log!("[(AVCaptureMetadataOutput*){:?} init] (AnyiOSEMU stub)", this);
+     let host = env.objc.borrow_mut::<AVCaptureMetadataOutputHostObject>(this);
+     host.rect_of_interest = CGRect {
+         origin: crate::frameworks::core_graphics::CGPoint { x: 0.0, y: 0.0 },
+@@ -914,8 +914,8 @@ fn make_default_video_device(env: &mut crate::Environment) -> id {
+     let init: id = msg![env; alloc init];
+     let media_type = ns_string::get_static_str(env, AVMediaTypeVideo);
+     retain(env, media_type);
+-    let name = ns_string::from_rust_string(env, "HyperHLE Stub Camera".to_string());
+-    let uid = ns_string::from_rust_string(env, "com.hyperhle.camera.stub".to_string());
++    let name = ns_string::from_rust_string(env, "AnyiOSEMU Stub Camera".to_string());
++    let uid = ns_string::from_rust_string(env, "org.anyiose.camera.stub".to_string());
+     {
+         let host = env.objc.borrow_mut::<AVCaptureDeviceHostObject>(init);
+         host.media_type = media_type;
+diff --git a/src/frameworks/avfoundation/av_speech.rs b/src/frameworks/avfoundation/av_speech.rs
+index 9cc2a94..8c3394c 100644
+--- a/src/frameworks/avfoundation/av_speech.rs
++++ b/src/frameworks/avfoundation/av_speech.rs
+@@ -205,7 +205,7 @@ pub const CLASSES: ClassExports = objc_classes! {
+ }
+ 
+ - (id)name { // NSString*
+-    ns_string::get_static_str(env, "touchHLE")
++    ns_string::get_static_str(env, "AnyiOSEMU")
+ }
+ 
+ - (())dealloc {
+diff --git a/src/frameworks/captive_network.rs b/src/frameworks/captive_network.rs
+index 0dfbed8..5f3f921 100644
+--- a/src/frameworks/captive_network.rs
++++ b/src/frameworks/captive_network.rs
+@@ -60,7 +60,7 @@ fn CNCopyCurrentNetworkInfo(env: &mut Environment, interface: CFStringRef) -> CF
+     let interface_name = to_rust_string(env, interface.cast());
+     log_dbg!("CNCopyCurrentNetworkInfo({interface_name:?}) — reporting placeholder Wi-Fi network",);
+ 
+-    let ssid = get_static_str(env, "touchHLE");
++    let ssid = get_static_str(env, "AnyiOSEMU");
+     let bssid = get_static_str(env, "02:00:00:00:00:00");
+     let ssid_key = get_static_str(env, "SSID");
+     let bssid_key = get_static_str(env, "BSSID");
+diff --git a/src/frameworks/core_foundation/cf_net_service.rs b/src/frameworks/core_foundation/cf_net_service.rs
+index 1533dfd..8233992 100644
+--- a/src/frameworks/core_foundation/cf_net_service.rs
++++ b/src/frameworks/core_foundation/cf_net_service.rs
+@@ -1055,8 +1055,8 @@ pub fn CFNetServiceRegisterWithOptions(
+     };
+ 
+     let host_name = match socket.local_addr {
+-        Some(addr) => format!("{}-hyperhle.local", addr.octets()[3]),
+-        None => "hyperhle.local".to_string(),
++        Some(addr) => format!("{}-anyiose.local", addr.octets()[3]),
++        None => "anyiose.local".to_string(),
+     };
+     // Name-conflict auto-rename: if we are already registered under this
+     // name and auto-rename is allowed, append a suffix.
+diff --git a/src/frameworks/foundation/asidentifier_manager.rs b/src/frameworks/foundation/asidentifier_manager.rs
+index 2b61b70..01f0565 100644
+--- a/src/frameworks/foundation/asidentifier_manager.rs
++++ b/src/frameworks/foundation/asidentifier_manager.rs
+@@ -215,7 +215,7 @@ pub const CLASSES: ClassExports = objc_classes! {
+ // -------------------------------------------------------------------------
+ 
+ + (id)description {
+-    let s = "ATTrackingManager (touchHLE stub — always Denied)";
++    let s = "ATTrackingManager (AnyiOSEMU stub — always Denied)";
+     let cstr = env.mem.alloc_and_write_cstr(s.as_bytes());
+     msg_class![env; NSString stringWithUTF8String:cstr]
+ }
+diff --git a/src/frameworks/foundation/ns_file_manager.rs b/src/frameworks/foundation/ns_file_manager.rs
+index 882e5c1..c450b4b 100644
+--- a/src/frameworks/foundation/ns_file_manager.rs
++++ b/src/frameworks/foundation/ns_file_manager.rs
+@@ -290,13 +290,13 @@ fn NSHomeDirectory(env: &mut Environment) -> id {
+ 
+ fn NSUserName(_env: &mut Environment) -> id {
+     // Return a default username
+-    let username = ns_string::from_rust_string(_env, String::from("touchHLE_user"));
++    let username = ns_string::from_rust_string(_env, String::from("AnyiOSEMU_user"));
+     autorelease(_env, username)
+ }
+ 
+ fn NSFullUserName(_env: &mut Environment) -> id {
+     // Return a default full user name
+-    let full_name = ns_string::from_rust_string(_env, String::from("touchHLE User"));
++    let full_name = ns_string::from_rust_string(_env, String::from("AnyiOSEMU User"));
+     autorelease(_env, full_name)
+ }
+ 
+diff --git a/src/frameworks/foundation/ns_process_info.rs b/src/frameworks/foundation/ns_process_info.rs
+index e4f84a2..291836f 100644
+--- a/src/frameworks/foundation/ns_process_info.rs
++++ b/src/frameworks/foundation/ns_process_info.rs
+@@ -161,7 +161,7 @@ pub const CLASSES: ClassExports = objc_classes! {
+ 
+ - (id)hostName {
+     assert_process_info_singleton(env, this);
+-    ns_string::get_static_str(env, "touchHLE-host.local")
++    ns_string::get_static_str(env, "AnyiOSEMU-host.local")
+ }
+ 
+ - (id)arguments {
+diff --git a/src/frameworks/metal.rs b/src/frameworks/metal.rs
+index 871bd0c..5bb07a1 100644
+--- a/src/frameworks/metal.rs
++++ b/src/frameworks/metal.rs
+@@ -228,7 +228,7 @@ const CLASSES: ClassExports = objc_classes! {
+ // a failed/nil device lookup). Real iOS answers these on the metaclass only
+ // for the handful of +class helpers, but being permissive here is free:
+ // forward every creation/probe selector to a fresh instance.
+-+ (id)name { metal_string(env, "HyperHLE Metal compatibility device") }
+++ (id)name { metal_string(env, "AnyiOSEMU Metal compatibility device") }
+ + (bool)hasUnifiedMemory { true }
+ + (bool)supportsFamily:(NSUInteger)family {
+     let device: id = msg_class![env; MTLDevice new];
+@@ -288,7 +288,7 @@ const CLASSES: ClassExports = objc_classes! {
+ }
+ 
+ - (id)init { this }
+-- (id)name { metal_string(env, "HyperHLE Metal compatibility device") }
++- (id)name { metal_string(env, "AnyiOSEMU Metal compatibility device") }
+ - (bool)hasUnifiedMemory { true }
+ - (NSUInteger)recommendedMaxWorkingSetSize { 0 }
+ - (bool)supportsFamily:(NSUInteger)_family { false }
+diff --git a/src/frameworks/uikit/ui_image_picker_controller.rs b/src/frameworks/uikit/ui_image_picker_controller.rs
+index 85a066f..98ad0be 100644
+--- a/src/frameworks/uikit/ui_image_picker_controller.rs
++++ b/src/frameworks/uikit/ui_image_picker_controller.rs
+@@ -380,7 +380,7 @@ fn UISaveVideoAtPathToSavedPhotosAlbum(
+         to_rust_string(env, video_path).into_owned()
+     };
+     log!(
+-        "UISaveVideoAtPathToSavedPhotosAlbum({:?}): stubbed (no Photos library in touchHLE)",
++        "UISaveVideoAtPathToSavedPhotosAlbum({:?}): stubbed (no Photos library in AnyiOSEMU)",
+         path_str
+     );
+ }
+diff --git a/src/frameworks/uikit/ui_nib.rs b/src/frameworks/uikit/ui_nib.rs
+index 36c2a8b..e650483 100644
+--- a/src/frameworks/uikit/ui_nib.rs
++++ b/src/frameworks/uikit/ui_nib.rs
+@@ -115,7 +115,7 @@ pub const CLASSES: ClassExports = objc_classes! {
+ 
+ - (id)instantiateWithOwner:(id)owner options:(id)options {
+     if owner == nil {
+-            log!("touchHLE Warning: UINib instantiateWithOwner:nil; continuing with nil File's Owner");
++            log!("AnyiOSEMU Warning: UINib instantiateWithOwner:nil; continuing with nil File's Owner");
+         }
+ 
+     // Apple's UINib loading documentation: the only documented `options`
+@@ -242,7 +242,7 @@ pub const CLASSES: ClassExports = objc_classes! {
+             }
+         }
+ 
+-        log!("touchHLE Warning: {} requested but file_owner is nil! Returning dummy.", id);
++        log!("AnyiOSEMU Warning: {} requested but file_owner is nil! Returning dummy.", id);
+         let ns_object_class = env.objc.get_known_class("NSObject", &mut env.mem);
+         let dummy: id = msg![env; ns_object_class alloc];
+         release(env, this);
+@@ -429,7 +429,7 @@ pub const CLASSES: ClassExports = objc_classes! {
+         // заглушка NSObject
+         if source_class == ns_object_class {
+             let label_str = to_rust_string(env, label);
+-            log!("touchHLE NIB: Skipping outlet '{}' connection because source is an unhandled NSObject", label_str);
++            log!("AnyiOSEMU NIB: Skipping outlet '{}' connection because source is an unhandled NSObject", label_str);
+             return;
+         }
+ 
+diff --git a/src/frameworks/uikit/ui_view/ui_window.rs b/src/frameworks/uikit/ui_view/ui_window.rs
+index 2513027..c3a0335 100644
+--- a/src/frameworks/uikit/ui_view/ui_window.rs
++++ b/src/frameworks/uikit/ui_view/ui_window.rs
+@@ -521,7 +521,7 @@ pub const CLASSES: ClassExports = objc_classes! {
+ }
+ - (())setScreen:(id)_screen {
+     log_dbg!(
+-        "[UIWindow setScreen:] ignored; touchHLE only emulates the main screen."
++        "[UIWindow setScreen:] ignored; AnyiOSEMU only emulates the main screen."
+     );
+ }
+ 
+diff --git a/src/fs.rs b/src/fs.rs
+index c3ab190..e167629 100644
+--- a/src/fs.rs
++++ b/src/fs.rs
+@@ -457,7 +457,7 @@ fn handle_open_err<T, E: std::fmt::Display, P: std::fmt::Debug>(
+ ) -> T {
+     match open_result {
+         Ok(ok) => ok,
+-        Err(e) => panic!("Unexpected I/O failure when trying to access real path {host_path:?}: {e}. This might indicate that files needed by touchHLE are missing, or were moved while it was running."),
++        Err(e) => panic!("Unexpected I/O failure when trying to access real path {host_path:?}: {e}. This might indicate that files needed by AnyiOSEMU are missing, or were moved while it was running."),
+     }
+ }
+ 
+diff --git a/src/gles/gles1_on_gl2.rs b/src/gles/gles1_on_gl2.rs
+index 5b654c7..e6606bf 100644
+--- a/src/gles/gles1_on_gl2.rs
++++ b/src/gles/gles1_on_gl2.rs
+@@ -541,7 +541,7 @@ fn new_gles1_on_gl2_state() -> GLES1OnGL2State {
+ 
+ impl GLESContext for GLES1OnGL2Context {
+     fn description() -> &'static str {
+-        "OpenGL ES 1.1 via touchHLE GLES1-on-GL2 layer"
++        "OpenGL ES 1.1 via AnyiOSEMU GLES1-on-GL2 compatibility layer"
+     }
+ 
+     fn new(window: &mut Window) -> Result<Self, String> {
+diff --git a/src/gles/present.rs b/src/gles/present.rs
+index 4b16094..faeb1d0 100644
+--- a/src/gles/present.rs
++++ b/src/gles/present.rs
+@@ -73,7 +73,7 @@ impl FpsCounter {
+             #[cfg(target_os = "ios")]
+             crate::report_host_fps(fps);
+             if log_output {
+-                echo!("touchHLE: {} FPS: {:.2}", label, fps);
++                echo!("AnyiOSEMU: {} FPS: {:.2}", label, fps);
+             }
+             // Update global text cache for on-screen overlay if enabled via
+             // environment variable or the runtime flag.
+diff --git a/src/lib.rs b/src/lib.rs
+index ba739ba..586451d 100644
+--- a/src/lib.rs
++++ b/src/lib.rs
+@@ -82,7 +82,7 @@ static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
+ 
+ pub use touchHLE_version::*;
+ 
+-pub const DISPLAY_NAME: &str = "HyperHLE-Reborn";
++pub const DISPLAY_NAME: &str = "AnyiOSEMU";
+ 
+ #[cfg(target_os = "ios")]
+ static HOST_EXIT_REQUESTED: AtomicBool = AtomicBool::new(false);
+@@ -169,8 +169,8 @@ fn take_host_exit_request() -> bool {
+ #[cfg(target_os = "android")]
+ #[no_mangle]
+ pub extern "C" fn SDL_main(
+-    _argc: std::ffi::c_int,
+-    _argv: *const *const std::ffi::c_char,
++    argc: std::ffi::c_int,
++    argv: *const *const std::ffi::c_char,
+ ) -> std::ffi::c_int {
+     // Rust's default panic handler prints to stderr, but on Android that just
+     // gets discarded, so we set a custom hook to make debugging easier.
+@@ -188,15 +188,54 @@ pub extern "C" fn SDL_main(
+             echo_no_panic!("Panic: {}", payload);
+         }
+     }));
+-    // Empty args: brings up app picker.
+-    match main([String::new()].into_iter()) {
++
++    // SDLActivity passes the game's private path and user-selected options as
++    // native argv entries. Strip AnyiOS's private data-directory option before
++    // normal emulator option parsing, then run the selected app directly rather
++    // than opening the standalone emulator's app picker.
++    let mut arguments = Vec::with_capacity(argc.max(1) as usize);
++    if argc > 0 && !argv.is_null() {
++        for index in 0..argc as usize {
++            let value = unsafe { *argv.add(index) };
++            if !value.is_null() {
++                arguments.push(
++                    unsafe { std::ffi::CStr::from_ptr(value) }
++                        .to_string_lossy()
++                        .into_owned(),
++                );
++            }
++        }
++    }
++    if arguments.is_empty() {
++        arguments.push(String::from("AnyiOSEMU"));
++    }
++    let mut app_arguments = Vec::with_capacity(arguments.len());
++    for argument in arguments {
++        if let Some(path) = argument.strip_prefix("--anyiose-data-dir=") {
++            if let Err(error) = paths::set_android_user_data_base_path(std::path::PathBuf::from(path)) {
++                sdl2::log::log(&format!("AnyiOSEMU could not set its private data directory: {error}"));
++                return 1;
++            }
++        } else {
++            app_arguments.push(argument);
++        }
++    }
++    if app_arguments.is_empty() {
++        app_arguments.push(String::from("AnyiOSEMU"));
++    }
++    if let Err(error) = crate::log::reset_log_file() {
++        sdl2::log::log(&format!("AnyiOSEMU could not initialize its per-game log: {error}"));
++        return 1;
++    }
++
++    match main(app_arguments.into_iter()) {
+         Ok(termination) => {
+             let code = termination.map_or(0, |result| result.exit_code());
+-            echo!("touchHLE finished with status {code}");
++            echo!("AnyiOSEMU finished with status {code}");
+             code
+         }
+         Err(e) => {
+-            echo!("touchHLE errored: {e:?}");
++            echo!("AnyiOSEMU errored: {e:?}");
+             1
+         }
+     }
+@@ -204,7 +243,7 @@ pub extern "C" fn SDL_main(
+ 
+ const USAGE: &str = "\
+ Usage:
+-    touchHLE [PATH] [OPTIONS]
++    AnyiOSEMU [PATH] [OPTIONS]
+ 
+ PATH should be a path to a .app bundle or .ipa file.
+ 
+@@ -281,7 +320,7 @@ fn run_session<T: Iterator<Item = String>>(
+     }
+ 
+     echo!(
+-        "touchHLE {}{}{}",
++        "AnyiOSEMU {}{}{}",
+         branding(),
+         if branding().is_empty() { "" } else { " " },
+         VERSION,
+@@ -300,7 +339,7 @@ fn run_session<T: Iterator<Item = String>>(
+ 
+     {
+         let base_path = paths::user_data_base_path();
+-        log!("Base path for touchHLE files: {}", base_path.display());
++        log!("Base path for AnyiOSEMU files: {}", base_path.display());
+         paths::prepopulate_user_data_dir();
+         paths::remove_legacy_pvrtc_disk_cache();
+     }
+@@ -533,7 +572,7 @@ fn run_session<T: Iterator<Item = String>>(
+         // missing post-iOS-9 APIs becomes the rule rather than the exception.
+         if major > 9 || (major == 9 && minor > 0) {
+             echo!(
+-                "Warning: app requires OS version {}. touchHLE currently aims \
++                "Warning: app requires OS version {}. AnyiOSEMU currently aims \
+                  for iOS 2.x–9.0; newer APIs may be missing.",
+                 version
+             );
+@@ -542,7 +581,7 @@ fn run_session<T: Iterator<Item = String>>(
+ 
+     if required_device_capabilities.contains(&"opengles-3") {
+         echo!(
+-            "Warning: app requires OpenGL ES 3.0+ support. HyperHLE now routes EAGL OpenGL ES 3 contexts to its GLES 3 backend."
++            "Warning: app requires OpenGL ES 3.0+ support. AnyiOSEMU routes EAGL OpenGL ES 3 contexts to its GLES 3 backend."
+         );
+     }
+ 
+diff --git a/src/libc/mach_o.rs b/src/libc/mach_o.rs
+index 53dd986..dff6dc0 100644
+--- a/src/libc/mach_o.rs
++++ b/src/libc/mach_o.rs
+@@ -218,7 +218,7 @@ fn _dyld_register_func_for_add_image(env: &mut Environment, func: GuestFunction)
+ /// callback is intentionally never invoked.
+ fn _dyld_register_func_for_remove_image(_env: &mut Environment, func: GuestFunction) {
+     log_dbg!(
+-        "_dyld_register_func_for_remove_image({:?}): accepted; image removal never fires in touchHLE",
++        "_dyld_register_func_for_remove_image({:?}): accepted; image removal never fires in AnyiOSEMU",
+         func
+     );
+ }
+diff --git a/src/libc/mmap.rs b/src/libc/mmap.rs
+index b78c4f9..205e786 100644
+--- a/src/libc/mmap.rs
++++ b/src/libc/mmap.rs
+@@ -372,7 +372,7 @@ fn mprotect(env: &mut Environment, addr: MutVoidPtr, len: GuestUSize, prot: i32)
+     // address ranges, which our guest mmap allocator handles by always
+     // returning a valid range.
+     log_dbg!(
+-        "mprotect({:?}, {}, {:#x}) -> 0 (no-op; touchHLE does not enforce per-page protections)",
++        "mprotect({:?}, {}, {:#x}) -> 0 (no-op; AnyiOSEMU does not enforce per-page protections)",
+         addr,
+         len,
+         prot
+diff --git a/src/libc/netdb.rs b/src/libc/netdb.rs
+index 1c056ea..4c9f6d9 100644
+--- a/src/libc/netdb.rs
++++ b/src/libc/netdb.rs
+@@ -374,7 +374,7 @@ fn gethostbyname(env: &mut Environment, name: ConstPtr<u8>) -> MutPtr<u8> {
+         octets
+     } else {
+         match hostname.as_str() {
+-            "localhost" | "loopback" | "touchHLE" => [127, 0, 0, 1],
++            "localhost" | "loopback" | "touchHLE" | "AnyiOSEMU" => [127, 0, 0, 1],
+             "broadcasthost" => [255, 255, 255, 255],
+             // Games (e.g. Gameloft titles) broadcast LAN discovery to the
+             // name of their own service or to wildcard hostnames; also map
+diff --git a/src/libc/pthread/thread.rs b/src/libc/pthread/thread.rs
+index eac9fa3..d544376 100644
+--- a/src/libc/pthread/thread.rs
++++ b/src/libc/pthread/thread.rs
+@@ -457,7 +457,7 @@ pub fn pthread_self(env: &mut Environment) -> pthread_t {
+ pub fn pthread_exit(env: &mut Environment, retval: MutVoidPtr) {
+     let current_thread = env.current_thread;
+     log!(
+-        "pthread_exit({:?}) on emulated thread {}; redirecting to touchHLE thread-exit routine",
++        "pthread_exit({:?}) on emulated thread {}; redirecting to AnyiOSEMU thread-exit routine",
+         retval,
+         current_thread
+     );
+diff --git a/src/libc/stdlib.rs b/src/libc/stdlib.rs
+index ac318e8..654eff3 100644
+--- a/src/libc/stdlib.rs
++++ b/src/libc/stdlib.rs
+@@ -98,7 +98,7 @@ fn malloc(env: &mut Environment, mut size: GuestUSize) -> MutVoidPtr {
+     // =========================================================================
+     if size > 0xF000_0000 {
+         let actual_size = (-(size as i32)) as GuestUSize;
+-        log!("TouchHLE::libc::stdlib: Hack! malloc passed negative size {:#x} ({}). Allocating {} bytes instead.", size, size as i32, actual_size);
++        log!("malloc passed negative size {:#x} ({}); allocating {} bytes instead.", size, size as i32, actual_size);
+         size = actual_size;
+     }
+ 
+diff --git a/src/libc/sys/utsname.rs b/src/libc/sys/utsname.rs
+index fe6d0f8..e67f689 100644
+--- a/src/libc/sys/utsname.rs
++++ b/src/libc/sys/utsname.rs
+@@ -35,7 +35,7 @@ fn uname(env: &mut Environment, name: MutPtr<utsname>) -> i32 {
+     let sysname = b"Darwin\0";
+     uts_name.sysname[..sysname.len()].copy_from_slice(sysname);
+     // Same as sysctlbyname 'kern.hostname'
+-    let nodename = b"touchHLE\0";
++    let nodename = b"AnyiOSEMU\0";
+     uts_name.nodename[..nodename.len()].copy_from_slice(nodename);
+     // Same as sysctlbyname 'kern.osrelease'
+     let release = b"13.0.0\0";
+diff --git a/src/libc/sysctl.rs b/src/libc/sysctl.rs
+index 7996ef4..41d0b94 100644
+--- a/src/libc/sysctl.rs
++++ b/src/libc/sysctl.rs
+@@ -58,7 +58,7 @@ static SYSCTL_VALUES: [((i32, i32), &str, SysInfoType); 38] = [
+     ((1,1), "kern.ostype" , String(b"Darwin")),
+     ((1,2), "kern.osrelease" , String(b"13.0.0")),
+     ((1,3), "kern.osversion" , String(b"10B141")),
+-    ((1,10), "kern.hostname" , String(b"touchHLE")),
++    ((1,10), "kern.hostname" , String(b"AnyiOSEMU")),
+     ((1,4), "kern.version" , String(b"Darwin Kernel Version 13.0.0: Wed Jun 13 16:55:00 PDT 2012; root:xnu-2107.7.55~11/RELEASE_ARM_S5L8920X")),
+     ((1,21), "kern.boottime" , SysInfoType::Int64(1600000000)),
+     // kern.proc.pid is a node for process information. Some games probe
+diff --git a/src/libc/unistd.rs b/src/libc/unistd.rs
+index 23463ee..a1a17de 100644
+--- a/src/libc/unistd.rs
++++ b/src/libc/unistd.rs
+@@ -415,7 +415,7 @@ fn symlink(env: &mut Environment, path1: ConstPtr<u8>, path2: ConstPtr<u8>) -> i
+ fn gethostname(env: &mut Environment, name: MutPtr<u8>, namelen: GuestUSize) -> i32 {
+     // A unique per-device hostname needs networking support; until then
+     // this hardcoded name matches the emulator's advertised identity.
+-    let hostname = "touchHLE";
++    let hostname = "AnyiOSEMU";
+     let len: GuestUSize = hostname.len().try_into().unwrap();
+     if namelen <= len {
+         // POSIX: name buffer too small -> ENAMETOOLONG. Don't crash the host.
+diff --git a/src/log.rs b/src/log.rs
+index 1b531e5..3ec8ab7 100644
+--- a/src/log.rs
++++ b/src/log.rs
+@@ -16,7 +16,7 @@ use std::sync::{LazyLock, Mutex};
+ pub fn get_log_file() -> &'static Mutex<File> {
+     static LOG_FILE: LazyLock<Mutex<File>> = LazyLock::new(|| {
+         let file =
+-            File::create(crate::paths::user_data_base_path().join("touchHLE_log.txt")).unwrap();
++            File::create(crate::paths::user_data_base_path().join("AnyiOSEMU_log.txt")).unwrap();
+         #[cfg(unix)]
+         crate::crash_handler::set_log_fd(std::os::fd::AsRawFd::as_raw_fd(&file));
+         Mutex::new(file)
+@@ -25,13 +25,27 @@ pub fn get_log_file() -> &'static Mutex<File> {
+     &LOG_FILE
+ }
+ 
++/// Start a fresh per-game log after Android selects the game's private sandbox.
++pub fn reset_log_file() -> Result<(), String> {
++    let path = crate::paths::user_data_base_path().join("AnyiOSEMU_log.txt");
++    let file = File::create(&path)
++        .map_err(|error| format!("could not create {}: {error}", path.display()))?;
++    let mut current = get_log_file()
++        .lock()
++        .map_err(|_| "log-file lock is poisoned".to_string())?;
++    *current = file;
++    #[cfg(unix)]
++    crate::crash_handler::set_log_fd(std::os::fd::AsRawFd::as_raw_fd(&*current));
++    Ok(())
++}
++
+ /// Prints a log message unconditionally. Use this for errors or warnings.
+ ///
+ /// The message is prefixed with the module path, so it is clear where it comes
+ /// from.
+ macro_rules! log {
+     ($($arg:tt)+) => {
+-        echo!("{}: {}", module_path!(), format_args!($($arg)+))
++        echo!("AnyiOSEMU{}: {}", module_path!().strip_prefix("touchHLE").unwrap_or(""), format_args!($($arg)+))
+     }
+ }
+ 
+diff --git a/src/mach_o.rs b/src/mach_o.rs
+index 03c8143..4a05872 100644
+--- a/src/mach_o.rs
++++ b/src/mach_o.rs
+@@ -815,7 +815,7 @@ impl MachO {
+                 LoadCommand::EncryptionInfo { id, .. } => {
+                     if id != 0 {
+                         return Err(
+-                            "The executable is encrypted. touchHLE can't run encrypted apps!",
++                            "The executable is encrypted. AnyiOSEMU cannot run encrypted apps.",
+                         );
+                     }
+                 }
+diff --git a/src/mem.rs b/src/mem.rs
+index a8ecd81..c07a930 100644
+--- a/src/mem.rs
++++ b/src/mem.rs
+@@ -595,7 +595,7 @@ impl Mem {
+                 // Insert a sentinel to emit the notice only once.
+                 set.insert(0xFFFF_FFFE);
+                 log!(
+-                    "touchHLE::mem: further NULL-PAGE {} warnings silenced \
++                    "AnyiOSEMU::mem: further NULL-PAGE {} warnings silenced \
+                      after {} unique sites",
+                     if is_write { "WRITE" } else { "READ" },
+                     MAX_UNIQUE_LOGS
+@@ -608,7 +608,7 @@ impl Mem {
+             // Huge size is almost always a corrupted/-1 length; capture a
+             // backtrace to identify the offending host function.
+             log!(
+-                "touchHLE::mem: backtrace for huge-size NULL-PAGE/OOB access:\n{}",
++                "AnyiOSEMU::mem: backtrace for huge-size NULL-PAGE/OOB access:\n{}",
+                 std::backtrace::Backtrace::force_capture()
+             );
+         }
+@@ -625,7 +625,7 @@ impl Mem {
+             " — returning stub page"
+         };
+         log!(
+-            "touchHLE::mem: NULL-PAGE {} at 0x{:08x} (size: 0x{:x}) from {}{} \
++            "AnyiOSEMU::mem: NULL-PAGE {} at 0x{:08x} (size: 0x{:x}) from {}{} \
+              (unique sites logged: {}/{})",
+             op_type,
+             at,
+@@ -660,7 +660,7 @@ impl Mem {
+         let thread = crate::environment::LAST_HOST_CALL_THREAD.load(Ordering::Relaxed);
+         let symbol = Self::last_host_call_symbol();
+         log!(
+-            "touchHLE::mem:   guest PC={:#x} LR={:#x} (thread {}); host fn \
++            "AnyiOSEMU::mem:   guest PC={:#x} LR={:#x} (thread {}); host fn \
+              {} called with:{}; code at PC: [{}]; code at LR: [{}]",
+             guest_pc,
+             guest_lr,
+@@ -671,7 +671,7 @@ impl Mem {
+             Self::guest_code_dump(mem, guest_lr)
+         );
+         log!(
+-            "touchHLE::mem:   host backtrace:\n{}",
++            "AnyiOSEMU::mem:   host backtrace:\n{}",
+             std::backtrace::Backtrace::force_capture()
+         );
+     }
+diff --git a/src/objc/classes.rs b/src/objc/classes.rs
+index 483ec5c..263c8ef 100644
+--- a/src/objc/classes.rs
++++ b/src/objc/classes.rs
+@@ -2299,7 +2299,7 @@ pub fn ___objc_personality_v0(
+     context: MutVoidPtr,
+ ) -> i32 {
+     log!(
+-        "___objc_personality_v0 called! Exception handling is not fully implemented in touchHLE.\n\
++        "___objc_personality_v0 called! Exception handling is not fully implemented in AnyiOSEMU.\n\
+         version: {}, actions: {}, class: {:x}, object: {:?}, context: {:?}",
+         version,
+         actions,
+diff --git a/src/options.rs b/src/options.rs
+index f19834b..ffa8a03 100644
+--- a/src/options.rs
++++ b/src/options.rs
+@@ -372,7 +372,7 @@ impl Default for Options {
+             // case). Default the fix-up to ON so games work out of the
+             // box on Android — users can still disable it via
+             // `--fix-texture-min-filter=false` in
+-            // `touchHLE_options.txt` if they hit a game that genuinely
++            // `AnyiOSEMU_options.txt` if they hit a game that genuinely
+             // depends on mipmap minification (rare among iOS 2.x/3.x
+             // titles). On desktop hosts (where the user is likely
+             // running Mesa / Apple PowerVR / NVIDIA / AMD, all
+diff --git a/src/paths.rs b/src/paths.rs
+index 5f265c8..73fb365 100644
+--- a/src/paths.rs
++++ b/src/paths.rs
+@@ -25,6 +25,24 @@ use std::borrow::Cow;
+ use std::io::{Read, Seek};
+ use std::path::{Path, PathBuf};
+ 
++#[cfg(target_os = "android")]
++static ANDROID_USER_DATA_BASE_PATH: std::sync::OnceLock<std::sync::RwLock<Option<PathBuf>>> =
++    std::sync::OnceLock::new();
++
++/// Route Android user data into the active AnyiOS game's private sandbox.
++#[cfg(target_os = "android")]
++pub fn set_android_user_data_base_path(path: PathBuf) -> Result<(), String> {
++    if !path.is_absolute() {
++        return Err("AnyiOSEMU data directory must be absolute".to_string());
++    }
++    let lock = ANDROID_USER_DATA_BASE_PATH.get_or_init(|| std::sync::RwLock::new(None));
++    let mut current = lock
++        .write()
++        .map_err(|_| "AnyiOSEMU data directory lock is poisoned".to_string())?;
++    *current = Some(path);
++    Ok(())
++}
++
+ /// Name of the directory containing ARMv6 dynamic libraries bundled with
+ /// touchHLE.
+ pub const DYLIBS_DIR: &str = "touchHLE_dylibs";
+@@ -107,13 +125,13 @@ pub const RESOURCES_ARE_EXTERNAL_FILES: bool =
+ 
+ /// Name of the directory where the user can put apps if they want them to
+ /// appear in the app picker.
+-pub const APPS_DIR: &str = "touchHLE_apps";
++pub const APPS_DIR: &str = "AnyiOSEMU_apps";
+ 
+ /// Name of the file intended for the user's own options.
+-pub const USER_OPTIONS_FILE: &str = "touchHLE_options.txt";
++pub const USER_OPTIONS_FILE: &str = "AnyiOSEMU_options.txt";
+ 
+ /// Persistent preferences for the graphical app picker.
+-pub const PICKER_SETTINGS_FILE: &str = "touchHLE_picker_settings.txt";
++pub const PICKER_SETTINGS_FILE: &str = "AnyiOSEMU_picker_settings.txt";
+ 
+ /// Names of files the user can put a wallpaper image (for the app picker) in.
+ #[allow(unused)]
+@@ -125,10 +143,10 @@ pub const WALLPAPER_FILES: &[&str] = &[
+ 
+ /// Name of the directory where touchHLE will store sandboxed app data, e.g.
+ /// the `Documents` directory.
+-pub const SANDBOX_DIR: &str = "touchHLE_sandbox";
++pub const SANDBOX_DIR: &str = "AnyiOSEMU_sandbox";
+ 
+ /// Name of the directory where redirected/exported SQLite databases live.
+-pub const SQLITE_DIR: &str = "touchHLE_sqlite";
++pub const SQLITE_DIR: &str = "AnyiOSEMU_sqlite";
+ 
+ /// Name of the directory where touchHLE will store IMG_####.PNG files saved to
+ /// the Photo Album.
+@@ -137,6 +155,14 @@ pub const PHOTO_ALBUM_DIR: &str = "DCIM/100APPLE";
+ /// Get a platform-specific base path needed for accessing touchHLE's
+ /// user-modifiable files. This is empty on platforms other than Android.
+ pub fn user_data_base_path() -> Cow<'static, Path> {
++    #[cfg(target_os = "android")]
++    if let Some(path) = ANDROID_USER_DATA_BASE_PATH
++        .get()
++        .and_then(|lock| lock.read().ok().and_then(|path| path.clone()))
++    {
++        return Cow::Owned(path);
++    }
++
+     #[cfg(target_os = "android")]
+     unsafe {
+         // This is an exception to the rule that SDL2 should only be used
+@@ -170,7 +196,7 @@ pub fn user_data_base_path() -> Cow<'static, Path> {
+         // a standard location.
+         if get_bundled_resources_path().is_some() {
+             return Cow::from(PathBuf::from(
+-                sdl2::filesystem::pref_path("touchhle.org", "touchHLE").unwrap(),
++                sdl2::filesystem::pref_path("anyios.org", "AnyiOSEMU").unwrap(),
+             ));
+         }
+         Cow::from(Path::new("."))
+@@ -181,7 +207,7 @@ pub fn user_data_base_path() -> Cow<'static, Path> {
+ /// `android/app/build.gradle`. The documents provider is registered with
+ /// `${applicationId}.provider` as its authority, so this must be kept in sync
+ /// with the Gradle file (only the branding suffix is appended separately).
+-const ANDROID_APPLICATION_ID: &str = "org.hyperhle.reborn";
++const ANDROID_APPLICATION_ID: &str = "org.podnative";
+ 
+ /// The authority of the documents provider that exposes the user data
+ /// directory to the system file manager on Android. A build with branding
+@@ -287,7 +313,7 @@ pub fn url_for_opening_apps_dir() -> Result<String, String> {
+ /// cache was removed (both the in-memory tier and this on-disk tier) because
+ /// decoded RGBA8 entries used a lot of host memory and disk space.
+ pub fn remove_legacy_pvrtc_disk_cache() {
+-    let dir = user_data_base_path().join("touchHLE_pvrtc_cache");
++    let dir = user_data_base_path().join("AnyiOSEMU_pvrtc_cache");
+     if dir.exists() {
+         match std::fs::remove_dir_all(&dir) {
+             Ok(()) => log!("Removed legacy PVRTC disk cache directory {}", dir.display()),
+diff --git a/src/trainer.rs b/src/trainer.rs
+index 01d5076..2f09afa 100644
+--- a/src/trainer.rs
++++ b/src/trainer.rs
+@@ -235,7 +235,7 @@ pub struct Trainer {
+     dump_counter: u32,
+ }
+ 
+-const HACKS_DIR: &str = "touchHLE_hacks";
++const HACKS_DIR: &str = "AnyiOSEMU_hacks";
+ const GLOBAL_HACKS_FILE: &str = "hacks.txt";
+ /// Don't try to search allocations larger than this (they are rarely game
+ /// state and scanning them is slow).
+diff --git a/src/version/lib.rs b/src/version/lib.rs
+index 1163770..f6dcce7 100644
+--- a/src/version/lib.rs
++++ b/src/version/lib.rs
+@@ -18,20 +18,7 @@ pub const GITHUB_REF_NAME: Option<&str> = option_env!("GITHUB_REF_NAME");
+ pub const GITHUB_EVENT_NAME: Option<&str> = option_env!("GITHUB_EVENT_NAME");
+ 
+ pub fn branding() -> &'static str {
+-    if GITHUB_RUN_ID.is_none() {
+-        return "";
+-    }
+-    if GITHUB_EVENT_NAME == Some("create")
+-        && VERSION
+-            .strip_prefix('v')
+-            .is_some_and(|v| v == env!("CARGO_PKG_VERSION"))
+-        && GITHUB_REF_NAME.unwrap() == VERSION
+-    {
+-        return "";
+-    }
+-    if (GITHUB_REPOSITORY, GITHUB_REF_NAME) == (Some("touchHLE/touchHLE"), Some("trunk")) {
+-        "PREVIEW"
+-    } else {
+-        "UNOFFICIAL"
+-    }
++    // AnyiOSEMU supplies the host branding; upstream attribution is retained
++    // in the source tree and the packaged third-party notices.
++    ""
+ }
+diff --git a/src/window.rs b/src/window.rs
+index 6212747..bab2c51 100644
+--- a/src/window.rs
++++ b/src/window.rs
+@@ -3124,7 +3124,7 @@ pub fn show_error_messagebox(window: Option<&Window>, error_message: &str) {
+         messagebox::ButtonData {
+             flags: messagebox::MessageBoxButtonFlag::NOTHING,
+             button_id: 0,
+-            text: "Open touchHLE directory",
++            text: "Open AnyiOSEMU directory",
+         },
+         messagebox::ButtonData {
+             flags: messagebox::MessageBoxButtonFlag::NOTHING,
+@@ -3136,13 +3136,13 @@ pub fn show_error_messagebox(window: Option<&Window>, error_message: &str) {
+     let Ok(clicked_button) = messagebox::show_message_box(
+         messagebox::MessageBoxFlag::ERROR,
+         &mbox,
+-        "touchHLE crashed!",
+-        &format!("touchHLE crashed with the following error: {error_message}"),
++        "AnyiOSEMU stopped",
++        &format!("AnyiOSEMU stopped with the following error: {error_message}"),
+         window.map(|win| &win.window),
+         None,
+     ) else {
+         log!("Warning: Failed to show error message box; falling back to stderr only.");
+-        eprintln!("touchHLE crashed: {}", error_message);
++        eprintln!("AnyiOSEMU stopped: {}", error_message);
+         return;
+     };
+ 
+diff --git a/touchHLE_apps/README.txt b/touchHLE_apps/README.txt
+index 5fb5bfe..49c58e5 100644
+--- a/touchHLE_apps/README.txt
++++ b/touchHLE_apps/README.txt
+@@ -1 +1 @@
+-If you put your .app bundles or .ipa files in this directory, they will show up in the touchHLE app picker.
++This folder is reserved for AnyiOSEMU-managed app data. Import games through the AnyiOS library so originals remain backed up and launch settings are preserved.
+diff --git a/touchHLE_options.txt b/touchHLE_options.txt
+index aa4944a..a76de94 100644
+--- a/touchHLE_options.txt
++++ b/touchHLE_options.txt
+@@ -1,15 +1,14 @@
+ # This file lets you specify the options you want to use for various apps.
+ #
+-# Options in this file take precedence over ones in touchHLE_default_options.txt
++# Options in this file take precedence over ones in the bundled default options file.
+ #
+ # ---
+ #
+ # Each line in this file specifies options for an app; there should only be one
+ # line per app. A line should consist of the identifier for an app, followed by
+ # a colon (:), followed by the options to apply. To find out an app's
+-# identifier, you can run it in touchHLE and look at the “App bundle info”
+-# output. To get a list of possible options, see OPTIONS_HELP.txt or run
+-# touchHLE with the --help flag.
++# identifier, open its AnyiOSEMU launch report and look at “App bundle info”.
++# To get a list of possible options, see OPTIONS_HELP.txt or the AnyiOSEMU log.
+ #
+ # Text on a line following a hash sign (#) is treated as a comment and ignored.
+ # Empty lines are also ignored.
+@@ -23,7 +22,7 @@ com.telltalegames.Grickle101Low: --landscape-left
+ com.telltalegames.Grickle101: --landscape-left
+ 
+ # Early Telltale iPad/iPhone engine builds use the GLES2 subset provided by
+-# touchHLE's desktop OpenGL 2.1 compatibility backend.
++# AnyiOSEMU's OpenGL ES 2.0 compatibility backend.
+ com.telltalegames.SamMax301: --landscape-left --gles2-compat
+ com.telltalegames.WallaceGromit102: --landscape-left --gles2-compat
+ 

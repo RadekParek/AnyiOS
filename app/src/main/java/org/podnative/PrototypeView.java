@@ -179,7 +179,7 @@ final class PrototypeView extends SurfaceView implements SurfaceHolder.Callback 
                     NativeBridge.stop();
                 Diagnostics.record("SURFACE", "backend released on owner thread");
             }
-        }, "PodNative-graphics");
+        }, "AnyiOS-graphics-test");
         worker.start();
     }
     @Override

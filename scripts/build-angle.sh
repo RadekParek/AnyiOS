@@ -42,13 +42,20 @@ angle_enable_vulkan_validation_layers = false
 use_remoteexec = false
 ARGS
 gn gen out/PodNative --fail-on-unused-args
-autoninja -C out/PodNative libEGL libGLESv2
+autoninja -C out/PodNative libEGL libGLESv1_CM libGLESv2
 DEST="$ROOT/third_party/angle/lib/arm64-v8a"
-mkdir -p "$DEST" "$ROOT/third_party/angle/include" "$ROOT/app/src/main/assets/angle-notices"
+EMU_DEST="$ROOT/app/src/main/jniLibs/arm64-v8a"
+mkdir -p "$DEST" "$EMU_DEST" "$ROOT/third_party/angle/include" "$ROOT/app/src/main/assets/angle-notices"
 cp -a include/. "$ROOT/third_party/angle/include/"
-# Non-component builds fold ordinary dependencies into the two ANGLE libraries.
+# Non-component builds fold ordinary dependencies into the ANGLE libraries.
 # The closure audit below fails if this assumption changes upstream.
-cp out/PodNative/libEGL_podnative.so out/PodNative/libGLESv2_podnative.so "$DEST/"
+cp out/PodNative/libEGL_podnative.so out/PodNative/libGLESv1_CM_podnative.so \
+  out/PodNative/libGLESv2_podnative.so "$DEST/"
+# HyperHLE-Reborn resolves Android's bundled driver by these canonical names.
+# These are byte-for-byte copies from the same source pin used by the AnyiOS test renderer.
+cp "$DEST/libEGL_podnative.so" "$EMU_DEST/libEGL_angle.so"
+cp "$DEST/libGLESv1_CM_podnative.so" "$EMU_DEST/libGLESv1_CM_angle.so"
+cp "$DEST/libGLESv2_podnative.so" "$EMU_DEST/libGLESv2_angle.so"
 printf '%s\n' "$REV" > "$ROOT/app/src/main/assets/angle-revision.txt"
 # Preserve all checkout license texts conservatively, including transitive dependencies.
 python3 "$ROOT/scripts/collect-angle-notices.py" "$PWD" "$ROOT/app/src/main/assets/angle-notices"

@@ -7,6 +7,8 @@ struct MachOSlice {
     uint64_t size;
     uint32_t subtype;
     bool universal;
+    bool containsArm64;
+    bool containsArm64_32;
 };
 // Only the header/table need be resident; totalSize is the actual file length.
 // Thin files and FAT/FAT64 in either byte order are accepted; only ARM32 is selected.

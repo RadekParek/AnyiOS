@@ -1,16 +1,19 @@
-# Brief comparison: AnyiOS and HyperHLE-Reborn
+# HyperHLE-Reborn and AnyiOSEMU
 
-**Snapshot: 2026-10-24.** This is a source/README comparison, not an independent compatibility or speed test. HyperHLE-Reborn is a community fork of touchHLE; its README describes a high-level iOS emulator that reimplements selected iOS frameworks on the host. Its README also lists multiple titles as tested “Playable” or “Ingame.” That is a stronger *publicly stated game-compatibility record* than AnyiOS currently has: AnyiOS still has no verified visible Angry Birds menu/gameplay result in this worktree.
+**Snapshot: 2026-10-25.** AnyiOSEMU integrates the exact HyperHLE-Reborn source revision recorded in `third_party/hyperhle-revision.txt`; this is the selected Android **game-execution engine**, not a rejected candidate. This document describes product/integration scope only. It is not an independent compatibility, rendering, security or speed test, and AnyiOS does not inherit upstream game-compatibility claims without testing those games in its own APK/device configuration.
 
-| Area | HyperHLE-Reborn | AnyiOS in this branch |
+| Area | HyperHLE-Reborn upstream | AnyiOS / AnyiOSEMU integration |
 |---|---|---|
-| Runtime approach | Builds on touchHLE’s high-level iOS-app emulation and host-side framework implementations. | C++ ARM32 runtime using Dynarmic plus explicit iOS service/framework emulation; ANGLE remains the default graphics path. |
-| IPA filesystem | Opens an IPA as a ZIP and builds a virtual app-bundle tree. A requested member is decompressed into a shared in-memory cache, which supports seekable reads without extracting the whole bundle to disk. | Indexes ZIP/ZIP64 members and materializes only opened files into a persistent private `sandbox/ZipCache`; CRC is checked. Writes go to `sandbox/BundleOverrides` with deletion markers, never back into the imported IPA. Saves live in `sandbox/Documents`, with an export action. |
-| Trade-off | Its in-memory cache can avoid per-member disk writes and make repeated/seeked reads cheap, at the cost of retaining decompressed data in RAM. | Its disk cache uses storage and has first-open write latency, but it survives relaunch and avoids retaining every decompressed resource in RAM. The overlay preserves bundle writes. These trade-offs have not been benchmarked head-to-head. |
-| Platform and compatibility evidence | The README emphasizes Android/mobile usability, device profiles, touch, fullscreen/orientation, and ongoing graphics/audio/framework work; it names several games it says have been tested. | This branch focuses on a measured ARM32 runtime, explicit import/error reporting, ANGLE GLES compatibility, and an inspectable per-game data layout. Actual device rendering and gameplay remain unverified. |
+| Runtime | touchHLE-based high-level iOS app emulation with a Rust guest/runtime and Android SDL host. | Uses that pinned runtime to execute eligible imported ARM32 iOS apps inside the AnyiOS Android app. |
+| Product UI | Upstream Android host/application picker and its own branding. | Preserves the AnyiOS module chooser, library, import/export, settings and design. The visible runtime product name is AnyiOSEMU. |
+| Import/library | Upstream runtime input/application workflow. | Uses the AnyiOS shared private library and retained original IPA or `.app` source. Launching a universal ARM32+ARM64 binary selects ARM32; ARM64-only remains unsupported. |
+| Graphics | Upstream Android SDL/EGL/GLES integration. | Builds the pinned Google ANGLE EGL/GLES libraries expected by the runtime, uses ANGLE by default, records any driver fallback and exposes an explicit native-GLES option. Rendering in AnyiOS still needs device validation. |
+| Data and reports | Runtime-owned paths and logs from the pinned source. | Supplies per-game private data, validates the provider paths under app storage, persists a bounded session report and includes the engine/ANGLE revisions. |
+| Converter | Not part of upstream. | Remains a separate AnyiOS module, unchanged by this engine integration. |
+| Compatibility | Upstream README lists its own titles/statuses, which reflect upstream builds and tests. | No title is declared playable until the AnyiOSEMU APK displays its real menu and responds to input on a device. A build, host trace or inherited upstream claim is insufficient. |
 
-## Practical takeaway
+## Consequence for previous AnyiOS prototype notes
 
-HyperHLE-Reborn is presently ahead in the project’s *reported breadth of working games* and its Android/mobile compatibility experience. Its ZIP filesystem is more directly memory-backed; AnyiOS’s new version adds a persistent, write-capable overlay and an exportable save area. The small host measurements in [`PROGRESS.md`](PROGRESS.md) compare AnyiOS lazy versus full resource materialization only; they say nothing about HyperHLE’s speed or Android launch time. No HyperHLE rendering implementation was copied.
+The C++ ARM32/Dynarmic guest runner, custom guest framework/GLES path and ZIP-backed game sandbox described in earlier progress entries are historical prototype work, not the current Android game-launch path. The AnyiOS C++ importer/slice inspection and independent ANGLE surface-test diagnostics remain, but they do not execute games. See [`RUNTIME.md`](RUNTIME.md), [`ARCHITECTURE.md`](ARCHITECTURE.md), and [`DEVICE_TESTING.md`](DEVICE_TESTING.md) for the active path and evidence gates.
 
-Sources: [HyperHLE-Reborn README](https://github.com/chuck6900/HyperHLE-Reborn/blob/trunk/README.md), [its IPA bundle/filesystem implementation](https://github.com/KlugKlugTG/HyperHLE-Reborn/blob/trunk/src/fs/bundle.rs), and [its filesystem nodes](https://github.com/KlugKlugTG/HyperHLE-Reborn/blob/trunk/src/fs.rs).
+The integration retains upstream attribution and licenses; rebranding the visible emulator UI does not rename or conceal its source. See [`THIRD_PARTY_NOTICES.md`](../THIRD_PARTY_NOTICES.md).

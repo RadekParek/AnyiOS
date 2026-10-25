@@ -1,10 +1,29 @@
-# Continuation progress — 2026-10-25
+# Current status — 2026-10-25
 
-## Angry Birds 1.0.0 live landscape main menu — host-verified; Android device check pending
+## AnyiOSEMU engine integration — implementation in progress; build/device validation pending
 
-* The Android launch keeps the ARM32 game running instead of stopping at a timed probe. A follow-up fix samples the configured EAGL drawable at 30 fps from guest scheduler safe points as well as UIKit update callbacks. Previously a parked UIKit run loop could leave the launch spinner waiting for a callback the game never generated; ANGLE remains first choice on Android.
-* HyperHLE-Reborn’s relevant difference is that it polls the host window/event loop independently of the guest run loop (about 120 Hz). AnyiOS now applies the same separation to frame delivery, without importing its Rust/SDL renderer: the 33 ms sampler runs at emulator safe points and emits a frame only after the game configures a drawable.
-* Added a CPU regression that starts a guest with no UIKit update event and cancels only after a frame reaches the sink. The live host runner also captures the real IPA’s 480×320 Angry Birds title menu; Android/ANGLE device validation is still pending.
+The active Android game engine is being replaced by the pinned HyperHLE-Reborn/touchHLE runtime, branded in-app as **AnyiOSEMU**. The AnyiOS shell/library/design and Converter remain intact. This intentionally supersedes the C++ game-runtime work in the historical log below; its host menu/readback result is not evidence for this engine.
+
+- The HyperHLE-Reborn source submodule and recursive vendor submodules are pinned. `third_party/hyperhle-patches/AnyiOSEMU.patch` is generated and applies byte-for-byte to an isolated worktree at the exact pin. `scripts/prepare-hyperhle.sh` passes against the live pinned checkout, including nested-submodule and notice checks.
+- Gradle now configures the `arm64-v8a` Rust/SDL runtime. CI setup provisions the Rust Android target, cargo-ndk, Boost 1.81.0 and recursive engine source, with Cargo/Boost caching. These build steps have not run in the current workspace.
+- ANGLE has been advanced to `9addc2983b90152f628cfdaea194983b46b254bd`; the pipeline now caches, compares and packages all three EGL/GLES aliases expected by AnyiOSEMU. Source-level compatibility is not proof that the new revision built or loads.
+- Mach-O reporting now separates ARM32, ARM64 and ARM64_32. Universal ARM32+ARM64 games select ARM32; thin and universal launch slices are restricted to the pinned runtime's generic ARM, ARMv6, ARMv7, ARMv7f and ARMv7s subtypes, with unsupported subtype/capability records rejected. ARM64-only remains unsupported. The FAT selector passed a standalone warning-clean g++ run including subtype-priority cases and the 20,000-input mutation loop; Android/JVM validation remains pending.
+- Visible runtime strings and documentation have been rebranded/updated while preserving upstream license notices. The audit covered the Android host activity and reachable game-launch routes; remaining `touchHLE`/HyperHLE names are internal package, shared-library/resource identifiers, technical comments or required upstream attribution rather than user-facing product labels.
+- The local environment has no Rust, Gradle or Android SDK toolchain. The standalone FAT-selector C++ test and source-format/script checks pass, but Rust/Kotlin/Java and the full Android native/Cargo integration have not been compiled; no CI or device run has validated the package or runtime.
+
+**Acceptance remains a real game's visible menu and working touch on Android.** A successful source patch, native build, APK, host test, instruction count, GL-call log, swap or exit code alone does not establish compatibility, rendering or speed. No compatibility claims are made. See [`DEVICE_TESTING.md`](DEVICE_TESTING.md).
+
+---
+
+# Historical C++ game-runtime prototype log
+
+The entries below record a previous AnyiOS C++ ARM32/Dynarmic prototype, its host experiments and older ANGLE revisions. They are retained as engineering history, not as the current Android game engine or current device/build status. Their host rendering, import, guest-loop and compatibility evidence does not transfer to AnyiOSEMU.
+
+## Angry Birds 1.0.0 live landscape main menu — host-only prototype result; not AnyiOSEMU validation
+
+* In that earlier C++ prototype, Android launch kept the ARM32 game running instead of stopping at a timed probe. A follow-up fix sampled its configured EAGL drawable at 30 fps from guest scheduler safe points as well as UIKit update callbacks. A parked UIKit run loop had left the old launch spinner waiting for a callback the game never generated; ANGLE was first choice on Android.
+* The prototype's frame-delivery loop used the same separation observed in HyperHLE-Reborn: it polled from emulator safe points and emitted a frame only after the game configured a drawable. This was historical C++ prototype code, not the current AnyiOSEMU renderer.
+* A CPU regression started a guest with no UIKit update event and cancelled only after a frame reached the sink. The old host runner captured the real IPA’s 480×320 Angry Birds title menu; that host result and its still-pending device check do not validate AnyiOSEMU.
 * Fixed the game's GL argument ABI: its ARMv6 code uses base AAPCS, so `float` arguments arrive in core registers/stack, not VFP registers. Both recording-driver and ES 1.1-to-ES 2.0 emulation tests now encode that ABI.
 * The guest renders in a 320×480 logical buffer and its `LandscapeLeft` output is rotated to 480×320. `PrototypeView` already aspect-fits frames, so the landscape artwork keeps its 3:2 ratio instead of being stretched across a wider phone display. A reused scratch buffer avoids a new full-frame allocation for both the vertical flip and rotation on every frame.
 * `tests/AngryBirds_v1.0_os30.ipa` was run for 12 seconds through the actual host guest runner with Mesa GLES. The captured 480×320 frame visibly shows the Angry Birds title menu; the guest stayed in its UIKit update loop and no unimplemented imports trapped. This proves host execution and readback, not the Android ANGLE device path.
@@ -99,7 +118,9 @@ The `MEMORY_NULL` report still means an access to an unmapped low guest address;
 identify the title's pointer bug. No target binary or fresh device register/PC trace was
 available to trace the pointer source. Likewise, no new Android build/device run or visual
 frame was available. Host replay, zero GL errors, gate resolution and recording-driver draws
-are not proof of a menu or gameplay. No rendering path was copied from HyperHLE-Reborn.
+are not proof of a menu or gameplay. In the historical prototype, no rendering path had been
+copied from HyperHLE-Reborn; the later active AnyiOSEMU integration deliberately adopts its
+pinned runtime and ANGLE-facing Android path.
 
 Remaining compatibility limits include standard stream operations, arbitrary C++ allocator
 state, custom CFArray callbacks, Objective-C exception unwinding, virtual-base RTTI cases,

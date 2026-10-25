@@ -117,8 +117,10 @@ final class GameInspector {
         } catch (IOException | IllegalStateException e) {
             result.blockReason = e.getMessage() == null ? e.toString() : e.getMessage();
             result.status = result.architecture.equals("ARM64")
+                    || result.architecture.equals("ARM64_32")
                     || result.architecture.equals("64-bit")
                     || result.blockReason.contains("FAT_NO_ARM32")
+                    || result.blockReason.contains("MACHO_CPU_SUBTYPE")
                 ? "Unsupported"
                 : "Invalid";
             result.report += "\nIMPORT_RETAINED: Original private copy preserved. Cannot launch: "
@@ -213,19 +215,20 @@ final class GameInspector {
             file.readFully(header);
             if (header.length >= 8 && (header[0] & 255) == 0xcf && (header[1] & 255) == 0xfa
                 && (header[2] & 255) == 0xed && (header[3] & 255) == 0xfe) {
-                result.architecture =
-                    (header[4] & 255) == 12 && header[5] == 0 && header[6] == 0 && header[7] == 1
-                    ? "ARM64"
-                    : "64-bit";
+                int cpuType = (header[4] & 255) | (header[5] & 255) << 8 | (header[6] & 255) << 16
+                    | (header[7] & 255) << 24;
+                result.architecture = cpuType == 0x0100000c ? "ARM64"
+                    : cpuType == 0x0200000c                 ? "ARM64_32"
+                                                            : "64-bit";
                 throw new IOException(result.architecture
-                    + " 64-bit executable retained, but this ARM32 runtime cannot execute it");
+                    + " executable retained, but this ARM32 runtime cannot execute it");
             }
             long[] slice;
             try {
                 slice = NativeBridge.arm32Slice(header, file.length());
             } catch (IllegalStateException e) {
                 if (e.getMessage() != null && e.getMessage().contains("FAT_NO_ARM32"))
-                    result.architecture = "No ARM32 slice";
+                    result.architecture = unsupportedUniversalArchitecture(e.getMessage());
                 throw new IOException(e.getMessage(), e);
             }
             if (slice[1] > MAX_EXECUTABLE)
@@ -246,9 +249,16 @@ final class GameInspector {
             result.architecture = (subtype & 0xffffff) == 9 ? "ARMv7"
                 : (subtype & 0xffffff) == 6                 ? "ARMv6"
                 : (subtype & 0xffffff) == 11                ? "ARMv7s"
+                : (subtype & 0xffffff) == 10                ? "ARMv7f"
                                                             : "ARM32";
-            if (slice[3] != 0)
-                result.architecture += " · Universal";
+            if (slice[3] != 0) {
+                String slices = universalArchitectureSlices(slice);
+                result.architecture += " · " + slices + " universal (ARM32 selected)";
+                if (slice[4] == 0 && slice[5] == 0)
+                    result.architecture += " (no ARM64 slice detected)";
+            } else {
+                result.architecture += " · ARM32";
+            }
             if (report.startsWith("MACHO_ENCRYPTED:"))
                 result.status = "Encrypted";
             if (result.launchAttempt) {
@@ -265,9 +275,12 @@ final class GameInspector {
                 takeGuestFrame(result);
                 report += "\n\n" + result.launchOutcome;
             }
-            result.report =
-                "Container: " + (slice[3] != 0 ? "universal; selected ARM32 slice" : "thin ARM32")
-                + "\nSlice offset=" + slice[0] + " size=" + slice[1] + " bytes\n\n" + report;
+            String container = slice[3] == 0
+                ? "thin ARM32"
+                : "universal " + universalArchitectureSlices(slice) + "; ARM32 selected"
+                    + (slice[4] == 0 && slice[5] == 0 ? "; no ARM64 slice detected" : "");
+            result.report = "Container: " + container + "\nSlice offset=" + slice[0]
+                + " size=" + slice[1] + " bytes\n\n" + report;
         }
     }
     private static void takeGuestFrame(Result result) {
@@ -483,6 +496,24 @@ final class GameInspector {
                 "No Mach-O executable found. Select the extracted .app folder, not a folder of IPA downloads");
         inspectExecutable(executable, result);
         result.executable = folder.toPath().relativize(executable.toPath()).toString();
+    }
+    private static String universalArchitectureSlices(long[] slice) {
+        StringBuilder architectures = new StringBuilder("ARM32");
+        if (slice[4] != 0)
+            architectures.append(" + ARM64");
+        if (slice[5] != 0)
+            architectures.append(" + ARM64_32");
+        return architectures.toString();
+    }
+    private static String unsupportedUniversalArchitecture(String error) {
+        String marker = "universal binary contains ";
+        String endMarker = " but no supported ARM32 slice";
+        int start = error.indexOf(marker);
+        int end = start < 0 ? -1 : error.indexOf(endMarker, start + marker.length());
+        if (end < 0)
+            return "Universal (no ARM32 slice)";
+        return error.substring(start + marker.length(), end)
+            + " · universal (no supported ARM32 slice)";
     }
     @SuppressWarnings("unchecked")
     private static List<String> iconCandidates(Map<String, Object> info) {

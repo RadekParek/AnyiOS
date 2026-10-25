@@ -1,134 +1,51 @@
 # AnyiOS
 
-One Android app with **Emulator** and **Converter** modules and a shared private source library.
-The emulator is the independent former PodNative ARM32/ANGLE project; the converter
-integrates the owner's RadekiOSconventor source at a recorded revision.
-**Real-game compatibility remains unfinished. A successful build or generated
-experimental APK is not proof that Ninjago (or another game) runs.**
+An Android app with the existing **AnyiOS** launcher, shared private game library and **Converter**. The experimental game engine is **AnyiOSEMU**, integrating the pinned HyperHLE-Reborn/touchHLE runtime. The app shell and Converter remain separate from the emulator engine; upstream license and attribution are retained.
 
-- Launch into an Emulator / Converter chooser with a common teal design and shared appearance settings.
-- Import IPAs in either module; both use `files/games/<id>/source.bin`, not duplicate IPA copies.
-- Import a folder of IPAs recursively as separate entries; extracted .app import remains separate.
-- Converter analysis and generated APKs are separate from the immutable original source.
-- Confirmed removal deletes the shared entry from both modules. Existing emulator data and Android package id `org.podnative` are preserved. A separately installed converter's private storage cannot be read automatically; reimport its original IPAs.
+## What it does
 
-[Integration, tests and boundaries](docs/ANYIOS_INTEGRATION.md) ·
-[Converter fork review](docs/CONVERTER_FORK_REVIEW.md).
-The GitHub repository is now **`RadekParek/AnyiOS`**; old `PodNative` links redirect. Technical JNI
-namespaces, signing/cache names and historical engineering records intentionally keep their
-original names.
+- Preserves the existing AnyiOS module chooser, library screens, settings and teal design.
+- Imports iOS IPA files or extracted `.app` bundles into one private library shared with Converter. Original imports remain untouched.
+- Runs eligible **ARM32** iPhone OS applications through AnyiOSEMU. A universal bundle containing ARM32 and ARM64 runs its ARM32 slice. ARM64-only apps are explicitly unsupported; this build does not implement ARM64 guest execution.
+- Keeps AnyiOSEMU writable data, logs and exports isolated per game. Importing or launching does not imply compatibility.
+- Builds all three bundled ANGLE EGL/GLES libraries from the pinned Google ANGLE source. ANGLE is the default emulator driver; using the device's native GLES is an explicit setting, and driver fallback is recorded.
+- Keeps the original C++ import inspection and standalone ANGLE surface test as diagnostics; they are not the game execution engine.
+- Leaves the Converter pipeline and its upstream source unchanged.
 
-[Download the Android APK and PC builds](https://github.com/RadekParek/AnyiOS/actions/workflows/android.yml)
-(one successful run publishes three artifacts: `AnyiOS.apk`, `AnyiOS-PC-linux-x86_64`, and
-`AnyiOS-PC-windows-x86_64`). The PC artifacts are CPU/HLE diagnostic builds, not desktop
-emulator GUIs or proof of Windows ANGLE rendering.
-[Current implementation boundaries](docs/GRAPHICS_FRAMEWORK_INCREMENT.md) ·
-[Linker/dispatch increment](docs/DYLD_AND_IMPORT_INCREMENT.md).
-[Historical 0.2.1 build evidence](docs/STARTUP_APK_REPORT.md).
-[Historical first APK report](docs/FIRST_APK_REPORT.md).
+**Compatibility, visible rendering and gameplay require real-device, per-game validation.** A successful compile, clean exit code, instruction count or GL-call log is not proof that a game menu is visible or playable. See [device testing](docs/DEVICE_TESTING.md) and [current progress](docs/PROGRESS.md).
 
-## First slice
+## Runtime and architecture
 
-* Native Android library/inspection flow, settings, diagnostics and log export.
-* PodNative-owned graphics backend; source-pinned upstream ANGLE embedded Vulkan
-  integration, with explicit failure. Bundled ANGLE is the default driver and
-  Settings ▸ "Native OpenGL ES" prefers the device's own driver instead; the launch
-  report names the libraries that answered, so the choice is never silent. Titles
-  written for OpenGL ES 1.1 are served by fixed-function emulation over ES 2.0,
-  because ANGLE has no ES 1.1 frontend — see
-  [ANGLE integration](docs/ANGLE_INTEGRATION.md).
-* Shader-based animated textured cube with depth testing and reusable resources.
-* Bounded ARM32 Mach-O inspection and temporary validated guest-memory mapping that accepts
-  **ARMv6, ARMv7 and ARMv7s** slices and PIE images, and runs each image with instruction
-  semantics matching its declared CPU subtype.
-* Actual Dynarmic CPU adapter with host-tested ARM/Thumb execution and an in-app CPU self-test; device execution and game-session integration remain pending.
-* HLE linker core: session-owned two-level export graph, deterministic strong/weak
-  coalescing, transactional graph-aware fixups, and authenticated ARM `SVC` call
-  gates; launch reports required-import coverage instead of claiming resolution.
-* Guest C runtime: owned heap plus bounded string/number/math/atomic implementations on
-  the documented iOS ARMv7 base-ABI call boundary, CoreGraphics geometry, media time and
-  colour-space lifetime, plus real `printf`/`snprintf` formatting and the core Foundation
-  collections, plus the C++ ABI and compiler-runtime entry points that `libstdc++.6` and
-  `libgcc_s.1` export, plus real guest stdio over explicitly mounted directories
-  (the launch report states exact coverage per image; the last recorded device report was
-  156 of 438 unique imports), plus the `UIApplicationMain` bootstrap: argv parsing, the
-  guest delegate instantiated from its own class metadata and its launch callback entered
-  through an owned lifecycle gate. EAGL rendering, the window server and exception
-  unwinding stay explicit blockers rather than fabricated successes.
-* Objective-C runtime core: guest class objects, selectors, `objc_msgSend` dispatch,
-  NSObject/NSString/NSAutoreleasePool semantics, and real message dispatch tests.
-* The emulator takes the whole screen in landscape while a game boots, keeps the display
-  awake, and resizes in place when the device is rotated (the activity handles the
-  configuration change instead of being rebuilt). The debug console starts hidden and is
-  opt-in from Settings.
-* Launches now run guest code: dyld fixups and legacy symbol stubs are applied, unimplemented imports bind to
-  faulting gates, and a launch reports instructions retired plus the first missing API — shown in
-  an Android-style crash screen that names the blocker, the guest PC and the guest function
-  that PC belongs to.
-* GitHub Actions debug/tagged-release build recipes with artifacts and provenance.
+AnyiOS launches an imported game in the pinned Rust/SDL AnyiOSEMU runtime. The Android activity forwards the selected source, a private per-game data directory, frame cap, ANGLE/native-GLES preference, Force Composition and verbose-GLES preference. Input and window lifecycle are handled by the runtime. Source revisions, selected settings and bounded session logs are recorded in the game's report.
 
-No inherited TouchHLE/HyperHLE renderer. No proprietary game files. No universal
-compatibility or performance claims. Ninjago stages A–G are all unverified.
+Runtime source and nested dependencies are pinned through `third_party/hyperhle` and its recursive submodules. The reviewed AnyiOS integration is a source patch at `third_party/hyperhle-patches/AnyiOSEMU.patch`, applied only to the revision in `third_party/hyperhle-revision.txt`. The exact Boost release required by the Dynarmic build is recorded in `third_party/hyperhle-boost-version.txt`.
 
-## Build / test
+See [architecture](docs/ARCHITECTURE.md), [ANGLE integration](docs/ANGLE_INTEGRATION.md), and [third-party notices](THIRD_PARTY_NOTICES.md).
 
-Host: `scripts/test-host.sh` (g++/Python required).
-Real CPU engine tests: `scripts/test-cpu.sh` (CMake/C++20/git required).
-See [runtime contracts and device test](docs/RUNTIME.md).
+## Build and test
 
-Android: follow [ANGLE integration](docs/ANGLE_INTEGRATION.md), then use Gradle
-8.11.1/JDK17: run `scripts/prepare-cpu.sh`, `scripts/prepare-converter.sh` and the ANGLE preparation first, then
-`gradle :app:lintDebug :converter:lintDebug :app:testDebugUnitTest :converter:testDebugUnitTest :app:assembleDebug`.
-Converter host checks: install test-only `capstone==5.0.7` and `unicorn==2.1.4`, then run `scripts/test-converter.sh`.
-Proprietary game-dependent upstream tests are explicitly skipped unless a locally supplied authorized fixture exists; CI never fetches one.
-Real upstream ANGLE libraries are mandatory build inputs; no stub mode exists.
-See [device tests](docs/DEVICE_TESTING.md) before claiming rendering success.
+Requirements include JDK 17, Gradle 8.11.1, Android SDK/build-tools 35, NDK `27.2.12479018`, CMake, Rust with the `aarch64-linux-android` target, `cargo-ndk` 3.5.4, and the pinned ANGLE/depot_tools build dependencies. ANGLE's source build needs a Linux environment with Chromium's dependency download hosts and substantial free disk space.
 
-CI artifacts are published only after a successful workflow. The recommended download is
-`AnyiOS.apk`: a non-debuggable release signed with the cached preview certificate, so it
-upgrades an existing install without changing the signing identity. `AnyiOS-debug.apk` is
-kept for diagnostics; being debuggable, it is the build Play Protect is most likely to warn about.
-Tagged builds produce `AnyiOS.apk`, SHA256SUMS and BUILD-INFO.txt. Without
-signing secrets the release output is explicitly unsigned and not installable.
-Public GitHub Release publication additionally requires the repository variable
-`PODNATIVE_PUBLISH_RELEASE=true` after license/device review and configured signing.
+From a recursive checkout:
 
-## Engineering records
+```sh
+git submodule update --init --recursive
+scripts/prepare-hyperhle.sh
+scripts/prepare-hyperhle-boost.sh
+scripts/prepare-cpu.sh
+scripts/prepare-converter.sh
+scripts/bootstrap-angle-tools.sh
+# Add the pinned depot_tools checkout to PATH, then:
+ANGLE_INSTALL_DEPS=1 scripts/build-angle.sh
+rustup target add aarch64-linux-android
+cargo install cargo-ndk@3.5.4
+gradle --no-daemon :app:lintDebug :app:testDebugUnitTest :app:assembleDebug
+```
 
-[Current progress](docs/PROGRESS.md) · [Runtime](docs/RUNTIME.md) · [Plan](docs/PLAN.md) · [Research](docs/RESEARCH.md) ·
-[Architecture](docs/ARCHITECTURE.md) · [ANGLE](docs/ANGLE_INTEGRATION.md) ·
-[Ninjago status](docs/NINJAGO_COMPATIBILITY.md) ·
-[Third-party notices](THIRD_PARTY_NOTICES.md) · [Build report](docs/BUILD_REPORT.md)
+The Android workflow is configured to run pinned source preparation, Boost/Rust provisioning, ANGLE build/audit, Android lint/JVM tests, Gradle/Cargo compilation and APK packaging checks. The PC CI suite tests the separate C++ CPU/loader diagnostics. Until the updated workflow succeeds, those checks remain pending. Do not infer AnyiOSEMU game compatibility from host tests.
 
-### 0.2 library preview
+## Artifacts and project records
 
-This preview adds persistent private IPA/folder imports, ARM32 selection in
-universal Mach-O containers, a library-first light/dark UI and an original launcher
-icon. Imported does **not** mean runnable. See [library limits, workflow and update
-signing caveats](docs/LIBRARY_PREVIEW.md). The previous graphics preview was
-reported working by the user on their S23 Ultra; this does not validate gameplay
-or the new UI.
+[Android build workflow](https://github.com/RadekParek/AnyiOS/actions/workflows/android.yml) publishes APK and PC diagnostic artifacts after successful jobs. Build provenance and SHA-256 checksums accompany each artifact. Release signing/publication remains subject to the repository's existing signing and license gates.
 
-### Startup preview follow-up
-
-This APK removes the fixed 2 GiB import quota and library entry cap, validates
-`LC_DYSYMTAB`, and enables a real native-loader startup attempt with persistent,
-exportable blocker reports. It does not execute guest code yet. Resource/parser
-safety bounds and low-space checks remain; see [current behavior](docs/LIBRARY_PREVIEW.md).
-
-### 0.3 graphics/framework foundation
-
-Unified Android/PC diagnostic CI, a new handheld launcher mark, animated native
-UI, actual imported launch-artwork presentation through ANGLE (max 3 × 900 ms),
-CoreFoundation bit-vector/lifetime services, CoreGraphics affine math and an
-app-linked ARM/Thumb CPU self-test. These are **not playable-game compatibility**;
-[implementation boundaries and device checklist](docs/GRAPHICS_FRAMEWORK_INCREMENT.md).
-Local Android builds now also require `scripts/prepare-cpu.sh` before Gradle.
-
-### 0.4 linker/import preview
-
-ARM32 pointer rebase/bind and legacy indirect-symbol decoding, a tested transactional
-fixup applier, retained ARM64/broken imports with reasons, legacy CgBI artwork
-conversion, and a green pocket-player visual identity. Required exports and guest
-bootstrap remain unresolved: **this is not a playable Ninjago build**.
-[Scope, official Apple format references and tests](docs/DYLD_AND_IMPORT_INCREMENT.md).
+Historical engineering reports describe the earlier independent C++ game-runtime prototype and its tests. The active Android game path is now AnyiOSEMU; see the dated status in [`docs/PROGRESS.md`](docs/PROGRESS.md) and the [updated integration notes](docs/ANYIOS_INTEGRATION.md).

@@ -1,0 +1,15 @@
+AnyiOSEMU runtime — third-party notices
+
+AnyiOS keeps its existing app shell, shared game library and Converter. AnyiOSEMU is a separate Android-hosted ARM32 guest runtime integrated from HyperHLE-Reborn, a fork of touchHLE.
+
+Source attribution
+• HyperHLE-Reborn contributors: https://github.com/KlugKlugTG/HyperHLE-Reborn
+• Upstream touchHLE project: https://github.com/touchHLE/touchHLE
+• AnyiOS integration patch: third_party/hyperhle-patches/AnyiOSEMU.patch in the source repository.
+• Exact runtime source pin: third_party/hyperhle-revision.txt in the source repository.
+
+HyperHLE-Reborn/touchHLE source is licensed under the Mozilla Public License 2.0 (MPL-2.0). The complete MPL text is shipped as the LICENSE asset. Copyright and SPDX notices in upstream source are retained; names are credited here and in the source tree. Source-form changes made for AnyiOS are available in the linked repository patch.
+
+The Android runtime also uses SDL 2, Dynarmic, OpenAL Soft, libxml2, PVRTDecompress and Rust dependencies. Their upstream license and copyright notices are included with the runtime resources where available. The build collects the pinned Cargo dependency names, authors and declared licenses plus Dynarmic's upstream legal summary into the in-app notices. The app's ANGLE libraries are built from the pinned Google ANGLE source revision; their BSD-style terms and conservative dependency notice bundle are shipped under angle-notices/. CPU-test and Converter notices are under cpu-notices/ and converter-notices/ respectively.
+
+Third-party software is provided under its own license. This notice does not change those licenses or imply endorsement. A complete dependency and redistribution review is still required before a public production release.
