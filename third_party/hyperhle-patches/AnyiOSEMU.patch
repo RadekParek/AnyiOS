@@ -1,5 +1,5 @@
 diff --git a/android/app/src/main/java/org/touchhle/android/DocumentsProvider.kt b/android/app/src/main/java/org/touchhle/android/DocumentsProvider.kt
-index 29142ee..32d31ed 100644
+index 29142ee5b4946ad57abae61336598686bfd9f24e..32d31edbb92ff20dcb0e536912f52b57fed2a513 100644
 --- a/android/app/src/main/java/org/touchhle/android/DocumentsProvider.kt
 +++ b/android/app/src/main/java/org/touchhle/android/DocumentsProvider.kt
 @@ -17,6 +17,8 @@ import android.os.ParcelFileDescriptor
@@ -238,7 +238,7 @@ index 29142ee..32d31ed 100644
          return ParcelFileDescriptor.open(file, accessMode)
      }
 diff --git a/android/app/src/main/java/org/touchhle/android/HostMedia.java b/android/app/src/main/java/org/touchhle/android/HostMedia.java
-index 670dc38..c1ff168 100644
+index 670dc38476621ac72d7da765d0b5a0229597cd72..c1ff168bf4a88f46f5e4578172befc0d746807d9 100644
 --- a/android/app/src/main/java/org/touchhle/android/HostMedia.java
 +++ b/android/app/src/main/java/org/touchhle/android/HostMedia.java
 @@ -226,7 +226,7 @@ public class HostMedia {
@@ -260,7 +260,7 @@ index 670dc38..c1ff168 100644
          return true;
      }
 diff --git a/android/app/src/main/java/org/touchhle/android/MainActivity.java b/android/app/src/main/java/org/touchhle/android/MainActivity.java
-index 7803c18..dd52911 100644
+index 7803c18600484c29a067ec1433ddfe275c7c593a..dd5291142f40314fda88e24a68f67d786e50e8c5 100644
 --- a/android/app/src/main/java/org/touchhle/android/MainActivity.java
 +++ b/android/app/src/main/java/org/touchhle/android/MainActivity.java
 @@ -30,7 +30,7 @@ import java.io.InputStream;
@@ -294,7 +294,7 @@ index 7803c18..dd52911 100644
              Log.e(TAG, "Couldn't create " + appsDir);
              return;
 diff --git a/src/audio/mic.rs b/src/audio/mic.rs
-index d416bb7..9521dea 100644
+index d416bb73bc8dfe72af7a344c71b9ad39c7bb9a75..9521dea0359f35cdd89f87f966329a3e95f1f929 100644
 --- a/src/audio/mic.rs
 +++ b/src/audio/mic.rs
 @@ -229,7 +229,7 @@ pub fn start() -> bool {
@@ -307,7 +307,7 @@ index d416bb7..9521dea 100644
      {
          Ok(handle) => *lock(&THREAD) = Some(handle),
 diff --git a/src/bin.rs b/src/bin.rs
-index 51498da..dba2a53 100644
+index 51498da6eda8ceab522b790be41fb3883eca27e9..dba2a531ce11b491263e4823a79e822b3ad8bc3c 100644
 --- a/src/bin.rs
 +++ b/src/bin.rs
 @@ -13,7 +13,7 @@ fn main() -> std::process::ExitCode {
@@ -320,7 +320,7 @@ index 51498da..dba2a53 100644
          }
      }
 diff --git a/src/crash_handler.rs b/src/crash_handler.rs
-index e8a2cad..78b70c2 100644
+index e8a2cad582c6ffe71df9fa71ab1d94e9acae176f..78b70c2819047192c789493e6f91d4901a837a07 100644
 --- a/src/crash_handler.rs
 +++ b/src/crash_handler.rs
 @@ -85,7 +85,7 @@ pub fn install_panic_hook() {
@@ -351,7 +351,7 @@ index e8a2cad..78b70c2 100644
          ));
          if code == EXCEPTION_ACCESS_VIOLATION {
 diff --git a/src/environment.rs b/src/environment.rs
-index 0d50bc9..5373b4e 100644
+index 0d50bc9c2dbabcb3c605800919ca8140dd84f8e0..5373b4e650340e1ec8c24ae55f349bcf61562e77 100644
 --- a/src/environment.rs
 +++ b/src/environment.rs
 @@ -1366,19 +1366,19 @@ impl Environment {
@@ -398,7 +398,7 @@ index 0d50bc9..5373b4e 100644
               need a real window (e.g. OpenGL ES, text input, dialogs); headless-safe \
               callers must check env.window.is_none() first and skip the window-only \
 diff --git a/src/environment/app_picker.rs b/src/environment/app_picker.rs
-index 52b6a64..007cca8 100644
+index 52b6a64f0c561b7f2309fc84b9165eaecc4c0d4b..007cca811ee053a421aa6a2cc4c3a7b17e9e9cf8 100644
 --- a/src/environment/app_picker.rs
 +++ b/src/environment/app_picker.rs
 @@ -76,7 +76,7 @@ struct AppInfo {
@@ -429,7 +429,7 @@ index 52b6a64..007cca8 100644
          true,
          white,
 diff --git a/src/environment/app_picker/archive_store.rs b/src/environment/app_picker/archive_store.rs
-index 94831a9..74cb6da 100644
+index 94831a9a5bc9f1aee7233f9d58a897548b5b9e00..74cb6da5b70b922802ce78e32480f7ef87b99597 100644
 --- a/src/environment/app_picker/archive_store.rs
 +++ b/src/environment/app_picker/archive_store.rs
 @@ -2108,7 +2108,7 @@ fn download_task_status(task: &DownloadTask) -> String {
@@ -478,7 +478,7 @@ index 94831a9..74cb6da 100644
              let result = network::download_ipa(
                  &apps_dir,
 diff --git a/src/environment/app_picker/archive_store/network.rs b/src/environment/app_picker/archive_store/network.rs
-index cfd9d53..a0bc9ad 100644
+index cfd9d53f21db4ba7581a69cb1037a50e6d17b26d..a0bc9ada707ab6cbf61db3319fd9e5b90c403b0e 100644
 --- a/src/environment/app_picker/archive_store/network.rs
 +++ b/src/environment/app_picker/archive_store/network.rs
 @@ -170,7 +170,7 @@ pub(super) fn fetch_artwork(identifier: &str) -> Result<Vec<u8>, String> {
@@ -509,7 +509,7 @@ index cfd9d53..a0bc9ad 100644
          .call();
      let response = check_response(response)?;
 diff --git a/src/frameworks/avfoundation/av_capture.rs b/src/frameworks/avfoundation/av_capture.rs
-index 6815788..5cd2d58 100644
+index 6815788e6958a7e014ce1cd17d8375082731233f..5cd2d5864649e7199596bb66e20b417f1f8dd78f 100644
 --- a/src/frameworks/avfoundation/av_capture.rs
 +++ b/src/frameworks/avfoundation/av_capture.rs
 @@ -359,7 +359,7 @@ struct AVCaptureDeviceHostObject {
@@ -578,7 +578,7 @@ index 6815788..5cd2d58 100644
          let host = env.objc.borrow_mut::<AVCaptureDeviceHostObject>(init);
          host.media_type = media_type;
 diff --git a/src/frameworks/avfoundation/av_speech.rs b/src/frameworks/avfoundation/av_speech.rs
-index 9cc2a94..8c3394c 100644
+index 9cc2a94a48eb7ff682e4783a99a06ebd269c373e..8c3394c9be797b49fa130a8269d41a8c7044f3d1 100644
 --- a/src/frameworks/avfoundation/av_speech.rs
 +++ b/src/frameworks/avfoundation/av_speech.rs
 @@ -205,7 +205,7 @@ pub const CLASSES: ClassExports = objc_classes! {
@@ -591,7 +591,7 @@ index 9cc2a94..8c3394c 100644
  
  - (())dealloc {
 diff --git a/src/frameworks/captive_network.rs b/src/frameworks/captive_network.rs
-index 0dfbed8..5f3f921 100644
+index 0dfbed8c67d50dd86e3fd15abb7ed1f92962df10..5f3f921d7fed6315be92bb6e98ecca988470226f 100644
 --- a/src/frameworks/captive_network.rs
 +++ b/src/frameworks/captive_network.rs
 @@ -60,7 +60,7 @@ fn CNCopyCurrentNetworkInfo(env: &mut Environment, interface: CFStringRef) -> CF
@@ -604,7 +604,7 @@ index 0dfbed8..5f3f921 100644
      let ssid_key = get_static_str(env, "SSID");
      let bssid_key = get_static_str(env, "BSSID");
 diff --git a/src/frameworks/core_foundation/cf_net_service.rs b/src/frameworks/core_foundation/cf_net_service.rs
-index 1533dfd..8233992 100644
+index 1533dfd65bbdf36784c3ab42ac0398285ee4fd24..82339926df909780b8a8616db517459d97f9bb67 100644
 --- a/src/frameworks/core_foundation/cf_net_service.rs
 +++ b/src/frameworks/core_foundation/cf_net_service.rs
 @@ -1055,8 +1055,8 @@ pub fn CFNetServiceRegisterWithOptions(
@@ -619,7 +619,7 @@ index 1533dfd..8233992 100644
      // Name-conflict auto-rename: if we are already registered under this
      // name and auto-rename is allowed, append a suffix.
 diff --git a/src/frameworks/foundation/asidentifier_manager.rs b/src/frameworks/foundation/asidentifier_manager.rs
-index 2b61b70..01f0565 100644
+index 2b61b70aa995cee6c90c9103ddcf4a4f446b5c94..01f05659f88fadc50bfbba5c98adf132454a1457 100644
 --- a/src/frameworks/foundation/asidentifier_manager.rs
 +++ b/src/frameworks/foundation/asidentifier_manager.rs
 @@ -215,7 +215,7 @@ pub const CLASSES: ClassExports = objc_classes! {
@@ -632,7 +632,7 @@ index 2b61b70..01f0565 100644
      msg_class![env; NSString stringWithUTF8String:cstr]
  }
 diff --git a/src/frameworks/foundation/ns_file_manager.rs b/src/frameworks/foundation/ns_file_manager.rs
-index 882e5c1..c450b4b 100644
+index 882e5c1d04183e76676778a7a402ec541d29dad1..c450b4b4b5f52adc4da197d4ebd498ecb0a244be 100644
 --- a/src/frameworks/foundation/ns_file_manager.rs
 +++ b/src/frameworks/foundation/ns_file_manager.rs
 @@ -290,13 +290,13 @@ fn NSHomeDirectory(env: &mut Environment) -> id {
@@ -652,7 +652,7 @@ index 882e5c1..c450b4b 100644
  }
  
 diff --git a/src/frameworks/foundation/ns_process_info.rs b/src/frameworks/foundation/ns_process_info.rs
-index e4f84a2..291836f 100644
+index e4f84a2978ea4bf4cfb79d681bc08d76d56124de..291836f0094babac9df71ac879802d002e2467a8 100644
 --- a/src/frameworks/foundation/ns_process_info.rs
 +++ b/src/frameworks/foundation/ns_process_info.rs
 @@ -161,7 +161,7 @@ pub const CLASSES: ClassExports = objc_classes! {
@@ -665,7 +665,7 @@ index e4f84a2..291836f 100644
  
  - (id)arguments {
 diff --git a/src/frameworks/metal.rs b/src/frameworks/metal.rs
-index 871bd0c..5bb07a1 100644
+index 871bd0ca7bb2597a59c55b2fdcce92a2e5f79fe5..5bb07a16575336a4fed5a898ae137ef15bb35cee 100644
 --- a/src/frameworks/metal.rs
 +++ b/src/frameworks/metal.rs
 @@ -228,7 +228,7 @@ const CLASSES: ClassExports = objc_classes! {
@@ -687,7 +687,7 @@ index 871bd0c..5bb07a1 100644
  - (NSUInteger)recommendedMaxWorkingSetSize { 0 }
  - (bool)supportsFamily:(NSUInteger)_family { false }
 diff --git a/src/frameworks/uikit/ui_image_picker_controller.rs b/src/frameworks/uikit/ui_image_picker_controller.rs
-index 85a066f..98ad0be 100644
+index 85a066f4bcb5d313af5637ac052485d27901e6df..98ad0be1ac687ea4feadfadbcc26493fa780c561 100644
 --- a/src/frameworks/uikit/ui_image_picker_controller.rs
 +++ b/src/frameworks/uikit/ui_image_picker_controller.rs
 @@ -380,7 +380,7 @@ fn UISaveVideoAtPathToSavedPhotosAlbum(
@@ -700,7 +700,7 @@ index 85a066f..98ad0be 100644
      );
  }
 diff --git a/src/frameworks/uikit/ui_nib.rs b/src/frameworks/uikit/ui_nib.rs
-index 36c2a8b..e650483 100644
+index 36c2a8b688da0e744e5f35bf48b169e9183215e1..e6504839bbf181780edb80572a5f5b1665e99808 100644
 --- a/src/frameworks/uikit/ui_nib.rs
 +++ b/src/frameworks/uikit/ui_nib.rs
 @@ -115,7 +115,7 @@ pub const CLASSES: ClassExports = objc_classes! {
@@ -731,7 +731,7 @@ index 36c2a8b..e650483 100644
          }
  
 diff --git a/src/frameworks/uikit/ui_view/ui_window.rs b/src/frameworks/uikit/ui_view/ui_window.rs
-index 2513027..c3a0335 100644
+index 25130279d197c09882c966a0e1e3a9e743660363..c3a033529bc3ef4033ae92e786a2256ed279e1c6 100644
 --- a/src/frameworks/uikit/ui_view/ui_window.rs
 +++ b/src/frameworks/uikit/ui_view/ui_window.rs
 @@ -521,7 +521,7 @@ pub const CLASSES: ClassExports = objc_classes! {
@@ -744,7 +744,7 @@ index 2513027..c3a0335 100644
  }
  
 diff --git a/src/fs.rs b/src/fs.rs
-index c3ab190..e167629 100644
+index c3ab190935da2e0ca31cf8d36e68f2fc8f53e615..e1676290ce004b8dd88745c91789c1d4e02cad86 100644
 --- a/src/fs.rs
 +++ b/src/fs.rs
 @@ -457,7 +457,7 @@ fn handle_open_err<T, E: std::fmt::Display, P: std::fmt::Debug>(
@@ -757,7 +757,7 @@ index c3ab190..e167629 100644
  }
  
 diff --git a/src/gles/gles1_on_gl2.rs b/src/gles/gles1_on_gl2.rs
-index 5b654c7..e6606bf 100644
+index 5b654c7f4970f6e7cdefa77d631b42d50b544012..e6606bfbfa556f26af7f70dcc1c08b0a5058bcf8 100644
 --- a/src/gles/gles1_on_gl2.rs
 +++ b/src/gles/gles1_on_gl2.rs
 @@ -541,7 +541,7 @@ fn new_gles1_on_gl2_state() -> GLES1OnGL2State {
@@ -770,7 +770,7 @@ index 5b654c7..e6606bf 100644
  
      fn new(window: &mut Window) -> Result<Self, String> {
 diff --git a/src/gles/present.rs b/src/gles/present.rs
-index 4b16094..faeb1d0 100644
+index 4b16094f77e34f32d705ed3345257bc489968a7b..faeb1d05518f14b9698ef46bd540b0d8be25614f 100644
 --- a/src/gles/present.rs
 +++ b/src/gles/present.rs
 @@ -73,7 +73,7 @@ impl FpsCounter {
@@ -783,7 +783,7 @@ index 4b16094..faeb1d0 100644
              // Update global text cache for on-screen overlay if enabled via
              // environment variable or the runtime flag.
 diff --git a/src/lib.rs b/src/lib.rs
-index ba739ba..586451d 100644
+index ba739ba822a2511182fb10c144a074e7607ec707..586451ddc6d9281419b874f41be3a25461c712ae 100644
 --- a/src/lib.rs
 +++ b/src/lib.rs
 @@ -82,7 +82,7 @@ static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
@@ -911,7 +911,7 @@ index ba739ba..586451d 100644
      }
  
 diff --git a/src/libc/mach_o.rs b/src/libc/mach_o.rs
-index 53dd986..dff6dc0 100644
+index 53dd9860324923d8b1fd95efdb738179a5eee3f3..dff6dc0cf55d200c57dda40873c4a069d5637389 100644
 --- a/src/libc/mach_o.rs
 +++ b/src/libc/mach_o.rs
 @@ -218,7 +218,7 @@ fn _dyld_register_func_for_add_image(env: &mut Environment, func: GuestFunction)
@@ -924,7 +924,7 @@ index 53dd986..dff6dc0 100644
      );
  }
 diff --git a/src/libc/mmap.rs b/src/libc/mmap.rs
-index b78c4f9..205e786 100644
+index b78c4f979ff01ccb6964d986faff7c3a4744409d..205e7860b67401965392b15140263818e8d1e5db 100644
 --- a/src/libc/mmap.rs
 +++ b/src/libc/mmap.rs
 @@ -372,7 +372,7 @@ fn mprotect(env: &mut Environment, addr: MutVoidPtr, len: GuestUSize, prot: i32)
@@ -937,7 +937,7 @@ index b78c4f9..205e786 100644
          len,
          prot
 diff --git a/src/libc/netdb.rs b/src/libc/netdb.rs
-index 1c056ea..4c9f6d9 100644
+index 1c056ea4b2da9115f1dc6761f9a49559da95ade9..4c9f6d9c7d68326b3494acf1fa240d0b9f7b7f2d 100644
 --- a/src/libc/netdb.rs
 +++ b/src/libc/netdb.rs
 @@ -374,7 +374,7 @@ fn gethostbyname(env: &mut Environment, name: ConstPtr<u8>) -> MutPtr<u8> {
@@ -950,7 +950,7 @@ index 1c056ea..4c9f6d9 100644
              // Games (e.g. Gameloft titles) broadcast LAN discovery to the
              // name of their own service or to wildcard hostnames; also map
 diff --git a/src/libc/pthread/thread.rs b/src/libc/pthread/thread.rs
-index eac9fa3..d544376 100644
+index eac9fa37f6fcfada5c0c081dfad6077491ea69d7..d544376169275e70b4f808a6c0910ae141c1ea82 100644
 --- a/src/libc/pthread/thread.rs
 +++ b/src/libc/pthread/thread.rs
 @@ -457,7 +457,7 @@ pub fn pthread_self(env: &mut Environment) -> pthread_t {
@@ -963,7 +963,7 @@ index eac9fa3..d544376 100644
          current_thread
      );
 diff --git a/src/libc/stdlib.rs b/src/libc/stdlib.rs
-index ac318e8..654eff3 100644
+index ac318e86b2950cb6773672641f2a5deaabdb1f71..654eff3762c0d3da468a4441297746c57d2923b9 100644
 --- a/src/libc/stdlib.rs
 +++ b/src/libc/stdlib.rs
 @@ -98,7 +98,7 @@ fn malloc(env: &mut Environment, mut size: GuestUSize) -> MutVoidPtr {
@@ -976,7 +976,7 @@ index ac318e8..654eff3 100644
      }
  
 diff --git a/src/libc/sys/utsname.rs b/src/libc/sys/utsname.rs
-index fe6d0f8..e67f689 100644
+index fe6d0f8024a8d7fb9ab8237b5bbbe7958b8f899a..e67f6890245317acbf1afe097d8e8ee41ec66c9f 100644
 --- a/src/libc/sys/utsname.rs
 +++ b/src/libc/sys/utsname.rs
 @@ -35,7 +35,7 @@ fn uname(env: &mut Environment, name: MutPtr<utsname>) -> i32 {
@@ -989,7 +989,7 @@ index fe6d0f8..e67f689 100644
      // Same as sysctlbyname 'kern.osrelease'
      let release = b"13.0.0\0";
 diff --git a/src/libc/sysctl.rs b/src/libc/sysctl.rs
-index 7996ef4..41d0b94 100644
+index 7996ef43f5d273b670ff4b202c206c5e0b07c3ad..41d0b947761ca53919fae4e34562be06212cdb5a 100644
 --- a/src/libc/sysctl.rs
 +++ b/src/libc/sysctl.rs
 @@ -58,7 +58,7 @@ static SYSCTL_VALUES: [((i32, i32), &str, SysInfoType); 38] = [
@@ -1002,7 +1002,7 @@ index 7996ef4..41d0b94 100644
      ((1,21), "kern.boottime" , SysInfoType::Int64(1600000000)),
      // kern.proc.pid is a node for process information. Some games probe
 diff --git a/src/libc/unistd.rs b/src/libc/unistd.rs
-index 23463ee..a1a17de 100644
+index 23463eecd8e447efbe649ec638c30a2409d26d43..a1a17de349e93e89de6c94f32def190a2bfe6132 100644
 --- a/src/libc/unistd.rs
 +++ b/src/libc/unistd.rs
 @@ -415,7 +415,7 @@ fn symlink(env: &mut Environment, path1: ConstPtr<u8>, path2: ConstPtr<u8>) -> i
@@ -1015,7 +1015,7 @@ index 23463ee..a1a17de 100644
      if namelen <= len {
          // POSIX: name buffer too small -> ENAMETOOLONG. Don't crash the host.
 diff --git a/src/log.rs b/src/log.rs
-index 1b531e5..3ec8ab7 100644
+index 1b531e5b46c3037b2cb761ab6dd437620065faf9..3ec8ab7b05fee32c633cdcce77624cde09faaba4 100644
 --- a/src/log.rs
 +++ b/src/log.rs
 @@ -16,7 +16,7 @@ use std::sync::{LazyLock, Mutex};
@@ -1057,7 +1057,7 @@ index 1b531e5..3ec8ab7 100644
  }
  
 diff --git a/src/mach_o.rs b/src/mach_o.rs
-index 03c8143..4a05872 100644
+index 03c8143b8027ac877e3e7498f17434ae4e2fbed4..4a05872403090b6fc023d6d9b3b9e1401febf4e8 100644
 --- a/src/mach_o.rs
 +++ b/src/mach_o.rs
 @@ -815,7 +815,7 @@ impl MachO {
@@ -1070,7 +1070,7 @@ index 03c8143..4a05872 100644
                      }
                  }
 diff --git a/src/mem.rs b/src/mem.rs
-index a8ecd81..c07a930 100644
+index a8ecd8191975407e912e426d97753bd918bbaf5c..c07a93049de4a0f8545fe662e16e31bcdd309977 100644
 --- a/src/mem.rs
 +++ b/src/mem.rs
 @@ -595,7 +595,7 @@ impl Mem {
@@ -1119,7 +1119,7 @@ index a8ecd81..c07a930 100644
          );
      }
 diff --git a/src/objc/classes.rs b/src/objc/classes.rs
-index 483ec5c..263c8ef 100644
+index 483ec5cc9439c9293b15a97206d14e2824c8794b..263c8ef0cee99ca72558e8f6977058edcc68b655 100644
 --- a/src/objc/classes.rs
 +++ b/src/objc/classes.rs
 @@ -2299,7 +2299,7 @@ pub fn ___objc_personality_v0(
@@ -1132,7 +1132,7 @@ index 483ec5c..263c8ef 100644
          version,
          actions,
 diff --git a/src/options.rs b/src/options.rs
-index f19834b..ffa8a03 100644
+index f19834ba9b628cb422b8d0a0319650beb3223a3e..ffa8a03a616cd423b00f09204eed4d1760c211d5 100644
 --- a/src/options.rs
 +++ b/src/options.rs
 @@ -372,7 +372,7 @@ impl Default for Options {
@@ -1145,7 +1145,7 @@ index f19834b..ffa8a03 100644
              // titles). On desktop hosts (where the user is likely
              // running Mesa / Apple PowerVR / NVIDIA / AMD, all
 diff --git a/src/paths.rs b/src/paths.rs
-index 5f265c8..73fb365 100644
+index 5f265c86ab8091c3ac37d76ff9467baf804ee7ea..73fb3656e87b206df49e9a317cabca95b1eac913 100644
 --- a/src/paths.rs
 +++ b/src/paths.rs
 @@ -25,6 +25,24 @@ use std::borrow::Cow;
@@ -1246,7 +1246,7 @@ index 5f265c8..73fb365 100644
          match std::fs::remove_dir_all(&dir) {
              Ok(()) => log!("Removed legacy PVRTC disk cache directory {}", dir.display()),
 diff --git a/src/trainer.rs b/src/trainer.rs
-index 01d5076..2f09afa 100644
+index 01d5076c15de326eeb885177ee1fbae4bd561817..2f09afa112a9cb44ac2e37248641c531f66760e7 100644
 --- a/src/trainer.rs
 +++ b/src/trainer.rs
 @@ -235,7 +235,7 @@ pub struct Trainer {
@@ -1259,7 +1259,7 @@ index 01d5076..2f09afa 100644
  /// Don't try to search allocations larger than this (they are rarely game
  /// state and scanning them is slow).
 diff --git a/src/version/lib.rs b/src/version/lib.rs
-index 1163770..f6dcce7 100644
+index 116377048b0174b12bec8580997c3b8c65e859e0..f6dcce7b8de7f45490c2835505967ee99c4a5025 100644
 --- a/src/version/lib.rs
 +++ b/src/version/lib.rs
 @@ -18,20 +18,7 @@ pub const GITHUB_REF_NAME: Option<&str> = option_env!("GITHUB_REF_NAME");
@@ -1287,7 +1287,7 @@ index 1163770..f6dcce7 100644
 +    ""
  }
 diff --git a/src/window.rs b/src/window.rs
-index 6212747..bab2c51 100644
+index 62127476cf0e6bfaae962dd8146cded72f1ad9e8..bab2c51805b74c6931ffbbf0f03605ee5a314550 100644
 --- a/src/window.rs
 +++ b/src/window.rs
 @@ -3124,7 +3124,7 @@ pub fn show_error_messagebox(window: Option<&Window>, error_message: &str) {
@@ -1317,14 +1317,14 @@ index 6212747..bab2c51 100644
      };
  
 diff --git a/touchHLE_apps/README.txt b/touchHLE_apps/README.txt
-index 5fb5bfe..49c58e5 100644
+index 5fb5bfeb73d920cf4ea240f6d0242c7463a7fc1e..49c58e51d1e6e8e12e58ade05ec75ce93bfd1fc8 100644
 --- a/touchHLE_apps/README.txt
 +++ b/touchHLE_apps/README.txt
 @@ -1 +1 @@
 -If you put your .app bundles or .ipa files in this directory, they will show up in the touchHLE app picker.
 +This folder is reserved for AnyiOSEMU-managed app data. Import games through the AnyiOS library so originals remain backed up and launch settings are preserved.
 diff --git a/touchHLE_options.txt b/touchHLE_options.txt
-index aa4944a..a76de94 100644
+index aa4944a6c4bc2b5fccf1ece46dbe06c859dcbdf9..a76de9415c74a9f7e1d21c9cfdca1b550541cdc6 100644
 --- a/touchHLE_options.txt
 +++ b/touchHLE_options.txt
 @@ -1,15 +1,14 @@

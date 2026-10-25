@@ -33,7 +33,9 @@ fi
 
 ACTUAL_PATCH=$(mktemp "${TMPDIR:-/tmp}/anyiose-patch.XXXXXX")
 trap 'rm -f "$ACTUAL_PATCH"' EXIT
-git -C "$HLE" diff --binary HEAD > "$ACTUAL_PATCH"
+# Full object IDs keep this exact patch check stable across Git versions and
+# shallow/full clones, whose default abbreviated hashes may differ in length.
+git -C "$HLE" diff --binary --full-index HEAD > "$ACTUAL_PATCH"
 if ! cmp -s "$PATCH" "$ACTUAL_PATCH"; then
   echo "Pinned engine worktree contains changes outside the reviewed AnyiOSEMU patch" >&2
   exit 1
