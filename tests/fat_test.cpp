@@ -1,6 +1,7 @@
 #include <cassert>
 #include <iostream>
 #include <random>
+#include <string>
 #include <vector>
 
 #include "macho_container.h"
@@ -25,12 +26,13 @@ Bytes fat(bool wide = false, bool le = false) {
     return b;
 }
 template <class F>
-void fault(const char* code, F f) {
+void fault(const char* code, F f, const char* detail = nullptr) {
     bool caught = false;
     try {
         f();
     } catch (const podnative::runtime::Error& e) {
-        caught = e.code == code;
+        caught = e.code == code &&
+                 (detail == nullptr || std::string(e.what()).find(detail) != std::string::npos);
         if (!caught) std::cerr << e.what() << '\n';
     }
     assert(caught);
@@ -41,10 +43,26 @@ int main() {
             auto b = fat(wide, le);
             auto s = podnative::selectArm32Slice(b.data(), 72, b.size());
             assert(s.universal && s.offset == 2048 && s.size == 512 && s.subtype == 9);
+            assert(s.containsArm64 && !s.containsArm64_32);
         }
+    auto arm64_32 = fat();
+    put(arm64_32, 8, 0x0200000c);
+    auto arm64_32_slice = podnative::selectArm32Slice(arm64_32.data(), 72, arm64_32.size());
+    assert(!arm64_32_slice.containsArm64 && arm64_32_slice.containsArm64_32);
+
+    auto arm32_variants = fat();
+    put(arm32_variants, 8, 12);
+    put(arm32_variants, 12, 6);
+    put(arm32_variants, 32, 10);
+    auto preferred = podnative::selectArm32Slice(arm32_variants.data(), 72, arm32_variants.size());
+    assert(preferred.universal && preferred.offset == 2048 && preferred.subtype == 10);
+    assert(!preferred.containsArm64);
+
     auto b = fat();
     put(b, 28, 0x100000c);
-    fault("FAT_NO_ARM32", [&] { podnative::selectArm32Slice(b.data(), 64, b.size()); });
+    fault(
+        "FAT_NO_ARM32", [&] { podnative::selectArm32Slice(b.data(), 64, b.size()); },
+        "contains ARM64 but no supported ARM32 slice");
     b = fat();
     put(b, 36, 1024);
     fault("FAT_SLICE_OVERLAP", [&] { podnative::selectArm32Slice(b.data(), 64, b.size()); });
@@ -67,6 +85,16 @@ int main() {
     put(b, 4, 12, 4, true);
     auto s = podnative::selectArm32Slice(b.data(), 28, 128);
     assert(!s.universal && s.size == 128);
+    put(b, 8, 10, 4, true);
+    s = podnative::selectArm32Slice(b.data(), 28, 128);
+    assert(!s.universal && s.subtype == 10);
+    put(b, 8, 5, 4, true);
+    fault("MACHO_CPU_SUBTYPE", [&] { podnative::selectArm32Slice(b.data(), 28, 128); });
+    put(b, 8, 0x80000009, 4, true);
+    fault("MACHO_CPU_SUBTYPE", [&] { podnative::selectArm32Slice(b.data(), 28, 128); });
+    b = fat();
+    put(b, 32, 0x80000009);
+    fault("FAT_NO_ARM32", [&] { podnative::selectArm32Slice(b.data(), 72, b.size()); });
     std::mt19937 rng(107);
     for (int i = 0; i < 20000; i++) {
         b = fat(i % 2, i % 3 == 0);

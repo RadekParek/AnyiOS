@@ -81,6 +81,42 @@ final class GameLibrary {
         File cover() {
             return new File(directory, "cover.png");
         }
+        boolean canLaunchInAnyiOSEMU() {
+            if ((!kind.equals("IPA") && !kind.equals("Folder")) || !blockReason.isEmpty()
+                || status.equals("Encrypted") || status.equals("Unsupported")
+                || status.equals("Invalid"))
+                return false;
+            String architectureName = architecture.toUpperCase(java.util.Locale.ROOT);
+            int separator = architectureName.indexOf(' ');
+            String architectureFamily =
+                separator < 0 ? architectureName : architectureName.substring(0, separator);
+            return architectureFamily.equals("ARM32") || architectureFamily.equals("ARMV6")
+                || architectureFamily.equals("ARMV7") || architectureFamily.equals("ARMV7F")
+                || architectureFamily.equals("ARMV7S");
+        }
+        File source() {
+            return new File(directory, kind.equals("Folder") ? "bundle" : "source.bin");
+        }
+        /** Resolve the actual .app root retained inside an imported folder, if it was nested. */
+        File anyioseSource() {
+            File source = source();
+            if (kind.equals("Folder") && !executable.isEmpty()) {
+                try {
+                    File root = source.getCanonicalFile();
+                    File executableFile = new File(source, executable).getCanonicalFile();
+                    if (executableFile.toPath().startsWith(root.toPath())) {
+                        File bundle = executableFile.getParentFile();
+                        if (bundle != null && new File(bundle, "Info.plist").isFile())
+                            return bundle;
+                    }
+                } catch (IOException ignored) { /* Runtime preparation reports the missing path. */
+                }
+            }
+            return source;
+        }
+        File anyioseDataDirectory() {
+            return new File(directory, "sandbox/AnyiOSEMU");
+        }
     }
     private final Context context;
     private final File root;
@@ -230,12 +266,13 @@ final class GameLibrary {
             throw new IOException("Could not create private game storage");
     }
     private static final class SandboxPaths {
-        final File root, documents, bundleCache, bundleOverlay;
+        final File root, documents, bundleCache, bundleOverlay, anyiose;
         SandboxPaths(File root) {
             this.root = root;
             documents = new File(root, "Documents");
             bundleCache = new File(root, "ZipCache");
             bundleOverlay = new File(root, "BundleOverrides");
+            anyiose = new File(root, "AnyiOSEMU");
         }
     }
     private static void ensurePrivateDirectory(File root, File directory) throws IOException {
@@ -252,6 +289,7 @@ final class GameLibrary {
         ensurePrivateDirectory(sandbox, paths.documents);
         ensurePrivateDirectory(sandbox, paths.bundleCache);
         ensurePrivateDirectory(sandbox, paths.bundleOverlay);
+        ensurePrivateDirectory(sandbox, paths.anyiose);
         File legacyContainer = new File(gameDirectory, "container");
         if (java.nio.file.Files.isSymbolicLink(legacyContainer.toPath()))
             throw new IOException("Legacy game data refused a symbolic link");
@@ -716,6 +754,7 @@ final class GameLibrary {
             List<File> images = new ArrayList<>();
             try {
                 mkdir(scratch);
+                ensureSandbox(game.directory);
                 File source =
                     new File(game.directory, game.kind.equals("Folder") ? "bundle" : "source.bin");
                 GameInspector.Result result = GameInspector.analyze(source, game.title, scratch);
@@ -772,6 +811,64 @@ final class GameLibrary {
             }
         });
     }
+    /** Prepares a zero-copy IPA path with the extension required by AnyiOSEMU's ZIP loader. */
+    void prepareAnyiOSEmu(Game game, java.util.function.Consumer<File> callback) {
+        if (!game.canLaunchInAnyiOSEMU()) {
+            main.post(() -> callback.accept(null));
+            return;
+        }
+        if (!begin("Preparing the private AnyiOSEMU session…")) {
+            main.post(() -> callback.accept(null));
+            return;
+        }
+        worker.execute(() -> {
+            File runtimeSource = null;
+            try {
+                File canonicalRoot = root.getCanonicalFile();
+                File canonicalGame = game.directory.getCanonicalFile();
+                if (!canonicalGame.getParentFile().equals(canonicalRoot))
+                    throw new IOException("Invalid library entry");
+                SandboxPaths sandbox = ensureSandbox(game.directory);
+                File source = game.anyioseSource();
+                if (!source.exists() || !source.canRead()
+                    || !source.getCanonicalFile().toPath().startsWith(canonicalGame.toPath()))
+                    throw new IOException("The private game source is missing or unreadable");
+                if (game.kind.equals("IPA")) {
+                    File alias = new File(game.directory, "AnyiOSEMU_source.ipa");
+                    if (java.nio.file.Files.isSymbolicLink(alias.toPath()))
+                        java.nio.file.Files.delete(alias.toPath());
+                    if (alias.exists() && !alias.isFile())
+                        throw new IOException("The AnyiOSEMU IPA path is not a regular file");
+                    if (!alias.exists()
+                        || !java.nio.file.Files.isSameFile(alias.toPath(), source.toPath())) {
+                        java.nio.file.Files.deleteIfExists(alias.toPath());
+                        // A hard link avoids duplicating a potentially multi-gigabyte IPA and
+                        // leaves Converter's canonical source.bin untouched.
+                        java.nio.file.Files.createLink(alias.toPath(), source.toPath());
+                    }
+                    runtimeSource = alias;
+                } else {
+                    if (!source.isDirectory())
+                        throw new IOException("The extracted .app bundle is missing");
+                    runtimeSource = source;
+                }
+                ensurePrivateDirectory(sandbox.root, sandbox.anyiose);
+            } catch (Exception | LinkageError e) {
+                runtimeSource = null;
+                error = true;
+                notice = "Could not prepare AnyiOSEMU: " + e.getMessage();
+                Diagnostics.record("ANYIOSEMU_PREPARE_ERROR", e.toString());
+            } finally {
+                SharedCatalog.end();
+                busy = false;
+                cancellable = false;
+                progress = "";
+                changed();
+                File ready = runtimeSource;
+                main.post(() -> callback.accept(ready));
+            }
+        });
+    }
     private static boolean bundleCacheValid(
         File bundle, File marker, String fingerprint, String executable) {
         try {
@@ -787,6 +884,49 @@ final class GameLibrary {
         } catch (Exception e) {
             return false;
         }
+    }
+    /** Persists a launch-start or completed AnyiOSEMU runtime log with the shared game entry. */
+    void recordAnyiOSEmuReport(String gameId, String report) {
+        if (gameId == null || !gameId.matches("game-[0-9a-f-]{36}") || report == null)
+            return;
+        worker.execute(() -> {
+            try {
+                File directory = new File(root, gameId);
+                if (!directory.getCanonicalFile().getParentFile().equals(root.getCanonicalFile())
+                    || !directory.isDirectory())
+                    throw new IOException("The game entry no longer exists");
+                String bounded = report.length() > 100000
+                    ? report.substring(0, 100000) + "\nReport shortened."
+                    : report;
+                String saved = "Recorded at " + new java.util.Date()
+                    + "\nBuild=" + BuildConfig.SOURCE_REVISION + "\n" + bounded;
+                JSONObject data = readMetadata(directory);
+                data.put("lastLaunchReport", saved);
+                writeMetadata(directory, data);
+                refresh();
+                boolean pending = report.contains("outcome pending");
+                boolean completed = report.contains("AnyiOSEMU finished with status 0");
+                error = report.contains("AnyiOSEMU errored:") || report.contains("PANIC in thread")
+                    || report.contains("FATAL: native host crash")
+                    || report.contains("FATAL host exception") || report.contains("FATAL SIGNAL")
+                    || report.contains("Runtime log unavailable:")
+                    || report.matches("(?s).*AnyiOSEMU finished with status (?!0\\b)[0-9]+.*");
+                notice = pending
+                    ? "AnyiOSEMU started. Its report will be updated when the session closes."
+                    : error
+                    ? "AnyiOSEMU recorded an error. Open the latest session report for details."
+                    : completed
+                    ? "AnyiOSEMU exited normally; that is not proof of visible rendering or gameplay."
+                    : "AnyiOSEMU session ended. The diagnostic log was saved; visual results remain unverified.";
+                Diagnostics.record("ANYIOSEMU_SESSION", gameId + " · " + notice);
+            } catch (Exception e) {
+                error = true;
+                notice = "Could not save AnyiOSEMU report: " + e.getMessage();
+                Diagnostics.record("ANYIOSEMU_REPORT_ERROR", e.toString());
+            } finally {
+                changed();
+            }
+        });
     }
     void attemptLaunch(Game game) {
         attemptLaunch(game, null);
@@ -925,13 +1065,14 @@ final class GameLibrary {
                     addSandboxDirectory(sandbox.root, sandbox.documents, "Documents/", zip, 0);
                     addSandboxDirectory(
                         sandbox.root, sandbox.bundleOverlay, "BundleOverrides/", zip, 0);
+                    addSandboxDirectory(sandbox.root, sandbox.anyiose, "AnyiOSEMU/", zip, 0, true);
                     File importedBundle = new File(game.directory, "bundle");
                     if (game.kind.equals("Folder") || importedBundle.isDirectory())
                         addSandboxDirectory(game.directory, importedBundle, "Bundle/", zip, 0);
                 }
-                notice = "Sandbox data exported. The ZIP contains Documents and bundle overrides; "
-                    + "an imported .app copy is included when applicable, while the rebuildable "
-                    + "IPA resource cache is excluded.";
+                notice = "Sandbox data exported. The ZIP contains Documents, bundle overrides and "
+                    + "AnyiOSEMU per-game data; rebuildable IPA/PVRTC caches are excluded. An "
+                    + "imported .app copy is included when applicable.";
                 error = false;
                 Diagnostics.record("SANDBOX_EXPORT", game.title + " · " + formatBytes(copied));
             } catch (CancellationException e) {
@@ -951,6 +1092,10 @@ final class GameLibrary {
     }
     private void addSandboxDirectory(File sandboxRoot, File directory, String archivePath,
         ZipOutputStream zip, int depth) throws IOException {
+        addSandboxDirectory(sandboxRoot, directory, archivePath, zip, depth, false);
+    }
+    private void addSandboxDirectory(File sandboxRoot, File directory, String archivePath,
+        ZipOutputStream zip, int depth, boolean excludeRuntimeCaches) throws IOException {
         checkCancelled();
         if (depth > 32 || ++files > 30000)
             throw new IOException("Sandbox exceeds safe depth or 30,000-entry export limit");
@@ -969,11 +1114,13 @@ final class GameLibrary {
         byte[] buffer = new byte[65536];
         for (File child : children) {
             checkCancelled();
+            if (excludeRuntimeCaches && child.getName().equals("AnyiOSEMU_pvrtc_cache"))
+                continue;
             if (java.nio.file.Files.isSymbolicLink(child.toPath()))
                 throw new IOException("Sandbox export refused a symbolic link");
             if (child.isDirectory()) {
-                addSandboxDirectory(
-                    sandboxRoot, child, archivePath + child.getName() + "/", zip, depth + 1);
+                addSandboxDirectory(sandboxRoot, child, archivePath + child.getName() + "/", zip,
+                    depth + 1, excludeRuntimeCaches);
                 continue;
             }
             if (!child.isFile())

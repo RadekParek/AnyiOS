@@ -6,6 +6,27 @@
 #include "runtime/error.h"
 namespace podnative {
 using runtime::Error;
+namespace {
+int arm32SubtypeRank(uint32_t subtype) {
+    // Match the pinned ARM32 runtime's accepted Mach-O subtypes. Capability bits
+    // signal requirements this backend does not implement and must not be masked.
+    if (subtype & 0xff000000u) return -1;
+    switch (subtype) {
+        case 9:
+            return 4;  // ARMv7
+        case 11:
+            return 3;  // ARMv7s
+        case 10:
+            return 2;  // ARMv7f
+        case 6:
+            return 1;  // ARMv6
+        case 0:
+            return 0;  // Generic ARM
+        default:
+            return -1;
+    }
+}
+}  // namespace
 MachOSlice selectArm32Slice(const uint8_t* b, size_t n, uint64_t fileSize) {
     if (!b || n < 4 || fileSize < 4 || n > fileSize)
         throw Error("CONTAINER_TRUNCATED", "executable header is incomplete");
@@ -21,7 +42,11 @@ MachOSlice selectArm32Slice(const uint8_t* b, size_t n, uint64_t fileSize) {
     if (magic == 0xcefaedfe) {
         if (n < 28 || fileSize < 28) throw Error("MACHO_TRUNCATED", "ARM32 header is incomplete");
         if (read(4, 4, true) != 12) throw Error("MACHO_CPU", "thin executable is not ARM32");
-        return {0, fileSize, uint32_t(read(8, 4, true)), false};
+        const auto subtype = uint32_t(read(8, 4, true));
+        if (arm32SubtypeRank(subtype) < 0)
+            throw Error("MACHO_CPU_SUBTYPE",
+                        "thin ARM32 executable uses an unsupported CPU subtype or capability");
+        return {0, fileSize, subtype, false, false, false};
     }
     bool little = magic == 0xbebafeca || magic == 0xbfbafeca;
     bool wide = magic == 0xcafebabf || magic == 0xbfbafeca;
@@ -40,11 +65,19 @@ MachOSlice selectArm32Slice(const uint8_t* b, size_t n, uint64_t fileSize) {
     };
     std::vector<Range> ranges;
     MachOSlice chosen{};
+    bool containsArm32 = false;
+    bool containsArm64 = false;
+    bool containsArm64_32 = false;
+    bool containsOther = false;
     int best = -1;
     for (uint64_t i = 0; i < count; i++) {
         const size_t p = size_t(8 + i * stride);
         const uint32_t cpu = uint32_t(read(p, 4, little)),
                        subtype = uint32_t(read(p + 4, 4, little));
+        containsArm32 = containsArm32 || cpu == 12;
+        containsArm64 = containsArm64 || cpu == 0x0100000c;
+        containsArm64_32 = containsArm64_32 || cpu == 0x0200000c;
+        containsOther = containsOther || (cpu != 12 && cpu != 0x0100000c && cpu != 0x0200000c);
         const uint64_t offset = read(p + 8, wide ? 8 : 4, little),
                        size = read(p + (wide ? 16 : 12), wide ? 8 : 4, little);
         const uint64_t alignment = read(p + (wide ? 24 : 16), 4, little);
@@ -60,19 +93,33 @@ MachOSlice selectArm32Slice(const uint8_t* b, size_t n, uint64_t fileSize) {
                 throw Error("FAT_SLICE_OVERLAP", "architecture slices overlap");
         ranges.push_back({offset, offset + size});
         if (cpu == 12) {
-            // Prefer ordinary ARMv7, then v7s, v6, and generic ARM. Never choose ARM64.
-            uint32_t base = subtype & 0xffffff;
-            int rank = base == 9 ? 4 : base == 11 ? 3 : base == 6 ? 2 : base == 0 ? 1 : 0;
+            // Prefer ARMv7, then v7s, v7f, v6 and generic ARM. Never choose ARM64.
+            const int rank = arm32SubtypeRank(subtype);
             if (rank > best) {
                 best = rank;
-                chosen = {offset, size, subtype, true};
+                chosen = {offset, size, subtype, true, containsArm64, containsArm64_32};
             }
         }
     }
-    if (best < 0)
-        throw Error(
-            "FAT_NO_ARM32",
-            "universal binary contains no ARM32 slice; ARM64-only iOS games are unsupported");
+    if (best >= 0) {
+        chosen.containsArm64 = containsArm64;
+        chosen.containsArm64_32 = containsArm64_32;
+    }
+    if (best < 0) {
+        std::string architectures;
+        auto appendArchitecture = [&architectures](const char* name) {
+            if (!architectures.empty()) architectures += " + ";
+            architectures += name;
+        };
+        if (containsArm32) appendArchitecture("ARM32");
+        if (containsArm64) appendArchitecture("ARM64");
+        if (containsArm64_32) appendArchitecture("ARM64_32");
+        if (containsOther) appendArchitecture("other CPU architectures");
+        if (architectures.empty()) architectures = "no recognized CPU architectures";
+        throw Error("FAT_NO_ARM32",
+                    "universal binary contains " + architectures +
+                        " but no supported ARM32 slice; ARM64-only iOS games are unsupported");
+    }
     if (chosen.size < 28)
         throw Error("FAT_SLICE_TRUNCATED", "selected ARM32 slice has no complete Mach-O header");
     return chosen;

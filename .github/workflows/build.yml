@@ -30,10 +30,45 @@ jobs:
     timeout-minutes: 150
     steps:
       - uses: actions/checkout@v5
+        with:
+          # Prepare Gradle before initializing SDL's unused nested wrapper JAR below;
+          # the app build uses the pinned installed Gradle distribution, not SDL's wrapper.
+          submodules: false
       - uses: actions/setup-java@v5
         with:
           distribution: temurin
           java-version: '17'
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.11.1'
+      - name: Prepare pinned AnyiOSEMU engine source
+        run: scripts/prepare-hyperhle.sh
+      - name: Cache pinned AnyiOSEMU Boost headers
+        id: anyiose-boost-cache
+        uses: actions/cache@v4
+        with:
+          path: third_party/hyperhle/vendor/boost
+          key: ${{ runner.os }}-boost-${{ hashFiles('third_party/hyperhle-boost-version.txt', 'scripts/prepare-hyperhle-boost.sh') }}
+      - name: Prepare pinned AnyiOSEMU Boost headers
+        if: steps.anyiose-boost-cache.outputs.cache-hit != 'true'
+        run: scripts/prepare-hyperhle-boost.sh
+      - name: Install Rust Android toolchain
+        run: |
+          rustup target add aarch64-linux-android
+          cargo install cargo-ndk@3.5.4
+          rustc --version
+          cargo --version
+          cargo ndk --version
+      - name: Cache AnyiOSEMU Rust Android build
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            third_party/hyperhle/target
+          key: ${{ runner.os }}-android-ndk-27.2.12479018-anyiose-rust-${{ hashFiles('third_party/hyperhle-revision.txt', 'third_party/hyperhle-patches/AnyiOSEMU.patch', 'third_party/hyperhle-patches/SDL-Android-NDK-27.patch', 'third_party/hyperhle/Cargo.lock', 'third_party/hyperhle/**/Cargo.toml') }}
+          restore-keys: |
+            ${{ runner.os }}-android-ndk-27.2.12479018-anyiose-rust-
       # Development keys only, never release signing material. Cache eviction can
       # change this certificate; durable distribution requires configured signing secrets.
       - name: Reuse development signing identity when cached
@@ -52,13 +87,16 @@ jobs:
           } 2>&1 | tee .local/logs/environment.log
           test -x "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"
           echo "$ANDROID_HOME/cmdline-tools/latest/bin" >> "$GITHUB_PATH"
-      - uses: gradle/actions/setup-gradle@v4
-        with:
-          gradle-version: '8.11.1'
       - name: Install application SDK
         run: |
           set -o pipefail
           sdkmanager 'platforms;android-35' 'build-tools;35.0.0' 'ndk;27.2.12479018' 'cmake;3.22.1' 2>&1 | tee .local/logs/sdk-install.log
+          # cargo-ndk-android unconditionally reads local.properties for ndk.dir.
+          printf 'sdk.dir=%s\nndk.dir=%s/ndk/27.2.12479018\n' "$ANDROID_HOME" "$ANDROID_HOME" > local.properties
+      - name: Prepare Cargo SDL source for Android NDK 27
+        run: |
+          set -o pipefail
+          scripts/prepare-hyperhle-rust-sdl.sh 2>&1 | tee .local/logs/rust-sdl-prepare.log
       - name: Formatting and script lint
         run: |
           pipx install clang-format==19.1.7
@@ -93,6 +131,7 @@ jobs:
           path: |
             third_party/angle/lib/arm64-v8a/
             third_party/angle/include/
+            app/src/main/jniLibs/arm64-v8a/
             app/src/main/assets/angle-notices/
             app/src/main/assets/angle-revision.txt
       - name: Bootstrap upstream ANGLE build tools
@@ -115,6 +154,9 @@ jobs:
         run: |
           python3 scripts/check-native-deps.py third_party/angle/lib/arm64-v8a
           cmp third_party/angle/revision.txt app/src/main/assets/angle-revision.txt
+          cmp third_party/angle/lib/arm64-v8a/libEGL_podnative.so app/src/main/jniLibs/arm64-v8a/libEGL_angle.so
+          cmp third_party/angle/lib/arm64-v8a/libGLESv1_CM_podnative.so app/src/main/jniLibs/arm64-v8a/libGLESv1_CM_angle.so
+          cmp third_party/angle/lib/arm64-v8a/libGLESv2_podnative.so app/src/main/jniLibs/arm64-v8a/libGLESv2_angle.so
       - name: Cache verified ANGLE before compiling the application
         if: steps.angle-cache.outputs.cache-hit != 'true'
         uses: actions/cache/save@v4
@@ -123,6 +165,7 @@ jobs:
           path: |
             third_party/angle/lib/arm64-v8a/
             third_party/angle/include/
+            app/src/main/jniLibs/arm64-v8a/
             app/src/main/assets/angle-notices/
             app/src/main/assets/angle-revision.txt
       # A debuggable APK is what Play Protect and Samsung's installer warn about.
@@ -192,7 +235,7 @@ jobs:
             exit 1
           fi
           rm -f .manifest.txt
-          printf 'source=%s\nangle=%s\nvariant=%s\nsigning=%s\ndebuggable=false\n' "$GITHUB_SHA" "$(cat ../../third_party/angle/revision.txt)" "$VARIANT" "${PODNATIVE_KEYSTORE:+configured}${PODNATIVE_PREVIEW_KEYSTORE:+preview}" > BUILD-INFO.txt
+          printf 'source=%s\nangle=%s\nanyiose_runtime=%s\nvariant=%s\nsigning=%s\ndebuggable=false\n' "$GITHUB_SHA" "$(cat ../../third_party/angle/revision.txt)" "$(cat ../../third_party/hyperhle-revision.txt)" "$VARIANT" "${PODNATIVE_KEYSTORE:+configured}${PODNATIVE_PREVIEW_KEYSTORE:+preview}" > BUILD-INFO.txt
           "$ANDROID_HOME/build-tools/35.0.0/apksigner" verify --print-certs "$ARTIFACT" >> BUILD-INFO.txt || {
             if [ "$VARIANT" = debug ] || [ -n "${PODNATIVE_KEYSTORE:-}" ] || [ -n "${PODNATIVE_PREVIEW_KEYSTORE:-}" ]; then exit 1; fi
             echo 'UNSIGNED release: not installable until signed; not a published signed release.' >> BUILD-INFO.txt
@@ -210,6 +253,22 @@ jobs:
           printf 'converter=%s\nconverter_cpu=%s\n' "$(cat ../../converter/UPSTREAM_REVISION)" "$(cat ../../third_party/converter-runtime/dynarmic-revision.txt)" >> BUILD-INFO.txt
           unzip -l "$ARTIFACT" | grep 'lib/arm64-v8a/libEGL_podnative.so'
           unzip -l "$ARTIFACT" | grep 'lib/arm64-v8a/libGLESv2_podnative.so'
+          unzip -l "$ARTIFACT" | grep 'lib/arm64-v8a/libEGL_angle.so'
+          unzip -l "$ARTIFACT" | grep 'lib/arm64-v8a/libGLESv1_CM_angle.so'
+          unzip -l "$ARTIFACT" | grep 'lib/arm64-v8a/libGLESv2_angle.so'
+          unzip -l "$ARTIFACT" | grep 'lib/arm64-v8a/libtouchHLE.so'
+          unzip -l "$ARTIFACT" | grep 'lib/arm64-v8a/libSDL2.so'
+          unzip -l "$ARTIFACT" | grep 'lib/arm64-v8a/libc++_shared.so'
+          unzip -l "$ARTIFACT" | grep 'assets/anyiose-runtime-notices.txt'
+          unzip -l "$ARTIFACT" | grep 'assets/angle-notices/INDEX.txt'
+          unzip -l "$ARTIFACT" | grep 'assets/anyiose-rust-dependencies.txt'
+          unzip -l "$ARTIFACT" | grep 'assets/anyiose-dynarmic-license.txt'
+          unzip -l "$ARTIFACT" | grep 'assets/LICENSE'
+          unzip -l "$ARTIFACT" | grep 'assets/vendor/SDL/LICENSE.txt'
+          unzip -l "$ARTIFACT" | grep 'assets/vendor/dynarmic/LICENSE.txt'
+          unzip -l "$ARTIFACT" | grep 'assets/vendor/openal-soft/COPYING'
+          unzip -l "$ARTIFACT" | grep 'assets/touchHLE_dylibs/COPYING.libstdcxx'
+          unzip -l "$ARTIFACT" | grep 'assets/touchHLE_fonts/LICENSE.noto'
           unzip -l "$ARTIFACT" | grep 'lib/arm64-v8a/libcompat_runtime_v1.so'
           unzip -l "$ARTIFACT" | grep 'lib/arm64-v8a/libradek.so'
           unzip -l "$ARTIFACT" | grep 'assets/gameruntime-template/classes.dex'
@@ -227,8 +286,19 @@ jobs:
           import xml.etree.ElementTree as ET
           for path in Path('.local/logs').glob('*.log'):
               all_lines = path.read_text(errors='replace').splitlines()
-              errors = [line for line in all_lines if any(token in line for token in ('e: file:', 'error:', ' FAILED', ' > ', 'Duplicate class', 'FAILURES!!!'))][:30]
-              lines = errors + all_lines[-12:]
+              markers = (
+                  'e: file:', 'error:', ' failed', 'failure', 'exception', 'caused by:',
+                  'could not', 'cannot ', 'unable to', 'not found', 'no such file',
+                  'permission denied', 'unresolved reference', 'undefined reference',
+                  'linker', 'panic', 'what went wrong:', 'execution failed for task',
+                  'non-zero exit', 'duplicate class', 'failures!!!',
+              )
+              matching = [i for i, line in enumerate(all_lines)
+                          if any(marker in line.lower() for marker in markers)]
+              errors = []
+              for index in matching[-15:]:
+                  errors.extend(all_lines[max(0, index - 1):min(len(all_lines), index + 4)])
+              lines = list(dict.fromkeys(errors + all_lines[-20:]))
               message = (path.name + ': ' + '\n'.join(lines)).replace('%', '%25').replace('\r', '%0D').replace('\n', '%0A')
               print('::warning::' + message)
           for root in ('app/build/test-results', 'converter/app/build/test-results'):
@@ -237,6 +307,16 @@ jobs:
                       for failure in case.findall('failure') + case.findall('error'):
                           message = (str(path) + ': ' + case.get('name', '') + ': ' + (failure.text or failure.get('message', '')))[:5000]
                           print('::warning::' + message.replace('%', '%25').replace('\r', '%0D').replace('\n', '%0A'))
+          # Gradle's failure summary prints only the first Android lint finding;
+          # surface every finding so CI diagnostics are actionable without fetching artifacts.
+          for path in Path('app/build/intermediates/lint_intermediate_text_report').rglob('lint-results-*.txt'):
+              report = path.read_text(errors='replace').splitlines()
+              for index, line in enumerate(report):
+                  if ': Error:' not in line:
+                      continue
+                  detail = '\n'.join(report[index:min(len(report), index + 4)])
+                  message = (str(path) + ': ' + detail)[:5000]
+                  print('::warning::' + message.replace('%', '%25').replace('\r', '%0D').replace('\n', '%0A'))
           PYCODE
       # Only published on failure: a successful run produces exactly the APK artifact.
       - name: Preserve build logs and test reports
@@ -248,6 +328,7 @@ jobs:
           path: |
             .local/logs/
             app/build/reports/
+            app/build/intermediates/lint_intermediate_text_report/
             app/build/test-results/
             converter/app/build/reports/
             converter/app/build/test-results/

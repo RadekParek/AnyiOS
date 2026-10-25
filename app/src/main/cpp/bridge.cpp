@@ -155,10 +155,11 @@ Java_org_podnative_NativeBridge_arm32Slice(JNIEnv* env, jclass, jbyteArray heade
         if (env->ExceptionCheck()) return nullptr;
         const auto slice =
             podnative::selectArm32Slice(bytes.data(), bytes.size(), uint64_t(length));
-        const jlong result[] = {jlong(slice.offset), jlong(slice.size), jlong(slice.subtype),
-                                slice.universal ? 1 : 0};
-        auto array = env->NewLongArray(4);
-        if (array) env->SetLongArrayRegion(array, 0, 4, result);
+        const jlong result[] = {jlong(slice.offset),         jlong(slice.size),
+                                jlong(slice.subtype),        slice.universal ? 1 : 0,
+                                slice.containsArm64 ? 1 : 0, slice.containsArm64_32 ? 1 : 0};
+        auto array = env->NewLongArray(6);
+        if (array) env->SetLongArrayRegion(array, 0, 6, result);
         return array;
     } catch (const std::exception& e) {
         fail(env, e);

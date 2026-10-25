@@ -1,10 +1,18 @@
-# HLE linker / guest-call increment
+# Historical C++ HLE linker / guest-call prototype
+
+> **Historical only.** The C++ guest framework and call-gate path below belonged to the
+> previous AnyiOS game-runtime prototype. The current Android game engine is the pinned
+> HyperHLE-Reborn source integrated as AnyiOSEMU; these C++ coverage counts and host results
+> are not current-engine compatibility evidence. See [`RUNTIME.md`](RUNTIME.md) and
+> [`ANYIOS_INTEGRATION.md`](ANYIOS_INTEGRATION.md).
+
+## Original HLE linker / guest-call increment
 
 2026-10-21. Target the latest private Spinjitzu Scavenger Hunt report: 472 static imports, 1,235 binding sites, weak coalescing and legacy dispatch blockers. Do not commit the report or game files.
 
 Implement an original, session-owned export graph (two-level ordinals, explicit aliases, deterministic weak selection), graph-aware transactional fixups, and checked ARM SVC call gates for genuinely implemented APIs. Bind the existing CF bit-vector implementation and bounded C memory/string operations. Audit production launch against the actual registry instead of claiming every import is supported. Exercise ARM and Thumb calls through the pinned CPU in CI, including forged traps and invalid return addresses.
 
-HyperHLE-Reborn 5b65054c55cc33c6095f8c4b771430da5e63fbf4: MPL-2.0; reviewed src/dyld.rs module documentation and HostDylib interface as architectural research only. Its general separation of library names/aliases and function/data/class exports is useful. No implementation or renderer copied, linked or vendored. Keep independent ANGLE renderer unchanged. Official Apple format references from the earlier dyld increment still apply.
+An earlier HyperHLE-Reborn candidate at `5b65054c55cc33c6095f8c4b771430da5e63fbf4` was reviewed for architecture. That is not the selected engine pin. At the time of this historical prototype, no implementation or renderer was copied; the later AnyiOSEMU integration deliberately replaced this Android game path with a different pinned HyperHLE-Reborn revision. Official Apple format references from the earlier dyld increment still apply.
 
 Second increment (same day): guest heap and the C runtime subset described in
 `DYLD_AND_IMPORT_INCREMENT.md`. Coverage moved from 9 to 72 of 438 required imports.

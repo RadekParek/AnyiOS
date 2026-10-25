@@ -1,4 +1,34 @@
 plugins { id 'com.android.application' }
+apply plugin: 'com.github.willir.rust.cargo-ndk-android'
+apply plugin: 'org.jetbrains.kotlin.android'
+
+def hyperHleRoot = file("$rootDir/third_party/hyperhle")
+def hyperHleRevision = file("$rootDir/third_party/hyperhle-revision.txt").text.trim()
+def hyperHleAssets = layout.buildDirectory.dir('generated/hyperhleAssets')
+def anyioseDebugNoticeAssets = layout.buildDirectory.dir('generated/anyioseRuntimeNotices/debug')
+def anyioseReleaseNoticeAssets = layout.buildDirectory.dir('generated/anyioseRuntimeNotices/release')
+def syncHyperHleAssets = tasks.register('syncHyperHleAssets', Sync) {
+    from(hyperHleRoot) {
+        include 'touchHLE_dylibs/**'
+        include 'touchHLE_fonts/**'
+        include 'touchHLE_default_options.txt'
+        include 'touchHLE_wallpaper.png'
+    }
+    // Keep the upstream and bundled dependency notices alongside the packaged resources.
+    from(hyperHleRoot) {
+        include 'LICENSE'
+        include 'vendor/SDL/LICENSE.txt'
+        include 'vendor/dynarmic/LICENSE.txt'
+        include 'vendor/dynarmic/README.md'
+        include 'vendor/openal-soft/COPYING'
+        include 'vendor/libxml2/Copyright'
+        include 'vendor/stb/LICENSE'
+        include 'vendor/PVRTDecompress/LICENSE.md'
+        include 'vendor/symphonia-codec-aac/LICENSE'
+    }
+    into(hyperHleAssets)
+}
+
 android {
     namespace 'org.podnative'
     compileSdk 35
@@ -12,13 +42,24 @@ android {
         ndk { abiFilters 'arm64-v8a' }
         externalNativeBuild { cmake { cppFlags '-std=c++20' } }
         buildConfigField 'String', 'SOURCE_REVISION', '"' + (System.getenv('GITHUB_SHA') ?: 'local-uncommitted') + '"'
+        buildConfigField 'String', 'ANYIOSEMU_ENGINE_REVISION', '"' + hyperHleRevision + '"'
+        buildConfigField 'String', 'APP_NAME', '"AnyiOSEMU"'
     }
     compileOptions {
         sourceCompatibility JavaVersion.VERSION_17
         targetCompatibility JavaVersion.VERSION_17
     }
+    kotlinOptions { jvmTarget = '17' }
     buildFeatures { buildConfig true }
     testOptions { unitTests.includeAndroidResources = true }
+    sourceSets {
+        main {
+            java.srcDir("$hyperHleRoot/android/app/src/main/java")
+            assets.srcDir(hyperHleAssets)
+        }
+        debug { assets.srcDir(anyioseDebugNoticeAssets) }
+        release { assets.srcDir(anyioseReleaseNoticeAssets) }
+    }
     externalNativeBuild { cmake { path 'src/main/cpp/CMakeLists.txt'; version '3.22.1' } }
     signingConfigs {
         // Preview builds are non-debuggable but reuse the cached development
@@ -52,6 +93,70 @@ android {
         }
     }
     lint { abortOnError true }
+}
+
+// Match the upstream crate's Android ABI and static OpenAL/libxml2 configuration.
+cargoNdk {
+    targets = ['arm64']
+    // cargo-ndk resolves module beneath the Gradle root, so pass a relative path.
+    module = rootProject.relativePath(hyperHleRoot)
+    librariesNames = ['libtouchHLE.so', 'libSDL2.so', 'libc++_shared.so']
+    extraCargoEnv = [
+        'ANDROID_NDK': android.ndkDirectory,
+        'ANDROID_NDK_HOME': android.ndkDirectory
+    ]
+    extraCargoBuildArguments = [
+        '--lib', '--no-default-features', '--features',
+        'touchHLE_openal_soft_wrapper/static,touchHLE_libxml2_wrapper/static,sdl2/bundled'
+    ]
+}
+
+android.applicationVariants.all { variant ->
+    def capitalized = variant.name.capitalize()
+    def nativeBuildTask = "externalNativeBuild${capitalized}"
+    def collectNotices = tasks.register("collect${capitalized}AnyiOSEmuNotices") {
+        dependsOn(syncHyperHleAssets)
+        dependsOn(nativeBuildTask)
+        mustRunAfter(syncHyperHleAssets)
+        def target = new File(hyperHleRoot, 'target')
+        def rustDependencyFiles = project.fileTree(target) {
+            include '**/out/rust_dependencies.txt'
+        }
+        def dynarmicLicenseFiles = project.fileTree(target) {
+            include '**/out/dynarmic_license.txt'
+        }
+        inputs.files(rustDependencyFiles, dynarmicLicenseFiles)
+        def outputDirectory = layout.buildDirectory
+            .dir("generated/anyioseRuntimeNotices/${variant.name}").get().asFile
+        outputs.files(
+            new File(outputDirectory, 'anyiose-rust-dependencies.txt'),
+            new File(outputDirectory, 'anyiose-dynarmic-license.txt'))
+        outputs.upToDateWhen { false }
+        doLast {
+            def newest = { files, label ->
+                def candidates = files.files.findAll { it.isFile() && it.length() > 0 }
+                    .sort { left, right -> right.lastModified() <=> left.lastModified() }
+                if (candidates.isEmpty())
+                    throw new GradleException("The AnyiOSEMU build did not produce ${label}")
+                candidates.first()
+            }
+            outputDirectory.mkdirs()
+            new File(outputDirectory, 'anyiose-rust-dependencies.txt').text =
+                newest(rustDependencyFiles, 'the pinned Rust dependency license list').getText('UTF-8')
+            new File(outputDirectory, 'anyiose-dynarmic-license.txt').text =
+                newest(dynarmicLicenseFiles, 'the Dynarmic license summary').getText('UTF-8')
+        }
+    }
+    tasks["merge${capitalized}Assets"].dependsOn(syncHyperHleAssets)
+    // cargo-ndk-android attaches its ABI-specific Cargo build to this task.
+    tasks["merge${capitalized}Assets"].dependsOn(nativeBuildTask)
+    tasks["merge${capitalized}Assets"].dependsOn(collectNotices)
+    // Lint model and analysis tasks snapshot variant assets; wait for generated notices.
+    tasks.matching {
+        it.name.contains(capitalized) && it.name.toLowerCase().contains('lint')
+    }.configureEach {
+        dependsOn(collectNotices)
+    }
 }
 
 dependencies {

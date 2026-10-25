@@ -1,64 +1,43 @@
-# S23 Ultra graphics acceptance
+# AnyiOSEMU device acceptance
 
-No connected device, Android emulator or captured image was available during
-implementation. The user reported the previous 3D test working on their S23 Ultra;
-no screenshot/log was supplied. The new library APK is built (see LIBRARY_APK_REPORT.md),
-but the new UI/import flow still needs device review. This is a checklist, not a test report.
+No device run of this HyperHLE-Reborn-to-AnyiOSEMU integration has been performed in the current workspace. A previously reported AnyiOS ANGLE surface test is not validation of the new runtime. This is a test checklist, not a pass report.
 
-1. Download a **successfully built** `PodNative-debug.apk` CI artifact. Review
-   `BUILD-INFO.txt` and SHA256SUMS. Install with `adb install -r PodNative-debug.apk`.
-2. Clear logcat: `adb logcat -c`; launch `org.podnative/.MainActivity`.
-3. Diagnostics → Run graphics test. Confirm an animated checker-textured 3D cube,
-   perspective and correct self-occlusion, not just a clear color or static UI.
-4. Confirm diagnostics identify embedded ANGLE, actual GL version/renderer, Vulkan
-   candidate/driver, dimensions and no shader/link/GL/EGL/framebuffer errors.
-5. Capture evidence **only if visible output succeeds**:
-   `adb exec-out screencap -p > PodNative-S23Ultra.png` and
-   `adb logcat -d -s PodNative ANGLE > PodNative-S23Ultra.log`.
-   FIRST_PRESENT means swap returned successfully; it is not screenshot evidence.
-6. Background/foreground ten times, lock/unlock, rotate portrait/landscape, stop and
-   relaunch. Confirm visible scene restores, no stale surface crash and resources
-   are released/recreated. Changing resolution applies on the next launch.
-7. Run 720/1080/1440 short-edge caps when the display configuration allows. Run
-   FHD and QHD display modes; record actual render dimensions, not setting labels.
-   Test 30/60/120 caps and actual panel refresh rates. Vsync/backpressure can limit
-   frame throughput; do not report requested caps as measured FPS.
-8. Collect 5-minute traces and log actual present count/interval, draw+swap duration,
-   memory and thermal behavior. Use Perfetto/GPU tools for CPU/GPU split,
-   frame-interval distributions and shader compile time. Current in-app metrics
-   provide only basic CPU-wall draw+swap and Java heap samples; no GPU/audio or
-   guest CPU measurement is implemented. Confirm no memory growth across relaunches.
-9. Exercise cancel/invalid import, malformed ZIP, oversized executable, encrypted
-   executable, remove imports, log export, settings persistence and process recreation.
-10. Return revision, Android build, display mode, GL renderer/version, logs, screenshot,
-    observed errors and exact reproduction. Never attach game binaries/assets.
+## Build and launch
 
-## Current test matrix
+1. Download a **successfully built** APK from the AnyiOS workflow. Check `BUILD-INFO.txt` and `SHA256SUMS`; note the app commit, AnyiOSEMU source pin and ANGLE pin. Install over the existing AnyiOS build when applicable.
+2. Launch AnyiOS, open the shared Library and import a legally obtained IPA or extracted `.app` through the existing UI. Originals must remain untouched.
+3. Check the architecture label and report. A thin ARM32 app is eligible; a universal ARM32+ARM64 app must state that ARM32 is selected; an ARM64-only app must remain unsupported. Encrypted or malformed imports must not be offered as runnable.
+4. Open an eligible game's details and choose **Launch in AnyiOSEMU**. Confirm that the game's own menu or first screen appears—not the emulator's picker, a boot placeholder, a clear-color surface or the Android library UI.
+5. Tap through the actual game menu. Confirm the runtime receives touch and that the visible state changes. Capture a screenshot only after observing real game output.
+6. Open the saved session report. Check the AnyiOSEMU engine revision, selected ARM32 source, FPS cap, ANGLE/native-GLES preference, Force Composition, verbose-log setting and any initialization/fallback/error lines. A successful return or status 0 is not rendering proof.
 
-| Test | Result |
+## Graphics, input and lifecycle
+
+- Confirm ANGLE is the driver that actually initialized in the default setting. The APK should contain `libEGL_angle.so`, `libGLESv1_CM_angle.so` and `libGLESv2_angle.so` for `arm64-v8a`. If ANGLE is unavailable, verify the log accurately identifies a native GLES fallback rather than claiming ANGLE.
+- Retry with Settings ▸ **Native OpenGL ES** enabled, then with **Force Composition** toggled. Each setting should apply on the next AnyiOSEMU launch and be recorded in the report. Do not infer which mode is better without observing the game.
+- Exercise touch targets, multi-touch if the game uses it, Android Back, pause/resume, lock/unlock and orientation changes. Record whether the menu/game returns, freezes, turns blank or exits. Check audio separately.
+- Try 30/60/120 FPS limits and note actual device/panel behavior; a requested cap is not a measured frame rate. Verbose GLES logging is opt-in and may reduce performance.
+- Run the separate **ANGLE surface test** as a graphics diagnostic. Its cube validates a different surface path and is not a substitute for game rendering.
+
+## Storage and reports
+
+- Relaunch the same game and confirm per-game AnyiOSEMU data is isolated and persists. Export its sandbox, inspect the archive for the runtime log/data, and verify rebuildable caches are excluded.
+- Remove the imported library entry and confirm the original IPA/folder remains unchanged. Reimport if needed; do not upload game binaries or assets to issues/CI.
+- Test import cancellation, encrypted/ARM64-only inputs, a universal ARM32+ARM64 input, an invalid archive, crash/forced-stop recovery, diagnostics export and app process recreation.
+- If native crash logs are available, save them with the APK revision, device model, Android version, display mode and exact reproduction. Do not include game files.
+
+## Current evidence matrix
+
+| Check | Current status |
 |---|---|
-| Host parser/memory/loader/FAT + 55,000 malformed/mutated inputs | Passed locally with ASan/UBSan |
-| Real Dynarmic ARM/Thumb execution on x86-64 host | Passed |
-| Android compile / lint | Passed in CI run 39501999659 |
-| Source-pinned ANGLE build / dependency audit | Passed in CI run 39495542750 |
-| APK produced/published | Yes; see LIBRARY_APK_REPORT.md |
-| Embedded Vulkan ANGLE init | Previous 3D test user-reported working; no backend log supplied |
-| Textured 3D cube / real screenshot | Previous test user-reported working / no screenshot |
-| Surface recreation, pause/resume, rotation | Implemented source paths; device tests pending |
-| S23 Ultra FHD / QHD / 60 / 120 FPS | Not measured |
-| Game stages A–G | None reached |
-
-## Library acceptance (new preview)
-
-- Import your own IPA and the equivalent extracted `.app` folder. Verify title,
-  version, ARM32/universal status, retained size and artwork/fallback. Never upload
-  game files to this repository, CI or issue reports.
-- Restart/force-stop/reopen: entries, rename and settings must persist. Rotate or
-  background during copying; progress must continue without duplicate publication.
-- Cancel a large import; previous entries must remain and staging must be removed.
-  Provider-blocked reads may delay cancellation. Kill the process during an import,
-  reopen, and verify interrupted staging is cleaned and no incomplete entry appears.
-- Try ARM64-only, encrypted ARM32, malformed IPA and universal ARM32 binaries.
-  Expect explicit status/errors; successful imports must not imply game launch.
-- Export an import report and diagnostic log. Remove a private copy and verify the
-  original IPA/folder is untouched. Check light/dark/system, large font and rotation.
+| Pinned AnyiOSEMU source, recursive submodules and reviewed patch | Exact-pin patch applies cleanly; `scripts/prepare-hyperhle.sh` passes locally |
+| ARM32/ARM64/ARM64_32 FAT slice detection | `fat_test.cpp` passed with g++ `-Wall -Wextra -Werror`, including 20,000 mutations |
+| AnyiOS JVM source tests | Added; not yet run in this workspace |
+| Android ARM32/ARM64 universal-bundle labels and slice selection | Implementation updated; Java/Android regression pending |
+| ANGLE 9addc298 source build, three-library audit and APK packaging | CI verification pending |
+| Android lint, JVM tests and APK build | CI verification pending |
+| AnyiOSEMU initialization on a real Android device | Not tested |
+| Visible game menu and touch interaction | Not tested |
+| ANGLE/native-GLES fallback, Force Composition and audio | Not tested |
+| S23 Ultra FPS, thermals, pause/resume and orientation | Not measured |
+| Game compatibility | Not established; must be tested title-by-title |

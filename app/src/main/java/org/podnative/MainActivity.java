@@ -14,8 +14,6 @@ import android.graphics.drawable.GradientDrawable;
 import android.graphics.drawable.RippleDrawable;
 import android.net.Uri;
 import android.os.Bundle;
-import android.os.Handler;
-import android.os.Looper;
 import android.text.TextUtils;
 import android.view.Gravity;
 import android.view.View;
@@ -30,26 +28,23 @@ import android.widget.ProgressBar;
 import android.widget.ScrollView;
 import android.widget.TextView;
 import dev.radek.conventor.SharedCatalog;
+import java.io.ByteArrayOutputStream;
 import java.io.File;
+import java.io.InputStream;
 import java.io.OutputStream;
 import java.nio.charset.StandardCharsets;
 import java.util.List;
 
 public final class MainActivity extends Activity {
     private static final int IMPORT_FILE = 10, EXPORT = 11, IMPORT_FOLDER = 12,
-                             IMPORT_APP_FOLDER = 13, EXPORT_SANDBOX = 14;
-    private static final int GUEST_SCREEN_WIDTH = 320, GUEST_SCREEN_HEIGHT = 480,
-                             GUEST_INTERFACE_ORIENTATION_LANDSCAPE_LEFT = 3;
+                             IMPORT_APP_FOLDER = 13, EXPORT_SANDBOX = 14, RUN_ANYIOSEMU = 15;
     private SharedPreferences prefs;
     private boolean landscapeRequested = false;
     private GameLibrary library;
-    private final Handler guestFrameHandler = new Handler(Looper.getMainLooper());
-    private int guestFrameGeneration;
     private PrototypeView prototype;
     private TextView liveStatus, progressLabel;
-    private String tab = "Library", exportGame = "";
-    private boolean resumeTest, dark, showingSplashes, showingGuestFrame, showingBoot, resumed;
-    private int presentationGeneration, launchGeneration;
+    private String tab = "Library", exportGame = "", activeAnyiOSEmuGameId = "";
+    private boolean resumeTest, dark;
     private int background, surface, ink, muted, line, accent, soft;
     private long renderedRevision;
     private boolean renderedBusy;
@@ -57,14 +52,6 @@ public final class MainActivity extends Activity {
     private final Runnable libraryChanged = () -> {
         if (isFinishing() || isDestroyed())
             return;
-        if (showingBoot && liveStatus != null) {
-            String status =
-                library.progress.isEmpty() ? "Running the guest session…" : library.progress;
-            if (showingGuestFrame)
-                status += "\nLive preview · touch input is not forwarded yet.";
-            liveStatus.setText(status);
-            return;
-        }
         if (prototype != null)
             return;
         if (renderedRevision == library.revision && renderedBusy == SharedCatalog.isBusy()
@@ -76,11 +63,9 @@ public final class MainActivity extends Activity {
     @Override
     public void onCreate(Bundle state) {
         prefs = getSharedPreferences("settings", MODE_PRIVATE);
-        // Verbose logging is a persisted developer switch; applying it before the first
-        // launch attempt is what makes it take effect for the game that needs diagnosing.
+        // Keep the native diagnostics/ANGLE test in sync with persisted switches before its
+        // renderer initializes. AnyiOSEMU reads the same settings before its next SDL launch.
         NativeBridge.setVerbose(prefs.getBoolean("verboseLogging", false));
-        // Same rule for the GL driver choice: it is read once, when the driver is resolved,
-        // so a switch flipped in Settings has to reach the runtime before the next launch.
         NativeBridge.setNativeGles(prefs.getBoolean("nativeGles", false));
         dark =
             !getSharedPreferences("radek_settings", MODE_PRIVATE).getBoolean("light_theme", false);
@@ -100,7 +85,7 @@ public final class MainActivity extends Activity {
         accent = dev.radek.conventor.SharedTheme.accent(this);
         soft = color(dark ? "#203E30" : "#DDF3E7");
         Diagnostics.record(
-            "APP", "library ready; guest sessions run ARM32 code and stream ANGLE-backed frames");
+            "APP", "AnyiOSEMU ready; IPA and .app launches use the ARM32 guest runtime");
         home();
         if (state == null && getIntent().getBooleanExtra("importIpaFolder", false))
             selectFolder(IMPORT_FOLDER);
@@ -122,6 +107,70 @@ public final class MainActivity extends Activity {
         } catch (Exception e) {
             return "Unavailable: " + e.getMessage();
         }
+    }
+    private void appendNoticeAsset(StringBuilder notices, String name, String label) {
+        notices.append("\n\n--- ").append(label).append(" ---\n\n");
+        try (InputStream input = getAssets().open(name);
+            ByteArrayOutputStream output = new ByteArrayOutputStream()) {
+            byte[] buffer = new byte[4096];
+            int read;
+            while ((read = input.read(buffer)) != -1) output.write(buffer, 0, read);
+            notices.append(new String(output.toByteArray(), StandardCharsets.UTF_8));
+        } catch (Exception e) {
+            notices.append("Could not load bundled notice asset '")
+                .append(name)
+                .append("': ")
+                .append(e.getMessage());
+        }
+    }
+    private void appendNoticeAssetsUnder(StringBuilder notices, String directory) {
+        try {
+            String[] children = getAssets().list(directory);
+            if (children == null || children.length == 0) {
+                appendNoticeAsset(notices, directory, directory);
+                return;
+            }
+            for (String child : children) {
+                String path = directory + "/" + child;
+                String[] nested = getAssets().list(path);
+                if (nested != null && nested.length > 0)
+                    appendNoticeAssetsUnder(notices, path);
+                else
+                    appendNoticeAsset(notices, path, path);
+            }
+        } catch (Exception e) {
+            notices.append("\n\nCould not list bundled notice directory '")
+                .append(directory)
+                .append("': ")
+                .append(e.getMessage());
+        }
+    }
+    private void showRuntimeNotices() {
+        StringBuilder notices = new StringBuilder();
+        appendNoticeAsset(notices, "anyiose-runtime-notices.txt", "AnyiOSEMU provenance");
+        appendNoticeAsset(notices, "LICENSE", "Mozilla Public License 2.0");
+        String[] noticeAssets = {"vendor/SDL/LICENSE.txt", "vendor/dynarmic/LICENSE.txt",
+            "vendor/dynarmic/README.md", "vendor/openal-soft/COPYING", "vendor/libxml2/Copyright",
+            "vendor/stb/LICENSE", "vendor/PVRTDecompress/LICENSE.md",
+            "vendor/symphonia-codec-aac/LICENSE", "touchHLE_dylibs/README.md",
+            "touchHLE_dylibs/COPYING.libgcc", "touchHLE_dylibs/COPYING.libsqlite3",
+            "touchHLE_dylibs/COPYING.libstdcxx", "touchHLE_dylibs/COPYING.libz",
+            "touchHLE_fonts/README.md", "touchHLE_fonts/LICENSE.liberation",
+            "touchHLE_fonts/LICENSE.noto", "anyiose-rust-dependencies.txt",
+            "anyiose-dynarmic-license.txt"};
+        for (String name : noticeAssets) appendNoticeAsset(notices, name, name);
+        appendNoticeAssetsUnder(notices, "angle-notices");
+        TextView text = text(notices.toString(), 12, ink, false);
+        text.setTypeface(Typeface.MONOSPACE);
+        text.setTextIsSelectable(true);
+        text.setPadding(dp(18), dp(14), dp(18), dp(14));
+        ScrollView scroll = new ScrollView(this);
+        scroll.addView(text);
+        new AlertDialog.Builder(this)
+            .setTitle("AnyiOSEMU third-party notices")
+            .setView(scroll)
+            .setPositiveButton("Done", null)
+            .show();
     }
     private static int color(String value) {
         return Color.parseColor(value);
@@ -259,7 +308,7 @@ public final class MainActivity extends Activity {
         ImageView logo = new ImageView(this);
         logo.setImageResource(R.drawable.ic_brand);
         brand.addView(logo, new LinearLayout.LayoutParams(dp(32), dp(32)));
-        TextView wordmark = text("AnyiOS / Emulator", 19, ink, true);
+        TextView wordmark = text("AnyiOS / AnyiOSEMU", 19, ink, true);
         LinearLayout.LayoutParams wordmarkLp = new LinearLayout.LayoutParams(0, -2, 1);
         wordmarkLp.leftMargin = dp(10);
         brand.addView(wordmark, wordmarkLp);
@@ -269,7 +318,7 @@ public final class MainActivity extends Activity {
         preview.setBackground(shape(soft, 8, false));
         brand.addView(preview);
         root.addView(brand);
-        brand.setContentDescription("AnyiOS Emulator. Tap to return to module selection.");
+        brand.setContentDescription("AnyiOS AnyiOSEMU. Tap to return to module selection.");
         brand.setFocusable(true);
         brand.setOnClickListener(v -> finish());
         ScrollView scroll = new ScrollView(this);
@@ -392,10 +441,10 @@ public final class MainActivity extends Activity {
             }
         }
         LinearLayout status = card(parent);
-        status.addView(text("Boot attempts run real ARM32 guest code", 14, ink, true));
+        status.addView(text("Experimental AnyiOSEMU runtime", 14, ink, true));
         gap(status, 7);
         status.addView(text(
-            "A boot applies dyld fixups, runs the guest on the Dynarmic engine and stops at the first iOS API that has no implementation, with a crash screen naming it. Rendering, UIKit and audio are still incomplete, so a title that needs them will stop there rather than pretend to work.",
+            "AnyiOSEMU runs ARM32 iPhone OS apps through a high-level compatibility runtime, SDL touch input and the bundled ANGLE driver. Universal ARM32+ARM64 bundles launch through ARM32; ARM64-only apps are unsupported. Compatibility and visible rendering must be checked on the actual device—an APK build or clean exit is not proof of gameplay.",
             13, muted, false));
         File[] legacy = new File(getFilesDir(), "imports").listFiles();
         if (legacy != null && legacy.length > 0) {
@@ -441,7 +490,8 @@ public final class MainActivity extends Activity {
         card.setPadding(dp(9), dp(9), dp(9), dp(11));
         clickable(card, surface, 18, () -> gameDetails(game));
         card.setContentDescription(game.title + ", " + game.architecture + ", " + game.status
-            + ", game launch unavailable");
+            + (game.canLaunchInAnyiOSEMU() ? ", open details to launch in AnyiOSEMU"
+                                           : ", game launch unavailable"));
         FrameLayout artwork = new FrameLayout(this);
         GradientDrawable artworkBackdrop = new GradientDrawable(GradientDrawable.Orientation.TL_BR,
             new int[] {color(dark ? "#174C38" : "#CAF2DD"), color(dark ? "#15342C" : "#E4F4BC")});
@@ -473,9 +523,9 @@ public final class MainActivity extends Activity {
         card.addView(subtitle);
         gap(card, 6);
         // The chip states what the runtime knows, never a compatibility score.
-        String chip = !game.blockReason.isEmpty() ? game.status
-            : game.status.equals("Encrypted")     ? "Encrypted"
-                                                  : "Ready to boot";
+        String chip = !game.canLaunchInAnyiOSEMU()
+            ? game.status.equals("Encrypted") ? "Encrypted" : game.status
+            : "ARM32 eligible";
         TextView status = text(chip, 9, accent, true);
         status.setPadding(dp(7), dp(4), dp(7), dp(4));
         status.setBackground(shape(soft, 6, false));
@@ -515,7 +565,7 @@ public final class MainActivity extends Activity {
         });
         gap(content, 14);
         content.addView(text(
-            "Import game folder searches for IPAs. AnyiOS reads each IPA as a ZIP, inspects the executable and metadata, and loads app resources on demand rather than extracting the entire bundle. Writable game data is kept in a separate per-game sandbox and can be exported from game details. This is a partial iOS runtime, not Apple's full iOS Simulator or a native game port. Use Import extracted app folder for an existing .app bundle.",
+            "Import game folder searches for IPAs. AnyiOSEMU inspects the executable and metadata, then reads IPA resources on demand rather than extracting the entire bundle. Writable game data is isolated in a per-game sandbox and can be exported from game details. This is an experimental iOS app runtime, not Apple's full iOS Simulator or a native game port. Use Import extracted app folder for an existing .app bundle.",
             12, muted, false));
         sheet.setContentView(content);
         sheet.show();
@@ -552,55 +602,50 @@ public final class MainActivity extends Activity {
                 + (game.bundleId.isEmpty() ? "" : "\n" + game.bundleId),
             13, muted, false));
         gap(content, 18);
-        content.addView(text(!game.blockReason.isEmpty() ? "Cannot launch this import"
-                : game.status.equals("Encrypted")        ? "Encrypted executable"
-                                                         : "Experimental guest launch",
+        content.addView(text(!game.canLaunchInAnyiOSEMU() ? game.status.equals("Encrypted")
+                    ? "Encrypted executable"
+                    : "Cannot launch this import"
+                                                          : "AnyiOSEMU · experimental launch",
             17, ink, true));
         gap(content, 8);
         content.addView(text(!game.blockReason.isEmpty() ? game.blockReason
                 : game.status.equals("Encrypted")
-                ? "The game was added, but its executable is protected. This build does not bypass DRM."
+                ? "The game was added, but its executable is protected. AnyiOSEMU does not bypass DRM."
+                : game.kind.equals("Executable")
+                ? "This executable-only import is retained for inspection, but AnyiOSEMU needs a complete IPA or extracted .app bundle."
                 : game.kind.equals("IPA")
-                ? "Boot game reads IPA resources from the ZIP on demand, caches only files the guest opens, and keeps bundle writes in a private overlay. It runs validated ARM32 guest code as a live session and streams rendered EAGL frames through ANGLE. Missing iOS services or graphics setup can still stop startup; touch input is not forwarded yet."
-                : game.kind.equals("Folder")
-                ? "Boot game uses the private extracted .app copy. Persistent Documents data stays in the sandbox; app-bundle writes remain in bundle/ and are included when you export sandbox data. Missing iOS services or graphics setup can still stop startup; this is experimental and does not claim full gameplay."
-                : "Boot game runs the executable-only import as a live ARM32 guest session. "
-                    + "No app resources are present; missing iOS services or graphics setup can still stop startup.",
+                ? "AnyiOSEMU launches the original IPA and chooses its validated ARM32 slice. Universal ARM32+ARM64 apps run through ARM32; ARM64-only apps are unsupported. The Android activity handles touch input, and bundled ANGLE is the default graphics driver. Missing iOS services, DRM or a device-specific graphics issue can still stop startup or leave the display blank; a successful build or exit does not prove gameplay."
+                : "AnyiOSEMU launches this private extracted .app copy using its ARM32 executable. Touch input is handled by the runtime, and bundled ANGLE is the default graphics driver. Persistent runtime data stays isolated in this game's sandbox and is included in sandbox exports. Missing iOS services, DRM or a device-specific graphics issue can still stop startup or leave the display blank.",
             14, muted, false));
         gap(content, 16);
         content.addView(text("GAME SANDBOX", 11, muted, true));
         gap(content, 6);
-        TextView sandboxInfo = text("sandbox/Documents · persistent game saves\n"
+        TextView sandboxInfo = text("sandbox/Documents · legacy/portable game saves\n"
                 + "sandbox/BundleOverrides · IPA app-resource writes\n"
-                + "sandbox/ZipCache · rebuildable files opened from an IPA (not exported)\n"
-                + "For extracted .app imports and legacy extracted caches, bundle/ is the private app copy and is included in exports.",
+                + "sandbox/ZipCache · rebuildable IPA resource cache (not exported)\n"
+                + "sandbox/AnyiOSEMU/AnyiOSEMU_sandbox/<bundle ID> · AnyiOSEMU Documents, Library and saves\n"
+                + "sandbox/AnyiOSEMU/AnyiOSEMU_log.txt · latest runtime diagnostics\n"
+                + "AnyiOSEMU's rebuildable PVRTC cache is excluded from exports. Extracted .app bundle/ data is included when applicable.",
             12, muted, false);
         sandboxInfo.setTextIsSelectable(true);
         content.addView(sandboxInfo);
-        Button launch = action("Boot game · experimental", true, () -> {
+        Button launch = action("Launch in AnyiOSEMU · experimental", true, () -> {
             sheet.dismiss();
-            java.lang.ref.WeakReference<MainActivity> owner =
-                new java.lang.ref.WeakReference<>(this);
-            library.preparePresentation(game, files -> {
-                MainActivity activity = owner.get();
-                if (activity != null && activity.resumed && !activity.isFinishing()
-                    && !activity.isDestroyed())
-                    activity.presentGameArtwork(game, files);
-            });
+            launchAnyiOSEMU(game);
         });
-        launch.setEnabled(!SharedCatalog.isBusy());
+        launch.setEnabled(game.canLaunchInAnyiOSEMU() && !SharedCatalog.isBusy());
         LinearLayout.LayoutParams launchLp = new LinearLayout.LayoutParams(-1, -2);
         launchLp.topMargin = dp(18);
         content.addView(launch, launchLp);
         if (!game.launchReport.isEmpty()) {
-            button(content, "Latest launch report", false, () -> {
+            button(content, "Latest AnyiOSEMU session report", false, () -> {
                 TextView output = text(game.launchReport, 12, ink, false);
                 output.setTextIsSelectable(true);
                 output.setPadding(dp(20), dp(16), dp(20), dp(16));
                 ScrollView reportScroll = new ScrollView(this);
                 reportScroll.addView(output);
                 new AlertDialog.Builder(this)
-                    .setTitle("Launch attempt")
+                    .setTitle("AnyiOSEMU session report")
                     .setView(reportScroll)
                     .setPositiveButton("Done", null)
                     .setNeutralButton("Export", (dialog, which) -> exportReport(game))
@@ -654,6 +699,46 @@ public final class MainActivity extends Activity {
         sheet.getWindow().setBackgroundDrawableResource(android.R.color.transparent);
         sheet.getWindow().setGravity(Gravity.BOTTOM);
         sheet.getWindow().setLayout(-1, -2);
+    }
+    private void launchAnyiOSEMU(GameLibrary.Game game) {
+        if (!game.canLaunchInAnyiOSEMU())
+            return;
+        java.lang.ref.WeakReference<MainActivity> owner = new java.lang.ref.WeakReference<>(this);
+        library.prepareAnyiOSEmu(game, source -> {
+            MainActivity activity = owner.get();
+            if (activity == null || activity.isFinishing() || activity.isDestroyed())
+                return;
+            if (source == null) {
+                String message = activity.library.notice.isEmpty()
+                    ? "AnyiOSEMU could not prepare this game. Open Diagnostics for details."
+                    : activity.library.notice;
+                android.widget.Toast.makeText(activity, message, android.widget.Toast.LENGTH_LONG)
+                    .show();
+                return;
+            }
+            Intent intent =
+                new Intent(activity, AnyiOSEmuActivity.class)
+                    .putExtra(AnyiOSEmuActivity.EXTRA_GAME_ID, game.id)
+                    .putExtra(AnyiOSEmuActivity.EXTRA_GAME_TITLE, game.title)
+                    .putExtra(AnyiOSEmuActivity.EXTRA_SOURCE_PATH, source.getAbsolutePath())
+                    .putExtra(AnyiOSEmuActivity.EXTRA_DATA_PATH,
+                        game.anyioseDataDirectory().getAbsolutePath())
+                    .putExtra(AnyiOSEmuActivity.EXTRA_SHOW_CONSOLE,
+                        activity.prefs.getBoolean("showConsole", false));
+            try {
+                activity.activeAnyiOSEmuGameId = game.id;
+                activity.startActivityForResult(intent, RUN_ANYIOSEMU);
+                activity.library.recordAnyiOSEmuReport(game.id,
+                    "AnyiOSEMU session outcome pending; the runtime log will be captured on exit.");
+            } catch (Exception e) {
+                activity.activeAnyiOSEmuGameId = "";
+                Diagnostics.record("ANYIOSEMU_START_ERROR", e.toString());
+                android.widget.Toast
+                    .makeText(activity, "Could not open AnyiOSEMU: " + e.getMessage(),
+                        android.widget.Toast.LENGTH_LONG)
+                    .show();
+            }
+        });
     }
     private void showReport(GameLibrary.Game game) {
         // Older library entries keep their persisted report across upgrades. Rebuild stale
@@ -758,40 +843,43 @@ public final class MainActivity extends Activity {
             ()
                 -> choose("Render resolution", new String[] {"720p", "1080p · FHD", "1440p · QHD"},
                     new int[] {720, 1080, 1440}, "resolution", 1080));
-        settingRow(display, "Frame limit", "Vsync stays enabled; not an FPS guarantee",
+        settingRow(display, "Frame limit", "Passed to AnyiOSEMU; not a displayed-FPS guarantee",
             prefs.getInt("fps", 60) + " FPS",
             ()
                 -> choose("Frame limit",
                     new String[] {"30 FPS", "60 FPS", "120 FPS · experimental"},
                     new int[] {30, 60, 120}, "fps", 60));
-        settingRow(display, "On-screen console", "Debug overlay while a game boots",
+        settingRow(display, "Session badge", "Brief AnyiOSEMU overlay at launch",
             prefs.getBoolean("showConsole", false) ? "Shown" : "Hidden", this::toggleConsole);
-        // The deep trace the compatibility work needs: every service the guest calls, every
-        // exception-unwinding decision and every GL error, in the launch report. Off by
-        // default, because it is slow and it is only useful when something goes wrong.
+        // Detailed GLES call logging is useful for black-screen investigations, but can
+        // measurably slow the guest. Keep it opt-in.
         settingRow(display, "Verbose logging",
-            "Deep runtime trace in launch reports: API calls, unwinding, GL errors",
+            "Add detailed GLES calls to AnyiOSEMU logs; may reduce speed",
             prefs.getBoolean("verboseLogging", false) ? "On" : "Off", this::toggleVerbose);
         String[] appearances = {"Light", "Dark"};
         settingRow(display, "Appearance", "Choose your preferred look", dark ? "Dark" : "Light",
             () -> choose("Appearance", appearances, new int[] {1, 2}, "theme", dark ? 2 : 1));
-        display.addView(
-            text("Rendering changes apply on the next graphics-test launch.", 12, muted, false));
+        display.addView(text(
+            "Frame cap, graphics driver and composition options apply on the next AnyiOSEMU launch; render resolution is for the ANGLE surface test.",
+            12, muted, false));
         LinearLayout graphics = card(parent);
         graphics.addView(text("GRAPHICS", 11, muted, true));
         gap(graphics, 13);
-        graphics.addView(text("Embedded ANGLE · Vulkan", 17, ink, true));
+        graphics.addView(text("Bundled ANGLE · AnyiOSEMU graphics", 17, ink, true));
         gap(graphics, 7);
         graphics.addView(text(
-            "Real upstream ANGLE is included. AnyiOS asks for the Vulkan backend first and only uses ANGLE's OpenGL ES backend when the driver refuses Vulkan; the backend in use is always named, never swapped silently. No root access, developer options or system driver changes are involved.",
+            "AnyiOSEMU and the ANGLE surface test use real, source-built Google ANGLE at the pinned revision. The test requests Vulkan explicitly; AnyiOSEMU uses ANGLE by default and records any native-driver fallback in its session log. No root access, developer options or system driver changes are involved. Build success is not device-rendering proof.",
             13, muted, false));
         gap(graphics, 7);
-        // The bundled driver is the default because one implementation on every device is what
-        // makes a game behave the same everywhere. Turning this on asks for the device's own
-        // driver first, for a game that needs something the bundled one does not provide.
+        // Prefer the pinned driver by default. Native GLES is an explicit alternate path for
+        // games that need device-specific behavior; initialization failures remain visible.
         settingRow(graphics, "Native OpenGL ES",
-            "Use this device's GPU driver first; bundled ANGLE stays the fallback",
+            "Use the device driver instead of bundled ANGLE; failures stay explicit",
             prefs.getBoolean("nativeGles", false) ? "On" : "Off", this::toggleNativeGles);
+        settingRow(graphics, "Force Composition",
+            "Route EAGL frames through the compositor; may fix display issues but can cost speed",
+            prefs.getBoolean("forceComposition", false) ? "On" : "Off",
+            this::toggleForceComposition);
         button(graphics, "Run ANGLE surface test", true, this::launch);
         LinearLayout storage = card(parent);
         storage.addView(text("ON THIS DEVICE", 11, muted, true));
@@ -803,14 +891,15 @@ public final class MainActivity extends Activity {
             16, ink, true));
         gap(storage, 8);
         storage.addView(text(
-            "Each game's sandbox/Documents holds persistent saves; sandbox/BundleOverrides holds app-bundle writes, and sandbox/ZipCache is rebuildable. Export sandbox data from game details to back it up. Imports keep the original IPA privately; remove a game from its details to free its copy. No fixed game-count quota; free-space and parser safety limits apply.",
+            "Each game keeps legacy Documents, IPA bundle overrides and AnyiOSEMU's separate per-app Documents/Library data. Runtime logs are included in sandbox exports; rebuildable IPA and PVRTC caches are excluded. Originals stay private and untouched. Remove a game from its details to free the local copy.",
             13, muted, false));
         LinearLayout about = card(parent);
         about.addView(text("AnyiOS " + BuildConfig.VERSION_NAME, 16, ink, true));
         gap(about, 9);
         about.addView(text(
-            "Boot attempts run real ARM32 guest code on Dynarmic and stop at the first iOS API without an implementation, with a crash screen naming it. UIKit, EAGL rendering, audio and touch overlays are still incomplete.",
+            "AnyiOSEMU is an experimental ARM32 iPhone OS app runtime. Universal ARM32+ARM64 bundles use their ARM32 slice; ARM64-only apps are unsupported. Compatibility, rendering and performance vary by app and device and require real-device testing.",
             13, muted, false));
+        button(about, "Runtime licenses & notices", false, this::showRuntimeNotices);
         gap(about, 10);
         about.addView(text("SIGNING CERTIFICATE SHA-256", 10, muted, true));
         gap(about, 4);
@@ -830,7 +919,15 @@ public final class MainActivity extends Activity {
                     .setNegativeButton("Cancel", null)
                     .setPositiveButton("Reset",
                         (dialog, which) -> {
-                            prefs.edit().remove("resolution").remove("fps").remove("theme").apply();
+                            prefs.edit()
+                                .remove("resolution")
+                                .remove("fps")
+                                .remove("theme")
+                                .remove("nativeGles")
+                                .remove("forceComposition")
+                                .remove("showConsole")
+                                .remove("verboseLogging")
+                                .apply();
                             recreate();
                         })
                     .show());
@@ -863,15 +960,12 @@ public final class MainActivity extends Activity {
             .setNegativeButton("Cancel", null)
             .show();
     }
-    /**
-     * Debug output is off by default: a launched game shows only its own display. Turning
-     * this on brings back the boot bar, the live status line and tap-to-reveal chrome.
-     */
+    /** The optional session badge is brief; detailed runtime logs remain in the saved report. */
     private void toggleConsole() {
         new AlertDialog.Builder(this)
-            .setTitle("On-screen console")
+            .setTitle("Session badge")
             .setMessage(
-                "Show the boot progress bar and runtime status over the game? Off keeps the display clean; crash reports are always shown.")
+                "Show a brief AnyiOSEMU badge over the game at launch? It fades after five seconds; the display stays clean afterward and the runtime report is saved either way.")
             .setNegativeButton("Hidden",
                 (dialog, which) -> {
                     prefs.edit().putBoolean("showConsole", false).apply();
@@ -885,34 +979,34 @@ public final class MainActivity extends Activity {
             .show();
     }
     /**
-     * Verbose logging is a developer switch: it adds a deep trace (service calls, exception
-     * unwinding, GL errors) to the report a launch produces. It never changes what the guest
-     * does, and it stays off unless someone asks for it.
+     * Detailed GLES call logging is opt-in and can reduce performance; it does not change game
+     * behavior.
      */
     private void toggleVerbose() {
         boolean on = !prefs.getBoolean("verboseLogging", false);
         prefs.edit().putBoolean("verboseLogging", on).apply();
         NativeBridge.setVerbose(on);
         Diagnostics.record("Settings",
-            on ? "Verbose logging enabled; the next launch report carries the deep trace."
-               : "Verbose logging disabled.");
+            on ? "Detailed GLES logging enabled for the next AnyiOSEMU run; it may reduce speed."
+               : "Detailed GLES logging disabled.");
         home();
     }
-    /**
-     * Native OpenGL ES asks for this device's own GPU driver before the bundled ANGLE. It is
-     * off by default: one driver implementation on every device is the reason ANGLE is bundled
-     * at all. Either way, a game written for OpenGL ES 1.1 whose fixed-function entry points no
-     * loaded driver exports is served by the runtime emulating them over ES 2.0, and the launch
-     * report names the libraries that answered. Applies to the next launch, because a driver is
-     * resolved once and is not swapped underneath a running game.
-     */
+    /** The default is the pinned bundled ANGLE stack; native GLES is an explicit alternative. */
     private void toggleNativeGles() {
         boolean on = !prefs.getBoolean("nativeGles", false);
         prefs.edit().putBoolean("nativeGles", on).apply();
         NativeBridge.setNativeGles(on);
         Diagnostics.record("Settings",
-            on ? "Native OpenGL ES enabled; the next launch resolves the device driver first."
-               : "Native OpenGL ES disabled; the next launch uses the bundled ANGLE first.");
+            on ? "Native OpenGL ES enabled for the next AnyiOSEMU/graphics-test launch."
+               : "Bundled ANGLE selected for the next AnyiOSEMU/graphics-test launch.");
+        home();
+    }
+    private void toggleForceComposition() {
+        boolean on = !prefs.getBoolean("forceComposition", false);
+        prefs.edit().putBoolean("forceComposition", on).apply();
+        Diagnostics.record("Settings",
+            on ? "Force Composition enabled for the next AnyiOSEMU launch; it may reduce speed."
+               : "Force Composition disabled for the next AnyiOSEMU launch.");
         home();
     }
     private void diagnostics(LinearLayout parent) {
@@ -951,17 +1045,9 @@ public final class MainActivity extends Activity {
             "Reports can contain app names, imported symbols and device information. Review them before sharing. Proprietary game files are never included.",
             12, muted, false));
     }
-    /**
-     * Full-screen, rotation-aware emulator chrome. The display keeps the whole window, the
-     * system bars are hidden with transient-swipe behaviour, and the screen stays awake
-     * while a game boots. Rotation is handled by this activity (see the manifest), so the
-     * ANGLE surface is resized in place instead of the emulator being torn down.
-     */
+    /** Full-screen, rotation-aware window used by the standalone ANGLE surface test. */
     private void enterEmulatorDisplay() {
-        // Games take the whole screen in landscape, matching UIKit LandscapeRight (home button
-        // to the right). SENSOR_LANDSCAPE
-        // would start whichever way the phone happens to be lying at launch, which made an
-        // iPhone game boot upside down on a perfectly normal grip.
+        // The surface test is full-screen in landscape so its backend output can be inspected.
         if (!landscapeRequested) {
             setRequestedOrientation(ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE);
             landscapeRequested = true;
@@ -1004,9 +1090,8 @@ public final class MainActivity extends Activity {
     public void onConfigurationChanged(Configuration configuration) {
         super.onConfigurationChanged(configuration);
         // Rotation lands here because the manifest declares configChanges. Re-assert the
-        // immersive window (bars come back on some OEMs) and let the surface report its new
-        // size; PrototypeView restarts the backend at the new dimensions.
-        if (prototype != null || showingSplashes || showingGuestFrame || showingBoot)
+        // immersive window for the ANGLE graphics test; the guest runtime has its own activity.
+        if (prototype != null)
             enterEmulatorDisplay();
         else
             home();
@@ -1014,248 +1099,8 @@ public final class MainActivity extends Activity {
     @Override
     public void onWindowFocusChanged(boolean focused) {
         super.onWindowFocusChanged(focused);
-        if (focused && (prototype != null || showingSplashes || showingGuestFrame || showingBoot))
+        if (focused && prototype != null)
             enterEmulatorDisplay();
-    }
-    /** Chrome that fades out over the display and returns on tap, like a console overlay. */
-    private void autoHideChrome(final View chrome, final View tapTarget) {
-        if (chrome == null)
-            return;
-        final Runnable hide = () -> {
-            if (chrome.getVisibility() != View.VISIBLE)
-                return;
-            chrome.animate()
-                .alpha(0f)
-                .setDuration(350)
-                .withEndAction(() -> {
-                    chrome.setVisibility(View.GONE);
-                    chrome.setAlpha(1f);
-                })
-                .start();
-        };
-        chrome.postDelayed(hide, 4000);
-        if (tapTarget != null)
-            tapTarget.setOnClickListener(view -> {
-                if (chrome.getVisibility() == View.VISIBLE) {
-                    hide.run();
-                    return;
-                }
-                chrome.setVisibility(View.VISIBLE);
-                chrome.animate().alpha(1f).setDuration(180).start();
-                chrome.postDelayed(hide, 3000);
-            });
-    }
-    private void presentGameArtwork(GameLibrary.Game game, List<File> files) {
-        if (files.isEmpty()) {
-            attempt(game);
-            return;
-        }
-        showingSplashes = true;
-        enterEmulatorDisplay();
-        int generation = ++presentationGeneration;
-        FrameLayout frame = new FrameLayout(this);
-        frame.setBackgroundColor(Color.BLACK);
-        prototype = new PrototypeView(this, files,
-            info
-            -> {
-                if (liveStatus != null)
-                    liveStatus.setText(info);
-            },
-            () -> {
-                if (showingSplashes && generation == presentationGeneration && resumed) {
-                    stop();
-                    attempt(game);
-                }
-            });
-        // The display fills the window; the console chrome is opt-in from Settings.
-        frame.addView(prototype, new FrameLayout.LayoutParams(-1, -1));
-        if (!prefs.getBoolean("showConsole", false)) {
-            setContentView(frame);
-            return;
-        }
-        LinearLayout chrome = column();
-        chrome.setClipChildren(false);
-        LinearLayout bar = row();
-        bar.setPadding(dp(16), dp(10), dp(8), dp(10));
-        bar.setBackgroundColor(Color.parseColor("#CC0B1020"));
-        TextView running = text(game.title, 14, Color.WHITE, true);
-        running.setMaxLines(1);
-        running.setEllipsize(TextUtils.TruncateAt.END);
-        bar.addView(running, new LinearLayout.LayoutParams(0, -2, 1));
-        TextView live = text("● BOOT", 10, accent, true);
-        live.setLetterSpacing(0.12f);
-        bar.addView(live);
-        Button cancel = action("Stop", false, this::stop);
-        cancel.setTextColor(Color.WHITE);
-        bar.addView(cancel);
-        chrome.addView(bar);
-        liveStatus =
-            text("Preparing display · anyiOS engine", 11, Color.parseColor("#B9C7D8"), false);
-        liveStatus.setPadding(dp(16), dp(8), dp(16), dp(10));
-        liveStatus.setBackgroundColor(Color.parseColor("#CC0D1524"));
-        LinearLayout.LayoutParams spacer = new LinearLayout.LayoutParams(-1, 0, 1);
-        chrome.addView(new View(this), spacer);
-        chrome.addView(liveStatus);
-        chrome.setOnApplyWindowInsetsListener((view, insets) -> {
-            if (android.os.Build.VERSION.SDK_INT >= 30) {
-                android.graphics.Insets bars = insets.getInsets(
-                    WindowInsets.Type.systemBars() | WindowInsets.Type.displayCutout());
-                view.setPadding(bars.left, bars.top, bars.right, bars.bottom);
-            } else
-                view.setPadding(insets.getSystemWindowInsetLeft(), insets.getSystemWindowInsetTop(),
-                    insets.getSystemWindowInsetRight(), insets.getSystemWindowInsetBottom());
-            return insets;
-        });
-        frame.addView(chrome, new FrameLayout.LayoutParams(-1, -1));
-        autoHideChrome(chrome, frame);
-        setContentView(frame);
-        chrome.requestApplyInsets();
-    }
-    /** Runs a live ARM32 guest session and streams its rendered frames to the ANGLE surface. */
-    private void attempt(GameLibrary.Game game) {
-        if (isFinishing() || isDestroyed())
-            return;
-        if (prototype != null) {
-            prototype.halt();
-            prototype = null;
-        }
-        showingSplashes = false;
-        showingGuestFrame = false;
-        showingBoot = true;
-        final int generation = ++launchGeneration;
-        enterEmulatorDisplay();
-        // UIKit uses portrait logical coordinates; the guest's LandscapeLeft frame is rotated
-        // into the Android landscape view, which preserves its aspect ratio instead of stretching.
-        NativeBridge.setGuestScreenSize(
-            GUEST_SCREEN_WIDTH, GUEST_SCREEN_HEIGHT, GUEST_INTERFACE_ORIENTATION_LANDSCAPE_LEFT);
-        GameInspector.resetGuestFrameReporting();
-        NativeBridge.beginGuestLaunch();
-        guestFrameGeneration = 0;
-        FrameLayout boot = new FrameLayout(this);
-        boot.setBackgroundColor(Color.BLACK);
-        LinearLayout content = new LinearLayout(this);
-        content.setOrientation(LinearLayout.VERTICAL);
-        content.setGravity(Gravity.CENTER);
-        content.setPadding(dp(28), dp(24), dp(28), dp(24));
-        TextView title = text(game.title, 22, Color.WHITE, true);
-        title.setGravity(Gravity.CENTER);
-        content.addView(title);
-        liveStatus = text("Opening app resources and starting the guest…", 14,
-            Color.parseColor("#B9C7D8"), false);
-        liveStatus.setGravity(Gravity.CENTER);
-        liveStatus.setPadding(0, dp(12), 0, dp(22));
-        content.addView(liveStatus);
-        ProgressBar spinner = new ProgressBar(this);
-        content.addView(spinner);
-        Button cancel = action("Stop", false, this::stop);
-        LinearLayout.LayoutParams cancelLp = new LinearLayout.LayoutParams(-2, -2);
-        cancelLp.topMargin = dp(24);
-        content.addView(cancel, cancelLp);
-        boot.addView(content, new FrameLayout.LayoutParams(-1, -1));
-        setContentView(boot);
-        boolean accepted = library.attemptLaunch(game, result -> {
-            if (isFinishing() || isDestroyed() || generation != launchGeneration || !showingBoot)
-                return;
-            showingBoot = false;
-            if (result != null && result.hasFrame()) {
-                if (prototype != null) {
-                    prototype.updateGuestFrame(
-                        result.frameWidth, result.frameHeight, result.guestFrame);
-                    if (liveStatus != null)
-                        liveStatus.setText("Guest session ended · showing its last frame. "
-                            + "Touch input is not forwarded yet.");
-                } else {
-                    showGuestFrame(game, result);
-                }
-            } else if (prototype != null) {
-                if (liveStatus != null)
-                    liveStatus.setText("Guest stopped before a final frame. The last live frame "
-                        + "remains visible; see the launch report for details.");
-            } else {
-                String report = result == null ? "LAUNCH_BLOCKED: no native result" : result.report;
-                stop();
-                RuntimeCrash.show(this, game.title, report);
-            }
-        });
-        if (!accepted) {
-            showingBoot = false;
-            stop();
-        } else {
-            guestFrameHandler.postDelayed(() -> pollGuestFrame(generation, game), 33);
-        }
-    }
-    private void pollGuestFrame(int generation, GameLibrary.Game game) {
-        if (isFinishing() || isDestroyed() || generation != launchGeneration || !showingBoot)
-            return;
-        GameInspector.GuestFrame frame = GameInspector.pollGuestFrame(guestFrameGeneration);
-        if (frame != null) {
-            guestFrameGeneration = frame.generation;
-            if (!showingGuestFrame)
-                showLiveGuestFrame(game, frame);
-            else if (prototype != null)
-                prototype.updateGuestFrame(frame);
-        }
-        if (showingBoot && generation == launchGeneration)
-            guestFrameHandler.postDelayed(() -> pollGuestFrame(generation, game), 33);
-    }
-    private void showLiveGuestFrame(GameLibrary.Game game, GameInspector.GuestFrame guestFrame) {
-        showingGuestFrame = true;
-        FrameLayout frame = new FrameLayout(this);
-        frame.setBackgroundColor(Color.BLACK);
-        prototype = new PrototypeView(
-            this, guestFrame, prefs.getInt("fps", 60), prefs.getInt("resolution", 1080), info -> {
-                if (liveStatus != null)
-                    liveStatus.setText(info
-                        + "\nLive guest framebuffer through ANGLE · touch input not forwarded.");
-            });
-        frame.addView(prototype, new FrameLayout.LayoutParams(-1, -1));
-        LinearLayout chrome = new LinearLayout(this);
-        chrome.setOrientation(LinearLayout.VERTICAL);
-        chrome.setBackgroundColor(Color.parseColor("#CC0B1020"));
-        chrome.setPadding(dp(16), dp(8), dp(16), dp(10));
-        chrome.addView(text(game.title + " · LIVE GUEST SESSION", 12, Color.WHITE, true));
-        liveStatus = text("Live guest frames · touch input is not forwarded yet.", 11,
-            Color.parseColor("#B9C7D8"), false);
-        liveStatus.setMaxLines(2);
-        chrome.addView(liveStatus);
-        chrome.addView(
-            action("Stop / back", false, this::stop), new LinearLayout.LayoutParams(-2, -2));
-        if (prefs.getBoolean("showConsole", false))
-            frame.addView(chrome, new FrameLayout.LayoutParams(-1, -2, Gravity.TOP));
-        setContentView(frame);
-    }
-    /** Displays read-back guest RGBA through the Android ANGLE surface; this is a snapshot. */
-    private void showGuestFrame(GameLibrary.Game game, GameLibrary.LaunchResult result) {
-        showingGuestFrame = true;
-        showingSplashes = false;
-        showingBoot = false;
-        enterEmulatorDisplay();
-        FrameLayout frame = new FrameLayout(this);
-        frame.setBackgroundColor(Color.BLACK);
-        prototype = new PrototypeView(this, result.frameWidth, result.frameHeight,
-            result.guestFrame, prefs.getInt("fps", 60), prefs.getInt("resolution", 1080), info -> {
-                if (liveStatus != null)
-                    liveStatus.setText(info);
-            });
-        frame.addView(prototype, new FrameLayout.LayoutParams(-1, -1));
-        if (prefs.getBoolean("showConsole", false)) {
-            LinearLayout chrome = new LinearLayout(this);
-            chrome.setOrientation(LinearLayout.VERTICAL);
-            chrome.setBackgroundColor(Color.parseColor("#CC0B1020"));
-            chrome.setPadding(dp(16), dp(8), dp(16), dp(10));
-            TextView label = text(game.title + " · GUEST FRAME SNAPSHOT", 12, Color.WHITE, true);
-            chrome.addView(label);
-            liveStatus = text("Last guest EAGL frame captured before the session stopped.", 11,
-                Color.parseColor("#B9C7D8"), false);
-            liveStatus.setMaxLines(2);
-            chrome.addView(liveStatus);
-            Button back = action("Stop", false, this::stop);
-            chrome.addView(back, new LinearLayout.LayoutParams(-2, -2));
-            frame.addView(chrome, new FrameLayout.LayoutParams(-1, -2, Gravity.TOP));
-        } else {
-            liveStatus = null;
-        }
-        setContentView(frame);
     }
     private void launch() {
         LinearLayout root = column();
@@ -1280,17 +1125,6 @@ public final class MainActivity extends Activity {
         enterEmulatorDisplay();
     }
     private void stop() {
-        if (showingBoot) {
-            if (library != null)
-                library.cancelLaunch();
-            else
-                NativeBridge.cancelGuestLaunch();
-        }
-        showingBoot = false;
-        showingGuestFrame = false;
-        showingSplashes = false;
-        launchGeneration++;
-        presentationGeneration++;
         leaveEmulatorDisplay();
         resumeTest = false;
         if (prototype != null) {
@@ -1312,19 +1146,16 @@ public final class MainActivity extends Activity {
     }
     @Override
     protected void onPause() {
-        resumed = false;
-        boolean wasRunning = prototype != null || showingBoot;
-        boolean wasArtwork = showingSplashes || showingGuestFrame || showingBoot;
+        boolean wasRunning = prototype != null;
         if (wasRunning)
             stop();
-        resumeTest = wasRunning && !wasArtwork;
+        resumeTest = wasRunning;
         Diagnostics.record("LIFECYCLE", "paused; graphics resources released if active");
         super.onPause();
     }
     @Override
     protected void onResume() {
         super.onResume();
-        resumed = true;
         if (resumeTest) {
             resumeTest = false;
             launch();
@@ -1333,15 +1164,14 @@ public final class MainActivity extends Activity {
     }
     @Override
     protected void onSaveInstanceState(Bundle out) {
-        out.putBoolean("prototype",
-            (prototype != null && !showingSplashes && !showingGuestFrame) || resumeTest);
+        out.putBoolean("prototype", prototype != null || resumeTest);
         out.putString("tab", tab);
         out.putString("exportGame", exportGame);
         super.onSaveInstanceState(out);
     }
     @Override
     public void onBackPressed() {
-        if (prototype != null || showingBoot)
+        if (prototype != null)
             stop();
         else if (!tab.equals("Library")) {
             tab = "Library";
@@ -1352,6 +1182,25 @@ public final class MainActivity extends Activity {
     @Override
     protected void onActivityResult(int request, int result, Intent data) {
         super.onActivityResult(request, result, data);
+        if (request == RUN_ANYIOSEMU) {
+            String gameId = activeAnyiOSEmuGameId;
+            String report = null;
+            if (data != null) {
+                String returnedId = data.getStringExtra(AnyiOSEmuActivity.EXTRA_GAME_ID);
+                if (returnedId != null && !returnedId.isEmpty())
+                    gameId = returnedId;
+                report = data.getStringExtra(AnyiOSEmuActivity.EXTRA_GAME_REPORT);
+            }
+            activeAnyiOSEmuGameId = "";
+            if (!gameId.isEmpty()) {
+                if (report == null || report.isEmpty())
+                    report = "AnyiOSEMU session returned without a final activity report. "
+                        + "Runtime log: sandbox/AnyiOSEMU/AnyiOSEMU_log.txt. "
+                        + "Visual output and gameplay remain unverified.";
+                library.recordAnyiOSEmuReport(gameId, report);
+            }
+            return;
+        }
         if (result != RESULT_OK || data == null || data.getData() == null)
             return;
         Uri uri = data.getData();
@@ -1395,7 +1244,7 @@ public final class MainActivity extends Activity {
                     + "\n\n" + selected.report
                     + (selected.launchReport.isEmpty()
                             ? ""
-                            : "\n\nLATEST LAUNCH ATTEMPT\n" + selected.launchReport);
+                            : "\n\nLATEST ANYIOSEMU SESSION\n" + selected.launchReport);
             }
             final String output = report;
             final android.content.Context app = getApplicationContext();

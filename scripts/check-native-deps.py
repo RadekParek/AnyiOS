@@ -18,7 +18,11 @@ PLATFORM = {
     "libc.so",
     "libz.so",
 }
-EXPECTED = {"libEGL_podnative.so", "libGLESv2_podnative.so"}
+EXPECTED = {
+    "libEGL_podnative.so",
+    "libGLESv1_CM_podnative.so",
+    "libGLESv2_podnative.so",
+}
 NATIVE_GLES = {"libEGL.so", "libGLESv1_CM.so", "libGLESv2.so", "libGLESv3.so"}
 
 
