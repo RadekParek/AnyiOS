@@ -27,7 +27,7 @@ index 65c5a42370f28be3290ea3153f6261120ccfce7e..fbe18495ef4c6105d7159feba120fc02
          private enum Operation {
              CHR_READ,
 diff --git a/android/app/src/main/java/org/libsdl/app/HIDDeviceManager.java b/android/app/src/main/java/org/libsdl/app/HIDDeviceManager.java
-index cf3c9267fbd94e01113a939c37340aae44693215..419d9697d796b02e1b1c9ae358463a171c7b8b08 100644
+index cf3c9267fbd94e01113a939c37340aae44693215..7f926b62d58249ea62d48158d5390ce7104518d7 100644
 --- a/android/app/src/main/java/org/libsdl/app/HIDDeviceManager.java
 +++ b/android/app/src/main/java/org/libsdl/app/HIDDeviceManager.java
 @@ -1,5 +1,6 @@
@@ -47,7 +47,16 @@ index cf3c9267fbd94e01113a939c37340aae44693215..419d9697d796b02e1b1c9ae358463a17
  public class HIDDeviceManager {
      private static final String TAG = "hidapi";
      private static final String ACTION_USB_PERMISSION = "org.libsdl.app.USB_PERMISSION";
-@@ -193,7 +197,11 @@ public class HIDDeviceManager {
+@@ -139,6 +143,8 @@ public class HIDDeviceManager {
+         return result;
+     }
+ 
++    // The flag-free overload is used only on Android versions where the flagged API does not exist.
++    @SuppressLint("UnspecifiedRegisterReceiverFlag")
+     private void initializeUSB() {
+         mUsbManager = (UsbManager)mContext.getSystemService(Context.USB_SERVICE);
+         if (mUsbManager == null) {
+@@ -193,7 +199,11 @@ public class HIDDeviceManager {
          filter.addAction(UsbManager.ACTION_USB_DEVICE_ATTACHED);
          filter.addAction(UsbManager.ACTION_USB_DEVICE_DETACHED);
          filter.addAction(HIDDeviceManager.ACTION_USB_PERMISSION);
