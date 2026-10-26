@@ -1,6 +1,6 @@
 # AnyiOS
 
-An Android app with the existing **AnyiOS** launcher, shared private game library and **Converter**. The experimental game engine is **AnyiOSEMU**, integrating the pinned HyperHLE-Reborn/touchHLE runtime. The app shell and Converter remain separate from the emulator engine; upstream license and attribution are retained.
+An Android app with the existing **AnyiOS** launcher, shared private game library and **Converter**. The experimental game engine is **AnyiOSEMU**. The app shell and Converter remain separate from the emulator engine; upstream license and attribution are retained.
 
 ## What it does
 
@@ -17,8 +17,6 @@ An Android app with the existing **AnyiOS** launcher, shared private game librar
 ## Runtime and architecture
 
 AnyiOS launches an imported game in the pinned Rust/SDL AnyiOSEMU runtime. The Android activity forwards the selected source, a private per-game data directory, frame cap, ANGLE/native-GLES preference, Force Composition and verbose-GLES preference. Input and window lifecycle are handled by the runtime. Source revisions, selected settings and bounded session logs are recorded in the game's report.
-
-Runtime source and nested dependencies are pinned through `third_party/hyperhle` and its recursive submodules. The reviewed AnyiOS integration is a source patch at `third_party/hyperhle-patches/AnyiOSEMU.patch`, applied only to the revision in `third_party/hyperhle-revision.txt`. The exact Boost release required by the Dynarmic build is recorded in `third_party/hyperhle-boost-version.txt`.
 
 ## Game data and Android storage
 
