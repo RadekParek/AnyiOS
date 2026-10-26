@@ -41,6 +41,12 @@ import java.util.List;
 public final class MainActivity extends Activity {
     private static final int IMPORT_FILE = 10, EXPORT = 11, IMPORT_FOLDER = 12,
                              IMPORT_APP_FOLDER = 13, EXPORT_SANDBOX = 14, RUN_ANYIOSEMU = 15;
+    private static final String FOLDER_PICKER_HELP =
+        "Android 11+ blocks folder-tree access to the storage root, the Downloads folder, "
+        + "Android/data and "
+        + "Android/obb. Choose an accessible subfolder (for example, under Documents). For IPA "
+        + "files in Downloads, use Import IPA file(s). If the picker says \"Can't use this folder\", "
+        + "choose another location; AnyiOS cannot bypass the system restriction.";
     private SharedPreferences prefs;
     private boolean landscapeRequested = false;
     private GameLibrary library;
@@ -510,10 +516,7 @@ public final class MainActivity extends Activity {
             ImageView image = new ImageView(this);
             image.setImageURI(Uri.fromFile(game.cover()));
             image.setScaleType(ImageView.ScaleType.CENTER_CROP);
-            if (game.kind.equals("IPA")) {
-                image.setScaleX(2f);
-                image.setScaleY(2f);
-            }
+            // Artwork is prepared at higher pixel resolution; never enlarge the view itself.
             artwork.addView(image, new FrameLayout.LayoutParams(-1, -1));
         }
         card.addView(artwork, new LinearLayout.LayoutParams(-1, dp(92)));
@@ -572,7 +575,8 @@ public final class MainActivity extends Activity {
         });
         gap(content, 14);
         content.addView(text(
-            "Choose one or more IPA files, a folder containing IPAs, or the exact extracted .app folder. Originals stay untouched. IPA resources are read on demand; writable game data stays in a separate per-game sandbox. Executable-only imports are for inspection and cannot launch. AnyiOSEMU is experimental—not Apple's full iOS Simulator or a native game port.",
+            "Choose one or more IPA files, a folder containing IPAs, or the exact extracted .app folder. Originals stay untouched. IPA resources are read on demand; writable game data stays in a separate per-game sandbox. Executable-only imports are for inspection and cannot launch. AnyiOSEMU is experimental—not Apple's full iOS Simulator or a native game port.\n\n"
+                + FOLDER_PICKER_HELP,
             12, muted, false));
         sheet.setContentView(content);
         sheet.show();
@@ -589,10 +593,18 @@ public final class MainActivity extends Activity {
             IMPORT_FILE);
     }
     private void selectFolder(int request) {
-        startActivityForResult(new Intent(Intent.ACTION_OPEN_DOCUMENT_TREE)
-                                   .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION
-                                       | Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION),
-            request);
+        try {
+            startActivityForResult(new Intent(Intent.ACTION_OPEN_DOCUMENT_TREE)
+                                       .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION
+                                           | Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION),
+                request);
+        } catch (android.content.ActivityNotFoundException | SecurityException e) {
+            Diagnostics.record("STORAGE_PICKER_ERROR", e.toString());
+            android.widget.Toast
+                .makeText(this, "Android's folder picker could not open: " + e.getMessage(),
+                    android.widget.Toast.LENGTH_LONG)
+                .show();
+        }
     }
     private void gameDetails(GameLibrary.Game game) {
         Dialog sheet = new Dialog(this);
@@ -633,7 +645,9 @@ public final class MainActivity extends Activity {
                 + "sandbox/ZipCache · rebuildable IPA resource cache (not exported)\n"
                 + "sandbox/AnyiOSEMU/AnyiOSEMU_sandbox/<bundle ID> · AnyiOSEMU Documents, Library and saves\n"
                 + "sandbox/AnyiOSEMU/AnyiOSEMU_log.txt · latest runtime diagnostics\n"
-                + "AnyiOSEMU's rebuildable PVRTC cache is excluded from exports. Extracted .app bundle/ data is included when applicable.",
+                + "AnyiOSEMU's rebuildable PVRTC cache is excluded from exports. Extracted .app bundle/ data is included when applicable.\n\n"
+                + "Private runtime path: " + game.anyioseDataDirectory().getAbsolutePath() + "\n"
+                + "Android package ID: org.podnative (not org.anyios.com). This path is internal app-private storage, not /Android/data/org.podnative, and is not normally browsable in file managers. Android also restricts Android/data on recent versions. Use Export sandbox data to save a ZIP in a location you can access.",
             12, muted, false);
         sandboxInfo.setTextIsSelectable(true);
         content.addView(sandboxInfo);
@@ -945,7 +959,7 @@ public final class MainActivity extends Activity {
             16, ink, true));
         gap(storage, 8);
         storage.addView(text(
-            "Each game keeps legacy Documents, IPA bundle overrides and AnyiOSEMU's separate per-app Documents/Library data. Runtime logs are included in sandbox exports; rebuildable IPA and PVRTC caches are excluded. Originals stay private and untouched. Remove a game from its details to free the local copy.",
+            "Package ID: org.podnative (not org.anyios.com). Imports and saves live in internal app-private storage at /data/user/0/org.podnative/files/games/<game-id>/sandbox/AnyiOSEMU, not /Android/data/org.podnative. File managers normally cannot browse the internal path, and Android/data is restricted on recent versions. Open a game's details and use Export sandbox data to save Documents, Library, saves and the runtime log as a ZIP through Android's save picker. Originals stay private and untouched; rebuildable IPA/PVRTC caches are excluded.",
             13, muted, false));
         LinearLayout about = card(parent);
         about.addView(text("AnyiOS " + BuildConfig.VERSION_NAME, 16, ink, true));
@@ -1253,6 +1267,14 @@ public final class MainActivity extends Activity {
                         + "Visual output and gameplay remain unverified.";
                 library.recordAnyiOSEmuReport(gameId, report);
             }
+            return;
+        }
+        boolean folderImport = request == IMPORT_FOLDER || request == IMPORT_APP_FOLDER;
+        if (folderImport && (result != RESULT_OK || data == null || data.getData() == null)) {
+            android.widget.Toast
+                .makeText(this, "No folder imported. " + FOLDER_PICKER_HELP,
+                    android.widget.Toast.LENGTH_LONG)
+                .show();
             return;
         }
         if (result != RESULT_OK || data == null)

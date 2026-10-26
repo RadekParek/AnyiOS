@@ -66,16 +66,22 @@ jobs:
           rustc --version
           cargo --version
           cargo ndk --version
-      - name: Cache AnyiOSEMU Rust Android build
+      - name: Cache Cargo dependencies
         uses: actions/cache@v4
         with:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
-            third_party/hyperhle/target
-          key: ${{ runner.os }}-android-ndk-27.2.12479018-anyiose-rust-v2-${{ hashFiles('third_party/hyperhle-revision.txt', 'third_party/hyperhle-patches/AnyiOSEMU.patch', 'third_party/hyperhle-patches/SDL-Android-NDK-27.patch', 'third_party/hyperhle/Cargo.lock', 'third_party/hyperhle/**/Cargo.toml') }}
+          key: ${{ runner.os }}-cargo-dependencies-v1-${{ hashFiles('third_party/hyperhle/Cargo.lock') }}
           restore-keys: |
-            ${{ runner.os }}-android-ndk-27.2.12479018-anyiose-rust-v2-
+            ${{ runner.os }}-cargo-dependencies-v1-
+      - name: Cache AnyiOSEMU Rust Android build
+        uses: actions/cache@v4
+        with:
+          # Keep target artifacts isolated by the exact native-build inputs. In
+          # particular, do not restore an older CMakeCache across ABI/patch changes.
+          path: third_party/hyperhle/target
+          key: ${{ runner.os }}-android-ndk-27.2.12479018-anyiose-rust-v3-${{ hashFiles('app/build.gradle', 'third_party/hyperhle-revision.txt', 'third_party/hyperhle-patches/AnyiOSEMU.patch', 'third_party/hyperhle-patches/SDL-Android-NDK-27.patch', 'third_party/hyperhle/Cargo.lock', 'third_party/hyperhle/**/Cargo.toml') }}
       # Development keys only, never release signing material. Cache eviction can
       # change this certificate; durable distribution requires configured signing secrets.
       - name: Reuse development signing identity when cached
@@ -220,6 +226,19 @@ jobs:
           else
             gradle --no-daemon --build-cache --parallel :app:lintRelease :app:testReleaseUnitTest :converter:lintRelease :converter:testReleaseUnitTest :app:assembleRelease 2>&1 | tee .local/logs/android-build.log
           fi
+      - name: Verify Android Dynarmic target architecture
+        env:
+          VARIANT: ${{ inputs.variant }}
+        run: |
+          BUILD_ROOT="third_party/hyperhle/target/aarch64-linux-android/$VARIANT/build"
+          CMAKE_CACHE=$(find "$BUILD_ROOT" -path '*/touchHLE_dynarmic_wrapper-*/out/build/CMakeCache.txt' -print -quit)
+          if [ -z "$CMAKE_CACHE" ] || ! grep -Eq '^ARCHITECTURE:[^=]*=arm64$' "$CMAKE_CACHE"; then
+            echo 'Dynarmic Android CMake cache is missing the expected arm64 architecture.' >&2
+            if [ -n "$CMAKE_CACHE" ]; then
+              grep -E '^(ARCHITECTURE|CMAKE_SYSTEM_PROCESSOR|DYNARMIC_TESTS|BUILD_TESTING):' "$CMAKE_CACHE" || true
+            fi
+            exit 1
+          fi
       - name: Prepare APK and provenance
         env:
           VARIANT: ${{ inputs.variant }}
@@ -229,6 +248,19 @@ jobs:
           APK=$(find "app/build/outputs/apk/$VARIANT" -name '*.apk' -print -quit)
           test -n "$APK"
           cp "$APK" ".local/artifacts/$ARTIFACT"
+          # libtouchHLE is loaded on demand; Bionic rejects initial-exec TLS relocations
+          # when such a DSO is dlopened after process startup. Guard the final ARM64 ELF.
+          TLS_SO="$RUNNER_TEMP/libtouchHLE.so"
+          TLS_RELOCS="$RUNNER_TEMP/libtouchHLE-relocations.txt"
+          unzip -p "$APK" lib/arm64-v8a/libtouchHLE.so > "$TLS_SO"
+          test -s "$TLS_SO"
+          READELF="$ANDROID_HOME/ndk/27.2.12479018/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-readelf"
+          "$READELF" --relocations --wide "$TLS_SO" > "$TLS_RELOCS"
+          if grep -E 'R_AARCH64_TLS_TPREL|R_AARCH64_TLSIE_' "$TLS_RELOCS"; then
+            echo 'Refusing to package libtouchHLE.so with initial-exec TLS relocations.' >&2
+            exit 1
+          fi
+          echo 'libtouchHLE.so has no initial-exec TLS relocations.'
           cd .local/artifacts
           sha256sum "$ARTIFACT" > SHA256SUMS
           "$ANDROID_HOME/build-tools/35.0.0/aapt2" dump badging "$ARTIFACT" > APK-BADGING.txt
