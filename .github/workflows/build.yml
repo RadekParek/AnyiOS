@@ -73,9 +73,9 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             third_party/hyperhle/target
-          key: ${{ runner.os }}-android-ndk-27.2.12479018-anyiose-rust-${{ hashFiles('third_party/hyperhle-revision.txt', 'third_party/hyperhle-patches/AnyiOSEMU.patch', 'third_party/hyperhle-patches/SDL-Android-NDK-27.patch', 'third_party/hyperhle/Cargo.lock', 'third_party/hyperhle/**/Cargo.toml') }}
+          key: ${{ runner.os }}-android-ndk-27.2.12479018-anyiose-rust-v2-${{ hashFiles('third_party/hyperhle-revision.txt', 'third_party/hyperhle-patches/AnyiOSEMU.patch', 'third_party/hyperhle-patches/SDL-Android-NDK-27.patch', 'third_party/hyperhle/Cargo.lock', 'third_party/hyperhle/**/Cargo.toml') }}
           restore-keys: |
-            ${{ runner.os }}-android-ndk-27.2.12479018-anyiose-rust-
+            ${{ runner.os }}-android-ndk-27.2.12479018-anyiose-rust-v2-
       # Development keys only, never release signing material. Cache eviction can
       # change this certificate; durable distribution requires configured signing secrets.
       - name: Reuse development signing identity when cached
