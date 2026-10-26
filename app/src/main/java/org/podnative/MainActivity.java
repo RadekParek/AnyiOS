@@ -716,18 +716,19 @@ public final class MainActivity extends Activity {
             MainActivity activity = owner.get();
             if (activity == null || activity.isFinishing() || activity.isDestroyed())
                 return;
-                if (source == null) {
-                    String message = activity.library.notice.isEmpty()
-                        ? "Emulator could not prepare this game. Re-import the IPA or extracted app folder and try again."
-                        : activity.library.notice;
-                    if (message.startsWith("Emulator preparation cancelled.")) {
-                        android.widget.Toast.makeText(
-                            activity, message, android.widget.Toast.LENGTH_SHORT).show();
-                    } else {
-                        activity.showPreparationError(message);
-                    }
-                    return;
+            if (source == null) {
+                String message = activity.library.notice.isEmpty()
+                    ? "Emulator could not prepare this game. Re-import the IPA or extracted app folder and try again."
+                    : activity.library.notice;
+                if (message.startsWith("Emulator preparation cancelled.")) {
+                    android.widget.Toast
+                        .makeText(activity, message, android.widget.Toast.LENGTH_SHORT)
+                        .show();
+                } else {
+                    activity.showPreparationError(message);
                 }
+                return;
+            }
             Intent intent =
                 new Intent(activity, AnyiOSEmuActivity.class)
                     .putExtra(AnyiOSEmuActivity.EXTRA_GAME_ID, game.id)
@@ -766,16 +767,19 @@ public final class MainActivity extends Activity {
         new AlertDialog.Builder(this)
             .setTitle("Couldn’t open Emulator")
             .setView(scroll)
-            .setNegativeButton("Copy details", (dialog, which) -> {
-                android.content.ClipboardManager clipboard =
-                    getSystemService(android.content.ClipboardManager.class);
-                if (clipboard != null) {
-                    clipboard.setPrimaryClip(
-                        ClipData.newPlainText("AnyiOS emulator error", details));
-                    android.widget.Toast.makeText(
-                        this, "Error details copied", android.widget.Toast.LENGTH_SHORT).show();
-                }
-            })
+            .setNegativeButton("Copy details",
+                (dialog, which) -> {
+                    android.content.ClipboardManager clipboard =
+                        getSystemService(android.content.ClipboardManager.class);
+                    if (clipboard != null) {
+                        clipboard.setPrimaryClip(
+                            ClipData.newPlainText("AnyiOS emulator error", details));
+                        android.widget.Toast
+                            .makeText(
+                                this, "Error details copied", android.widget.Toast.LENGTH_SHORT)
+                            .show();
+                    }
+                })
             .setPositiveButton("Done", null)
             .show();
     }

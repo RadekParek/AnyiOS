@@ -908,14 +908,13 @@ final class GameLibrary {
     }
 
     static File copyRuntimeIpaAlias(File source, File alias, File temporary, File marker,
-        long usableSpace, Runnable checkCancelled,
-        java.util.function.LongConsumer onProgress) throws IOException {
+        long usableSpace, Runnable checkCancelled, java.util.function.LongConsumer onProgress)
+        throws IOException {
         final long expected = source.length();
         final long sourceModified = source.lastModified();
         final long reserve = 32L * 1024 * 1024;
-        final long required = expected > Long.MAX_VALUE - reserve
-            ? Long.MAX_VALUE
-            : Math.max(0, expected) + reserve;
+        final long required =
+            expected > Long.MAX_VALUE - reserve ? Long.MAX_VALUE : Math.max(0, expected) + reserve;
         if (expected < 0 || usableSpace < required) {
             throw new IOException("Android could not reuse the IPA without making another copy. "
                 + "The fallback copy needs " + formatBytes(required) + " free; only "
@@ -957,8 +956,8 @@ final class GameLibrary {
                 throw new IOException("The IPA changed while its emulator copy was being made");
             try {
                 if (!temporary.setLastModified(sourceModified))
-                    Diagnostics.record("ANYIOSEMU_SOURCE_TIMESTAMP",
-                        "Could not preserve IPA timestamp");
+                    Diagnostics.record(
+                        "ANYIOSEMU_SOURCE_TIMESTAMP", "Could not preserve IPA timestamp");
             } catch (SecurityException e) {
                 Diagnostics.record("ANYIOSEMU_SOURCE_TIMESTAMP", e.toString());
             }
@@ -973,7 +972,8 @@ final class GameLibrary {
             return alias;
         } catch (IOException e) {
             throw new IOException("Could not make an Emulator-readable IPA copy. Check available "
-                + "device storage and retry. " + e.getMessage(), e);
+                    + "device storage and retry. " + e.getMessage(),
+                e);
         } finally {
             if (temporary.exists() && !temporary.delete())
                 Diagnostics.record("ANYIOSEMU_SOURCE_CLEANUP", "Temporary IPA copy remains");
