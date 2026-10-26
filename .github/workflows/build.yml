@@ -48,9 +48,8 @@ jobs:
         uses: actions/cache@v4
         with:
           path: third_party/hyperhle/vendor/boost
-          key: ${{ runner.os }}-boost-${{ hashFiles('third_party/hyperhle-boost-version.txt', 'scripts/prepare-hyperhle-boost.sh') }}
-      - name: Prepare pinned AnyiOSEMU Boost headers
-        if: steps.anyiose-boost-cache.outputs.cache-hit != 'true'
+          key: ${{ runner.os }}-boost-v2-${{ hashFiles('third_party/hyperhle-boost-version.txt', 'scripts/prepare-hyperhle-boost.sh') }}
+      - name: Verify or prepare pinned AnyiOSEMU Boost headers
         run: scripts/prepare-hyperhle-boost.sh
       - name: Install Rust Android toolchain
         run: |
