@@ -27,7 +27,8 @@ import java.io.File
  *  4. a deterministic generated icon so no library entry is ever blank.
  */
 object Icons {
-    private const val TARGET = 512
+    // Retain four-times library artwork; IconLoader downsamples for fixed-size UI tiles/details.
+    private const val TARGET = 2048
     private const val MAX_IMAGE_BYTES = 16L * 1024 * 1024
     private const val MAX_CATALOG_BYTES = 96L * 1024 * 1024
     private const val MAX_PAYLOADS = 64

@@ -2,15 +2,15 @@
 # Fetch the exact Boost release required to build the pinned AnyiOSEMU Dynarmic wrapper.
 set -euo pipefail
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
-HLE="$ROOT/third_party/hyperhle"
-BOOST_DIR="$HLE/vendor/boost"
-VERSION=$(tr -d '\r\n' < "$ROOT/third_party/hyperhle-boost-version.txt")
+RUNTIME_ROOT="$ROOT/third_party/hyperhle"
+BOOST_DIR="$RUNTIME_ROOT/vendor/boost"
+VERSION=$(tr -d '\r\n' < "$ROOT/third_party/anyiose-runtime-boost-version.txt")
 [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || {
   echo "Invalid AnyiOSEMU Boost version: $VERSION" >&2
   exit 1
 }
-[[ -d "$HLE/vendor/dynarmic" ]] || {
-  echo "Pinned AnyiOSEMU submodules are missing; run scripts/prepare-hyperhle.sh first" >&2
+[[ -d "$RUNTIME_ROOT/vendor/dynarmic" ]] || {
+  echo "Pinned AnyiOSEMU submodules are missing; run scripts/prepare-anyiose-runtime.sh first" >&2
   exit 1
 }
 IFS=. read -r major minor patch <<< "$VERSION"

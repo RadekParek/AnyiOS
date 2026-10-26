@@ -73,4 +73,12 @@ public class GameInspectorArchiveTest {
             }
         }
     }
+
+    @Test
+    public void listsArm64BeforeArm32ButRetainsArm32Selection() {
+        assertEquals("ARM64 + ARM32",
+            GameInspector.universalArchitectureSlices(new long[] {0, 0, 0, 1, 1, 0}));
+        assertEquals(
+            "ARM32", GameInspector.universalArchitectureSlices(new long[] {0, 0, 0, 1, 0, 0}));
+    }
 }

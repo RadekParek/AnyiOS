@@ -1,11 +1,12 @@
 # Third-party provenance and license status
 
 AnyiOS remains the app shell, shared game library and Converter. The Android game
-runtime now integrates the pinned HyperHLE-Reborn source as a submodule; see its
-license/attribution section below. C++ import validation and the graphics test remain
-separate diagnostics, not the normal game runtime.
+runtime integrates pinned upstream Rust/SDL source under the first-party name
+AnyiOSEMU; complete upstream attribution and license information follow below. C++
+import validation and the graphics test remain separate diagnostics, not the normal
+game runtime.
 
-## ANGLE — pinned source build for diagnostics and AnyiOSEMU (current pin awaiting CI)
+## ANGLE — pinned source build for diagnostics and AnyiOSEMU (CI build passed; device unverified)
 
 * Origin: https://github.com/google/angle
 * Exact revision: `9addc2983b90152f628cfdaea194983b46b254bd`.
@@ -14,10 +15,9 @@ separate diagnostics, not the normal game runtime.
 * Intended use: build and embed upstream EGL/GLES libraries and use upstream API
   headers. Top-level terms permit source/binary redistribution subject to notices
   and no endorsement. No upstream source modifications.
-* The previous ANGLE pin passed an upstream source build and ELF dependency audit
-  in CI. This upgrade also builds the ES 1.1 entry-point library required by the
-  runtime; the new pin's source build, ELF audit and APK packaging are pending CI.
-  Device initialization/rendering remains unverified.
+* The current pin's source build, ELF dependency audit and APK packaging passed
+  Android CI run `40310754631`. This pin includes the ES 1.1 entry-point library
+  required by the runtime. Device initialization/rendering remains unverified.
 * Dependencies: exact versions are pinned by that ANGLE revision's DEPS. Build
   script collects license and README.chromium texts with an index into APK assets.
   **All compiled dependency terms and attribution must still be reviewed against
@@ -27,15 +27,15 @@ separate diagnostics, not the normal game runtime.
   The bundled ANGLE dependency-notice index and retained license/README texts are
   also exposed by the AnyiOSEMU runtime notices dialog.
 
-## HyperHLE-Reborn / touchHLE — AnyiOSEMU Android game runtime
+## AnyiOSEMU Android game runtime — upstream source attribution
 
 * Origin: https://github.com/KlugKlugTG/HyperHLE-Reborn
 * Exact source revision: `3f7325ddc29fa5b625b17487ec82eb864209b729`, pinned in
-  `third_party/hyperhle` and repeated in `third_party/hyperhle-revision.txt`.
+  `third_party/hyperhle` and repeated in `third_party/anyiose-runtime-revision.txt`.
 * License: Mozilla Public License 2.0. The upstream `LICENSE` is retained in the
   submodule and packaged with the Android runtime resources. Copyright and SPDX
   headers remain in upstream source; this integration does not remove attribution.
-* The tracked source-form patch in `third_party/hyperhle-patches/AnyiOSEMU.patch`
+* The tracked source-form patch in `third_party/anyiose-runtime-patches/AnyiOSEMU.patch`
   adapts launch arguments, per-game private data paths, Android provider identity,
   log naming and visible runtime strings. It applies only to the exact source pin.
 * Android builds compile the pinned Rust/SDL engine and consume the upstream
@@ -59,8 +59,8 @@ separate diagnostics, not the normal game runtime.
 * Exact revision: `a41c380246d3d9f9874f0f792d234dc0cc17c180` (6.7.0).
 * Root license: 0BSD, read and preserved in `third_party/dynarmic/LICENSE.txt`.
 * Original adapter for the separate AnyiOS host CPU tests and diagnostic; the Android
-  game launch now runs the pinned HyperHLE-Reborn engine above. A reviewed Oaknut
-  allocator patch adds opt-in checked W^X transitions and MAP_FAILED handling;
+  game launch now runs the separately pinned AnyiOSEMU Rust/SDL runtime above. A
+  reviewed Oaknut allocator patch adds opt-in checked W^X transitions and MAP_FAILED handling;
   provenance, modifications and retained MIT terms are documented in DEPENDENCIES.md.
 * CPU and dependency licenses were read before build. All included components have
   permissive terms allowing the intended use with retained notices. Exact dependency

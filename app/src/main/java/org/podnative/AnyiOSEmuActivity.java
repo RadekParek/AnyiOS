@@ -3,9 +3,13 @@ package org.podnative;
 import android.content.Intent;
 import android.graphics.Color;
 import android.graphics.Typeface;
+import android.graphics.drawable.GradientDrawable;
 import android.os.Bundle;
+import android.os.Debug;
 import android.os.Handler;
 import android.os.Looper;
+import android.os.Process;
+import android.os.SystemClock;
 import android.view.View;
 import android.view.ViewGroup;
 import android.widget.RelativeLayout;
@@ -14,6 +18,9 @@ import java.io.File;
 import java.io.RandomAccessFile;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
+import java.util.Locale;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 /** SDL host activity for AnyiOSEMU's pinned ARM32 iPhone OS runtime. */
 public final class AnyiOSEmuActivity extends org.touchhle.android.MainActivity {
@@ -28,11 +35,30 @@ public final class AnyiOSEmuActivity extends org.touchhle.android.MainActivity {
     public static volatile String userDataPath;
 
     private static final int MAX_REPORT_BYTES = 64 * 1024;
+    private static final int MAX_FPS_SCAN_BYTES = 32 * 1024;
+    private static final Pattern PRESENT_FPS =
+        Pattern.compile("AnyiOSEMU_PRESENT_FPS:\\s*([0-9]+(?:\\.[0-9]+)?)");
+    private final Handler hudHandler = new Handler(Looper.getMainLooper());
     private String gameId = "";
     private String gameTitle = "Imported game";
     private String sourcePath = "";
     private String dataPath = "";
     private long startedAt;
+    private int fpsCapPreference = DisplayFrameRate.AUTO;
+    private float effectiveFpsCap = 60.0f;
+    private boolean performanceHudEnabled;
+    private boolean maxClocksEnabled;
+    private boolean nativeGlesEnabled;
+    private boolean forceCompositionEnabled;
+    private boolean verboseGlesEnabled;
+    private TextView performanceHud;
+    private Runnable performanceHudSampler;
+    private long previousHudWallMs;
+    private long previousProcessCpuMs;
+    private long lastFpsMarkerPosition = -1;
+    private long lastFpsLogLength = -1;
+    private long lastMeasuredFpsAtMs;
+    private double lastMeasuredFps = Double.NaN;
 
     @Override
     protected void onCreate(Bundle state) {
@@ -48,6 +74,13 @@ public final class AnyiOSEmuActivity extends org.touchhle.android.MainActivity {
         if (dataPath == null)
             dataPath = "";
         startedAt = System.currentTimeMillis();
+        android.content.SharedPreferences settings = getSharedPreferences("settings", MODE_PRIVATE);
+        fpsCapPreference = settings.getInt("fps", DisplayFrameRate.AUTO);
+        performanceHudEnabled = settings.getBoolean("performanceHud", false);
+        maxClocksEnabled = settings.getBoolean("maxClocks", false);
+        nativeGlesEnabled = settings.getBoolean("nativeGles", false);
+        forceCompositionEnabled = settings.getBoolean("forceComposition", false);
+        verboseGlesEnabled = settings.getBoolean("verboseLogging", false);
 
         File dataDirectory = new File(dataPath);
         boolean dataDirectoryReady = dataDirectory.isDirectory() || dataDirectory.mkdirs();
@@ -63,6 +96,8 @@ public final class AnyiOSEmuActivity extends org.touchhle.android.MainActivity {
             userDataPath = null;
         }
         super.onCreate(state);
+        DisplayFrameRate.requestPreferredMode(this, fpsCapPreference);
+        effectiveFpsCap = DisplayFrameRate.resolveCap(this, fpsCapPreference);
         getSharedPreferences("anyiose_runtime", MODE_PRIVATE)
             .edit()
             .putString("last_data_path", userDataPath)
@@ -70,6 +105,8 @@ public final class AnyiOSEmuActivity extends org.touchhle.android.MainActivity {
         setTitle("AnyiOSEMU · " + gameTitle);
         if (intent != null && intent.getBooleanExtra(EXTRA_SHOW_CONSOLE, false))
             showSessionBadge();
+        if (performanceHudEnabled)
+            showPerformanceHud();
     }
 
     @Override
@@ -80,17 +117,16 @@ public final class AnyiOSEmuActivity extends org.touchhle.android.MainActivity {
         arguments.add("--anyiose-data-dir=" + userDataPath);
         arguments.add(sourcePath);
         arguments.add("--device-family=auto");
-        int fps = getSharedPreferences("settings", MODE_PRIVATE).getInt("fps", 60);
-        if (fps != 30 && fps != 60 && fps != 120)
-            fps = 60;
-        arguments.add("--fps-limit=" + fps);
-        boolean nativeGles =
-            getSharedPreferences("settings", MODE_PRIVATE).getBoolean("nativeGles", false);
-        arguments.add(nativeGles ? "--gles-native" : "--no-gles-native");
-        boolean forceComposition =
-            getSharedPreferences("settings", MODE_PRIVATE).getBoolean("forceComposition", false);
-        arguments.add(forceComposition ? "--force-composition" : "--no-force-composition");
-        if (getSharedPreferences("settings", MODE_PRIVATE).getBoolean("verboseLogging", false))
+        float fpsCap = DisplayFrameRate.resolveCap(this, fpsCapPreference);
+        effectiveFpsCap = fpsCap;
+        arguments.add("--fps-limit=" + DisplayFrameRate.formatOption(fpsCap));
+        arguments.add(maxClocksEnabled ? "--perf-hints" : "--no-perf-hints");
+        arguments.add(maxClocksEnabled ? "--affinity=big" : "--affinity=off");
+        if (performanceHudEnabled)
+            arguments.add("--print-fps");
+        arguments.add(nativeGlesEnabled ? "--gles-native" : "--no-gles-native");
+        arguments.add(forceCompositionEnabled ? "--force-composition" : "--no-force-composition");
+        if (verboseGlesEnabled)
             arguments.add("--verbose-gles");
         return arguments.toArray(new String[0]);
     }
@@ -130,8 +166,154 @@ public final class AnyiOSEmuActivity extends org.touchhle.android.MainActivity {
         }, 5000);
     }
 
+    private static final class FpsSample {
+        final double fps;
+        final long markerPosition;
+        final long logLength;
+
+        FpsSample(double fps, long markerPosition, long logLength) {
+            this.fps = fps;
+            this.markerPosition = markerPosition;
+            this.logLength = logLength;
+        }
+    }
+
+    private int dp(int value) {
+        return Math.round(value * getResources().getDisplayMetrics().density);
+    }
+
+    private void showPerformanceHud() {
+        View content = findViewById(android.R.id.content);
+        if (!(content instanceof ViewGroup))
+            return;
+        ViewGroup outer = (ViewGroup) content;
+        if (outer.getChildCount() == 0 || !(outer.getChildAt(0) instanceof ViewGroup))
+            return;
+        ViewGroup surface = (ViewGroup) outer.getChildAt(0);
+        performanceHud = new TextView(this);
+        performanceHud.setText("AnyiOSEMU HUD · sampling…");
+        performanceHud.setTextColor(Color.WHITE);
+        performanceHud.setTextSize(11);
+        performanceHud.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
+        performanceHud.setPadding(dp(11), dp(9), dp(11), dp(9));
+        performanceHud.setMaxWidth(dp(340));
+        GradientDrawable background = new GradientDrawable();
+        background.setColor(0xD910141D);
+        background.setCornerRadius(dp(12));
+        background.setStroke(dp(1), 0x664D6478);
+        performanceHud.setBackground(background);
+        performanceHud.setClickable(false);
+        performanceHud.setFocusable(false);
+        performanceHud.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_NO);
+        RelativeLayout.LayoutParams params = new RelativeLayout.LayoutParams(
+            ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        params.addRule(RelativeLayout.ALIGN_PARENT_TOP);
+        params.addRule(RelativeLayout.ALIGN_PARENT_END);
+        params.topMargin =
+            getSharedPreferences("settings", MODE_PRIVATE).getBoolean("showConsole", false)
+            ? dp(66)
+            : dp(10);
+        params.rightMargin = dp(10);
+        surface.addView(performanceHud, params);
+        performanceHudSampler = new Runnable() {
+            @Override
+            public void run() {
+                if (performanceHud == null || isFinishing() || isDestroyed())
+                    return;
+                updatePerformanceHud();
+                hudHandler.postDelayed(this, 1000);
+            }
+        };
+    }
+
+    private void updatePerformanceHud() {
+        long nowWall = SystemClock.elapsedRealtime();
+        long nowCpu = Process.getElapsedCpuTime();
+        String cpu = "—";
+        if (previousHudWallMs > 0 && nowWall > previousHudWallMs) {
+            double percent =
+                (nowCpu - previousProcessCpuMs) * 100.0 / (nowWall - previousHudWallMs);
+            cpu = String.format(Locale.ROOT, "%.0f%%", Math.max(0.0, percent));
+        }
+        previousHudWallMs = nowWall;
+        previousProcessCpuMs = nowCpu;
+
+        Debug.MemoryInfo memory = new Debug.MemoryInfo();
+        Debug.getMemoryInfo(memory);
+        long pssMegabytes = Math.max(0, memory.getTotalPss()) / 1024L;
+        long graphicsKilobytes = 0;
+        try {
+            graphicsKilobytes = Long.parseLong(memory.getMemoryStats().get("summary.graphics"));
+        } catch (Exception ignored) {
+            // Some Android versions do not report a graphics PSS category.
+        }
+        String graphics = graphicsKilobytes > 0 ? (graphicsKilobytes / 1024L) + " MB" : "n/a";
+
+        FpsSample sample = readLatestPresentedFps();
+        if (sample != null) {
+            if (lastFpsLogLength >= 0 && sample.logLength < lastFpsLogLength)
+                lastFpsMarkerPosition = -1;
+            if (sample.markerPosition > lastFpsMarkerPosition) {
+                lastFpsMarkerPosition = sample.markerPosition;
+                lastMeasuredFps = sample.fps;
+                lastMeasuredFpsAtMs = nowWall;
+            }
+            lastFpsLogLength = sample.logLength;
+        }
+        String fps = !Double.isNaN(lastMeasuredFps) && nowWall - lastMeasuredFpsAtMs <= 3000
+            ? String.format(Locale.ROOT, "%.1f", lastMeasuredFps)
+            : "—";
+        performanceHud.setText("FPS " + fps + " · cap " + DisplayFrameRate.formatHz(effectiveFpsCap)
+            + " Hz\n"
+            + "CPU " + cpu + " (process, one-core equivalent) · RAM " + pssMegabytes
+            + " MB PSS\nGPU utilization n/a · graphics PSS (within RAM total) " + graphics);
+    }
+
+    private FpsSample readLatestPresentedFps() {
+        File log = new File(dataPath, "AnyiOSEMU_log.txt");
+        if (!log.isFile())
+            return null;
+        try (RandomAccessFile input = new RandomAccessFile(log, "r")) {
+            long length = input.length();
+            long start = Math.max(0, length - MAX_FPS_SCAN_BYTES);
+            input.seek(start);
+            byte[] bytes = new byte[(int) (length - start)];
+            input.readFully(bytes);
+            String tail = new String(bytes, StandardCharsets.UTF_8);
+            Matcher matcher = PRESENT_FPS.matcher(tail);
+            FpsSample latest = null;
+            while (matcher.find()) {
+                double fps = Double.parseDouble(matcher.group(1));
+                long relativeBytes =
+                    tail.substring(0, matcher.start()).getBytes(StandardCharsets.UTF_8).length;
+                latest = new FpsSample(fps, start + relativeBytes, length);
+            }
+            return latest;
+        } catch (Exception ignored) {
+            return null;
+        }
+    }
+
+    @Override
+    protected void onResume() {
+        super.onResume();
+        if (performanceHudEnabled && performanceHudSampler != null) {
+            hudHandler.removeCallbacks(performanceHudSampler);
+            hudHandler.post(performanceHudSampler);
+        }
+    }
+
+    @Override
+    protected void onPause() {
+        if (performanceHudSampler != null)
+            hudHandler.removeCallbacks(performanceHudSampler);
+        super.onPause();
+    }
+
     @Override
     protected void onDestroy() {
+        if (performanceHudSampler != null)
+            hudHandler.removeCallbacks(performanceHudSampler);
         // SDL joins its native thread during super.onDestroy(); capture the log only after
         // that shutdown has finished so the final runtime status is not cut off.
         super.onDestroy();
@@ -145,10 +327,13 @@ public final class AnyiOSEmuActivity extends org.touchhle.android.MainActivity {
 
     private String sessionReport() {
         StringBuilder report = new StringBuilder();
-        android.content.SharedPreferences settings = getSharedPreferences("settings", MODE_PRIVATE);
-        int fps = settings.getInt("fps", 60);
-        if (fps != 30 && fps != 60 && fps != 120)
-            fps = 60;
+        int requestedFps = fpsCapPreference;
+        long reportTime = SystemClock.elapsedRealtime();
+        boolean recentFpsSample = performanceHudEnabled && !Double.isNaN(lastMeasuredFps)
+            && lastMeasuredFpsAtMs > 0 && reportTime - lastMeasuredFpsAtMs <= 3000;
+        String measuredFps = recentFpsSample
+            ? String.format(Locale.ROOT, "%.1f FPS (last presented-frame sample)", lastMeasuredFps)
+            : "not recorded (HUD off, no sample, or last sample older than three seconds)";
         report.append("AnyiOSEMU session\nGame=")
             .append(gameTitle)
             .append("\nStarted=")
@@ -157,17 +342,27 @@ public final class AnyiOSEmuActivity extends org.touchhle.android.MainActivity {
             .append(BuildConfig.SOURCE_REVISION)
             .append("\nAnyiOSEMU engine=")
             .append(BuildConfig.ANYIOSEMU_ENGINE_REVISION)
-            .append("\nNative guest: ARM32; universal ARM32+ARM64 bundles select ARM32"
+            .append("\nNative guest: ARM32; universal ARM64+ARM32 bundles select ARM32"
                 + "; ARM64-only bundles are unsupported")
-            .append("\nFPS limit=")
-            .append(fps)
+            .append("\nFPS cap request=")
+            .append(requestedFps <= DisplayFrameRate.AUTO
+                    ? "Auto (fastest supported mode at current resolution)"
+                    : requestedFps + " FPS")
+            .append("\nEffective FPS cap passed to AnyiOSEMU=")
+            .append(DisplayFrameRate.formatHz(effectiveFpsCap))
+            .append(" Hz\nMeasured presentation FPS=")
+            .append(measuredFps)
+            .append("\nPerformance HUD=")
+            .append(performanceHudEnabled)
+            .append("\nMax clocks request=")
+            .append(maxClocksEnabled)
+            .append(" (best-effort Android performance hints/CPU affinity; clocks are not forced)")
             .append("\nGraphics driver=")
-            .append(settings.getBoolean("nativeGles", false) ? "device-native GLES"
-                                                             : "bundled ANGLE by default")
+            .append(nativeGlesEnabled ? "device-native GLES" : "bundled ANGLE by default")
             .append("\nForce Composition=")
-            .append(settings.getBoolean("forceComposition", false))
+            .append(forceCompositionEnabled)
             .append("\nVerbose GLES logging=")
-            .append(settings.getBoolean("verboseLogging", false))
+            .append(verboseGlesEnabled)
             .append("\n\n");
         File log = new File(dataPath, "AnyiOSEMU_log.txt");
         try (RandomAccessFile input = new RandomAccessFile(log, "r")) {

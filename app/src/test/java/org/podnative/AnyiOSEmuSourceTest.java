@@ -19,11 +19,25 @@ public class AnyiOSEmuSourceTest {
     @Rule public TemporaryFolder temporary = new TemporaryFolder();
 
     @Test
+    public void usesConverterRecoveredIconWhenNoCoverWasFound() throws Exception {
+        File gameDirectory = temporary.newFolder("game-icon-fallback");
+        File recoveredIcon = new File(gameDirectory, "icon.png");
+        assertEquals(true, recoveredIcon.createNewFile());
+        GameLibrary.Game game = new GameLibrary.Game(gameDirectory,
+            new JSONObject().put("kind", "IPA"));
+
+        assertEquals(recoveredIcon, game.cover());
+        File cover = new File(gameDirectory, "cover.png");
+        assertEquals(true, cover.createNewFile());
+        assertEquals(cover, game.cover());
+    }
+
+    @Test
     public void universalArm32AndArm64GameIsLaunchableThroughItsArm32Slice() throws Exception {
         File gameDirectory = temporary.newFolder("game-universal");
         GameLibrary.Game game = new GameLibrary.Game(gameDirectory,
             new JSONObject().put("kind", "IPA")
-                .put("architecture", "ARMv7 · ARM32 + ARM64 universal (ARM32 selected)"));
+                .put("architecture", "ARM64 + ARM32 universal (ARM32 selected: ARMv7)"));
 
         assertEquals(true, game.canLaunchInAnyiOSEMU());
     }

@@ -1407,9 +1407,27 @@ index 116377048b0174b12bec8580997c3b8c65e859e0..f6dcce7b8de7f45490c2835505967ee9
 +    ""
  }
 diff --git a/src/window.rs b/src/window.rs
-index 62127476cf0e6bfaae962dd8146cded72f1ad9e8..bab2c51805b74c6931ffbbf0f03605ee5a314550 100644
+index 62127476cf0e6bfaae962dd8146cded72f1ad9e8..a024b83a819eb7a430f4f495fdbb129a5ef1c64f 100644
 --- a/src/window.rs
 +++ b/src/window.rs
+@@ -1351,7 +1351,7 @@ impl Window {
+             virtual_cursor_last: None,
+             virtual_cursor_last_unsticky: None,
+             virtual_accelerometer_last: None,
+-            show_fps_counter: Cell::new(false),
++            show_fps_counter: Cell::new(options.print_fps),
+             fps_frame_count: Cell::new(0),
+             fps_last_log: RefCell::new(Instant::now()),
+             perf_hints: crate::perf_hints::PerfHints::new(
+@@ -2686,7 +2686,7 @@ impl Window {
+                 // Compute FPS (frames in elapsed duration)
+                 let fps = (frames as f32) / (elapsed.as_secs_f32().max(1e-6));
+                 // Log to stdout / echo
+-                echo!("FPS: {:.1}", fps);
++                echo!("AnyiOSEMU_PRESENT_FPS: {:.1}", fps);
+                 // Reset counters
+                 *last = now;
+                 self.fps_frame_count.set(0);
 @@ -3124,7 +3124,7 @@ pub fn show_error_messagebox(window: Option<&Window>, error_message: &str) {
          messagebox::ButtonData {
              flags: messagebox::MessageBoxButtonFlag::NOTHING,

@@ -1,12 +1,12 @@
 AnyiOSEMU runtime — third-party notices
 
-AnyiOS keeps its existing app shell, shared game library and Converter. AnyiOSEMU is a separate Android-hosted ARM32 guest runtime integrated from HyperHLE-Reborn, a fork of touchHLE.
+AnyiOS keeps its existing app shell, shared game library and Converter. AnyiOSEMU is the first-party name for the Android-hosted ARM32 guest runtime integrated from the pinned upstream Rust/SDL source. The upstream projects are HyperHLE-Reborn (a fork of touchHLE); attribution and license notices follow.
 
 Source attribution
 • HyperHLE-Reborn contributors: https://github.com/KlugKlugTG/HyperHLE-Reborn
 • Upstream touchHLE project: https://github.com/touchHLE/touchHLE
-• AnyiOS integration patch: third_party/hyperhle-patches/AnyiOSEMU.patch in the source repository.
-• Exact runtime source pin: third_party/hyperhle-revision.txt in the source repository.
+• AnyiOS integration patch: third_party/anyiose-runtime-patches/AnyiOSEMU.patch in the source repository.
+• Exact runtime source pin: third_party/anyiose-runtime-revision.txt in the source repository.
 
 HyperHLE-Reborn/touchHLE source is licensed under the Mozilla Public License 2.0 (MPL-2.0). The complete MPL text is shipped as the LICENSE asset. Copyright and SPDX notices in upstream source are retained; names are credited here and in the source tree. Source-form changes made for AnyiOS are available in the linked repository patch.
 

@@ -93,7 +93,7 @@ class ShimAdapter {
     struct GuestMutexOwner {
         GuestAddress owner = 0;
         std::uint32_t depth = 0;
-        // Blocking self-locks of a normal mutex (ported from HyperHLE's
+        // Blocking self-locks of a normal mutex (matching the pinned guest runtime's
         // `environment/mutex.rs`, MPL-2.0): granted without changing ownership and
         // consumed by a matching unlock, so the single CPU is not spun forever.
         std::uint32_t phantomLocks = 0;

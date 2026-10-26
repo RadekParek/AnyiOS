@@ -2,14 +2,14 @@
 # Patch the pinned rust-sdl2 SDL submodule used by Cargo's bundled Android build.
 set -euo pipefail
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
-HLE="$ROOT/third_party/hyperhle"
-PATCH="$ROOT/third_party/hyperhle-patches/SDL-Android-NDK-27.patch"
+RUNTIME_ROOT="$ROOT/third_party/hyperhle"
+PATCH="$ROOT/third_party/anyiose-runtime-patches/SDL-Android-NDK-27.patch"
 
 [[ -f "$PATCH" ]] || { echo "Missing reviewed SDL compatibility patch: $PATCH" >&2; exit 1; }
 
-# Cargo builds sdl2-sys/SDL from its own git checkout, not HyperHLE's vendor/SDL.
-cargo fetch --locked --manifest-path "$HLE/Cargo.toml"
-METADATA=$(cargo metadata --locked --format-version 1 --manifest-path "$HLE/Cargo.toml")
+# Cargo builds sdl2-sys/SDL from its own git checkout, not the runtime submodule's vendor/SDL.
+cargo fetch --locked --manifest-path "$RUNTIME_ROOT/Cargo.toml"
+METADATA=$(cargo metadata --locked --format-version 1 --manifest-path "$RUNTIME_ROOT/Cargo.toml")
 PACKAGE_INFO=$(printf '%s\n' "$METADATA" | python3 -c '
 import json
 import sys
@@ -34,7 +34,7 @@ source = packages[0].get("source") or ""
 if not source.startswith("git+https://github.com/touchHLE/rust-sdl2?tag=touchHLE-3#"):
     raise SystemExit(f"Unexpected sdl2-sys source: {source}")
 print("{}\t{}".format(packages[0]["manifest_path"], source))
-' "$HLE/Cargo.lock")
+' "$RUNTIME_ROOT/Cargo.lock")
 IFS=$'\t' read -r S2_MANIFEST S2_SOURCE <<< "$PACKAGE_INFO"
 RUST_SDL2=$(cd "$(dirname "$S2_MANIFEST")/.." && pwd)
 SDL="$RUST_SDL2/sdl2-sys/SDL"
@@ -46,9 +46,9 @@ ACTUAL_RUST_SDL2_REV=$(git -C "$RUST_SDL2" rev-parse HEAD)
 }
 EXPECTED_SDL_REV=$(git -C "$RUST_SDL2" ls-tree HEAD sdl2-sys/SDL | awk '{print $3}')
 ACTUAL_SDL_REV=$(git -C "$SDL" rev-parse HEAD)
-VENDORED_SDL_REV=$(git -C "$HLE/vendor/SDL" rev-parse HEAD)
+VENDORED_SDL_REV=$(git -C "$RUNTIME_ROOT/vendor/SDL" rev-parse HEAD)
 if [[ -z "$EXPECTED_SDL_REV" || "$ACTUAL_SDL_REV" != "$EXPECTED_SDL_REV" || "$ACTUAL_SDL_REV" != "$VENDORED_SDL_REV" ]]; then
-  echo "rust-sdl2 SDL submodule does not match the pinned HyperHLE SDL revision" >&2
+  echo "rust-sdl2 SDL submodule does not match the pinned runtime SDL revision" >&2
   exit 1
 fi
 

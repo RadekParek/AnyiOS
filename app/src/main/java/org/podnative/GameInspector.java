@@ -22,6 +22,7 @@ import java.util.zip.ZipFile;
 /** Reads metadata and the selected ARM32 slice; complete source archives/resources are retained. */
 final class GameInspector {
     private static final int MAX_EXECUTABLE = 64 * 1024 * 1024;
+    private static final int MAX_ARTWORK_BYTES = 16 * 1024 * 1024;
     private static final long MAX_CONTAINER = 512L * 1024 * 1024;
     private static final AtomicBoolean guestFrameErrorReported = new AtomicBoolean();
     static final class Result {
@@ -252,10 +253,14 @@ final class GameInspector {
                 : (subtype & 0xffffff) == 10                ? "ARMv7f"
                                                             : "ARM32";
             if (slice[3] != 0) {
+                String selectedArchitecture = result.architecture;
                 String slices = universalArchitectureSlices(slice);
-                result.architecture += " · " + slices + " universal (ARM32 selected)";
-                if (slice[4] == 0 && slice[5] == 0)
-                    result.architecture += " (no ARM64 slice detected)";
+                if (slice[4] != 0 || slice[5] != 0)
+                    result.architecture =
+                        slices + " universal (ARM32 selected: " + selectedArchitecture + ")";
+                else
+                    result.architecture =
+                        selectedArchitecture + " · ARM32 universal (no ARM64 slice detected)";
             } else {
                 result.architecture += " · ARM32";
             }
@@ -360,7 +365,7 @@ final class GameInspector {
                 if (icon == null || icon.isDirectory())
                     continue;
                 try (InputStream in = zip.getInputStream(icon)) {
-                    result.icon = bounded(in, 4 * 1024 * 1024);
+                    result.icon = bounded(in, MAX_ARTWORK_BYTES);
                     break;
                 } catch (
                     IOException ignored) { /* Optional artwork never makes the executable valid. */
@@ -464,7 +469,7 @@ final class GameInspector {
             File icon = new File(bundle, name);
             if (icon.isFile())
                 try (InputStream in = new FileInputStream(icon)) {
-                    result.icon = bounded(in, 4 * 1024 * 1024);
+                    result.icon = bounded(in, MAX_ARTWORK_BYTES);
                     break;
                 } catch (IOException ignored) { /* Optional cover. */
                 }
@@ -497,12 +502,18 @@ final class GameInspector {
         inspectExecutable(executable, result);
         result.executable = folder.toPath().relativize(executable.toPath()).toString();
     }
-    private static String universalArchitectureSlices(long[] slice) {
-        StringBuilder architectures = new StringBuilder("ARM32");
+    static String universalArchitectureSlices(long[] slice) {
+        StringBuilder architectures = new StringBuilder();
         if (slice[4] != 0)
-            architectures.append(" + ARM64");
-        if (slice[5] != 0)
-            architectures.append(" + ARM64_32");
+            architectures.append("ARM64");
+        if (slice[5] != 0) {
+            if (architectures.length() > 0)
+                architectures.append(" + ");
+            architectures.append("ARM64_32");
+        }
+        if (architectures.length() > 0)
+            architectures.append(" + ");
+        architectures.append("ARM32");
         return architectures.toString();
     }
     private static String unsupportedUniversalArchitecture(String error) {

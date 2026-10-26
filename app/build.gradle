@@ -2,20 +2,20 @@ plugins { id 'com.android.application' }
 apply plugin: 'com.github.willir.rust.cargo-ndk-android'
 apply plugin: 'org.jetbrains.kotlin.android'
 
-def hyperHleRoot = file("$rootDir/third_party/hyperhle")
-def hyperHleRevision = file("$rootDir/third_party/hyperhle-revision.txt").text.trim()
-def hyperHleAssets = layout.buildDirectory.dir('generated/hyperhleAssets')
+def anyioseRuntimeRoot = file("$rootDir/third_party/hyperhle")
+def anyioseRuntimeRevision = file("$rootDir/third_party/anyiose-runtime-revision.txt").text.trim()
+def anyioseRuntimeAssets = layout.buildDirectory.dir('generated/anyioseRuntimeAssets')
 def anyioseDebugNoticeAssets = layout.buildDirectory.dir('generated/anyioseRuntimeNotices/debug')
 def anyioseReleaseNoticeAssets = layout.buildDirectory.dir('generated/anyioseRuntimeNotices/release')
-def syncHyperHleAssets = tasks.register('syncHyperHleAssets', Sync) {
-    from(hyperHleRoot) {
+def syncAnyiOSEmuRuntimeAssets = tasks.register('syncAnyiOSEmuRuntimeAssets', Sync) {
+    from(anyioseRuntimeRoot) {
         include 'touchHLE_dylibs/**'
         include 'touchHLE_fonts/**'
         include 'touchHLE_default_options.txt'
         include 'touchHLE_wallpaper.png'
     }
     // Keep the upstream and bundled dependency notices alongside the packaged resources.
-    from(hyperHleRoot) {
+    from(anyioseRuntimeRoot) {
         include 'LICENSE'
         include 'vendor/SDL/LICENSE.txt'
         include 'vendor/dynarmic/LICENSE.txt'
@@ -26,7 +26,7 @@ def syncHyperHleAssets = tasks.register('syncHyperHleAssets', Sync) {
         include 'vendor/PVRTDecompress/LICENSE.md'
         include 'vendor/symphonia-codec-aac/LICENSE'
     }
-    into(hyperHleAssets)
+    into(anyioseRuntimeAssets)
 }
 
 android {
@@ -42,7 +42,7 @@ android {
         ndk { abiFilters 'arm64-v8a' }
         externalNativeBuild { cmake { cppFlags '-std=c++20' } }
         buildConfigField 'String', 'SOURCE_REVISION', '"' + (System.getenv('GITHUB_SHA') ?: 'local-uncommitted') + '"'
-        buildConfigField 'String', 'ANYIOSEMU_ENGINE_REVISION', '"' + hyperHleRevision + '"'
+        buildConfigField 'String', 'ANYIOSEMU_ENGINE_REVISION', '"' + anyioseRuntimeRevision + '"'
         buildConfigField 'String', 'APP_NAME', '"AnyiOSEMU"'
     }
     compileOptions {
@@ -54,8 +54,8 @@ android {
     testOptions { unitTests.includeAndroidResources = true }
     sourceSets {
         main {
-            java.srcDir("$hyperHleRoot/android/app/src/main/java")
-            assets.srcDir(hyperHleAssets)
+            java.srcDir("$anyioseRuntimeRoot/android/app/src/main/java")
+            assets.srcDir(anyioseRuntimeAssets)
         }
         debug { assets.srcDir(anyioseDebugNoticeAssets) }
         release { assets.srcDir(anyioseReleaseNoticeAssets) }
@@ -99,13 +99,13 @@ android {
 cargoNdk {
     targets = ['arm64']
     // cargo-ndk resolves module beneath the Gradle root, so pass a relative path.
-    module = rootProject.relativePath(hyperHleRoot)
+    module = rootProject.relativePath(anyioseRuntimeRoot)
     librariesNames = ['libtouchHLE.so', 'libSDL2.so', 'libc++_shared.so']
     extraCargoEnv = [
         'ANDROID_NDK': android.ndkDirectory,
         'ANDROID_NDK_HOME': android.ndkDirectory
     ]
-    // mimalloc defaults to initial-exec TLS on Unix. libtouchHLE is dlopen'ed after app
+    // mimalloc defaults to initial-exec TLS on Unix. AnyiOSEMU is dlopen'ed after app
     // startup, so select mimalloc's dlopen-safe local-dynamic TLS feature on Android.
     extraCargoBuildArguments = [
         '--lib', '--no-default-features', '--features',
@@ -118,10 +118,10 @@ android.applicationVariants.all { variant ->
     def capitalized = variant.name.capitalize()
     def nativeBuildTask = "externalNativeBuild${capitalized}"
     def collectNotices = tasks.register("collect${capitalized}AnyiOSEmuNotices") {
-        dependsOn(syncHyperHleAssets)
+        dependsOn(syncAnyiOSEmuRuntimeAssets)
         dependsOn(nativeBuildTask)
-        mustRunAfter(syncHyperHleAssets)
-        def target = new File(hyperHleRoot, 'target')
+        mustRunAfter(syncAnyiOSEmuRuntimeAssets)
+        def target = new File(anyioseRuntimeRoot, 'target')
         def rustDependencyFiles = project.fileTree(target) {
             include '**/out/rust_dependencies.txt'
         }
@@ -150,7 +150,7 @@ android.applicationVariants.all { variant ->
                 newest(dynarmicLicenseFiles, 'the Dynarmic license summary').getText('UTF-8')
         }
     }
-    tasks["merge${capitalized}Assets"].dependsOn(syncHyperHleAssets)
+    tasks["merge${capitalized}Assets"].dependsOn(syncAnyiOSEmuRuntimeAssets)
     // cargo-ndk-android attaches its ABI-specific Cargo build to this task.
     tasks["merge${capitalized}Assets"].dependsOn(nativeBuildTask)
     tasks["merge${capitalized}Assets"].dependsOn(collectNotices)

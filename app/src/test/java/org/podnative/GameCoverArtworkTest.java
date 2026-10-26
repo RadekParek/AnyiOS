@@ -21,8 +21,8 @@ public class GameCoverArtworkTest {
     @Rule public TemporaryFolder temporary = new TemporaryFolder();
 
     @Test
-    public void preservesTwoTimesCoverPixels() throws Exception {
-        Bitmap source = Bitmap.createBitmap(1024, 768, Bitmap.Config.ARGB_8888);
+    public void preservesFourTimesCoverPixels() throws Exception {
+        Bitmap source = Bitmap.createBitmap(4096, 4, Bitmap.Config.ARGB_8888);
         ByteArrayOutputStream encoded = new ByteArrayOutputStream();
         try {
             assertTrue(source.compress(Bitmap.CompressFormat.PNG, 100, encoded));
@@ -37,7 +37,7 @@ public class GameCoverArtworkTest {
         BitmapFactory.Options bounds = new BitmapFactory.Options();
         bounds.inJustDecodeBounds = true;
         BitmapFactory.decodeFile(cover.getAbsolutePath(), bounds);
-        assertEquals(512, bounds.outWidth);
-        assertEquals(384, bounds.outHeight);
+        assertEquals(2048, bounds.outWidth);
+        assertEquals(2, bounds.outHeight);
     }
 }
