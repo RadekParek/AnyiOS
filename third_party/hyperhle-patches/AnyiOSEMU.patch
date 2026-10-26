@@ -417,7 +417,7 @@ index 51498da6eda8ceab522b790be41fb3883eca27e9..dba2a531ce11b491263e4823a79e822b
          }
      }
 diff --git a/src/cpu/dynarmic_wrapper/build.rs b/src/cpu/dynarmic_wrapper/build.rs
-index 22d9627f80cde83bba3df18afb6d83fe6c4c191e..bb27a0680464ca19c4646cf4e3a2a0e3ef981cb8 100644
+index 22d9627f80cde83bba3df18afb6d83fe6c4c191e..cceaa9b24462bcb4850b791d7b1a19a45cb096f4 100644
 --- a/src/cpu/dynarmic_wrapper/build.rs
 +++ b/src/cpu/dynarmic_wrapper/build.rs
 @@ -47,6 +47,7 @@ fn main() {
@@ -428,6 +428,17 @@ index 22d9627f80cde83bba3df18afb6d83fe6c4c191e..bb27a0680464ca19c4646cf4e3a2a0e3
      build.define("DYNARMIC_WARNINGS_AS_ERRORS", "OFF");
      build.define("DYNARMIC_TESTS", "OFF");
      build.define("DYNARMIC_USE_BUNDLED_EXTERNALS", "ON");
+@@ -83,6 +84,10 @@ fn main() {
+     // https://stackoverflow.com/questions/69697715/cross-compiling-c-program-for-android-on-mac-failed-using-ndks-clang
+     if os.eq_ignore_ascii_case("android") {
+         build.define("CMAKE_SYSTEM_NAME", "Android");
++        // cmake-rs skips processor inference when CMAKE_SYSTEM_NAME is explicit.
++        build.define("CMAKE_SYSTEM_PROCESSOR", "aarch64");
++        // Prevent Dynarmic's compiler probe from selecting a host backend.
++        build.define("ARCHITECTURE", "arm64");
+         build.define("CMAKE_SYSTEM_VERSION", "21");
+         build.define("ANDROID", "ON");
+         // Without this, CMake's architecture probe sees 32-bit `__arm__` and
 diff --git a/src/crash_handler.rs b/src/crash_handler.rs
 index e8a2cad582c6ffe71df9fa71ab1d94e9acae176f..78b70c2819047192c789493e6f91d4901a837a07 100644
 --- a/src/crash_handler.rs
