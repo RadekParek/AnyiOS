@@ -10,6 +10,7 @@ import android.os.Looper;
 import android.provider.DocumentsContract;
 import android.provider.OpenableColumns;
 import android.util.AtomicFile;
+import android.webkit.MimeTypeMap;
 import dev.radek.conventor.SharedCatalog;
 import java.io.File;
 import java.io.FileInputStream;
@@ -34,8 +35,10 @@ import org.json.JSONObject;
 /** App-scoped asynchronous worker for the durable app-private game library and sandboxes. */
 final class GameLibrary {
     private static final long MAX_SANDBOX_EXPORT_BYTES = 4L * 1024 * 1024 * 1024;
-    // Keep the same card dimensions while retaining a 2x pixel-density cover source.
-    private static final int COVER_MAX_EDGE = 512;
+    private static final int MAX_SANDBOX_EXPORT_FILES = 30000;
+    private static final int MAX_SANDBOX_EXPORT_DEPTH = 32;
+    // Retain artwork at four times the original 512-pixel library source cap.
+    private static final int COVER_MAX_EDGE = 2048;
     private static GameLibrary instance;
     static synchronized GameLibrary get(Context context) {
         if (instance == null)
@@ -81,7 +84,8 @@ final class GameLibrary {
             importedAt = data.optLong("importedAt");
         }
         File cover() {
-            return new File(directory, "cover.png");
+            File cover = new File(directory, "cover.png");
+            return cover.isFile() ? cover : new File(directory, "icon.png");
         }
         boolean canLaunchInAnyiOSEMU() {
             if ((!kind.equals("IPA") && !kind.equals("Folder")) || !blockReason.isEmpty()
@@ -89,6 +93,9 @@ final class GameLibrary {
                 || status.equals("Invalid"))
                 return false;
             String architectureName = architecture.toUpperCase(java.util.Locale.ROOT);
+            // Universal display labels list ARM64 first but remain launchable via ARM32.
+            if (architectureName.contains("ARM32 SELECTED"))
+                return true;
             int separator = architectureName.indexOf(' ');
             String architectureFamily =
                 separator < 0 ? architectureName : architectureName.substring(0, separator);
@@ -147,12 +154,19 @@ final class GameLibrary {
                             deleteTree(file);
                 // No continued URI access is needed after a completed private copy.
                 for (var permission : context.getContentResolver().getPersistedUriPermissions()) {
+                    int flags = (permission.isReadPermission()
+                                        ? android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION
+                                        : 0)
+                        | (permission.isWritePermission()
+                                ? android.content.Intent.FLAG_GRANT_WRITE_URI_PERMISSION
+                                : 0);
+                    if (flags == 0)
+                        continue;
                     try {
                         context.getContentResolver().releasePersistableUriPermission(
-                            permission.getUri(),
-                            android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION);
-                    } catch (
-                        SecurityException ignored) { /* Provider may revoke an old grant itself. */
+                            permission.getUri(), flags);
+                    } catch (Exception ignored) {
+                        // Provider may revoke an old grant itself.
                     }
                 }
                 refresh();
@@ -1273,7 +1287,7 @@ final class GameLibrary {
                     if (game.kind.equals("Folder") || importedBundle.isDirectory())
                         addSandboxDirectory(game.directory, importedBundle, "Bundle/", zip, 0);
                 }
-                notice = "Sandbox data exported. The ZIP contains Documents, bundle overrides and "
+                notice = "Game-data ZIP exported. It contains Documents, bundle overrides and "
                     + "AnyiOSEMU per-game data; rebuildable IPA/PVRTC caches are excluded. An "
                     + "imported .app copy is included when applicable.";
                 error = false;
@@ -1293,6 +1307,240 @@ final class GameLibrary {
             }
         });
     }
+    /** Copy browsable per-game data into a user-selected shared Documents tree. */
+    void exportSandboxFolder(Game game, Uri destinationTree) {
+        if (!begin("Preparing folder export…"))
+            return;
+        boolean persistableGrant = false;
+        if (destinationTree != null) {
+            try {
+                context.getContentResolver().takePersistableUriPermission(destinationTree,
+                    android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION
+                        | android.content.Intent.FLAG_GRANT_WRITE_URI_PERMISSION);
+                persistableGrant = true;
+            } catch (Exception ignored) {
+                // Some providers grant access only for the current activity/process session.
+            }
+        }
+        final boolean releasePersistableGrant = persistableGrant;
+        cancellable = true;
+        worker.execute(() -> {
+            ArrayList<Uri> createdDocuments = new ArrayList<>();
+            try {
+                if (destinationTree == null || destinationTree.getAuthority() == null)
+                    throw new IOException("The selected folder is unavailable");
+                if ((context.getPackageName() + ".provider").equals(destinationTree.getAuthority()))
+                    throw new IOException(
+                        "Choose a shared folder, not AnyiOSEMU’s private data provider");
+                if (!game.directory.getCanonicalFile().getParentFile().equals(
+                        root.getCanonicalFile()))
+                    throw new IOException("Invalid library entry");
+                SandboxPaths sandbox = ensureSandbox(game.directory);
+                String rootId = DocumentsContract.getTreeDocumentId(destinationTree);
+                Uri treeRoot = DocumentsContract.buildDocumentUriUsingTree(destinationTree, rootId);
+                Uri anyiosDirectory =
+                    findOrCreateDirectory(destinationTree, treeRoot, "org.anyios");
+                String folderName = exportFolderName(game);
+                Uri exportRoot = createExportDocument(destinationTree, anyiosDirectory,
+                    DocumentsContract.Document.MIME_TYPE_DIR, folderName, createdDocuments);
+
+                Uri documents = createExportDocument(destinationTree, exportRoot,
+                    DocumentsContract.Document.MIME_TYPE_DIR, "Documents", createdDocuments);
+                copySandboxDirectoryToFolder(sandbox.root, sandbox.documents, documents,
+                    destinationTree, "Documents/", 0, false, createdDocuments);
+
+                Uri overrides = createExportDocument(destinationTree, exportRoot,
+                    DocumentsContract.Document.MIME_TYPE_DIR, "BundleOverrides", createdDocuments);
+                copySandboxDirectoryToFolder(sandbox.root, sandbox.bundleOverlay, overrides,
+                    destinationTree, "BundleOverrides/", 0, false, createdDocuments);
+
+                Uri runtime = createExportDocument(destinationTree, exportRoot,
+                    DocumentsContract.Document.MIME_TYPE_DIR, "AnyiOSEMU", createdDocuments);
+                copySandboxDirectoryToFolder(sandbox.root, sandbox.anyiose, runtime,
+                    destinationTree, "AnyiOSEMU/", 0, true, createdDocuments);
+
+                File importedBundle = new File(game.directory, "bundle");
+                if (game.kind.equals("Folder") || importedBundle.isDirectory()) {
+                    Uri bundle = createExportDocument(destinationTree, exportRoot,
+                        DocumentsContract.Document.MIME_TYPE_DIR, "Bundle", createdDocuments);
+                    copySandboxDirectoryToFolder(game.directory, importedBundle, bundle,
+                        destinationTree, "Bundle/", 0, false, createdDocuments);
+                }
+                notice = "Game data copied to org.anyios/" + folderName
+                    + " in the selected location. Rebuildable IPA/PVRTC caches were excluded.";
+                error = false;
+                Diagnostics.record(
+                    "SANDBOX_FOLDER_EXPORT", game.title + " · " + formatBytes(copied));
+            } catch (CancellationException e) {
+                deleteCreatedDocuments(createdDocuments);
+                notice = "Folder export cancelled.";
+            } catch (Exception e) {
+                deleteCreatedDocuments(createdDocuments);
+                error = true;
+                notice = "Folder export failed: " + e.getMessage();
+                Diagnostics.record("SANDBOX_FOLDER_EXPORT_ERROR", e.toString());
+            } finally {
+                if (releasePersistableGrant && destinationTree != null) {
+                    try {
+                        context.getContentResolver().releasePersistableUriPermission(
+                            destinationTree,
+                            android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION
+                                | android.content.Intent.FLAG_GRANT_WRITE_URI_PERMISSION);
+                    } catch (Exception ignored) {
+                        // The provider may already have revoked this one-operation grant.
+                    }
+                }
+                SharedCatalog.end();
+                busy = false;
+                cancellable = false;
+                progress = "";
+                changed();
+            }
+        });
+    }
+
+    private Uri findOrCreateDirectory(Uri tree, Uri parent, String name) throws IOException {
+        String parentId = DocumentsContract.getDocumentId(parent);
+        Uri children = DocumentsContract.buildChildDocumentsUriUsingTree(tree, parentId);
+        String[] projection = {DocumentsContract.Document.COLUMN_DOCUMENT_ID,
+            DocumentsContract.Document.COLUMN_DISPLAY_NAME,
+            DocumentsContract.Document.COLUMN_MIME_TYPE};
+        try (Cursor cursor =
+                 context.getContentResolver().query(children, projection, null, null, null)) {
+            if (cursor != null) {
+                int idColumn = cursor.getColumnIndex(DocumentsContract.Document.COLUMN_DOCUMENT_ID);
+                int nameColumn =
+                    cursor.getColumnIndex(DocumentsContract.Document.COLUMN_DISPLAY_NAME);
+                int mimeColumn = cursor.getColumnIndex(DocumentsContract.Document.COLUMN_MIME_TYPE);
+                while (cursor.moveToNext()) {
+                    if (idColumn >= 0 && nameColumn >= 0 && mimeColumn >= 0
+                        && name.equals(cursor.getString(nameColumn))
+                        && DocumentsContract.Document.MIME_TYPE_DIR.equals(
+                            cursor.getString(mimeColumn)))
+                        return DocumentsContract.buildDocumentUriUsingTree(
+                            tree, cursor.getString(idColumn));
+                }
+            }
+        } catch (Exception ignored) {
+            // A provider may allow document creation without supporting child queries.
+        }
+        Uri created;
+        try {
+            created = DocumentsContract.createDocument(context.getContentResolver(), parent,
+                DocumentsContract.Document.MIME_TYPE_DIR, name);
+        } catch (Exception e) {
+            throw new IOException("The selected location cannot create the org.anyios folder", e);
+        }
+        if (created == null)
+            throw new IOException("The selected location did not create the org.anyios folder");
+        return DocumentsContract.buildDocumentUriUsingTree(
+            tree, DocumentsContract.getDocumentId(created));
+    }
+
+    private Uri createExportDocument(Uri tree, Uri parent, String mimeType, String name,
+        ArrayList<Uri> createdDocuments) throws IOException {
+        try {
+            Uri created = DocumentsContract.createDocument(
+                context.getContentResolver(), parent, mimeType, name);
+            if (created == null)
+                throw new IOException("The selected location refused to create " + name);
+            Uri treeDocument = DocumentsContract.buildDocumentUriUsingTree(
+                tree, DocumentsContract.getDocumentId(created));
+            createdDocuments.add(treeDocument);
+            return treeDocument;
+        } catch (Exception e) {
+            if (e instanceof IOException)
+                throw (IOException) e;
+            throw new IOException("The selected location refused to create " + name, e);
+        }
+    }
+
+    private void copySandboxDirectoryToFolder(File sandboxRoot, File directory, Uri destination,
+        Uri tree, String relativePath, int depth, boolean excludeRuntimeCaches,
+        ArrayList<Uri> createdDocuments) throws Exception {
+        checkCancelled();
+        if (depth > MAX_SANDBOX_EXPORT_DEPTH || ++files > MAX_SANDBOX_EXPORT_FILES)
+            throw new IOException("Game data exceeds the safe depth or 30,000-entry export limit");
+        if (java.nio.file.Files.isSymbolicLink(directory.toPath()))
+            throw new IOException("Folder export refused a symbolic-link directory");
+        File canonicalRoot = sandboxRoot.getCanonicalFile();
+        File canonicalDirectory = directory.getCanonicalFile();
+        if (!canonicalDirectory.toPath().startsWith(canonicalRoot.toPath()))
+            throw new IOException("Folder export directory escaped its private root");
+        File[] children = directory.listFiles();
+        if (children == null)
+            throw new IOException("Could not read a game-data directory");
+        java.util.Arrays.sort(children, Comparator.comparing(File::getName));
+        byte[] buffer = new byte[65536];
+        for (File child : children) {
+            checkCancelled();
+            if (excludeRuntimeCaches && child.getName().equals("AnyiOSEMU_pvrtc_cache"))
+                continue;
+            if (java.nio.file.Files.isSymbolicLink(child.toPath()))
+                throw new IOException("Folder export refused a symbolic link");
+            String name = relativePath + child.getName();
+            if (child.isDirectory()) {
+                Uri childDestination = createExportDocument(tree, destination,
+                    DocumentsContract.Document.MIME_TYPE_DIR, child.getName(), createdDocuments);
+                copySandboxDirectoryToFolder(sandboxRoot, child, childDestination, tree, name + "/",
+                    depth + 1, excludeRuntimeCaches, createdDocuments);
+                continue;
+            }
+            if (!child.isFile())
+                continue;
+            if (++files > MAX_SANDBOX_EXPORT_FILES)
+                throw new IOException("Game data exceeds the 30,000-file export limit");
+            File canonicalChild = child.getCanonicalFile();
+            if (!canonicalChild.toPath().startsWith(canonicalRoot.toPath()))
+                throw new IOException("Folder export file escaped its private root");
+            String extension = child.getName().contains(".")
+                ? child.getName()
+                      .substring(child.getName().lastIndexOf('.') + 1)
+                      .toLowerCase(java.util.Locale.ROOT)
+                : "";
+            String mime = MimeTypeMap.getSingleton().getMimeTypeFromExtension(extension);
+            if (mime == null)
+                mime = "application/octet-stream";
+            Uri output =
+                createExportDocument(tree, destination, mime, child.getName(), createdDocuments);
+            try (InputStream in = new FileInputStream(canonicalChild);
+                OutputStream out = context.getContentResolver().openOutputStream(output, "wt")) {
+                if (out == null)
+                    throw new IOException("The selected provider did not open " + name);
+                int count;
+                while ((count = in.read(buffer)) != -1) {
+                    checkCancelled();
+                    copied = LibraryRules.addCopiedBytes(copied, count);
+                    if (copied > MAX_SANDBOX_EXPORT_BYTES)
+                        throw new IOException("Game-data export exceeds the 4 GiB safety limit");
+                    out.write(buffer, 0, count);
+                    tick(name);
+                }
+            }
+        }
+    }
+
+    private void deleteCreatedDocuments(ArrayList<Uri> createdDocuments) {
+        for (int i = createdDocuments.size() - 1; i >= 0; i--) {
+            try {
+                DocumentsContract.deleteDocument(
+                    context.getContentResolver(), createdDocuments.get(i));
+            } catch (Exception ignored) {
+                // A provider may not support deleting partial exports; report the failure below.
+            }
+        }
+    }
+
+    private static String exportFolderName(Game game) {
+        String safeTitle =
+            game.title.replaceAll("[^A-Za-z0-9._-]+", "_").replaceAll("^\\.+|\\.+$", "");
+        if (safeTitle.isEmpty())
+            safeTitle = "game";
+        if (safeTitle.length() > 64)
+            safeTitle = safeTitle.substring(0, 64);
+        return "AnyiOSEMU-" + safeTitle + "-" + UUID.randomUUID().toString().substring(0, 8);
+    }
+
     private void addSandboxDirectory(File sandboxRoot, File directory, String archivePath,
         ZipOutputStream zip, int depth) throws IOException {
         addSandboxDirectory(sandboxRoot, directory, archivePath, zip, depth, false);
@@ -1300,8 +1548,8 @@ final class GameLibrary {
     private void addSandboxDirectory(File sandboxRoot, File directory, String archivePath,
         ZipOutputStream zip, int depth, boolean excludeRuntimeCaches) throws IOException {
         checkCancelled();
-        if (depth > 32 || ++files > 30000)
-            throw new IOException("Sandbox exceeds safe depth or 30,000-entry export limit");
+        if (depth > MAX_SANDBOX_EXPORT_DEPTH || ++files > MAX_SANDBOX_EXPORT_FILES)
+            throw new IOException("Game data exceeds the safe depth or 30,000-entry export limit");
         if (java.nio.file.Files.isSymbolicLink(directory.toPath()))
             throw new IOException("Sandbox export refused a symbolic-link directory");
         File canonicalRoot = sandboxRoot.getCanonicalFile();
@@ -1328,8 +1576,8 @@ final class GameLibrary {
             }
             if (!child.isFile())
                 continue;
-            if (++files > 30000)
-                throw new IOException("Sandbox exceeds the 30,000-file export limit");
+            if (++files > MAX_SANDBOX_EXPORT_FILES)
+                throw new IOException("Game data exceeds the 30,000-file export limit");
             File canonicalChild = child.getCanonicalFile();
             if (!canonicalChild.toPath().startsWith(canonicalRoot.toPath()))
                 throw new IOException("Sandbox file escaped its private root");

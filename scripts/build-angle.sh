@@ -51,7 +51,7 @@ cp -a include/. "$ROOT/third_party/angle/include/"
 # The closure audit below fails if this assumption changes upstream.
 cp out/PodNative/libEGL_podnative.so out/PodNative/libGLESv1_CM_podnative.so \
   out/PodNative/libGLESv2_podnative.so "$DEST/"
-# HyperHLE-Reborn resolves Android's bundled driver by these canonical names.
+# AnyiOSEMU resolves the bundled Android driver through these canonical names.
 # These are byte-for-byte copies from the same source pin used by the AnyiOS test renderer.
 cp "$DEST/libEGL_podnative.so" "$EMU_DEST/libEGL_angle.so"
 cp "$DEST/libGLESv1_CM_podnative.so" "$EMU_DEST/libGLESv1_CM_angle.so"

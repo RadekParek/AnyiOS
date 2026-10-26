@@ -2,11 +2,11 @@
 # Initialize pinned AnyiOSEMU engine sources and apply reviewed compatibility patches.
 set -euo pipefail
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
-HLE="$ROOT/third_party/hyperhle"
-PIN_FILE="$ROOT/third_party/hyperhle-revision.txt"
-PATCH="$ROOT/third_party/hyperhle-patches/AnyiOSEMU.patch"
-SDL="$HLE/vendor/SDL"
-SDL_PATCH="$ROOT/third_party/hyperhle-patches/SDL-Android-NDK-27.patch"
+RUNTIME_ROOT="$ROOT/third_party/hyperhle"
+PIN_FILE="$ROOT/third_party/anyiose-runtime-revision.txt"
+PATCH="$ROOT/third_party/anyiose-runtime-patches/AnyiOSEMU.patch"
+SDL="$RUNTIME_ROOT/vendor/SDL"
+SDL_PATCH="$ROOT/third_party/anyiose-runtime-patches/SDL-Android-NDK-27.patch"
 
 [[ -f "$PIN_FILE" ]] || { echo "Missing engine revision pin: $PIN_FILE" >&2; exit 1; }
 PIN=$(tr -d '\r\n' < "$PIN_FILE")
@@ -16,17 +16,17 @@ PIN=$(tr -d '\r\n' < "$PIN_FILE")
 }
 
 git -C "$ROOT" submodule update --init --recursive third_party/hyperhle
-ACTUAL=$(git -C "$HLE" rev-parse HEAD)
+ACTUAL=$(git -C "$RUNTIME_ROOT" rev-parse HEAD)
 [[ "$ACTUAL" == "$PIN" ]] || {
   echo "AnyiOSEMU engine revision mismatch: expected $PIN, found $ACTUAL" >&2
   exit 1
 }
 [[ -f "$PATCH" ]] || { echo "Missing reviewed engine patch: $PATCH" >&2; exit 1; }
 
-if git -C "$HLE" apply --reverse --check "$PATCH" >/dev/null 2>&1; then
+if git -C "$RUNTIME_ROOT" apply --reverse --check "$PATCH" >/dev/null 2>&1; then
   echo "AnyiOSEMU source patch is already applied to $PIN"
-elif git -C "$HLE" apply --check "$PATCH" >/dev/null 2>&1; then
-  git -C "$HLE" apply "$PATCH"
+elif git -C "$RUNTIME_ROOT" apply --check "$PATCH" >/dev/null 2>&1; then
+  git -C "$RUNTIME_ROOT" apply "$PATCH"
   echo "Applied AnyiOSEMU source patch to $PIN"
 else
   echo "AnyiOSEMU patch does not apply cleanly to pinned revision $PIN" >&2
@@ -38,13 +38,13 @@ ACTUAL_SDL_PATCH=$(mktemp "${TMPDIR:-/tmp}/anyiose-sdl-patch.XXXXXX")
 trap 'rm -f "$ACTUAL_PATCH" "$ACTUAL_SDL_PATCH"' EXIT
 # Full object IDs keep this exact patch check stable across Git versions and
 # shallow/full clones, whose default abbreviated hashes may differ in length.
-git -C "$HLE" diff --binary --full-index --ignore-submodules=all HEAD > "$ACTUAL_PATCH"
+git -C "$RUNTIME_ROOT" diff --binary --full-index --ignore-submodules=all HEAD > "$ACTUAL_PATCH"
 if ! cmp -s "$PATCH" "$ACTUAL_PATCH"; then
   echo "Pinned engine worktree contains changes outside the reviewed AnyiOSEMU patch" >&2
   exit 1
 fi
 
-SUBMODULE_STATUS=$(git -C "$HLE" submodule status --recursive)
+SUBMODULE_STATUS=$(git -C "$RUNTIME_ROOT" submodule status --recursive)
 if printf '%s\n' "$SUBMODULE_STATUS" | grep -Eq '^[-+U]'; then
   echo "AnyiOSEMU contains missing or mismatched nested submodules:" >&2
   printf '%s\n' "$SUBMODULE_STATUS" >&2
@@ -80,10 +80,10 @@ required_files=(
   touchHLE_fonts/LICENSE.noto
 )
 for path in "${required_files[@]}"; do
-  [[ -f "$HLE/$path" ]] || {
+  [[ -f "$RUNTIME_ROOT/$path" ]] || {
     echo "Pinned AnyiOSEMU source is missing a required runtime notice: $path" >&2
     exit 1
   }
 done
-git -C "$HLE" diff --check --ignore-submodules=all
+git -C "$RUNTIME_ROOT" diff --check --ignore-submodules=all
 git -C "$SDL" diff --check

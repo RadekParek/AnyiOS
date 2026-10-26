@@ -5,7 +5,7 @@
 - Upstream: [google/angle](https://github.com/google/angle).
 - Source pin: `9addc2983b90152f628cfdaea194983b46b254bd`, recorded in `third_party/angle/revision.txt`.
 - License: upstream BSD-style 3-clause license, retained at `third_party/angle/LICENSE`; CI also collects the checked-out dependency notices into the APK.
-- The previous ANGLE pin had a successful source build and ELF audit. This revision additionally builds the OpenGL ES 1.1 entry-point library and supplies the bundled driver expected by AnyiOSEMU. **This revision's build, dependency audit and APK packaging still require CI verification.** No Android device initialization or game rendering is claimed.
+- This revision builds the OpenGL ES 1.1 entry-point library and supplies the bundled driver expected by AnyiOSEMU. Its source build, dependency audit and APK packaging passed Android CI run `40310754631`. No Android device initialization or game rendering is claimed.
 
 ## Why three libraries are built
 
@@ -40,7 +40,7 @@ ANGLE_INSTALL_DEPS=1 scripts/build-angle.sh
 
 The depot_tools pin is `1eb46f8b23b4c6b3caa2be8e05999b6d1f4d0253`. `build-angle.sh` refuses an unexpected tool revision, syncs the exact ANGLE pin and its DEPS, generates GN with unused-argument checking, and builds `libEGL`, `libGLESv1_CM` and `libGLESv2`. Outputs, public headers, source revision and conservative third-party license bundle are created in ignored/generated locations. The app NDK is `27.2.12479018`; ANGLE's own DEPS controls its upstream toolchain.
 
-The sandbox does not have the Android/Chromium build environment. CI is the compilation gate. ANGLE's generated libraries and generated notice bundles are not committed to Git.
+The local sandbox does not have the Android/Chromium build environment; the pinned source build passed in CI. ANGLE's generated libraries and generated notice bundles are not committed to Git.
 
 ## Driver selection and truthful reporting
 

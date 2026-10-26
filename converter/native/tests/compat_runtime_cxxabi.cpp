@@ -561,7 +561,7 @@ void testAllNdkProvidersAndMinimalEmulation() {
     CHECK(harness.call("_pthread_mutex_unlock", registers, reason) == GuestCalloutResult::Returned);
     CHECK(registers.r[0] == 0);
 
-    // A blocking self-lock of a normal mutex is granted as a phantom lock (HyperHLE
+    // A blocking self-lock of a normal mutex is granted as a phantom lock (pinned runtime
     // behaviour) instead of spinning, and a matching unlock consumes it.
     constexpr GuestAddress kPhantomMutex = kData + 0x880;
     registers = {};

@@ -29,7 +29,7 @@ objects and binaries stay under ignored `.local/`.
 
 Host validation is not Android validation. The CPU adapter is not linked into the
 Android app until AArch64 compilation and on-device instruction/ABI tests pass.
-No code from HyperHLE or its Dynarmic wrapper is included.
+No code from the separately integrated Rust/SDL guest runtime or its Android-specific Dynarmic wrapper is included.
 
 ## Reviewed allocator modification
 

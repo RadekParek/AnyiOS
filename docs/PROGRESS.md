@@ -1,17 +1,20 @@
-# Current status — 2026-10-25
+# Current status — 2026-10-26
 
-## AnyiOSEMU engine integration — implementation in progress; build/device validation pending
+## AnyiOSEMU follow-up — implementation in progress; PR CI and device validation pending
 
-The active Android game engine is being replaced by the pinned HyperHLE-Reborn/touchHLE runtime, branded in-app as **AnyiOSEMU**. The AnyiOS shell/library/design and Converter remain intact. This intentionally supersedes the C++ game-runtime work in the historical log below; its host menu/readback result is not evidence for this engine.
+The Android guest runtime is presented in AnyiOS as **AnyiOSEMU**. This follow-up keeps the existing shell and product labels, preserves the pinned source/dependency identities and third-party notices, and adds the requested library/runtime/Converter improvements.
 
-- The HyperHLE-Reborn source submodule and recursive vendor submodules are pinned. `third_party/hyperhle-patches/AnyiOSEMU.patch` is generated and applies byte-for-byte to an isolated worktree at the exact pin. `scripts/prepare-hyperhle.sh` passes against the live pinned checkout, including nested-submodule and notice checks.
-- Gradle now configures the `arm64-v8a` Rust/SDL runtime. CI setup provisions the Rust Android target, cargo-ndk, Boost 1.81.0 and recursive engine source, with Cargo/Boost caching. These build steps have not run in the current workspace.
-- ANGLE has been advanced to `9addc2983b90152f628cfdaea194983b46b254bd`; the pipeline now caches, compares and packages all three EGL/GLES aliases expected by AnyiOSEMU. Source-level compatibility is not proof that the new revision built or loads.
-- Mach-O reporting now separates ARM32, ARM64 and ARM64_32. Universal ARM32+ARM64 games select ARM32; thin and universal launch slices are restricted to the pinned runtime's generic ARM, ARMv6, ARMv7, ARMv7f and ARMv7s subtypes, with unsupported subtype/capability records rejected. ARM64-only remains unsupported. The FAT selector passed a standalone warning-clean g++ run including subtype-priority cases and the 20,000-input mutation loop; Android/JVM validation remains pending.
-- Visible runtime strings and documentation have been rebranded/updated while preserving upstream license notices. The audit covered the Android host activity and reachable game-launch routes; remaining `touchHLE`/HyperHLE names are internal package, shared-library/resource identifiers, technical comments or required upstream attribution rather than user-facing product labels.
-- The local environment has no Rust, Gradle or Android SDK toolchain. The standalone FAT-selector C++ test and source-format/script checks pass, but Rust/Kotlin/Java and the full Android native/Cargo integration have not been compiled; no CI or device run has validated the package or runtime.
+- Added a SAF folder export beneath `org.anyios` plus the existing ZIP export. Both export copies of per-game data; saves remain private, and UI guidance does not claim access to restricted Android locations.
+- Raised retained IPA artwork to 2048px, added a shared cover/icon fallback for Emulator and Converter, and kept the existing tile dimensions with off-main-thread decoding.
+- Added display-aware Auto FPS capping and supported fixed caps. Session reports separate requested/effective caps from measured presentation FPS. An optional HUD reports process CPU, RAM PSS, driver-reported graphics PSS and measured FPS; GPU utilization is shown as unavailable where not exposed.
+- Added an off-by-default red **Max clocks** option that requests best-effort Android performance hints and high-capacity CPU affinity without claiming clock control.
+- Universal ARM64+ARM32 labels now show ARM64 first while explicitly keeping AnyiOSEMU's ARM32 slice selected. ARM64-only remains unsupported.
+- Converter's Force convert flow now offers Native runtime and Semi-Emulated runtime choices. The separate Semi-Emulated APK is described as a boot attempt, not a general conversion or gameplay guarantee.
+- Rebranded first-party explanatory text and identifiers where safe. Exact upstream names remain in legal/source notices, dependency paths and required runtime/package/library/resource identifiers so attribution and builds are not broken.
 
-**Acceptance remains a real game's visible menu and working touch on Android.** A successful source patch, native build, APK, host test, instruction count, GL-call log, swap or exit code alone does not establish compatibility, rendering or speed. No compatibility claims are made. See [`DEVICE_TESTING.md`](DEVICE_TESTING.md).
+Formatting/lint, shell syntax, `git diff --check` and the targeted runtime-patch applicability check passed locally. Android build/JVM tests cannot run in this workspace because Java, Gradle and the Android SDK are absent; this PR's CI is the next build gate. `scripts/test-converter.sh` was not run. No device rendering/gameplay test has occurred. ANGLE remains at its existing pin.
+
+**Acceptance still requires a real game's visible menu and working touch on Android.** Compilation, host tests, instruction counts, GL-call logs, swaps or exit codes alone do not establish compatibility, rendering or speed. See [`DEVICE_TESTING.md`](DEVICE_TESTING.md).
 
 ---
 
@@ -22,12 +25,12 @@ The entries below record a previous AnyiOS C++ ARM32/Dynarmic prototype, its hos
 ## Angry Birds 1.0.0 live landscape main menu — host-only prototype result; not AnyiOSEMU validation
 
 * In that earlier C++ prototype, Android launch kept the ARM32 game running instead of stopping at a timed probe. A follow-up fix sampled its configured EAGL drawable at 30 fps from guest scheduler safe points as well as UIKit update callbacks. A parked UIKit run loop had left the old launch spinner waiting for a callback the game never generated; ANGLE was first choice on Android.
-* The prototype's frame-delivery loop used the same separation observed in HyperHLE-Reborn: it polled from emulator safe points and emitted a frame only after the game configured a drawable. This was historical C++ prototype code, not the current AnyiOSEMU renderer.
+* The prototype's frame-delivery loop used the same separation observed in pinned upstream runtime: it polled from emulator safe points and emitted a frame only after the game configured a drawable. This was historical C++ prototype code, not the current AnyiOSEMU renderer.
 * A CPU regression started a guest with no UIKit update event and cancelled only after a frame reached the sink. The old host runner captured the real IPA’s 480×320 Angry Birds title menu; that host result and its still-pending device check do not validate AnyiOSEMU.
 * Fixed the game's GL argument ABI: its ARMv6 code uses base AAPCS, so `float` arguments arrive in core registers/stack, not VFP registers. Both recording-driver and ES 1.1-to-ES 2.0 emulation tests now encode that ABI.
 * The guest renders in a 320×480 logical buffer and its `LandscapeLeft` output is rotated to 480×320. `PrototypeView` already aspect-fits frames, so the landscape artwork keeps its 3:2 ratio instead of being stretched across a wider phone display. A reused scratch buffer avoids a new full-frame allocation for both the vertical flip and rotation on every frame.
 * `tests/AngryBirds_v1.0_os30.ipa` was run for 12 seconds through the actual host guest runner with Mesa GLES. The captured 480×320 frame visibly shows the Angry Birds title menu; the guest stayed in its UIKit update loop and no unimplemented imports trapped. This proves host execution and readback, not the Android ANGLE device path.
-* Verification: `scripts/test-host.sh` passed; `scripts/test-cpu.sh` passed 13/13; `scripts/check-format.sh` passed. Android release lint, unit tests and APK packaging passed in Android-only CI run `40170214485` for commit `3cb3aa1`; the VM has no Android device or emulator, so S23 visual validation remains pending. Touch input is not forwarded yet, so the menu is visible but not interactive. No converter source or tests were changed.
+* Verification at that historical prototype revision: `scripts/test-host.sh` passed; `scripts/test-cpu.sh` passed 13/13; `scripts/check-format.sh` passed. Android release lint, unit tests and APK packaging passed in Android-only CI run `40170214485` for commit `3cb3aa1`; the VM has no Android device or emulator, so S23 visual validation remains pending. Touch input was not forwarded at that stage, so the menu was visible but not interactive. Converter source and tests were unchanged in that increment.
 
 # Continuation progress — 2026-10-24
 
@@ -52,7 +55,7 @@ Three one-second synthetic Dynarmic probe runs had medians of 1,857 MIPS guest-o
 * `CPU_BUILD_JOBS=2 scripts/test-cpu.sh`: CTest **11/11** passed, including real CPU/HLE, Objective-C, loader, and throughput-probe checks. The local environment needed temporary CMake and zlib development files.
 * `scripts/check-format.sh`: pass with the repository-pinned clang-format 19.1.7 and Ruff 0.8.4.
 * Android/JNI compilation and device tests are still pending because this sandbox has no JDK, Gradle, or Android SDK. No fresh `MEMORY_NULL` PC/register trace was available, and visible Angry Birds menu/gameplay is still unverified. A host test, passing APK build, or graphics-driver call count is not rendering proof.
-* A brief source-based comparison with HyperHLE-Reborn is in [`HYPERHLE_COMPARISON.md`](HYPERHLE_COMPARISON.md); it separates its broader README-listed game compatibility from the filesystem trade-offs measured here.
+* A brief source-based comparison with the upstream runtime is in [`ENGINE_COMPARISON.md`](ENGINE_COMPARISON.md); it separates its broader README-listed game compatibility from the filesystem trade-offs measured here.
 
 ## Targeted startup/import compatibility pass — local implementation; device validation pending
 
@@ -119,7 +122,7 @@ identify the title's pointer bug. No target binary or fresh device register/PC t
 available to trace the pointer source. Likewise, no new Android build/device run or visual
 frame was available. Host replay, zero GL errors, gate resolution and recording-driver draws
 are not proof of a menu or gameplay. In the historical prototype, no rendering path had been
-copied from HyperHLE-Reborn; the later active AnyiOSEMU integration deliberately adopts its
+copied from pinned upstream runtime; the later active AnyiOSEMU integration deliberately adopts its
 pinned runtime and ANGLE-facing Android path.
 
 Remaining compatibility limits include standard stream operations, arbitrary C++ allocator
@@ -136,10 +139,10 @@ safety bound, not evidence that the target stays below it.
 * `CPU_BUILD_JOBS=2 scripts/test-cpu.sh`: CTest 11/11 passed, including CPU correctness,
   runtime loader, C++/Objective-C services and throughput-probe structural checks. The sandbox
   needed a temporary local CMake install because it has no system `cmake`.
-* Android APK build was not run: this checkout environment has no Gradle executable/wrapper,
-  Java runtime, or Android SDK. Consequently the Android-only JNI bridge and Java stale-report
-  UI flow are not compile-verified locally. Converter code and `scripts/test-converter.sh` remain
-  untouched.
+* At this historical 2026-10-24 increment, the Android APK build was not run: this checkout
+  environment had no Gradle executable/wrapper, Java runtime, or Android SDK. Consequently the
+  Android-only JNI bridge and Java stale-report UI flow were not compile-verified locally.
+  Converter code and `scripts/test-converter.sh` were untouched at that time.
 
 ## 0.9.6 — device-reported C++ exception handled; common API gaps filled
 
@@ -251,8 +254,8 @@ and the large C++ string/iostream surface in the other applications).
   ES1-to-ES2 emulation, 3 guest threads. The recording driver renders nothing; this does not
   establish gameplay or menu visibility.
 * The merged Android build d24e920 is the build that produced the user's reports. **The new
-  APK has not yet been built or re-tested on their device.** That remains the next evidence
-  gate; converter code and converter tests remain out of scope.
+  APK had not yet been built or re-tested on their device at that historical point.** That was
+  the next evidence gate; Converter changes and tests were out of scope at that time.
 
 ## 0.9.4 — the OpenGL ES boundary is a real driver call, not a stub
 

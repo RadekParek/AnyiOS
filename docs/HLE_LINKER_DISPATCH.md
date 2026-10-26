@@ -2,7 +2,7 @@
 
 > **Historical only.** The C++ guest framework and call-gate path below belonged to the
 > previous AnyiOS game-runtime prototype. The current Android game engine is the pinned
-> HyperHLE-Reborn source integrated as AnyiOSEMU; these C++ coverage counts and host results
+> Rust/SDL guest runtime presented as AnyiOSEMU; these C++ coverage counts and host results
 > are not current-engine compatibility evidence. See [`RUNTIME.md`](RUNTIME.md) and
 > [`ANYIOS_INTEGRATION.md`](ANYIOS_INTEGRATION.md).
 
@@ -12,7 +12,7 @@
 
 Implement an original, session-owned export graph (two-level ordinals, explicit aliases, deterministic weak selection), graph-aware transactional fixups, and checked ARM SVC call gates for genuinely implemented APIs. Bind the existing CF bit-vector implementation and bounded C memory/string operations. Audit production launch against the actual registry instead of claiming every import is supported. Exercise ARM and Thumb calls through the pinned CPU in CI, including forged traps and invalid return addresses.
 
-An earlier HyperHLE-Reborn candidate at `5b65054c55cc33c6095f8c4b771430da5e63fbf4` was reviewed for architecture. That is not the selected engine pin. At the time of this historical prototype, no implementation or renderer was copied; the later AnyiOSEMU integration deliberately replaced this Android game path with a different pinned HyperHLE-Reborn revision. Official Apple format references from the earlier dyld increment still apply.
+An earlier upstream-runtime candidate at `5b65054c55cc33c6095f8c4b771430da5e63fbf4` was reviewed for architecture. It is not the selected engine pin. At the time of this historical prototype, no implementation or renderer was copied; the later AnyiOSEMU integration deliberately replaced this Android game path with a separately pinned Rust/SDL guest runtime. Official Apple format references from the earlier dyld increment still apply.
 
 Second increment (same day): guest heap and the C runtime subset described in
 `DYLD_AND_IMPORT_INCREMENT.md`. Coverage moved from 9 to 72 of 438 required imports.

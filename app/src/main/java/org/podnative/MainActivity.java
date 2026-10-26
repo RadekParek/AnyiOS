@@ -40,7 +40,8 @@ import java.util.List;
 
 public final class MainActivity extends Activity {
     private static final int IMPORT_FILE = 10, EXPORT = 11, IMPORT_FOLDER = 12,
-                             IMPORT_APP_FOLDER = 13, EXPORT_SANDBOX = 14, RUN_ANYIOSEMU = 15;
+                             IMPORT_APP_FOLDER = 13, EXPORT_SANDBOX = 14, RUN_ANYIOSEMU = 15,
+                             EXPORT_SANDBOX_FOLDER = 16;
     private static final String FOLDER_PICKER_HELP =
         "Android 11+ blocks folder-tree access to the storage root, the Downloads folder, "
         + "Android/data and "
@@ -453,7 +454,7 @@ public final class MainActivity extends Activity {
         status.addView(text("Experimental AnyiOSEMU runtime", 14, ink, true));
         gap(status, 7);
         status.addView(text(
-            "AnyiOSEMU runs ARM32 iPhone OS apps through a high-level compatibility runtime, SDL touch input and the bundled ANGLE driver. Universal ARM32+ARM64 bundles launch through ARM32; ARM64-only apps are unsupported. Compatibility and visible rendering must be checked on the actual device—an APK build or clean exit is not proof of gameplay.",
+            "AnyiOSEMU runs ARM32 iPhone OS apps through a high-level compatibility runtime, SDL touch input and the bundled ANGLE driver. Universal ARM64+ARM32 bundles launch through ARM32; ARM64-only apps are unsupported. Compatibility and visible rendering must be checked on the actual device—an APK build or clean exit is not proof of gameplay.",
             13, muted, false));
         File[] legacy = new File(getFilesDir(), "imports").listFiles();
         if (legacy != null && legacy.length > 0) {
@@ -514,9 +515,9 @@ public final class MainActivity extends Activity {
         artwork.addView(letter, new FrameLayout.LayoutParams(-1, -1));
         if (game.cover().isFile()) {
             ImageView image = new ImageView(this);
-            image.setImageURI(Uri.fromFile(game.cover()));
             image.setScaleType(ImageView.ScaleType.CENTER_CROP);
-            // Artwork is prepared at higher pixel resolution; never enlarge the view itself.
+            // Keep the card's existing dimensions while decoding four-times artwork off-main.
+            ArtworkLoader.load(game.cover(), dp(256), image);
             artwork.addView(image, new FrameLayout.LayoutParams(-1, -1));
         }
         card.addView(artwork, new LinearLayout.LayoutParams(-1, dp(92)));
@@ -634,23 +635,9 @@ public final class MainActivity extends Activity {
                 : game.kind.equals("Executable")
                 ? "This executable-only import is retained for inspection, but AnyiOSEMU needs a complete IPA or extracted .app bundle."
                 : game.kind.equals("IPA")
-                ? "AnyiOSEMU launches the original IPA and chooses its validated ARM32 slice. Universal ARM32+ARM64 apps run through ARM32; ARM64-only apps are unsupported. The Android activity handles touch input, and bundled ANGLE is the default graphics driver. Missing iOS services, DRM or a device-specific graphics issue can still stop startup or leave the display blank; a successful build or exit does not prove gameplay."
-                : "AnyiOSEMU launches this private extracted .app copy using its ARM32 executable. Touch input is handled by the runtime, and bundled ANGLE is the default graphics driver. Persistent runtime data stays isolated in this game's sandbox and is included in sandbox exports. Missing iOS services, DRM or a device-specific graphics issue can still stop startup or leave the display blank.",
+                ? "AnyiOSEMU launches the original IPA and chooses its validated ARM32 slice. Universal ARM64+ARM32 apps run through ARM32; ARM64-only apps are unsupported. The Android activity handles touch input, and bundled ANGLE is the default graphics driver. Missing iOS services, DRM or a device-specific graphics issue can still stop startup or leave the display blank; a successful build or exit does not prove gameplay."
+                : "AnyiOSEMU launches this private extracted .app copy using its ARM32 executable. Touch input is handled by the runtime, and bundled ANGLE is the default graphics driver. Missing iOS services, DRM or a device-specific graphics issue can still stop startup or leave the display blank.",
             14, muted, false));
-        gap(content, 16);
-        content.addView(text("GAME SANDBOX", 11, muted, true));
-        gap(content, 6);
-        TextView sandboxInfo = text("sandbox/Documents · legacy/portable game saves\n"
-                + "sandbox/BundleOverrides · IPA app-resource writes\n"
-                + "sandbox/ZipCache · rebuildable IPA resource cache (not exported)\n"
-                + "sandbox/AnyiOSEMU/AnyiOSEMU_sandbox/<bundle ID> · AnyiOSEMU Documents, Library and saves\n"
-                + "sandbox/AnyiOSEMU/AnyiOSEMU_log.txt · latest runtime diagnostics\n"
-                + "AnyiOSEMU's rebuildable PVRTC cache is excluded from exports. Extracted .app bundle/ data is included when applicable.\n\n"
-                + "Private runtime path: " + game.anyioseDataDirectory().getAbsolutePath() + "\n"
-                + "Android package ID: org.podnative (not org.anyios.com). This path is internal app-private storage, not /Android/data/org.podnative, and is not normally browsable in file managers. Android also restricts Android/data on recent versions. Use Export sandbox data to save a ZIP in a location you can access.",
-            12, muted, false);
-        sandboxInfo.setTextIsSelectable(true);
-        content.addView(sandboxInfo);
         Button launch = action("Launch in AnyiOSEMU · experimental", true, () -> {
             sheet.dismiss();
             launchAnyiOSEMU(game);
@@ -676,7 +663,8 @@ public final class MainActivity extends Activity {
         }
         button(content, "View import report", false, () -> showReport(game));
         button(content, "Export report", false, () -> exportReport(game));
-        button(content, "Export sandbox data", false, () -> exportSandbox(game));
+        button(content, "Export game data to folder…", false, () -> exportSandboxFolder(game));
+        button(content, "Export game data as ZIP…", false, () -> exportSandbox(game));
         button(content, "Refresh details & artwork", false, () -> {
             sheet.dismiss();
             library.refreshGame(game);
@@ -881,8 +869,17 @@ public final class MainActivity extends Activity {
             new Intent(Intent.ACTION_CREATE_DOCUMENT)
                 .setType("application/zip")
                 .addCategory(Intent.CATEGORY_OPENABLE)
-                .putExtra(Intent.EXTRA_TITLE, "AnyiOS-" + safeTitle + "-sandbox.zip"),
+                .putExtra(Intent.EXTRA_TITLE, "org.anyios-" + safeTitle + "-game-data.zip"),
             EXPORT_SANDBOX);
+    }
+    private void exportSandboxFolder(GameLibrary.Game game) {
+        exportGame = game.id;
+        startActivityForResult(new Intent(Intent.ACTION_OPEN_DOCUMENT_TREE)
+                                   .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION
+                                       | Intent.FLAG_GRANT_WRITE_URI_PERMISSION
+                                       | Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION
+                                       | Intent.FLAG_GRANT_PREFIX_URI_PERMISSION),
+            EXPORT_SANDBOX_FOLDER);
     }
     private void settingRow(
         LinearLayout parent, String title, String description, String value, Runnable callback) {
@@ -902,6 +899,47 @@ public final class MainActivity extends Activity {
         container.setContentDescription(title + ", " + value);
         parent.addView(container);
     }
+    private String frameCapLabel() {
+        int requested = prefs.getInt("fps", DisplayFrameRate.AUTO);
+        float effective = DisplayFrameRate.resolveCap(this, requested);
+        if (requested <= DisplayFrameRate.AUTO)
+            return "Auto · " + DisplayFrameRate.formatHz(effective) + " Hz";
+        float maximum = DisplayFrameRate.highestSupportedRefreshRate(this);
+        if (requested > maximum + 0.05f)
+            return requested + " cap · " + DisplayFrameRate.formatHz(effective) + " Hz max";
+        return requested + " FPS cap";
+    }
+
+    private void chooseFrameCap() {
+        float maximum = DisplayFrameRate.highestSupportedRefreshRate(this);
+        ArrayList<String> labels = new ArrayList<>();
+        ArrayList<Integer> values = new ArrayList<>();
+        labels.add("Auto · highest supported (" + DisplayFrameRate.formatHz(maximum) + " Hz)");
+        values.add(DisplayFrameRate.AUTO);
+        int[] commonCaps = {30, 60, 90, 120, 144, 165, 240};
+        int requested = prefs.getInt("fps", DisplayFrameRate.AUTO);
+        boolean requestedIncluded = requested <= DisplayFrameRate.AUTO;
+        for (int cap : commonCaps) {
+            if (cap <= maximum + 0.5f) {
+                String label = cap + " FPS cap";
+                if (cap > maximum + 0.05f)
+                    label += " · limited to " + DisplayFrameRate.formatHz(maximum) + " Hz";
+                labels.add(label);
+                values.add(cap);
+                requestedIncluded |= cap == requested;
+            }
+        }
+        if (!requestedIncluded) {
+            labels.add(requested + " FPS requested (limited to "
+                + DisplayFrameRate.formatHz(maximum) + " Hz)");
+            values.add(requested);
+        }
+        int[] optionValues = new int[values.size()];
+        for (int index = 0; index < values.size(); index++) optionValues[index] = values.get(index);
+        choose(
+            "Frame cap", labels.toArray(new String[0]), optionValues, "fps", DisplayFrameRate.AUTO);
+    }
+
     private void settings(LinearLayout parent) {
         heading(parent, "Settings", "Simple controls. Clear limits.");
         LinearLayout display = card(parent);
@@ -911,12 +949,12 @@ public final class MainActivity extends Activity {
             ()
                 -> choose("Render resolution", new String[] {"720p", "1080p · FHD", "1440p · QHD"},
                     new int[] {720, 1080, 1440}, "resolution", 1080));
-        settingRow(display, "Frame limit", "Passed to AnyiOSEMU; not a displayed-FPS guarantee",
-            prefs.getInt("fps", 60) + " FPS",
-            ()
-                -> choose("Frame limit",
-                    new String[] {"30 FPS", "60 FPS", "120 FPS · experimental"},
-                    new int[] {30, 60, 120}, "fps", 60));
+        settingRow(display, "Frame cap",
+            "Auto requests the fastest supported mode at this resolution; measured FPS can be lower",
+            frameCapLabel(), this::chooseFrameCap);
+        settingRow(display, "Performance HUD",
+            "Off by default · process CPU, RAM PSS, driver-reported graphics PSS and measured presentation FPS; GPU utilization is not publicly reported on many devices",
+            prefs.getBoolean("performanceHud", false) ? "On" : "Off", this::togglePerformanceHud);
         settingRow(display, "Session badge", "Brief AnyiOSEMU overlay at launch",
             prefs.getBoolean("showConsole", false) ? "Shown" : "Hidden", this::toggleConsole);
         // Detailed GLES call logging is useful for black-screen investigations, but can
@@ -928,8 +966,9 @@ public final class MainActivity extends Activity {
         settingRow(display, "Appearance", "Choose your preferred look", dark ? "Dark" : "Light",
             () -> choose("Appearance", appearances, new int[] {1, 2}, "theme", dark ? 2 : 1));
         display.addView(text(
-            "Frame cap, graphics driver and composition options apply on the next AnyiOSEMU launch; render resolution is for the ANGLE surface test.",
+            "Frame cap, HUD and scheduler options apply on the next AnyiOSEMU launch; render resolution is for the separate ANGLE surface test.",
             12, muted, false));
+        maxClocksCard(parent);
         LinearLayout graphics = card(parent);
         graphics.addView(text("GRAPHICS", 11, muted, true));
         gap(graphics, 13);
@@ -959,13 +998,13 @@ public final class MainActivity extends Activity {
             16, ink, true));
         gap(storage, 8);
         storage.addView(text(
-            "Package ID: org.podnative (not org.anyios.com). Imports and saves live in internal app-private storage at /data/user/0/org.podnative/files/games/<game-id>/sandbox/AnyiOSEMU, not /Android/data/org.podnative. File managers normally cannot browse the internal path, and Android/data is restricted on recent versions. Open a game's details and use Export sandbox data to save Documents, Library, saves and the runtime log as a ZIP through Android's save picker. Originals stay private and untouched; rebuildable IPA/PVRTC caches are excluded.",
+            "Package ID: org.podnative (unchanged for app upgrades; not org.anyios.com). Game imports and runtime saves remain in internal app-private storage at /data/user/0/org.podnative/files/games/<game-id>/sandbox. In a game's details, export a browsable copy under org.anyios in a folder you choose, or save a ZIP through Android's document picker. The picker may block storage roots, Downloads, Android/data and Android/obb on recent Android; choose a permitted location. AnyiOS does not bypass those restrictions. Original imports are unchanged; rebuildable IPA/PVRTC caches are excluded.",
             13, muted, false));
         LinearLayout about = card(parent);
         about.addView(text("AnyiOS " + BuildConfig.VERSION_NAME, 16, ink, true));
         gap(about, 9);
         about.addView(text(
-            "AnyiOSEMU is an experimental ARM32 iPhone OS app runtime. Universal ARM32+ARM64 bundles use their ARM32 slice; ARM64-only apps are unsupported. Compatibility, rendering and performance vary by app and device and require real-device testing.",
+            "AnyiOSEMU is an experimental ARM32 iPhone OS app runtime. Universal ARM64+ARM32 bundles use their ARM32 slice; ARM64-only apps are unsupported. Compatibility, rendering and performance vary by app and device and require real-device testing.",
             13, muted, false));
         button(about, "Runtime licenses & notices", false, this::showRuntimeNotices);
         gap(about, 10);
@@ -990,6 +1029,8 @@ public final class MainActivity extends Activity {
                             prefs.edit()
                                 .remove("resolution")
                                 .remove("fps")
+                                .remove("performanceHud")
+                                .remove("maxClocks")
                                 .remove("theme")
                                 .remove("nativeGles")
                                 .remove("forceComposition")
@@ -1076,6 +1117,44 @@ public final class MainActivity extends Activity {
             on ? "Force Composition enabled for the next AnyiOSEMU launch; it may reduce speed."
                : "Force Composition disabled for the next AnyiOSEMU launch.");
         home();
+    }
+    private void togglePerformanceHud() {
+        boolean on = !prefs.getBoolean("performanceHud", false);
+        prefs.edit().putBoolean("performanceHud", on).apply();
+        Diagnostics.record("Settings",
+            on ? "Performance HUD enabled for the next AnyiOSEMU launch."
+               : "Performance HUD disabled.");
+        home();
+    }
+    private void setMaxClocks(boolean enabled) {
+        prefs.edit().putBoolean("maxClocks", enabled).apply();
+        Diagnostics.record("Settings",
+            enabled
+                ? "Best-effort Android performance hints and high-capacity CPU affinity requested for the next AnyiOSEMU launch; clocks are not forced."
+                : "Best-effort performance hints and high-capacity CPU affinity disabled for the next AnyiOSEMU launch.");
+        home();
+    }
+    private void maxClocksCard(LinearLayout parent) {
+        int danger = color(dark ? "#FFB4AB" : "#B3261E");
+        LinearLayout card = card(parent);
+        GradientDrawable background = shape(color(dark ? "#321D22" : "#FFF0F0"), 18, false);
+        background.setStroke(dp(1), danger);
+        card.setBackground(background);
+        LinearLayout header = row();
+        header.addView(
+            text("MAX CLOCKS", 12, danger, true), new LinearLayout.LayoutParams(0, -2, 1));
+        android.widget.Switch enabled = new android.widget.Switch(this);
+        enabled.setText("Enable");
+        enabled.setTextSize(13);
+        enabled.setTextColor(danger);
+        enabled.setChecked(prefs.getBoolean("maxClocks", false));
+        header.addView(enabled);
+        card.addView(header);
+        gap(card, 5);
+        card.addView(text(
+            "Off by default. When enabled, AnyiOSEMU requests Android performance hints and high-capacity CPU cores where supported. Android controls the clocks and may ignore or limit the request; this cannot force CPU/GPU frequencies, and GPU utilization is not exposed portably.",
+            12, muted, false));
+        enabled.setOnCheckedChangeListener((button, checked) -> setMaxClocks(checked));
     }
     private void diagnostics(LinearLayout parent) {
         heading(parent, "Diagnostics", "Useful evidence, without uploading your games.");
@@ -1181,13 +1260,15 @@ public final class MainActivity extends Activity {
         liveStatus.setEllipsize(TextUtils.TruncateAt.END);
         liveStatus.setPadding(dp(4), dp(10), dp(4), dp(10));
         root.addView(liveStatus);
-        prototype = new PrototypeView(
-            this, prefs.getInt("fps", 60), prefs.getInt("resolution", 1080), info -> {
-                if (liveStatus != null)
-                    liveStatus.setText(info);
-                if (info.startsWith("embedded ANGLE"))
-                    prefs.edit().putString("lastBackend", info).apply();
-            });
+        int testCap = Math.max(1,
+            Math.round(
+                DisplayFrameRate.resolveCap(this, prefs.getInt("fps", DisplayFrameRate.AUTO))));
+        prototype = new PrototypeView(this, testCap, prefs.getInt("resolution", 1080), info -> {
+            if (liveStatus != null)
+                liveStatus.setText(info);
+            if (info.startsWith("embedded ANGLE"))
+                prefs.edit().putString("lastBackend", info).apply();
+        });
         root.addView(prototype, new LinearLayout.LayoutParams(-1, 0, 1));
         setContentView(root);
         enterEmulatorDisplay();
@@ -1362,12 +1443,26 @@ public final class MainActivity extends Activity {
             if (selected == null) {
                 new AlertDialog.Builder(this)
                     .setTitle("Game no longer available")
-                    .setMessage("The game was removed before its sandbox could be exported.")
+                    .setMessage("The game was removed before its data could be exported.")
                     .setPositiveButton("OK", null)
                     .show();
                 return;
             }
             library.exportSandbox(selected, uri);
+        } else if (request == EXPORT_SANDBOX_FOLDER) {
+            GameLibrary.Game selected = null;
+            for (GameLibrary.Game game : library.games())
+                if (game.id.equals(exportGame))
+                    selected = game;
+            if (selected == null) {
+                new AlertDialog.Builder(this)
+                    .setTitle("Game no longer available")
+                    .setMessage("The game was removed before its data could be exported.")
+                    .setPositiveButton("OK", null)
+                    .show();
+                return;
+            }
+            library.exportSandboxFolder(selected, uri);
         }
     }
 }

@@ -42,18 +42,18 @@ jobs:
         with:
           gradle-version: '8.11.1'
       - name: Prepare pinned AnyiOSEMU engine source
-        run: scripts/prepare-hyperhle.sh
+        run: scripts/prepare-anyiose-runtime.sh
       - name: Cache pinned AnyiOSEMU Boost headers
         id: anyiose-boost-cache
         uses: actions/cache@v4
         with:
           path: third_party/hyperhle/vendor/boost
-          key: ${{ runner.os }}-boost-v2-${{ hashFiles('third_party/hyperhle-boost-version.txt', 'scripts/prepare-hyperhle-boost.sh') }}
+          key: ${{ runner.os }}-boost-v2-${{ hashFiles('third_party/anyiose-runtime-boost-version.txt', 'scripts/prepare-anyiose-runtime-boost.sh') }}
       - name: Verify or prepare pinned AnyiOSEMU Boost headers
         env:
           BOOST_ROOT: ${{ github.workspace }}/third_party/hyperhle/vendor/boost
         run: |
-          scripts/prepare-hyperhle-boost.sh
+          scripts/prepare-anyiose-runtime-boost.sh
           test -f "$BOOST_ROOT/boost/config.hpp"
           test -f "$BOOST_ROOT/boost/version.hpp"
           echo "BOOST_ROOT=$BOOST_ROOT" >> "$GITHUB_ENV"
@@ -81,7 +81,7 @@ jobs:
           # Keep target artifacts isolated by the exact native-build inputs. In
           # particular, do not restore an older CMakeCache across ABI/patch changes.
           path: third_party/hyperhle/target
-          key: ${{ runner.os }}-android-ndk-27.2.12479018-anyiose-rust-v3-${{ hashFiles('app/build.gradle', 'third_party/hyperhle-revision.txt', 'third_party/hyperhle-patches/AnyiOSEMU.patch', 'third_party/hyperhle-patches/SDL-Android-NDK-27.patch', 'third_party/hyperhle/Cargo.lock', 'third_party/hyperhle/**/Cargo.toml') }}
+          key: ${{ runner.os }}-android-ndk-27.2.12479018-anyiose-rust-v3-${{ hashFiles('app/build.gradle', 'third_party/anyiose-runtime-revision.txt', 'third_party/anyiose-runtime-patches/AnyiOSEMU.patch', 'third_party/anyiose-runtime-patches/SDL-Android-NDK-27.patch', 'third_party/hyperhle/Cargo.lock', 'third_party/hyperhle/**/Cargo.toml') }}
       # Development keys only, never release signing material. Cache eviction can
       # change this certificate; durable distribution requires configured signing secrets.
       - name: Reuse development signing identity when cached
@@ -109,7 +109,7 @@ jobs:
       - name: Prepare Cargo SDL source for Android NDK 27
         run: |
           set -o pipefail
-          scripts/prepare-hyperhle-rust-sdl.sh 2>&1 | tee .local/logs/rust-sdl-prepare.log
+          scripts/prepare-anyiose-runtime-sdl.sh 2>&1 | tee .local/logs/rust-sdl-prepare.log
       - name: Formatting and script lint
         run: |
           pipx install clang-format==19.1.7
@@ -248,19 +248,19 @@ jobs:
           APK=$(find "app/build/outputs/apk/$VARIANT" -name '*.apk' -print -quit)
           test -n "$APK"
           cp "$APK" ".local/artifacts/$ARTIFACT"
-          # libtouchHLE is loaded on demand; Bionic rejects initial-exec TLS relocations
-          # when such a DSO is dlopened after process startup. Guard the final ARM64 ELF.
-          TLS_SO="$RUNNER_TEMP/libtouchHLE.so"
-          TLS_RELOCS="$RUNNER_TEMP/libtouchHLE-relocations.txt"
+          # The AnyiOSEMU runtime is loaded on demand; Bionic rejects initial-exec TLS
+          # relocations in a DSO dlopened after process startup. Guard the final ARM64 ELF.
+          TLS_SO="$RUNNER_TEMP/libAnyiOSEMU.so"
+          TLS_RELOCS="$RUNNER_TEMP/AnyiOSEMU-relocations.txt"
           unzip -p "$APK" lib/arm64-v8a/libtouchHLE.so > "$TLS_SO"
           test -s "$TLS_SO"
           READELF="$ANDROID_HOME/ndk/27.2.12479018/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-readelf"
           "$READELF" --relocations --wide "$TLS_SO" > "$TLS_RELOCS"
           if grep -E 'R_AARCH64_TLS_TPREL|R_AARCH64_TLSIE_' "$TLS_RELOCS"; then
-            echo 'Refusing to package libtouchHLE.so with initial-exec TLS relocations.' >&2
+            echo 'Refusing to package AnyiOSEMU with initial-exec TLS relocations.' >&2
             exit 1
           fi
-          echo 'libtouchHLE.so has no initial-exec TLS relocations.'
+          echo 'AnyiOSEMU has no initial-exec TLS relocations.'
           cd .local/artifacts
           sha256sum "$ARTIFACT" > SHA256SUMS
           "$ANDROID_HOME/build-tools/35.0.0/aapt2" dump badging "$ARTIFACT" > APK-BADGING.txt
@@ -274,7 +274,7 @@ jobs:
             exit 1
           fi
           rm -f .manifest.txt
-          printf 'source=%s\nangle=%s\nanyiose_runtime=%s\nvariant=%s\nsigning=%s\ndebuggable=false\n' "$GITHUB_SHA" "$(cat ../../third_party/angle/revision.txt)" "$(cat ../../third_party/hyperhle-revision.txt)" "$VARIANT" "${PODNATIVE_KEYSTORE:+configured}${PODNATIVE_PREVIEW_KEYSTORE:+preview}" > BUILD-INFO.txt
+          printf 'source=%s\nangle=%s\nanyiose_runtime=%s\nvariant=%s\nsigning=%s\ndebuggable=false\n' "$GITHUB_SHA" "$(cat ../../third_party/angle/revision.txt)" "$(cat ../../third_party/anyiose-runtime-revision.txt)" "$VARIANT" "${PODNATIVE_KEYSTORE:+configured}${PODNATIVE_PREVIEW_KEYSTORE:+preview}" > BUILD-INFO.txt
           "$ANDROID_HOME/build-tools/35.0.0/apksigner" verify --print-certs "$ARTIFACT" >> BUILD-INFO.txt || {
             if [ "$VARIANT" = debug ] || [ -n "${PODNATIVE_KEYSTORE:-}" ] || [ -n "${PODNATIVE_PREVIEW_KEYSTORE:-}" ]; then exit 1; fi
             echo 'UNSIGNED release: not installable until signed; not a published signed release.' >> BUILD-INFO.txt

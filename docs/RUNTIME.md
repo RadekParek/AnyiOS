@@ -2,15 +2,15 @@
 
 ## Active Android game path
 
-AnyiOS launches eligible iOS apps in the pinned **AnyiOSEMU** (HyperHLE-Reborn/touchHLE) ARM32 guest runtime. `AnyiOSEmuActivity` hosts the Rust/SDL engine and passes the selected app/IPA, a validated private per-game data directory and the saved runtime controls. The runtime loads the selected app; the separate C++ loader and CPU diagnostic described below are not used to execute Android game launches.
+AnyiOS launches eligible iOS apps in the pinned **AnyiOSEMU** ARM32 guest runtime. `AnyiOSEmuActivity` hosts the Rust/SDL engine and passes the selected app/IPA, a validated private per-game data directory and saved runtime controls. The separate C++ loader and CPU diagnostic below are not used to execute Android game launches.
 
 The active Android ABI is `arm64-v8a`, but the iOS guest slice is ARM32/A32. A universal ARM32+ARM64 Mach-O is launched using ARM32. ARM64-only execution is not implemented. Do not interpret the host ABI or the existence of an ARM64 slice as guest support.
 
-HyperHLE-Reborn supplies the guest instruction engine and iOS compatibility layer. Importing a game, starting a process, successfully returning from the JIT or observing guest instructions does not demonstrate framework compatibility or visible rendering. A game's real menu, touch interaction, audio and lifecycle need separate device validation; see [`DEVICE_TESTING.md`](DEVICE_TESTING.md).
+The pinned guest runtime supplies the instruction engine and iOS compatibility layer. Importing a game, starting a process, successfully returning from the JIT or observing guest instructions does not demonstrate framework compatibility or visible rendering. A game's real menu, touch interaction, audio and lifecycle need separate device validation; see [`DEVICE_TESTING.md`](DEVICE_TESTING.md).
 
 ## Import inspection and slice reporting
 
-The retained AnyiOS C++ inspection bridge performs bounded archive/Mach-O metadata parsing. It distinguishes ARM32 (`CPU_TYPE_ARM`), ARM64 (`0x0100000c`) and ARM64_32 (`0x0200000c`) instead of conflating the 64-bit CPU families. `GameInspector` reports available slices and identifies the ARM32 slice for universal bundles. The import inspector refuses to claim ARM64-only eligibility.
+The retained AnyiOS C++ inspection bridge performs bounded archive/Mach-O metadata parsing. It distinguishes ARM32 (`CPU_TYPE_ARM`), ARM64 (`0x0100000c`) and ARM64_32 (`0x0200000c`) instead of conflating the 64-bit CPU families. `GameInspector` reports available slices ARM64-first and identifies the ARM32 slice for universal bundles. The import inspector refuses to claim ARM64-only eligibility.
 
 The root `tests/fat_test.cpp` exercises thin and FAT slice metadata and selection. `AnyiOSEmuSourceTest.java` tests source selection in nested `.app` folders and rejects executable metadata that escapes the imported directory. These tests verify inspection/source handling, not any game's execution or rendering.
 
@@ -24,10 +24,10 @@ The diagnostic implementation's memory contract includes checked 32-bit guest ra
 
 ## Reproducible source and build inputs
 
-- AnyiOSEMU runtime source pin: `third_party/hyperhle-revision.txt`.
-- Reviewed runtime integration/rebranding changes: `third_party/hyperhle-patches/AnyiOSEMU.patch`.
+- AnyiOSEMU runtime source pin: `third_party/anyiose-runtime-revision.txt`.
+- Reviewed runtime integration/rebranding changes: `third_party/anyiose-runtime-patches/AnyiOSEMU.patch`.
 - Rust Android target: `aarch64-linux-android`; Cargo/NDK wrapper: `cargo-ndk` 3.5.4.
-- Dynarmic's exact Boost headers: `third_party/hyperhle-boost-version.txt`, prepared by `scripts/prepare-hyperhle-boost.sh`.
+- Dynarmic's exact Boost headers: `third_party/anyiose-runtime-boost-version.txt`, prepared by `scripts/prepare-anyiose-runtime-boost.sh`.
 - App NDK: `27.2.12479018`.
 - ANGLE pin: `third_party/angle/revision.txt`; ANGLE's toolchain and DEPS are pinned separately.
 
@@ -35,6 +35,6 @@ The source patch must apply cleanly to the exact engine pin and recursively pinn
 
 ## Verification plan and current evidence
 
-Run native parser/diagnostic regression tests with `scripts/test-host.sh`; run the isolated C++ Dynarmic CPU tests with `scripts/test-cpu.sh` where the host toolchain is available. The AnyiOS Android integration is gated on Android lint, JVM tests, Cargo/NDK build, APK package audit and actual device validation. The current integration changes are not considered verified until those checks complete.
+Host parser/FAT regressions and repository format/script checks can run independently. The Android integration requires Android lint, JVM tests, Cargo/NDK build, APK package audit and device validation. This sandbox has no Java, Gradle or Android SDK, so the Android build and unit tests have not run locally; PR CI is the next build verification gate. No game compatibility, visible rendering or measured-speed claim is made here.
 
-Do not rerun the previously aborted `scripts/test-converter.sh` or change files under `converter/` as part of this work. Tests of the separate C++ diagnostics, a clean Rust/Gradle build, APK contents, GL-call counts, successful swaps, or process exit status do not establish that an iOS game's first menu is visible. No game compatibility or measured speed claim is made here.
+Do not run `scripts/test-converter.sh` in this task. Converter changes here are limited to the requested Force convert choice and shared-icon handling; the conversion backend is not being treated as validated by those UI changes. Tests of the separate C++ diagnostics, a clean Rust/Gradle build, APK contents, GL-call counts, successful swaps, or process exit status do not establish that an iOS game's first menu is visible.
