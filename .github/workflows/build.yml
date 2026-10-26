@@ -48,10 +48,17 @@ jobs:
         uses: actions/cache@v4
         with:
           path: third_party/hyperhle/vendor/boost
-          key: ${{ runner.os }}-boost-${{ hashFiles('third_party/hyperhle-boost-version.txt', 'scripts/prepare-hyperhle-boost.sh') }}
-      - name: Prepare pinned AnyiOSEMU Boost headers
-        if: steps.anyiose-boost-cache.outputs.cache-hit != 'true'
-        run: scripts/prepare-hyperhle-boost.sh
+          key: ${{ runner.os }}-boost-v2-${{ hashFiles('third_party/hyperhle-boost-version.txt', 'scripts/prepare-hyperhle-boost.sh') }}
+      - name: Verify or prepare pinned AnyiOSEMU Boost headers
+        env:
+          BOOST_ROOT: ${{ github.workspace }}/third_party/hyperhle/vendor/boost
+        run: |
+          scripts/prepare-hyperhle-boost.sh
+          test -f "$BOOST_ROOT/boost/config.hpp"
+          test -f "$BOOST_ROOT/boost/version.hpp"
+          echo "BOOST_ROOT=$BOOST_ROOT" >> "$GITHUB_ENV"
+          echo "Boost_ROOT=$BOOST_ROOT" >> "$GITHUB_ENV"
+          echo "BOOST_INCLUDEDIR=$BOOST_ROOT" >> "$GITHUB_ENV"
       - name: Install Rust Android toolchain
         run: |
           rustup target add aarch64-linux-android
@@ -66,9 +73,9 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             third_party/hyperhle/target
-          key: ${{ runner.os }}-android-ndk-27.2.12479018-anyiose-rust-${{ hashFiles('third_party/hyperhle-revision.txt', 'third_party/hyperhle-patches/AnyiOSEMU.patch', 'third_party/hyperhle-patches/SDL-Android-NDK-27.patch', 'third_party/hyperhle/Cargo.lock', 'third_party/hyperhle/**/Cargo.toml') }}
+          key: ${{ runner.os }}-android-ndk-27.2.12479018-anyiose-rust-v2-${{ hashFiles('third_party/hyperhle-revision.txt', 'third_party/hyperhle-patches/AnyiOSEMU.patch', 'third_party/hyperhle-patches/SDL-Android-NDK-27.patch', 'third_party/hyperhle/Cargo.lock', 'third_party/hyperhle/**/Cargo.toml') }}
           restore-keys: |
-            ${{ runner.os }}-android-ndk-27.2.12479018-anyiose-rust-
+            ${{ runner.os }}-android-ndk-27.2.12479018-anyiose-rust-v2-
       # Development keys only, never release signing material. Cache eviction can
       # change this certificate; durable distribution requires configured signing secrets.
       - name: Reuse development signing identity when cached

@@ -416,6 +416,18 @@ index 51498da6eda8ceab522b790be41fb3883eca27e9..dba2a531ce11b491263e4823a79e822b
              std::process::ExitCode::FAILURE
          }
      }
+diff --git a/src/cpu/dynarmic_wrapper/build.rs b/src/cpu/dynarmic_wrapper/build.rs
+index 22d9627f80cde83bba3df18afb6d83fe6c4c191e..bb27a0680464ca19c4646cf4e3a2a0e3ef981cb8 100644
+--- a/src/cpu/dynarmic_wrapper/build.rs
++++ b/src/cpu/dynarmic_wrapper/build.rs
+@@ -47,6 +47,7 @@ fn main() {
+     let mut build = cmake::Config::new(&dynarmic_dir);
+     let cmake_profile = build.get_profile().to_owned();
+     build.define("DYNARMIC_FRONTENDS", "A32"); // We don't need 64-bit
++    build.define("BUILD_TESTING", "OFF"); // Avoid building Dynarmic host tests in the Android app.
+     build.define("DYNARMIC_WARNINGS_AS_ERRORS", "OFF");
+     build.define("DYNARMIC_TESTS", "OFF");
+     build.define("DYNARMIC_USE_BUNDLED_EXTERNALS", "ON");
 diff --git a/src/crash_handler.rs b/src/crash_handler.rs
 index e8a2cad582c6ffe71df9fa71ab1d94e9acae176f..78b70c2819047192c789493e6f91d4901a837a07 100644
 --- a/src/crash_handler.rs

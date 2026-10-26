@@ -18,6 +18,7 @@ import java.io.FileNotFoundException;
 import java.io.FileOutputStream;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
+import java.util.Arrays;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.TimeUnit;
 import java.util.zip.ZipEntry;
@@ -160,6 +161,20 @@ public class BatchImportTest {
         }
         assertFalse(SharedCatalog.isBusy());
     }
+    @Test
+    public void selectedIpaFilesImportIndependentlyAndContinueAfterOneFailure() throws Exception {
+        library.importFiles(Arrays.asList(
+            DocumentsContract.buildDocumentUri("batch.test", "a"),
+            DocumentsContract.buildDocumentUri("batch.test", "bad")));
+        drain();
+
+        assertEquals(1, library.games().size());
+        assertTrue(library.notice,
+            library.notice.contains("1 of 2 selected files imported; 1 failed"));
+        assertTrue(new File(library.games().get(0).directory, "source.bin").isFile());
+        assertFalse(SharedCatalog.isBusy());
+    }
+
     @Test
     public void cyclicProviderCannotPublishAnyPartiallyScannedBatch() throws Exception {
         documents.cycle = true;

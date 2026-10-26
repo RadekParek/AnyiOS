@@ -222,7 +222,7 @@ final class GameLibrary {
     }
     void cancel() {
         cancelled = true;
-        progress = "Cancelling import…";
+        progress = "Cancelling operation…";
         changed();
     }
     void cancelLaunch() {
@@ -232,7 +232,7 @@ final class GameLibrary {
     private void checkCancelled() {
         if (cancelled)
             throw new CancellationException(
-                "Import cancelled. Your original files were not changed.");
+                "Operation cancelled. Your original files were not changed.");
     }
     private synchronized boolean begin(String message) {
         if (busy || !SharedCatalog.tryBegin()) {
@@ -392,6 +392,48 @@ final class GameLibrary {
     void importFile(Uri uri) {
         importSource(uri, null, false);
     }
+    void importFiles(List<Uri> sources) {
+        if (sources == null || sources.isEmpty() || !begin("Importing selected game files…"))
+            return;
+        cancellable = true;
+        worker.execute(() -> {
+            int imported = 0, failed = 0;
+            StringBuilder failures = new StringBuilder();
+            Set<String> visited = new HashSet<>();
+            try {
+                for (Uri source : sources) {
+                    if (source == null || !visited.add(source.toString()))
+                        continue;
+                    checkCancelled();
+                    try {
+                        importOne(source, null, false);
+                        imported++;
+                    } catch (CancellationException e) {
+                        throw e;
+                    } catch (Exception | LinkageError e) {
+                        failed++;
+                        if (failed <= 20)
+                            failures.append("\n")
+                                .append(displayName(source))
+                                .append(": ")
+                                .append(e.getMessage() == null ? e.toString() : e.getMessage());
+                        Diagnostics.record("BATCH_IMPORT", source + ": " + e);
+                    }
+                }
+                notice = imported + " of " + visited.size() + " selected files imported; " + failed
+                    + " failed." + failures;
+                error = failed > 0;
+            } catch (CancellationException e) {
+                notice = "Batch cancelled. " + imported + " completed entries were kept.";
+            } finally {
+                SharedCatalog.end();
+                busy = false;
+                cancellable = false;
+                progress = "";
+                changed();
+            }
+        });
+    }
     void importFolder(Uri uri) {
         importSource(uri, null, true);
     }
@@ -419,7 +461,7 @@ final class GameLibrary {
                             failures.append("\n")
                                 .append(displayName(source))
                                 .append(": ")
-                                .append(e.getMessage());
+                                .append(e.getMessage() == null ? e.toString() : e.getMessage());
                         Diagnostics.record("BATCH_IMPORT", source + ": " + e);
                     }
                 }
@@ -811,7 +853,159 @@ final class GameLibrary {
             }
         });
     }
-    /** Prepares a zero-copy IPA path with the extension required by AnyiOSEMU's ZIP loader. */
+    private File prepareRuntimeIpaSource(File gameDirectory, File source) throws IOException {
+        if (!source.isFile() || !source.canRead()
+            || java.nio.file.Files.isSymbolicLink(source.toPath()))
+            throw new IOException("The private IPA source is not a readable regular file");
+
+        File alias = new File(gameDirectory, "AnyiOSEMU_source.ipa");
+        File marker = new File(gameDirectory, ".AnyiOSEMU_source.ipa.meta");
+        File temporary = new File(gameDirectory, ".AnyiOSEMU_source.ipa.pending");
+        if (java.nio.file.Files.isSymbolicLink(alias.toPath())
+            || java.nio.file.Files.isSymbolicLink(marker.toPath())
+            || java.nio.file.Files.isSymbolicLink(temporary.toPath()))
+            throw new IOException("A symbolic link was found in the private IPA launch paths");
+        if (alias.exists() && !alias.isFile())
+            throw new IOException("The emulator IPA alias is not a regular file");
+        if (marker.exists() && !marker.isFile())
+            throw new IOException("The emulator IPA cache marker is not a regular file");
+        if (temporary.exists() && !temporary.isFile())
+            throw new IOException("The temporary emulator IPA path is not a regular file");
+
+        String fingerprint = source.length() + "\n" + source.lastModified() + "\n";
+        if (alias.isFile()) {
+            if (java.nio.file.Files.isSameFile(alias.toPath(), source.toPath()))
+                return alias;
+            if (alias.length() == source.length()
+                && (runtimeIpaMarkerMatches(marker, fingerprint)
+                    || alias.lastModified() == source.lastModified()))
+                return alias;
+        }
+        java.nio.file.Files.deleteIfExists(alias.toPath());
+        java.nio.file.Files.deleteIfExists(marker.toPath());
+        java.nio.file.Files.deleteIfExists(temporary.toPath());
+
+        try {
+            java.nio.file.Files.createLink(alias.toPath(), source.toPath());
+            return alias;
+        } catch (IOException | UnsupportedOperationException | SecurityException e) {
+            Diagnostics.record("ANYIOSEMU_SOURCE_LINK", e.toString());
+            // Some Android filesystems/ROMs forbid hard links inside app-private storage.
+        }
+
+        final long expected = source.length();
+        final long[] lastUpdate = {0};
+        return copyRuntimeIpaAlias(source, alias, temporary, marker, gameDirectory.getUsableSpace(),
+            this::checkCancelled, bytes -> {
+                long now = android.os.SystemClock.elapsedRealtime();
+                if (now - lastUpdate[0] < 350 && bytes < expected)
+                    return;
+                lastUpdate[0] = now;
+                progress = "Copying IPA for Emulator · " + formatBytes(bytes) + " / "
+                    + formatBytes(expected);
+                changed();
+            });
+    }
+
+    static File copyRuntimeIpaAlias(File source, File alias, File temporary, File marker,
+        long usableSpace, Runnable checkCancelled, java.util.function.LongConsumer onProgress)
+        throws IOException {
+        final long expected = source.length();
+        final long sourceModified = source.lastModified();
+        final long reserve = 32L * 1024 * 1024;
+        final long required =
+            expected > Long.MAX_VALUE - reserve ? Long.MAX_VALUE : Math.max(0, expected) + reserve;
+        if (expected < 0 || usableSpace < required) {
+            throw new IOException("Android could not reuse the IPA without making another copy. "
+                + "The fallback copy needs " + formatBytes(required) + " free; only "
+                + formatBytes(Math.max(0, usableSpace))
+                + " is available. Free device storage and try again.");
+        }
+        if (java.nio.file.Files.isSymbolicLink(alias.toPath())
+            || java.nio.file.Files.isSymbolicLink(temporary.toPath())
+            || java.nio.file.Files.isSymbolicLink(marker.toPath()))
+            throw new IOException("A symbolic link was found in the private IPA copy paths");
+        java.nio.file.Files.deleteIfExists(alias.toPath());
+        java.nio.file.Files.deleteIfExists(temporary.toPath());
+        java.nio.file.Files.deleteIfExists(marker.toPath());
+
+        long total = 0;
+        long nextSpaceCheck = 0;
+        try {
+            try (InputStream input = new FileInputStream(source);
+                FileOutputStream output = new FileOutputStream(temporary)) {
+                byte[] buffer = new byte[262144];
+                int count;
+                while ((count = input.read(buffer)) != -1) {
+                    checkCancelled.run();
+                    if (total >= nextSpaceCheck) {
+                        long available = temporary.getParentFile().getUsableSpace();
+                        if (available < count + reserve)
+                            throw new IOException("Free device storage fell below the 32 MiB "
+                                + "safety reserve. Clear storage and retry.");
+                        nextSpaceCheck = total + 4L * 1024 * 1024;
+                    }
+                    output.write(buffer, 0, count);
+                    total += count;
+                    onProgress.accept(total);
+                }
+                output.getFD().sync();
+            }
+            if (total != expected || source.length() != expected
+                || source.lastModified() != sourceModified)
+                throw new IOException("The IPA changed while its emulator copy was being made");
+            try {
+                if (!temporary.setLastModified(sourceModified))
+                    Diagnostics.record(
+                        "ANYIOSEMU_SOURCE_TIMESTAMP", "Could not preserve IPA timestamp");
+            } catch (SecurityException e) {
+                Diagnostics.record("ANYIOSEMU_SOURCE_TIMESTAMP", e.toString());
+            }
+            checkCancelled.run();
+            if (!temporary.renameTo(alias))
+                throw new IOException("Could not publish the private emulator IPA copy");
+            try {
+                writeRuntimeIpaMarker(marker, expected + "\n" + sourceModified + "\n");
+            } catch (IOException e) {
+                Diagnostics.record("ANYIOSEMU_SOURCE_MARKER", e.toString());
+            }
+            return alias;
+        } catch (IOException e) {
+            throw new IOException("Could not make an Emulator-readable IPA copy. Check available "
+                    + "device storage and retry. " + e.getMessage(),
+                e);
+        } finally {
+            if (temporary.exists() && !temporary.delete())
+                Diagnostics.record("ANYIOSEMU_SOURCE_CLEANUP", "Temporary IPA copy remains");
+        }
+    }
+
+    private static boolean runtimeIpaMarkerMatches(File marker, String fingerprint) {
+        if (!marker.isFile())
+            return false;
+        try (InputStream input = new AtomicFile(marker).openRead()) {
+            return fingerprint.equals(
+                new String(GameInspector.bounded(input, 4096), StandardCharsets.UTF_8));
+        } catch (Exception e) {
+            return false;
+        }
+    }
+
+    private static void writeRuntimeIpaMarker(File marker, String fingerprint) throws IOException {
+        AtomicFile atomic = new AtomicFile(marker);
+        FileOutputStream output = null;
+        try {
+            output = atomic.startWrite();
+            output.write(fingerprint.getBytes(StandardCharsets.UTF_8));
+            atomic.finishWrite(output);
+        } catch (IOException e) {
+            if (output != null)
+                atomic.failWrite(output);
+            throw e;
+        }
+    }
+
+    /** Prepares the runtime IPA path, preferring a hard link and copying only when required. */
     void prepareAnyiOSEmu(Game game, java.util.function.Consumer<File> callback) {
         if (!game.canLaunchInAnyiOSEMU()) {
             main.post(() -> callback.accept(null));
@@ -821,6 +1015,7 @@ final class GameLibrary {
             main.post(() -> callback.accept(null));
             return;
         }
+        cancellable = true;
         worker.execute(() -> {
             File runtimeSource = null;
             try {
@@ -828,35 +1023,32 @@ final class GameLibrary {
                 File canonicalGame = game.directory.getCanonicalFile();
                 if (!canonicalGame.getParentFile().equals(canonicalRoot))
                     throw new IOException("Invalid library entry");
+                checkCancelled();
                 SandboxPaths sandbox = ensureSandbox(game.directory);
                 File source = game.anyioseSource();
                 if (!source.exists() || !source.canRead()
                     || !source.getCanonicalFile().toPath().startsWith(canonicalGame.toPath()))
                     throw new IOException("The private game source is missing or unreadable");
                 if (game.kind.equals("IPA")) {
-                    File alias = new File(game.directory, "AnyiOSEMU_source.ipa");
-                    if (java.nio.file.Files.isSymbolicLink(alias.toPath()))
-                        java.nio.file.Files.delete(alias.toPath());
-                    if (alias.exists() && !alias.isFile())
-                        throw new IOException("The AnyiOSEMU IPA path is not a regular file");
-                    if (!alias.exists()
-                        || !java.nio.file.Files.isSameFile(alias.toPath(), source.toPath())) {
-                        java.nio.file.Files.deleteIfExists(alias.toPath());
-                        // A hard link avoids duplicating a potentially multi-gigabyte IPA and
-                        // leaves Converter's canonical source.bin untouched.
-                        java.nio.file.Files.createLink(alias.toPath(), source.toPath());
-                    }
-                    runtimeSource = alias;
+                    // Prefer a same-filesystem hard link; some Android devices forbid links in
+                    // app-private storage, so copy only as a checked, cancellable fallback.
+                    runtimeSource = prepareRuntimeIpaSource(game.directory, source);
                 } else {
                     if (!source.isDirectory())
                         throw new IOException("The extracted .app bundle is missing");
                     runtimeSource = source;
                 }
                 ensurePrivateDirectory(sandbox.root, sandbox.anyiose);
+                checkCancelled();
+            } catch (CancellationException e) {
+                runtimeSource = null;
+                error = false;
+                notice = "Emulator preparation cancelled. Your stored game file was not changed.";
             } catch (Exception | LinkageError e) {
                 runtimeSource = null;
                 error = true;
-                notice = "Could not prepare AnyiOSEMU: " + e.getMessage();
+                notice = "Could not prepare AnyiOSEMU: "
+                    + (e.getMessage() == null ? e.toString() : e.getMessage());
                 Diagnostics.record("ANYIOSEMU_PREPARE_ERROR", e.toString());
             } finally {
                 SharedCatalog.end();

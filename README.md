@@ -42,7 +42,7 @@ cargo install cargo-ndk@3.5.4
 gradle --no-daemon :app:lintDebug :app:testDebugUnitTest :app:assembleDebug
 ```
 
-The Android workflow is configured to run pinned source preparation, Boost/Rust provisioning, ANGLE build/audit, Android lint/JVM tests, Gradle/Cargo compilation and APK packaging checks. The PC CI suite tests the separate C++ CPU/loader diagnostics. Until the updated workflow succeeds, those checks remain pending. Do not infer AnyiOSEMU game compatibility from host tests.
+The Android workflow runs pinned source preparation, Boost/Rust provisioning, ANGLE build/audit, Android lint/JVM tests, Gradle/Cargo compilation and APK packaging checks. The PC CI suite tests the separate C++ CPU/loader diagnostics. Passing CI confirms the APK builds; it does not prove that any game displays a visible menu or is playable on a device.
 
 ## Artifacts and project records
 
