@@ -66,16 +66,22 @@ jobs:
           rustc --version
           cargo --version
           cargo ndk --version
-      - name: Cache AnyiOSEMU Rust Android build
+      - name: Cache Cargo dependencies
         uses: actions/cache@v4
         with:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
-            third_party/hyperhle/target
-          key: ${{ runner.os }}-android-ndk-27.2.12479018-anyiose-rust-v2-${{ hashFiles('app/build.gradle', 'third_party/hyperhle-revision.txt', 'third_party/hyperhle-patches/AnyiOSEMU.patch', 'third_party/hyperhle-patches/SDL-Android-NDK-27.patch', 'third_party/hyperhle/Cargo.lock', 'third_party/hyperhle/**/Cargo.toml') }}
+          key: ${{ runner.os }}-cargo-dependencies-v1-${{ hashFiles('third_party/hyperhle/Cargo.lock') }}
           restore-keys: |
-            ${{ runner.os }}-android-ndk-27.2.12479018-anyiose-rust-v2-
+            ${{ runner.os }}-cargo-dependencies-v1-
+      - name: Cache AnyiOSEMU Rust Android build
+        uses: actions/cache@v4
+        with:
+          # Keep target artifacts isolated by the exact native-build inputs. In
+          # particular, do not restore an older CMakeCache across ABI/patch changes.
+          path: third_party/hyperhle/target
+          key: ${{ runner.os }}-android-ndk-27.2.12479018-anyiose-rust-v3-${{ hashFiles('app/build.gradle', 'third_party/hyperhle-revision.txt', 'third_party/hyperhle-patches/AnyiOSEMU.patch', 'third_party/hyperhle-patches/SDL-Android-NDK-27.patch', 'third_party/hyperhle/Cargo.lock', 'third_party/hyperhle/**/Cargo.toml') }}
       # Development keys only, never release signing material. Cache eviction can
       # change this certificate; durable distribution requires configured signing secrets.
       - name: Reuse development signing identity when cached
@@ -219,6 +225,19 @@ jobs:
             gradle --no-daemon --build-cache --parallel :app:lintDebug :app:testDebugUnitTest :converter:lintDebug :converter:testDebugUnitTest :gameruntime-template:testDebugUnitTest :app:assembleDebug 2>&1 | tee .local/logs/android-build.log
           else
             gradle --no-daemon --build-cache --parallel :app:lintRelease :app:testReleaseUnitTest :converter:lintRelease :converter:testReleaseUnitTest :app:assembleRelease 2>&1 | tee .local/logs/android-build.log
+          fi
+      - name: Verify Android Dynarmic target architecture
+        env:
+          VARIANT: ${{ inputs.variant }}
+        run: |
+          BUILD_ROOT="third_party/hyperhle/target/aarch64-linux-android/$VARIANT/build"
+          CMAKE_CACHE=$(find "$BUILD_ROOT" -path '*/touchHLE_dynarmic_wrapper-*/out/build/CMakeCache.txt' -print -quit)
+          if [ -z "$CMAKE_CACHE" ] || ! grep -Eq '^ARCHITECTURE:[^=]*=arm64$' "$CMAKE_CACHE"; then
+            echo 'Dynarmic Android CMake cache is missing the expected arm64 architecture.' >&2
+            if [ -n "$CMAKE_CACHE" ]; then
+              grep -E '^(ARCHITECTURE|CMAKE_SYSTEM_PROCESSOR|DYNARMIC_TESTS|BUILD_TESTING):' "$CMAKE_CACHE" || true
+            fi
+            exit 1
           fi
       - name: Prepare APK and provenance
         env:
