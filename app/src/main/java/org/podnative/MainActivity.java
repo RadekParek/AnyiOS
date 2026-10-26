@@ -3,6 +3,7 @@ package org.podnative;
 import android.app.Activity;
 import android.app.AlertDialog;
 import android.app.Dialog;
+import android.content.ClipData;
 import android.content.Intent;
 import android.content.SharedPreferences;
 import android.content.pm.ActivityInfo;
@@ -33,6 +34,8 @@ import java.io.File;
 import java.io.InputStream;
 import java.io.OutputStream;
 import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
+import java.util.LinkedHashSet;
 import java.util.List;
 
 public final class MainActivity extends Activity {
@@ -474,7 +477,7 @@ public final class MainActivity extends Activity {
             header.addView(progressLabel, lp);
             progress.addView(header);
             if (library.cancellable)
-                button(progress, "Cancel import", false, library::cancel);
+                button(progress, "Cancel operation", false, library::cancel);
         }
         if (!library.notice.isEmpty()) {
             LinearLayout notice = card(parent);
@@ -507,6 +510,10 @@ public final class MainActivity extends Activity {
             ImageView image = new ImageView(this);
             image.setImageURI(Uri.fromFile(game.cover()));
             image.setScaleType(ImageView.ScaleType.CENTER_CROP);
+            if (game.kind.equals("IPA")) {
+                image.setScaleX(2f);
+                image.setScaleY(2f);
+            }
             artwork.addView(image, new FrameLayout.LayoutParams(-1, -1));
         }
         card.addView(artwork, new LinearLayout.LayoutParams(-1, dp(92)));
@@ -525,7 +532,7 @@ public final class MainActivity extends Activity {
         // The chip states what the runtime knows, never a compatibility score.
         String chip = !game.canLaunchInAnyiOSEMU()
             ? game.status.equals("Encrypted") ? "Encrypted" : game.status
-            : "ARM32 eligible";
+            : "ARM32 · experimental";
         TextView status = text(chip, 9, accent, true);
         status.setPadding(dp(7), dp(4), dp(7), dp(4));
         status.setBackground(shape(soft, 6, false));
@@ -547,25 +554,25 @@ public final class MainActivity extends Activity {
             "Choose your legally obtained game files. Originals stay untouched; everything is copied into private app storage.",
             14, muted, false));
         gap(content, 10);
-        button(content, "Import IPA", true, () -> {
+        button(content, "Import IPA file(s)", true, () -> {
             sheet.dismiss();
             selectFile();
         });
-        button(content, "Import game folder", false, () -> {
+        button(content, "Import folder of IPAs", false, () -> {
             sheet.dismiss();
             selectFolder(IMPORT_FOLDER);
         });
-        button(content, "Import extracted app folder", false, () -> {
+        button(content, "Import extracted .app folder", false, () -> {
             sheet.dismiss();
             selectFolder(IMPORT_APP_FOLDER);
         });
-        button(content, "Import executable only", false, () -> {
+        button(content, "Import executable for inspection", false, () -> {
             sheet.dismiss();
             selectFile();
         });
         gap(content, 14);
         content.addView(text(
-            "Import game folder searches for IPAs. AnyiOSEMU inspects the executable and metadata, then reads IPA resources on demand rather than extracting the entire bundle. Writable game data is isolated in a per-game sandbox and can be exported from game details. This is an experimental iOS app runtime, not Apple's full iOS Simulator or a native game port. Use Import extracted app folder for an existing .app bundle.",
+            "Choose one or more IPA files, a folder containing IPAs, or the exact extracted .app folder. Originals stay untouched. IPA resources are read on demand; writable game data stays in a separate per-game sandbox. Executable-only imports are for inspection and cannot launch. AnyiOSEMU is experimental—not Apple's full iOS Simulator or a native game port.",
             12, muted, false));
         sheet.setContentView(content);
         sheet.show();
@@ -577,6 +584,7 @@ public final class MainActivity extends Activity {
         startActivityForResult(new Intent(Intent.ACTION_OPEN_DOCUMENT)
                                    .setType("*/*")
                                    .addCategory(Intent.CATEGORY_OPENABLE)
+                                   .putExtra(Intent.EXTRA_ALLOW_MULTIPLE, true)
                                    .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION),
             IMPORT_FILE);
     }
@@ -708,14 +716,18 @@ public final class MainActivity extends Activity {
             MainActivity activity = owner.get();
             if (activity == null || activity.isFinishing() || activity.isDestroyed())
                 return;
-            if (source == null) {
-                String message = activity.library.notice.isEmpty()
-                    ? "AnyiOSEMU could not prepare this game. Open Diagnostics for details."
-                    : activity.library.notice;
-                android.widget.Toast.makeText(activity, message, android.widget.Toast.LENGTH_LONG)
-                    .show();
-                return;
-            }
+                if (source == null) {
+                    String message = activity.library.notice.isEmpty()
+                        ? "Emulator could not prepare this game. Re-import the IPA or extracted app folder and try again."
+                        : activity.library.notice;
+                    if (message.startsWith("Emulator preparation cancelled.")) {
+                        android.widget.Toast.makeText(
+                            activity, message, android.widget.Toast.LENGTH_SHORT).show();
+                    } else {
+                        activity.showPreparationError(message);
+                    }
+                    return;
+                }
             Intent intent =
                 new Intent(activity, AnyiOSEmuActivity.class)
                     .putExtra(AnyiOSEmuActivity.EXTRA_GAME_ID, game.id)
@@ -733,12 +745,50 @@ public final class MainActivity extends Activity {
             } catch (Exception e) {
                 activity.activeAnyiOSEmuGameId = "";
                 Diagnostics.record("ANYIOSEMU_START_ERROR", e.toString());
-                android.widget.Toast
-                    .makeText(activity, "Could not open AnyiOSEMU: " + e.getMessage(),
-                        android.widget.Toast.LENGTH_LONG)
-                    .show();
+                activity.showPreparationError("Could not open the Emulator activity: " + e);
             }
         });
+    }
+    private void showPreparationError(String message) {
+        String fullDetails = TextUtils.isEmpty(message)
+            ? "The game could not be prepared. Re-import the IPA or extracted app folder and try again."
+            : message;
+        final String details = fullDetails.length() > 12000
+            ? fullDetails.substring(0, 12000) + "\nDetails shortened."
+            : fullDetails;
+        TextView output = text(details, 13, ink, false);
+        output.setTypeface(Typeface.MONOSPACE);
+        output.setTextIsSelectable(true);
+        output.setPadding(dp(18), dp(14), dp(18), dp(14));
+        ScrollView scroll = new ScrollView(this);
+        scroll.addView(output);
+        scroll.setLayoutParams(new android.view.ViewGroup.LayoutParams(-1, dp(300)));
+        new AlertDialog.Builder(this)
+            .setTitle("Couldn’t open Emulator")
+            .setView(scroll)
+            .setNegativeButton("Copy details", (dialog, which) -> {
+                android.content.ClipboardManager clipboard =
+                    getSystemService(android.content.ClipboardManager.class);
+                if (clipboard != null) {
+                    clipboard.setPrimaryClip(
+                        ClipData.newPlainText("AnyiOS emulator error", details));
+                    android.widget.Toast.makeText(
+                        this, "Error details copied", android.widget.Toast.LENGTH_SHORT).show();
+                }
+            })
+            .setPositiveButton("Done", null)
+            .show();
+    }
+    static List<Uri> selectedFiles(Intent data) {
+        LinkedHashSet<Uri> selected = new LinkedHashSet<>();
+        ClipData clip = data.getClipData();
+        if (clip != null)
+            for (int i = 0; i < clip.getItemCount(); i++)
+                if (clip.getItemAt(i).getUri() != null)
+                    selected.add(clip.getItemAt(i).getUri());
+        if (data.getData() != null)
+            selected.add(data.getData());
+        return new ArrayList<>(selected);
     }
     private void showReport(GameLibrary.Game game) {
         // Older library entries keep their persisted report across upgrades. Rebuild stale
@@ -1201,12 +1251,20 @@ public final class MainActivity extends Activity {
             }
             return;
         }
-        if (result != RESULT_OK || data == null || data.getData() == null)
+        if (result != RESULT_OK || data == null)
+            return;
+        if (request == IMPORT_FILE) {
+            List<Uri> selected = selectedFiles(data);
+            if (selected.size() == 1)
+                library.importFile(selected.get(0));
+            else if (!selected.isEmpty())
+                library.importFiles(selected);
+            return;
+        }
+        if (data.getData() == null)
             return;
         Uri uri = data.getData();
-        if (request == IMPORT_FILE)
-            library.importFile(uri);
-        else if (request == IMPORT_FOLDER || request == IMPORT_APP_FOLDER) {
+        if (request == IMPORT_FOLDER || request == IMPORT_APP_FOLDER) {
             if (library.busy) {
                 android.widget.Toast
                     .makeText(this, "Wait for the current library action to finish",

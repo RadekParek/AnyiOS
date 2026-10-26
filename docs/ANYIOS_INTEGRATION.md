@@ -19,9 +19,9 @@ Generated Boost, Cargo, NDK and ANGLE outputs remain ignored build assets; only 
 
 ## Import-to-launch flow
 
-1. AnyiOS retains the imported IPA/folder in its shared private library. Inspection parses bounded executable metadata, reports ARM32/ARM64/ARM64_32 separately and keeps the original file untouched.
+1. AnyiOS retains one or more selected IPA files, a folder containing IPAs, or an extracted `.app` folder in its shared private library. Inspection parses bounded executable metadata, reports ARM32/ARM64/ARM64_32 separately and keeps the original file untouched.
 2. Launch is enabled for supported, unencrypted ARM32 executables. If a universal executable contains ARM32 and ARM64 slices, inspection reports both and the engine receives the ARM32 launch path. ARM64-only executables stay unsupported.
-3. IPA imports retain the canonical `source.bin`. AnyiOS creates an `AnyiOSEMU_source.ipa` hard-link alias for the runtime's IPA loader rather than copying a large IPA again. Extracted `.app` imports pass a validated executable/app path.
+3. IPA imports retain the canonical `source.bin`. AnyiOS prefers an `AnyiOSEMU_source.ipa` hard link for the runtime loader and falls back to a cancellable, free-space-checked copy on filesystems that reject links. Extracted `.app` imports pass a validated executable/app path.
 4. `AnyiOSEmuActivity` extends the upstream SDL Android activity and forwards the selected game, a canonical per-game private data path, frame cap, device-family choice, ANGLE/native-GLES setting, Force Composition and verbose-GLES option through the runtime arguments. Invalid or missing launch arguments show actionable usage rather than silently opening the standalone picker.
 5. AnyiOSEMU's patched Android entry point consumes those arguments, constructs the guest environment and loads the selected ARM32 app. The AnyiOS importer, host C++ diagnostics and Converter do not run the game.
 6. The per-game data root and last selected path are persisted under `anyiose_runtime`; the DocumentsProvider uses that saved value if its transient activity state is unavailable and validates canonical containment under private app storage. Runtime logs and the engine pin are included in the bounded session report/export.

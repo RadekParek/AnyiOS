@@ -28,7 +28,7 @@ The emulator source is a pinned submodule at `third_party/hyperhle`. `scripts/pr
 ## Responsibilities retained in the AnyiOS shell
 
 - `ModuleActivity` and `MainActivity`: module navigation, existing cards/settings, import/export flows, shared library and Converter handoff.
-- `GameLibrary`: private source storage, per-game sandbox and zero-copy IPA alias for AnyiOSEMU's `.ipa` loader, eligibility checks, report persistence and sandbox export.
+- `GameLibrary`: private source storage, per-game sandbox, hard-link IPA alias with a checked/cancellable copy fallback for AnyiOSEMU's `.ipa` loader, launch eligibility, report persistence and sandbox export.
 - `GameInspector`: bounded metadata/executable inspection and explicit ARM architecture reporting. A universal Mach-O that has ARM32 and ARM64 is launched through ARM32; ARM64-only is retained as unsupported.
 - `NativeBridge` and the C++ CMake library: import inspection, FAT slice selection, CPU/loader diagnostics and the standalone ANGLE surface test. They do **not** execute the imported game in the active Android path.
 - Converter: remains a separate module and continues using the shared original import. No file under `converter/` is changed by the emulator integration.
@@ -47,7 +47,7 @@ The C++ ARM/Thumb/Dynarmic diagnostic targets remain useful for their isolated t
 
 ## Private data and diagnostics
 
-Each library entry retains its original `source.bin`. For an IPA launch AnyiOS creates a hard-link alias named `AnyiOSEMU_source.ipa`, avoiding another copy while preserving the Converter's canonical source. AnyiOSEMU writes under that game's `sandbox/AnyiOSEMU` directory; the per-game log and settings summary are saved with the entry and included in sandbox exports. The Android DocumentsProvider resolves only paths under private app storage, refuses symlink components and blocks path/name traversal.
+Each library entry retains its original `source.bin`. For an IPA launch AnyiOS prefers a hard-link alias named `AnyiOSEMU_source.ipa`, preserving the Converter's canonical source without another copy. If Android's filesystem forbids hard links, a storage-checked, cancellable copy fallback creates the runtime alias; its rebuildable marker is kept beside the alias. AnyiOSEMU writes under that game's `sandbox/AnyiOSEMU` directory; the per-game log and settings summary are saved with the entry and included in sandbox exports. The Android DocumentsProvider resolves only paths under private app storage, refuses symlink components and blocks path/name traversal.
 
 Launch reports identify the source build, pinned engine revision, ARM32 selection, FPS cap, graphics preference, Force Composition and verbose-log setting. The bounded log tail includes the first runtime blocker when available. A forced stop or native process crash may leave only the pending report; saved files and native crash logs are not treated as proof of rendering.
 
