@@ -50,7 +50,15 @@ jobs:
           path: third_party/hyperhle/vendor/boost
           key: ${{ runner.os }}-boost-v2-${{ hashFiles('third_party/hyperhle-boost-version.txt', 'scripts/prepare-hyperhle-boost.sh') }}
       - name: Verify or prepare pinned AnyiOSEMU Boost headers
-        run: scripts/prepare-hyperhle-boost.sh
+        env:
+          BOOST_ROOT: ${{ github.workspace }}/third_party/hyperhle/vendor/boost
+        run: |
+          scripts/prepare-hyperhle-boost.sh
+          test -f "$BOOST_ROOT/boost/config.hpp"
+          test -f "$BOOST_ROOT/boost/version.hpp"
+          echo "BOOST_ROOT=$BOOST_ROOT" >> "$GITHUB_ENV"
+          echo "Boost_ROOT=$BOOST_ROOT" >> "$GITHUB_ENV"
+          echo "BOOST_INCLUDEDIR=$BOOST_ROOT" >> "$GITHUB_ENV"
       - name: Install Rust Android toolchain
         run: |
           rustup target add aarch64-linux-android
