@@ -36,7 +36,7 @@ No device run of the pinned runtime integration has been performed in this works
 | ARM32/ARM64/ARM64_32 FAT slice detection | Previously passed standalone warning-clean g++ regressions; current Android/JVM tests are not run locally |
 | Artwork resolution and shared-icon fallback | Implementation and regression tests updated; tests not run locally |
 | SAF folder/ZIP export and Android restrictions | Implementation review only; no device/provider test |
-| Converter Force convert choice and APK contracts | UI updated; full Converter test script intentionally not run |
+| Converter Force convert choice and APK contracts | UI updated; `scripts/test-converter.sh` was inadvertently invoked during PR description creation and failed in its Python suite because Capstone is unavailable; it has not been rerun |
 | Repository formatting, script syntax and diff checks | Passed locally |
 | Android lint, JVM tests, native/Cargo compilation and APK packaging | Pending this PR's CI |
 | AnyiOSEMU initialization on a real Android device | Not tested |
