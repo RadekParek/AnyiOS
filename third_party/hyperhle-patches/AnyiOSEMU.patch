@@ -1452,3 +1452,15 @@ index aa4944a6c4bc2b5fccf1ece46dbe06c859dcbdf9..a76de9415c74a9f7e1d21c9cfdca1b55
  com.telltalegames.SamMax301: --landscape-left --gles2-compat
  com.telltalegames.WallaceGromit102: --landscape-left --gles2-compat
  
+diff --git a/src/cpu/dynarmic_wrapper/build.rs b/src/cpu/dynarmic_wrapper/build.rs
+index 22d9627f80cde83bba3df18afb6d83fe6c4c191e..bb27a0680464ca19c4646cf4e3a2a0e3ef981cb8 100644
+--- a/src/cpu/dynarmic_wrapper/build.rs
++++ b/src/cpu/dynarmic_wrapper/build.rs
+@@ -47,6 +47,7 @@ fn main() {
+     let mut build = cmake::Config::new(&dynarmic_dir);
+     let cmake_profile = build.get_profile().to_owned();
+     build.define("DYNARMIC_FRONTENDS", "A32"); // We don't need 64-bit
++    build.define("BUILD_TESTING", "OFF"); // Avoid building Dynarmic host tests in the Android app.
+     build.define("DYNARMIC_WARNINGS_AS_ERRORS", "OFF");
+     build.define("DYNARMIC_TESTS", "OFF");
+     build.define("DYNARMIC_USE_BUNDLED_EXTERNALS", "ON");
