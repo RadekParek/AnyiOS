@@ -20,6 +20,12 @@ AnyiOS launches an imported game in the pinned Rust/SDL AnyiOSEMU runtime. The A
 
 Runtime source and nested dependencies are pinned through `third_party/hyperhle` and its recursive submodules. The reviewed AnyiOS integration is a source patch at `third_party/hyperhle-patches/AnyiOSEMU.patch`, applied only to the revision in `third_party/hyperhle-revision.txt`. The exact Boost release required by the Dynarmic build is recorded in `third_party/hyperhle-boost-version.txt`.
 
+## Game data and Android storage
+
+The Android application/package ID is **`org.podnative`** (not `org.anyios.com`). Imported games and their writable AnyiOSEMU data are stored in internal, app-private storage. A game's runtime data is under `/data/user/0/org.podnative/files/games/<game-id>/sandbox/AnyiOSEMU`; it is not stored in `/Android/data/org.podnative`. Other apps and ordinary file managers normally cannot browse `/data/user/0/...`, and Android 11+ restricts folder-picker access to the storage root, Downloads root, `Android/data`, and `Android/obb`.
+
+To get a usable copy of saves and diagnostics, open that game's details and choose **Export sandbox data**. The system save picker writes a ZIP to a location you choose; runtime logs and per-game Documents/Library data are included, while rebuildable caches are excluded. For folder imports, choose an accessible normal subfolder (for example, under Documents). For an IPA in Downloads, use **Import IPA file(s)** rather than trying to grant the Downloads folder tree. AnyiOS cannot bypass Android's picker restrictions.
+
 See [architecture](docs/ARCHITECTURE.md), [ANGLE integration](docs/ANGLE_INTEGRATION.md), and [third-party notices](THIRD_PARTY_NOTICES.md).
 
 ## Build and test

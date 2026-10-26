@@ -73,7 +73,7 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             third_party/hyperhle/target
-          key: ${{ runner.os }}-android-ndk-27.2.12479018-anyiose-rust-v2-${{ hashFiles('third_party/hyperhle-revision.txt', 'third_party/hyperhle-patches/AnyiOSEMU.patch', 'third_party/hyperhle-patches/SDL-Android-NDK-27.patch', 'third_party/hyperhle/Cargo.lock', 'third_party/hyperhle/**/Cargo.toml') }}
+          key: ${{ runner.os }}-android-ndk-27.2.12479018-anyiose-rust-v2-${{ hashFiles('app/build.gradle', 'third_party/hyperhle-revision.txt', 'third_party/hyperhle-patches/AnyiOSEMU.patch', 'third_party/hyperhle-patches/SDL-Android-NDK-27.patch', 'third_party/hyperhle/Cargo.lock', 'third_party/hyperhle/**/Cargo.toml') }}
           restore-keys: |
             ${{ runner.os }}-android-ndk-27.2.12479018-anyiose-rust-v2-
       # Development keys only, never release signing material. Cache eviction can
@@ -229,6 +229,19 @@ jobs:
           APK=$(find "app/build/outputs/apk/$VARIANT" -name '*.apk' -print -quit)
           test -n "$APK"
           cp "$APK" ".local/artifacts/$ARTIFACT"
+          # libtouchHLE is loaded on demand; Bionic rejects initial-exec TLS relocations
+          # when such a DSO is dlopened after process startup. Guard the final ARM64 ELF.
+          TLS_SO="$RUNNER_TEMP/libtouchHLE.so"
+          TLS_RELOCS="$RUNNER_TEMP/libtouchHLE-relocations.txt"
+          unzip -p "$APK" lib/arm64-v8a/libtouchHLE.so > "$TLS_SO"
+          test -s "$TLS_SO"
+          READELF="$ANDROID_HOME/ndk/27.2.12479018/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-readelf"
+          "$READELF" --relocations --wide "$TLS_SO" > "$TLS_RELOCS"
+          if grep -E 'R_AARCH64_TLS_TPREL|R_AARCH64_TLSIE_' "$TLS_RELOCS"; then
+            echo 'Refusing to package libtouchHLE.so with initial-exec TLS relocations.' >&2
+            exit 1
+          fi
+          echo 'libtouchHLE.so has no initial-exec TLS relocations.'
           cd .local/artifacts
           sha256sum "$ARTIFACT" > SHA256SUMS
           "$ANDROID_HOME/build-tools/35.0.0/aapt2" dump badging "$ARTIFACT" > APK-BADGING.txt

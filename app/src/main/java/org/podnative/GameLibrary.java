@@ -34,6 +34,8 @@ import org.json.JSONObject;
 /** App-scoped asynchronous worker for the durable app-private game library and sandboxes. */
 final class GameLibrary {
     private static final long MAX_SANDBOX_EXPORT_BYTES = 4L * 1024 * 1024 * 1024;
+    // Keep the same card dimensions while retaining a 2x pixel-density cover source.
+    private static final int COVER_MAX_EDGE = 512;
     private static GameLibrary instance;
     static synchronized GameLibrary get(Context context) {
         if (instance == null)
@@ -473,8 +475,12 @@ final class GameLibrary {
                 notice = "Batch cancelled. " + imported + " completed entries were kept.";
             } catch (Exception e) {
                 error = true;
-                notice = "Folder search failed: " + e.getMessage() + ". " + imported
-                    + " completed entries were kept.";
+                String detail = e.getMessage() == null ? e.toString() : e.getMessage();
+                notice = "Folder search failed: " + detail
+                    + ". If Android denied this location, choose an accessible subfolder under Documents; "
+                    + "the folder picker cannot grant the storage root, Downloads root, Android/data "
+                    + "or Android/obb. For individual IPAs in Downloads, use Import IPA file(s). "
+                    + imported + " completed entries were kept.";
             } finally {
                 try {
                     context.getContentResolver().releasePersistableUriPermission(
@@ -534,7 +540,12 @@ final class GameLibrary {
                 notice = e.getMessage();
             } catch (Exception | LinkageError e) {
                 error = true;
-                notice = "Import could not finish: " + e.getMessage();
+                String detail = e.getMessage() == null ? e.toString() : e.getMessage();
+                notice = "Import could not finish: " + detail;
+                if (tree)
+                    notice +=
+                        ". If Android denied this folder, choose an accessible normal subfolder; "
+                        + "the picker blocks the storage root, Downloads root, Android/data and Android/obb.";
                 Diagnostics.record("LIBRARY_ERROR", e.toString());
             } finally {
                 if (tree && uri != null)
@@ -1369,7 +1380,7 @@ final class GameLibrary {
         if (file.exists() && !file.delete())
             throw new IOException("Could not remove private temporary file");
     }
-    private static void saveCover(File directory, byte[] encoded) {
+    static void saveCover(File directory, byte[] encoded) {
         if (encoded == null)
             return;
         try {
@@ -1381,7 +1392,8 @@ final class GameLibrary {
                 || options.outHeight > 8192)
                 return;
             options.inSampleSize = 1;
-            while (Math.max(options.outWidth, options.outHeight) / options.inSampleSize > 256)
+            while (Math.max(options.outWidth, options.outHeight) / options.inSampleSize
+                > COVER_MAX_EDGE)
                 options.inSampleSize *= 2;
             options.inJustDecodeBounds = false;
             Bitmap image = BitmapFactory.decodeByteArray(encoded, 0, encoded.length, options);
