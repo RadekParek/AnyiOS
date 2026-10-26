@@ -1,6 +1,6 @@
 # AnyiOS
 
-An Android app with the existing **AnyiOS** launcher, shared game library and separate **Converter**. **AnyiOSEMU** is the first-party name for the experimental ARM32 iPhone OS runtime. Its source is pinned and third-party licensing/provenance is retained in [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md).
+An Android app with the existing **AnyiOS** launcher, shared private game library and separate **Converter**. **AnyiOSEMU** is the first-party name for the experimental ARM32 iPhone OS runtime. Its source is pinned; upstream licensing and provenance are retained in [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md).
 
 ## What it does
 
