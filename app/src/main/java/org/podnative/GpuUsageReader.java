@@ -79,13 +79,13 @@ final class GpuUsageReader {
             return value;
         }
         // KGSL can expose "0 0" while its counters reset between windows. Do
-        // not label the first empty sample as a measurement; briefly retain the
-        // last real window, then report idle if it remains power-collapsed.
+        // not treat an empty window as zero usage. Briefly retain the last real
+        // window, then report unavailable until the next published sample.
         if (Double.isNaN(lastBusy))
             return Double.NaN;
         if (nowMs >= lastBusyAt && nowMs - lastBusyAt <= BUSY_HOLD_MS)
             return lastBusy;
-        return 0.0;
+        return Double.NaN;
     }
 
     private static boolean isValid(Source source, String text) {

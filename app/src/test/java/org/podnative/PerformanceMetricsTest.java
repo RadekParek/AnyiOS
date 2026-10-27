@@ -46,7 +46,9 @@ public class PerformanceMetricsTest {
         assertEquals(25.0, reader.sample(2000), 0.001);
         Files.writeString(node.toPath(), "0 0\n");
         assertEquals(25.0, reader.sample(3000), 0.001);
-        assertEquals(0.0, reader.sample(8001), 0.001);
+        assertTrue(Double.isNaN(reader.sample(8001)));
+        Files.writeString(node.toPath(), "125 1000\n");
+        assertEquals(12.5, reader.sample(8500), 0.001);
         assertTrue(node.delete());
         assertTrue(Double.isNaN(reader.sample(9000)));
     }
