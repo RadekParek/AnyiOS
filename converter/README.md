@@ -9,7 +9,7 @@ An **offline IPA inspection and bounded native-reconstruction workbench** for au
 ## Force convert runtime choices
 
 - **Native runtime** is the previous diagnostic game-runtime boot attempt, not the strict static single-routine converter. Its guest runner has no Android EGL/GLES renderer and does not establish gameplay.
-- **Semi-Emulated** embeds the IPA, AnyiOSEMU, SDL, ANGLE and notices in a signed one-game APK. Its private launcher starts the game automatically at the available display resolution/refresh; the installed result does not depend on AnyiOS. This is emulation, not native recompilation, and compatibility and FPS require device testing. The emulator currently executes ARM32 slices only; ARM64-only and encrypted/unverified sources are rejected.
+- **Semi-Emulated** embeds the IPA, AnyiOSEMU, SDL, ANGLE and notices in a signed one-game APK. Its private launcher starts the game automatically at the available display resolution/refresh and requests high-refresh display-link callbacks; that experimental promotion can accelerate game logic. The installed result does not depend on AnyiOS. This is emulation, not native recompilation, and compatibility and FPS require device testing. The emulator currently executes ARM32 slices only; ARM64-only and encrypted/unverified sources are rejected.
 
 ## Offline reconstruction
 

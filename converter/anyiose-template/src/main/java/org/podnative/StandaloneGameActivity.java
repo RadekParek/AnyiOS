@@ -23,7 +23,7 @@ public final class StandaloneGameActivity extends org.anyiose.android.MainActivi
         if (data == null || !data.isDirectory() || !source.isFile()) return new String[] {"--help"};
         return new String[] {"--anyiose-data-dir=" + data.getAbsolutePath(), source.getAbsolutePath(),
             "--device-family=auto", "--fps-limit=" + String.format(Locale.ROOT, "%.3f", cap),
-            "--no-gles-native", "--no-force-composition"};
+            "--boost-display-link", "--no-gles-native", "--no-force-composition"};
     }
     private Display display() {
         if (android.os.Build.VERSION.SDK_INT >= 30 && getDisplay() != null) return getDisplay();

@@ -47,6 +47,7 @@ public final class AnyiOSEmuActivity extends org.anyiose.android.MainActivity {
     private int fpsCapPreference = DisplayFrameRate.AUTO;
     private float effectiveFpsCap = 60.0f;
     private boolean performanceHudEnabled;
+    private boolean boostDisplayLink;
     private int resolutionLimit;
     private int dynamicMinimum;
     private DynamicResolution dynamicResolution;
@@ -81,6 +82,7 @@ public final class AnyiOSEmuActivity extends org.anyiose.android.MainActivity {
         android.content.SharedPreferences settings = getSharedPreferences("settings", MODE_PRIVATE);
         fpsCapPreference = settings.getInt("fps", DisplayFrameRate.AUTO);
         performanceHudEnabled = settings.getBoolean("performanceHud", false);
+        boostDisplayLink = settings.getBoolean("boostDisplayLink", false);
         resolutionLimit = settings.getInt("resolution", 1080);
         dynamicMinimum = settings.getInt("dynamicResolution", 100);
         maxClocksEnabled = settings.getBoolean("maxClocks", false);
@@ -136,6 +138,7 @@ public final class AnyiOSEmuActivity extends org.anyiose.android.MainActivity {
         float fpsCap = DisplayFrameRate.resolveCap(this, fpsCapPreference);
         effectiveFpsCap = fpsCap;
         arguments.add("--fps-limit=" + DisplayFrameRate.formatOption(fpsCap));
+        arguments.add(boostDisplayLink ? "--boost-display-link" : "--no-boost-display-link");
         arguments.add(maxClocksEnabled ? "--perf-hints" : "--no-perf-hints");
         arguments.add(maxClocksEnabled ? "--affinity=big" : "--affinity=off");
         if (performanceHudEnabled || dynamicMinimum < 100)
@@ -384,6 +387,8 @@ public final class AnyiOSEmuActivity extends org.anyiose.android.MainActivity {
             .append("p\nDynamic surface resolution=")
             .append(dynamicResolution == null ? "off" : "on, minimum " + dynamicMinimum + "%")
             .append(" (presentation surface only; offscreen game buffers may not scale)")
+            .append("\n60 FPS display-link boost=")
+            .append(boostDisplayLink)
             .append("\nPerformance HUD=")
             .append(performanceHudEnabled)
             .append("\nMax clocks request=")

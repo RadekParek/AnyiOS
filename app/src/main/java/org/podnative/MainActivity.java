@@ -961,6 +961,14 @@ public final class MainActivity extends Activity {
         settingRow(display, "Frame cap",
             "Auto requests the fastest supported mode at this resolution; measured FPS can be lower",
             frameCapLabel(), this::chooseFrameCap);
+        settingRow(display, "High-refresh boost",
+            "Experimental: promote 60 FPS display links to the selected cap; may speed up game logic",
+            prefs.getBoolean("boostDisplayLink", false) ? "On" : "Off", () -> {
+                prefs.edit()
+                    .putBoolean("boostDisplayLink", !prefs.getBoolean("boostDisplayLink", false))
+                    .apply();
+                home();
+            });
         settingRow(display, "Performance HUD",
             "Off by default · process CPU, RAM PSS, driver-reported graphics PSS and measured presentation FPS; GPU utilization is not publicly reported on many devices",
             prefs.getBoolean("performanceHud", false) ? "On" : "Off", this::togglePerformanceHud);
@@ -1038,6 +1046,7 @@ public final class MainActivity extends Activity {
                             prefs.edit()
                                 .remove("resolution")
                                 .remove("dynamicResolution")
+                                .remove("boostDisplayLink")
                                 .remove("fps")
                                 .remove("performanceHud")
                                 .remove("maxClocks")

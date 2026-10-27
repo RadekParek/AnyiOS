@@ -852,10 +852,10 @@ index 0dfbed8c67d50dd86e3fd15abb7ed1f92962df10..5f3f921d7fed6315be92bb6e98ecca98
      let ssid_key = get_static_str(env, "SSID");
      let bssid_key = get_static_str(env, "BSSID");
 diff --git a/src/frameworks/core_animation/ca_display_link.rs b/src/frameworks/core_animation/ca_display_link.rs
-index 6155c5f3eb4e9236342338f56e777255f1e85586..fcfb4b7e6d6790c5d1e6ac4526e2dba41f270d16 100644
+index 6155c5f3eb4e9236342338f56e777255f1e85586..957b3b73c13515752dd9a450d2e1ec58b8d2f37a 100644
 --- a/src/frameworks/core_animation/ca_display_link.rs
 +++ b/src/frameworks/core_animation/ca_display_link.rs
-@@ -49,6 +49,7 @@ struct CADisplayLinkHostObject {
+@@ -49,9 +49,33 @@ struct CADisplayLinkHostObject {
      /// and the value must be `>= 1`.
      /// <https://developer.apple.com/documentation/quartzcore/cadisplaylink/1648526-frameinterval>
      frame_interval: NSInteger,
@@ -863,7 +863,33 @@ index 6155c5f3eb4e9236342338f56e777255f1e85586..fcfb4b7e6d6790c5d1e6ac4526e2dba4
  }
  impl HostObject for CADisplayLinkHostObject {}
  
-@@ -62,6 +63,7 @@ pub const CLASSES: ClassExports = objc_classes! {
++// Promote only a 60-FPS request, and only with explicit opt-in. Apps that
++// advance simulation by callback count may run too fast with this enabled.
++fn effective_link_fps(requested: NSInteger, maximum: NSInteger, boost: bool) -> NSInteger {
++    if requested <= 0 || (boost && requested == 60 && maximum > 60) {
++        maximum
++    } else {
++        requested.min(maximum).max(1)
++    }
++}
++
++#[cfg(test)]
++mod fps_tests {
++    use super::effective_link_fps;
++    #[test]
++    fn boost_promotes_only_60_and_respects_the_cap() {
++        assert_eq!(effective_link_fps(60, 120, false), 60);
++        assert_eq!(effective_link_fps(60, 120, true), 120);
++        assert_eq!(effective_link_fps(30, 120, true), 30);
++        assert_eq!(effective_link_fps(120, 60, true), 60);
++        assert_eq!(effective_link_fps(0, 120, false), 120);
++    }
++}
++
+ pub const CLASSES: ClassExports = objc_classes! {
+ 
+ (env, this, _cmd);
+@@ -62,6 +86,7 @@ pub const CLASSES: ClassExports = objc_classes! {
      let mut host = CADisplayLinkHostObject::default();
      // Per Apple's docs, the default frameInterval is 1.
      host.frame_interval = 1;
@@ -871,19 +897,43 @@ index 6155c5f3eb4e9236342338f56e777255f1e85586..fcfb4b7e6d6790c5d1e6ac4526e2dba4
      env.objc.alloc_object(this, Box::new(host), &mut env.mem)
  }
  
-@@ -131,7 +133,10 @@ pub const CLASSES: ClassExports = objc_classes! {
+@@ -71,7 +96,10 @@ pub const CLASSES: ClassExports = objc_classes! {
+     // we need a re-direction: the timer fires on the display link, which then
+     // calls the original selector, passing the link as a second argument.
+     let redirect_sel: SEL = env.objc.lookup_selector("_touchHLE_displayLinkTimerDidFire:").unwrap();
+-    let ns_timer = msg_class![env; NSTimer timerWithTimeInterval:(1.0/60.0)
++    let maximum = env.options.fps_limit.unwrap_or(60.0).clamp(1.0, 240.0).round() as NSInteger;
++    let boosted = env.options.boost_display_link && maximum > 60;
++    let initial_fps = if boosted { maximum } else { 60 };
++    let ns_timer = msg_class![env; NSTimer timerWithTimeInterval:(1.0 / initial_fps as f64)
+                      target:display_link
+                    selector:redirect_sel
+                    userInfo:nil
+@@ -81,6 +109,7 @@ pub const CLASSES: ClassExports = objc_classes! {
+     host_object.target = target;
+     host_object.selector = Some(sel);
+     host_object.ns_timer = ns_timer;
++    host_object.preferred_fps = initial_fps;
+     log_dbg!("[CADisplayLink displayLinkWithTarget:{:?} selector:{}] => {:?}", target, sel.as_str(&env.mem), display_link);
+     autorelease(env, display_link)
+ }
+@@ -131,8 +160,13 @@ pub const CLASSES: ClassExports = objc_classes! {
      // Apple docs state the value must be >= 1; clamp to keep guests alive
      // rather than raising NSInvalidArgumentException.
      let safe_interval = frameInterval.max(1);
 -    env.objc.borrow_mut::<CADisplayLinkHostObject>(this).frame_interval = safe_interval;
+-    let interval = safe_interval as f64 / 60.0;
++    let maximum = env.options.fps_limit.unwrap_or(60.0).clamp(1.0, 240.0).round() as NSInteger;
++    let boosted = env.options.boost_display_link && safe_interval == 1 && maximum > 60;
 +    let host = env.objc.borrow_mut::<CADisplayLinkHostObject>(this);
 +    host.frame_interval = safe_interval;
-+    // Legacy frameInterval was defined on 60 Hz displays; preserve game speed.
-+    host.preferred_fps = (60 / safe_interval).max(1);
-     let interval = safe_interval as f64 / 60.0;
++    // Preserve legacy 60-Hz timing unless the user explicitly enables boost.
++    host.preferred_fps = if boosted { maximum } else { (60 / safe_interval).max(1) };
++    let interval = if boosted { 1.0 / maximum as f64 } else { safe_interval as f64 / 60.0 };
  
      let ns_timer = env.objc.borrow::<CADisplayLinkHostObject>(this).ns_timer;
-@@ -141,14 +146,21 @@ pub const CLASSES: ClassExports = objc_classes! {
+     if ns_timer != nil {
+@@ -141,14 +175,21 @@ pub const CLASSES: ClassExports = objc_classes! {
  }
  
  - (NSInteger)preferredFramesPerSecond {
@@ -896,10 +946,10 @@ index 6155c5f3eb4e9236342338f56e777255f1e85586..fcfb4b7e6d6790c5d1e6ac4526e2dba4
 -    let safe_fps = if fps <= 0 { 60 } else { fps.min(60) };
 -    let interval = (60 / safe_fps).max(1);
 -    () = msg![env; this setFrameInterval:interval];
-+    // Honor explicit 90/120 Hz requests, but never speed up a game that asks
-+    // for 60. Zero means the fastest host rate, as in the iOS API.
++    // Zero means the fastest host rate. 60 is promoted only with opt-in,
++    // because games that advance simulation per callback may run too fast.
 +    let maximum = env.options.fps_limit.unwrap_or(60.0).clamp(1.0, 240.0).round() as NSInteger;
-+    let safe_fps = if fps <= 0 { maximum } else { fps.min(maximum).max(1) };
++    let safe_fps = effective_link_fps(fps, maximum, env.options.boost_display_link);
 +    let host = env.objc.borrow_mut::<CADisplayLinkHostObject>(this);
 +    host.preferred_fps = safe_fps;
 +    host.frame_interval = (maximum / safe_fps).max(1);
@@ -1565,10 +1615,27 @@ index 483ec5cc9439c9293b15a97206d14e2824c8794b..263c8ef0cee99ca72558e8f6977058ed
          version,
          actions,
 diff --git a/src/options.rs b/src/options.rs
-index f19834ba9b628cb422b8d0a0319650beb3223a3e..ffa8a03a616cd423b00f09204eed4d1760c211d5 100644
+index f19834ba9b628cb422b8d0a0319650beb3223a3e..96ffaa27a57c884b5b2c44dd53e6552adb2f1ef1 100644
 --- a/src/options.rs
 +++ b/src/options.rs
-@@ -372,7 +372,7 @@ impl Default for Options {
+@@ -147,6 +147,8 @@ pub struct Options {
+     pub headless: bool,
+     pub print_fps: bool,
+     pub fps_limit: Option<f64>,
++    /// Opt-in promotion of 60-Hz CADisplayLink callbacks to the host cap.
++    pub boost_display_link: bool,
+     pub force_composition: bool,
+     /// See [PresentMode]. Can also be set with the `TOUCHHLE_PRESENT_MODE`
+     /// environment variable (the option takes precedence).
+@@ -327,6 +329,7 @@ impl Default for Options {
+             headless: false,
+             print_fps: false,
+             fps_limit: Some(60.0),
++            boost_display_link: false,
+             force_composition: false,
+             present_mode: std::env::var("TOUCHHLE_PRESENT_MODE")
+                 .ok()
+@@ -372,7 +375,7 @@ impl Default for Options {
              // case). Default the fix-up to ON so games work out of the
              // box on Android — users can still disable it via
              // `--fix-texture-min-filter=false` in
@@ -1577,6 +1644,34 @@ index f19834ba9b628cb422b8d0a0319650beb3223a3e..ffa8a03a616cd423b00f09204eed4d17
              // depends on mipmap minification (rare among iOS 2.x/3.x
              // titles). On desktop hosts (where the user is likely
              // running Mesa / Apple PowerVR / NVIDIA / AMD, all
+@@ -610,6 +613,10 @@ impl Options {
+                     .ok_or_else(|| "Invalid value for --fps-limit=".to_string())?;
+                 self.fps_limit = Some(limit);
+             }
++        } else if arg == "--boost-display-link" {
++            self.boost_display_link = true;
++        } else if arg == "--no-boost-display-link" {
++            self.boost_display_link = false;
+         } else if arg == "--force-composition" {
+             self.force_composition = true;
+         } else if arg == "--no-force-composition" {
+@@ -794,6 +801,16 @@ fn parse_dump_options(options: &str) -> Result<DumpingOptions, String> {
+ mod option_parsing_tests {
+     use super::*;
+ 
++    #[test]
++    fn display_link_boost_is_opt_in() {
++        let mut options = Options::default();
++        assert!(!options.boost_display_link);
++        assert!(options.parse_argument("--boost-display-link").unwrap());
++        assert!(options.boost_display_link);
++        assert!(options.parse_argument("--no-boost-display-link").unwrap());
++        assert!(!options.boost_display_link);
++    }
++
+     #[test]
+     fn force_composition_can_be_enabled_and_disabled() {
+         let mut options = Options::default();
 diff --git a/src/paths.rs b/src/paths.rs
 index 5f265c86ab8091c3ac37d76ff9467baf804ee7ea..2b689d12f46a488c51f1d28f4c1c1d47fac3eb05 100644
 --- a/src/paths.rs

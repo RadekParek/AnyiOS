@@ -25,7 +25,7 @@ No device run of the pinned runtime integration has been performed in this works
 - From the Converter's Force convert dialog, confirm **Native runtime** produces the existing diagnostic game-runtime artifact. Confirm **Semi-Emulated** generates a separately named/signed APK with the embedded IPA and runtime, refuses encrypted/ARM64-only inputs, and opens only that game without a picker.
 - Install the Semi-Emulated APK, remove AnyiOS, reboot and launch it again. Verify its private saves persist and no host application is required; then repeat after an APK update signed with the same key. Check actual maximum resolution/refresh on a high-refresh device.
 - Verify Dynamic resolution starts Off, that the selected minimum is respected, and that changing the range takes effect on the next game launch. Compare measured FPS and visual resolution against the disabled setting on the same scene, including a CPU-bound scene. Check touch, orientation, background/resume and surface recreation at every scale. The presentation surface alone may not affect offscreen rendering workload; do not claim gains without measurement.
-- Test games requesting 60 FPS and >60 FPS separately on a 120-Hz device; display-link changes do not override an intentional 60-FPS game cap.
+- Test games requesting 60 FPS and >60 FPS separately on a 120-Hz device. Confirm High-refresh boost is off by default in the Emulator, and compare game speed and measured FPS when enabled; standalone APKs request boost. It may accelerate callback-driven simulation and cannot override every game-specific cap.
 
 ## Storage, icons and reports
 

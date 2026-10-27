@@ -1040,6 +1040,7 @@ class MainActivity : Activity() {
             "It does not have an Android EGL/GLES renderer.\n\n" +
             "Semi-Emulated builds a self-contained APK containing AnyiOSEMU and the IPA, launches only this game, " +
             "and uses the device's current resolution and fastest supported refresh mode. AnyiOS can be uninstalled afterwards. " +
+            "It requests high-refresh display-link callbacks; this can speed up game logic. " +
             "It needs an unencrypted ARM32 slice; rendering, FPS and gameplay depend on the game and device." +
             (if (nativeBuilt || semiEmulatedBuilt) "\n\nSelecting an existing runtime rebuilds that APK." else "")
         AlertDialog.Builder(this).setTitle("Choose a runtime").setMessage(message)
