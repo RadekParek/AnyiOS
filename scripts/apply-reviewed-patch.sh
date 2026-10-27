@@ -17,6 +17,13 @@ trap 'rm -f "$ACTUAL"' EXIT
 if git -C "$CHECKOUT" apply --reverse --check "$PATCH" >/dev/null 2>&1; then
   echo "$LABEL patch is already applied"
 elif git -C "$CHECKOUT" apply --check "$PATCH" >/dev/null 2>&1; then
+  # Check before changing anything, even if the patch happens to apply in a
+  # checkout where some unrelated tracked file was edited by the developer.
+  git -C "$CHECKOUT" diff --binary --full-index --ignore-submodules=all HEAD > "$ACTUAL"
+  if [[ -s "$ACTUAL" ]]; then
+    echo "$LABEL checkout contains unrelated local changes; patch was not applied" >&2
+    exit 1
+  fi
   git -C "$CHECKOUT" apply "$PATCH"
   echo "Applied $LABEL patch"
 else

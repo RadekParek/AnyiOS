@@ -65,6 +65,16 @@ class ReviewedPatchTests(unittest.TestCase):
             self.patch_new.read_bytes(),
         )
 
+    def test_unpatched_checkout_with_local_changes_is_left_untouched(self):
+        (self.repo / "other").write_text("user change\n")
+        before = self.git("diff", "--binary", "--full-index", "HEAD")
+        result = self.run_apply(self.old_sha, check=False)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn(b"patch was not applied", result.stderr)
+        self.assertEqual(before, self.git("diff", "--binary", "--full-index", "HEAD"))
+        self.assertEqual((self.repo / "tracked").read_text(), "base\n")
+        self.assertFalse((self.repo / "added").exists())
+
     def test_exact_old_patch_is_upgraded_including_created_files(self):
         self.git("apply", str(self.patch_old))
         self.git("add", "--intent-to-add", "added")
@@ -74,6 +84,27 @@ class ReviewedPatchTests(unittest.TestCase):
             self.git("diff", "--binary", "--full-index", "HEAD"),
             self.patch_new.read_bytes(),
         )
+
+    def test_conflicting_untracked_file_restores_the_previous_patch(self):
+        (self.repo / "tracked").write_text("new\n")
+        (self.repo / "added").write_text("new added\n")
+        (self.repo / "collision").write_text("created by new patch\n")
+        self.git("add", "--intent-to-add", "added", "collision")
+        self.patch_new.write_bytes(self.git("diff", "--binary", "--full-index", "HEAD"))
+        self.git("restore", "tracked")
+        self.git("reset", "-q", "--", "added", "collision")
+        (self.repo / "added").unlink()
+        (self.repo / "collision").unlink()
+        self.git("apply", str(self.patch_old))
+        self.git("add", "--intent-to-add", "added")
+        (self.repo / "collision").write_text("user file\n")
+        before = self.git("diff", "--binary", "--full-index", "HEAD")
+        result = self.run_apply(self.old_sha, check=False)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn(b"restored previous patch", result.stderr)
+        self.assertEqual(before, self.git("diff", "--binary", "--full-index", "HEAD"))
+        self.assertEqual((self.repo / "added").read_text(), "old added\n")
+        self.assertEqual((self.repo / "collision").read_text(), "user file\n")
 
     def test_old_patch_with_unknown_changes_is_rejected_without_losing_work(self):
         self.git("apply", str(self.patch_old))
