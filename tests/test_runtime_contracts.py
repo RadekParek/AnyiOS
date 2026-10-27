@@ -104,12 +104,18 @@ class RuntimeContractTests(unittest.TestCase):
         activity = read(ROOT / "app/src/main/java/org/podnative/AnyiOSEmuActivity.java")
         profile = read(ROOT / "app/src/main/java/org/podnative/GameDisplayProfile.java")
         settings = read(ROOT / "app/src/main/java/org/podnative/MainActivity.java")
-        # An older "resolution" preference used to affect a different graphics
-        # test. Never let that saved value silently force the new SDL buffer.
-        self.assertIn('settings.getInt("presentationResolution", 0)', activity)
-        self.assertNotIn('settings.getInt("resolution",', activity)
+        # Both retired manual-resolution preferences must be ignored, even
+        # for an upgraded installation whose settings still contain an old cap.
+        self.assertNotIn('settings.getInt("presentationResolution"', activity)
+        self.assertNotIn('settings.getInt("resolution"', activity)
+        self.assertNotIn('prefs.getInt("presentationResolution"', settings)
+        self.assertNotIn('settingRow(display, "Presentation resolution"', settings)
+        self.assertIn("new PrototypeView(this, testCap, 0,", settings)
         self.assertIn('settings.getInt("dynamicResolution", 100)', activity)
-        self.assertIn("resolutionLimit > 0 || dynamicMinimum < 100", activity)
+        self.assertIn("mSurface != null && dynamicMinimum < 100", activity)
+        self.assertIn("new SurfaceResolution(mSurface)", activity)
+        surface = read(ROOT / "app/src/main/java/org/podnative/SurfaceResolution.java")
+        self.assertNotIn("shortEdgeLimit", surface)
         self.assertNotIn('"--screen-size=', activity)
         self.assertIn('return "--device-family=auto"', profile)
         self.assertIn('"Maximize FPS"', settings)

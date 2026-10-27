@@ -43,7 +43,6 @@ public final class AnyiOSEmuActivity extends org.anyiose.android.MainActivity {
     private float effectiveFpsCap = 60.0f;
     private boolean performanceHudEnabled;
     private boolean boostDisplayLink;
-    private int resolutionLimit;
     private int gameDisplayProfile;
     private int dynamicMinimum;
     private DynamicResolution dynamicResolution;
@@ -78,7 +77,6 @@ public final class AnyiOSEmuActivity extends org.anyiose.android.MainActivity {
         fpsCapPreference = settings.getInt("fps", DisplayFrameRate.AUTO);
         performanceHudEnabled = settings.getBoolean("performanceHud", false);
         boostDisplayLink = settings.getBoolean("boostDisplayLink", false);
-        resolutionLimit = settings.getInt("presentationResolution", 0);
         gameDisplayProfile = settings.getInt("gameDisplayProfile", GameDisplayProfile.AUTO);
         dynamicMinimum = settings.getInt("dynamicResolution", 100);
         maxClocksEnabled = settings.getBoolean("maxClocks", false);
@@ -103,10 +101,9 @@ public final class AnyiOSEmuActivity extends org.anyiose.android.MainActivity {
         super.onCreate(state);
         DisplayFrameRate.requestPreferredMode(this, fpsCapPreference);
         effectiveFpsCap = DisplayFrameRate.resolveCap(this, fpsCapPreference);
-        if (mSurface != null && (resolutionLimit > 0 || dynamicMinimum < 100)) {
-            surfaceResolution = new SurfaceResolution(mSurface, resolutionLimit);
-            if (dynamicMinimum < 100)
-                dynamicResolution = new DynamicResolution(dynamicMinimum, effectiveFpsCap);
+        if (mSurface != null && dynamicMinimum < 100) {
+            surfaceResolution = new SurfaceResolution(mSurface);
+            dynamicResolution = new DynamicResolution(dynamicMinimum, effectiveFpsCap);
         }
         getSharedPreferences("anyiose_runtime", MODE_PRIVATE)
             .edit()
@@ -339,8 +336,7 @@ public final class AnyiOSEmuActivity extends org.anyiose.android.MainActivity {
             .append(measuredFps)
             .append("\nGame layout=")
             .append(GameDisplayProfile.label(gameDisplayProfile))
-            .append("\nPresentation short-edge limit=")
-            .append(resolutionLimit <= 0 ? "display native" : resolutionLimit + "p")
+            .append("\nPresentation base resolution=display native")
             .append("\nDynamic surface resolution=")
             .append(dynamicResolution == null ? "off" : "on, minimum " + dynamicMinimum + "%")
             .append(" (presentation surface only; offscreen game buffers may not scale)")
