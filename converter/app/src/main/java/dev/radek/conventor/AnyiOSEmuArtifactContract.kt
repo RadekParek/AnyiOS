@@ -31,6 +31,23 @@ internal object AnyiOSEmuArtifactContract {
         return file
     }
 
+    /** Share the retained IPA under the expansion filename, without a second converter-side copy. */
+    fun validateExpansion(report: JSONObject, dir: File, requestedName: String): File {
+        validate(report, dir, ArtifactNames.anyioseApkFileName(report))
+        val conversion = report.getJSONObject("anyioseConversion")
+        val expansion = conversion.optJSONObject("expansionObb") ?: error("No expansion file is recorded")
+        val packageName = conversion.optString("package")
+        val name = ArtifactNames.obbFileName(packageName, ArtifactNames.ANYIOSE_VERSION_CODE)
+        val sourceHash = conversion.optString("sourceSha256")
+        require(requestedName == name && expansion.optString("name") == name &&
+            expansion.optString("sha256") == sourceHash && !expansion.optBoolean("required", true))
+        val root = dir.canonicalFile
+        val source = File(root, "source.bin").canonicalFile
+        require(source.parentFile == root && source.isFile && source.length() == expansion.optLong("bytes", -1) &&
+            sha256(source) == sourceHash) { "The retained expansion payload is missing or has changed" }
+        return source
+    }
+
     fun sha256(file: File): String = file.inputStream().buffered().use { input ->
         val digest = MessageDigest.getInstance("SHA-256")
         val buffer = ByteArray(65536)

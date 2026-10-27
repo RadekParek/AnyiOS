@@ -49,6 +49,24 @@ internal object GameRuntimeArtifactContract {
         return result
     }
 
+    /** Validate the optional, separately emitted expansion before sharing it. */
+    fun validateExpansion(report: JSONObject, directory: File, requestedName: String): File {
+        validate(report, directory, ArtifactNames.gameApkFileName(report))
+        val conversion = report.getJSONObject("gameRuntimeConversion")
+        val expansion = conversion.optJSONObject("expansionObb") ?: error("No expansion file is recorded")
+        val versionCode = conversion.optInt("versionCode", 0)
+        require(versionCode > 0)
+        val name = ArtifactNames.obbFileName(conversion.optString("package"), versionCode)
+        require(requestedName == name && expansion.optString("name") == name)
+        val digest = expansion.optString("sha256")
+        require(digest.matches(Regex("[0-9a-f]{64}")))
+        val root = directory.canonicalFile
+        val file = File(root, name).canonicalFile
+        require(file.parentFile == root && file.isFile && file.length() == expansion.optLong("bytes", -1) &&
+            sha256(file) == digest) { "The expansion payload is missing or has changed" }
+        return file
+    }
+
     private fun sha256(file: File): String = file.inputStream().use { input ->
         val digest = MessageDigest.getInstance("SHA-256")
         val buffer = ByteArray(65536)

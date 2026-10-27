@@ -52,6 +52,31 @@ public class GameEngineDetectorTest {
         assertEquals("Unknown", single.result());
     }
 
+    @Test public void octarineNeedsTheSpecificSourcePathAndSurvivesChunkBoundaries()
+        throws Exception {
+        byte[] bytes = new byte[16500];
+        byte[] signature = GameEngineDetector.OCTARINE_SOURCE.getBytes(StandardCharsets.US_ASCII);
+        System.arraycopy(signature, 0, bytes, 16380, signature.length);
+        GameEngineDetector detector = new GameEngineDetector();
+        detector.observeExecutable(new ByteArrayInputStream(bytes));
+        assertEquals("Octarine (detected)", detector.result());
+        GameEngineDetector generic = new GameEngineDetector();
+        generic.observeRuntimeLog("Octarine HSSSoundManager.cpp Terraria");
+        assertEquals("Unknown", generic.result());
+        generic.observeRuntimeLog("/Users/codeglue/dev/" + GameEngineDetector.OCTARINE_SOURCE);
+        assertEquals("Octarine (detected)", generic.result());
+        assertEquals("Octarine, Unity (detected)",
+            GameEngineDetector.merge("Unity (detected)", generic.result()));
+    }
+
+    @Test public void gamemakerUsesRootGameDataNotPluginData() {
+        GameEngineDetector detector = new GameEngineDetector();
+        detector.observePath("PlugIns/Ad.app/game.ios");
+        assertEquals("Unknown", detector.result());
+        detector.observePath("game.ios");
+        assertEquals("GameMaker (detected)", detector.result());
+    }
+
     @Test public void binaryScanIsBounded() throws Exception {
         class Endless extends InputStream {
             long bytes;

@@ -20,6 +20,10 @@ def main():
             "--authorized", action="store_true", help="confirm ownership/permission to convert this IPA"
         )
         p.add_argument(
+            "--ghidra-home", type=Path, default=None,
+            help="optional local desktop Ghidra installation for bounded diagnostic pseudocode (Linux/macOS)",
+        )
+        p.add_argument(
             "--target-abi",
             choices=("auto", "arm64-v8a", "armeabi-v7a"),
             default="auto",
@@ -82,6 +86,7 @@ def main():
             args.authorized,
             args.command == "analyze",
             args.target_abi,
+            ghidra_home=args.ghidra_home,
         )
         print(
             json.dumps(

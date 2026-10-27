@@ -11,6 +11,26 @@ An **offline IPA inspection and bounded native-reconstruction workbench** for au
 - **Native runtime** is the previous diagnostic game-runtime boot attempt, not the strict static single-routine converter. Its guest runner has no Android EGL/GLES renderer and does not establish gameplay.
 - **Semi-Emulated** embeds the IPA, AnyiOSEMU, SDL, ANGLE and notices in a signed one-game APK. Its private transparent launcher verifies the IPA off the UI thread without a preparation screen, starts the game automatically at the available display resolution/refresh, and requests maximum-FPS display-link callbacks by default; that experimental promotion can accelerate game logic. Emulator error dialogs are suppressed for this host; Android may still show system UI for early failures or ANRs, and quiet fatal native exits forgo system tombstones. The installed result does not depend on AnyiOS. This is emulation, not native recompilation, and compatibility and FPS require device testing. The emulator currently executes ARM32 slices only; ARM64-only and encrypted/unverified sources are rejected.
 
+### Android expansion files
+
+A new Semi-Emulated result remains a self-contained APK. Its launcher verifies a
+private IPA, then best-effort creates `Android/obb/<package>/main.1.<package>.obb`
+as an identical, verified IPA ZIP mirror; execution and saves use private data,
+not the mutable OBB. The Converter can share the retained IPA under the exact
+OBB filename without a second converter-side copy. First launch uses additional
+storage and launches verify the mirror, so startup can take longer. If OBB
+storage is missing, read-only, full or restricted, the private game still runs.
+
+The Native diagnostic builder and the narrow `complete-game-v1` builders also
+attempt to produce a shareable resource ZIP OBB after validating the APK. A
+failure to create the extra copy leaves the self-contained APK usable. The
+bundled resources remain inside the APK, and the launchers create the app-specific
+OBB directory when available but do not install or load the sidecar. Desktop
+CLI output includes the sidecar alongside the APK when creation succeeds. These
+optional files are not Google Play expansion delivery and do not shrink the
+APK. Android's picker may prohibit `Android/obb`; no bypass is attempted.
+Existing conversions remain installable without an OBB.
+
 ## Offline reconstruction
 
 Authorized imports are analyzed before compatibility is assessed:
@@ -242,6 +262,34 @@ To inspect an authorized IPA:
 ```sh
 python3 -m radek analyze authorized.ipa --authorized --output workspace/analysis
 ```
+
+### Optional local Ghidra analysis (desktop CLI)
+
+The existing offline reconstruction (Mach-O metadata, disassembly and call/CFG
+analysis) runs without Ghidra. On Linux/macOS, you may additionally point the
+Python CLI at a **locally installed** Ghidra distribution and its compatible JDK:
+
+```sh
+python3 -m radek analyze authorized.ipa --authorized --output workspace/analysis \
+  --ghidra-home /path/to/ghidra
+```
+
+This opt-in runs `support/analyzeHeadless` and the bundled `AnyiOSDecompile.java`
+post-script locally. It never uploads or executes the IPA, and it skips encrypted
+Mach-O images rather than decrypting them. The job's `report.json` records
+availability, errors, timeout/truncation and `ghidra-inferred.c` if produced.
+That file is a **bounded pseudocode sample**, not original source or a runnable
+conversion; it does not change the converter's validation gates. Limits include
+128 MiB input, 32 functions, 3 seconds per function, a 90-second auto-analysis
+budget, 180-second wall timeout and 4 MiB maximum report. The Ghidra launcher
+is asked to use at most 2 analysis CPUs and a 1 GiB Java heap; these are Ghidra
+settings, not OS-wide limits on all native processes or disk usage. The temporary
+project is removed, but the selected Ghidra installation may retain its own
+local settings/logs. Treat the job output as private game material.
+
+Ghidra is not bundled with the Android converter; stock desktop Ghidra is not
+an Android library. Windows and Android runs report the opt-in as unavailable.
+The regular Android importer continues its on-device Mach-O/dependency analysis.
 
 A new output directory is required. Reports and logs persist; temporary extraction workspaces are
 removed. `analyze` returns `PARTIAL` after a successful inspection and may write the isolated code

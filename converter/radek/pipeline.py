@@ -12,6 +12,7 @@ from .gamepack import (
     assess_complete_conversion,
     build_complete_game,
     complete_game_metadata,
+    publish_resource_expansion,
     validate_complete_game,
 )
 from .game.codegen import generate as generate_full_game_translation
@@ -30,6 +31,7 @@ from .icons import extract as extract_icon, launcher as launcher_icon
 from .ir import Unsupported
 from .llvm_ir import emit as emit_llvm_ir, verify as verify_llvm_ir
 from .plan import plan_coverage
+from .ghidra import inspect as ghidra_inspect
 from .recon import reconstruct
 from .recon.report import blockers as recon_blockers, markdown as recon_markdown, summary as recon_summary
 
@@ -75,6 +77,7 @@ class Pipeline:
         self.report = {
             "schemaVersion": 1,
             "state": None,
+            "ghidra": {"status": "NOT_REQUESTED", "attempted": False, "completeGameConversion": False},
             "events": [],
             "capabilities": capabilities(),
             "apiImplementationGeneration": {
@@ -679,6 +682,25 @@ class Pipeline:
             "READY",
             "Bounded complete conversion finished: the signed APK passed every complete-game-v1 check.",
         )
+        # The verified, self-contained APK and READY report are durable before
+        # optional OBB work consumes any additional storage.
+        try:
+            self.report["completeConversion"]["expansionObb"] = publish_resource_expansion(
+                self.output, metadata["package"], assessment["resourcePayloads"]
+            )
+        except Exception as exc:  # noqa: BLE001 - optional export must not invalidate the APK
+            # An optional extra copy must not invalidate the already-verified APK.
+            self.report["completeConversion"]["expansionObbStatus"] = {
+                "status": "NOT_CREATED",
+                "required": False,
+                "message": f"The APK is self-contained; the optional OBB could not be created: {exc}",
+            }
+        try:
+            self.save(force=True)
+        except OSError:
+            # A full or disappearing output volume must not invalidate the
+            # already-persisted APK/report. The sidecar may be unrecorded.
+            pass
         return self.report
 
     def save(self, force: bool = False):
@@ -716,6 +738,7 @@ class Pipeline:
         authorized: bool,
         analyze_only=False,
         target_abi: str = "auto",
+        ghidra_home: Path | None = None,
     ):
         try:
             if not authorized:
@@ -752,6 +775,16 @@ class Pipeline:
                 graph = dependency_graph(app, executable, mach)
                 self.report["machO"] = mach
                 self.report["dependencies"] = graph
+                try:
+                    self.report["ghidra"] = ghidra_inspect(executable, mach, self.output, ghidra_home)
+                except Exception as exc:  # noqa: BLE001 - optional diagnostics never decide conversion gates
+                    self.report["ghidra"] = {
+                        "status": "FAILED", "attempted": ghidra_home is not None,
+                        "completeGameConversion": False,
+                        "message": f"Optional local Ghidra analysis failed: {exc}",
+                    }
+                if ghidra_home is not None:
+                    self.log("ANALYZING", "Optional Ghidra: " + self.report["ghidra"]["message"])
                 self.log(
                     "ANALYZING",
                     f'Analyzed {len(mach["slices"])} architecture slice(s), {len(graph["nodes"])} Mach-O image(s), {len(graph["edges"])} dependency edge(s)',

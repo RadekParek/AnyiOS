@@ -4,6 +4,11 @@ import org.json.JSONObject
 
 /** Safe APK filename derived from the selected IPA, shared by import, attachment and provider paths. */
 internal object ArtifactNames {
+    // Must match anyiose-template's versionCode; used by Android's OBB filename.
+    const val ANYIOSE_VERSION_CODE = 1
+    // gameruntime-template and converted-template also use versionCode 1.
+    const val GAME_RUNTIME_VERSION_CODE = 1
+    const val CONVERTED_VERSION_CODE = 1
     fun apkFileName(report: JSONObject): String {
         val original = report.optJSONObject("source")?.optString("originalName")?.takeIf { it.isNotBlank() }
             ?: report.optJSONObject("application")?.optString("name")?.takeIf { it.isNotBlank() }

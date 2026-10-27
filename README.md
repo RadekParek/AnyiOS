@@ -33,6 +33,19 @@ The Android application/package ID remains **`org.podnative`** (not `org.anyios.
 
 In a game's details, choose **Export game data to folder…** to copy its data beneath `org.anyios` in a folder selected through Android's document picker, or **Export game data as ZIP…** to save an archive. The folder export is a copy; live saves remain private. The picker may block storage roots, Downloads, `Android/data` and `Android/obb` on recent Android versions. Choose a permitted location; AnyiOS does not bypass those restrictions. Rebuildable caches are excluded.
 
+For a new **Semi-Emulated** force conversion, the APK remains self-contained and
+on launch attempts to create `Android/obb/<package>/main.1.<package>.obb` as a
+verified mirror of the embedded IPA. The private IPA and saves remain the only
+live source; unavailable, full, or read-only OBB storage must not prevent launch.
+The Converter can also share that IPA under the expansion filename. The mirror
+uses additional storage and verifying it can lengthen startup. The **Native**
+diagnostic builder and the narrow bounded converter also attempt to emit a
+resource OBB for sharing after building a self-contained APK. Their launchers
+create the app-specific directory when available but do not install or load the
+sidecar; the APK works without it. Android storage restrictions may prevent
+manually placing these files. They are not Google Play delivery and do not
+reduce APK size.
+
 See [architecture](docs/ARCHITECTURE.md), [ANGLE integration](docs/ANGLE_INTEGRATION.md), and [third-party notices](app/src/main/assets/anyiose-runtime-notices.txt).
 
 ## Build and test

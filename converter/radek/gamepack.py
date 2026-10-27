@@ -33,6 +33,9 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
+import re
+import tempfile
 import zipfile
 from pathlib import Path
 
@@ -44,7 +47,7 @@ from .apk import (
     run,
     validate_apk,
 )
-from .archive import InputError, safe_name
+from .archive import InputError, require_free_space, safe_name
 from .elf_writer import build_shared_object
 from .resources import MACH_MAGICS, fallback_icon
 
@@ -95,6 +98,7 @@ import android.widget.TextView;
 import org.json.JSONObject;
 
 import java.io.ByteArrayOutputStream;
+import java.io.File;
 import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
 
@@ -150,6 +154,12 @@ public final class MainActivity extends Activity {
     @Override
     protected void onCreate(Bundle state) {
         super.onCreate(state);
+        // Best effort only: all resources remain in the APK. Android may not
+        // provide external storage, or the user may not install the sidecar.
+        try {
+            File obb = getObbDir();
+            if (obb != null && !obb.isDirectory()) obb.mkdirs();
+        } catch (Throwable ignored) { }
         JSONObject metadata = readMetadata();
         String message = metadata.optString("launchMessage", "Converted by RadekiOSConventor");
         LinearLayout root = new LinearLayout(this);
@@ -547,6 +557,51 @@ def build_complete_game(
         "targetAbi": target_abi,
         "signedWith": "local debug keystore generated for this run",
     }
+
+
+def publish_resource_expansion(output: Path, package: str, payloads: dict[str, bytes]) -> dict:
+    """Best-effort *optional* bundle-resource sidecar for an already-validated APK.
+
+    The complete-game contract still requires every resource inside the APK.
+    Build in the output directory and atomically publish only a finished ZIP.
+    The caller supplies the resource payloads already vetted by the assessment.
+    """
+    if not re.fullmatch(r"dev\.radek\.converted\.p[0-9a-f]{20}", package):
+        raise ValueError("invalid bounded converted package")
+    name = f"main.1.{package}.obb"
+    target = output / name
+    # Preserve the importer's normal headroom for the already-completed report.
+    # Two ZIP headers contain each path; leave extra room for their metadata.
+    required = sum(len(data) + 2 * len(path.encode("utf-8")) + 256 for path, data in payloads.items())
+    require_free_space(output, required)
+    fd, temporary_name = tempfile.mkstemp(prefix="." + name + ".", suffix=".pending", dir=output)
+    os.close(fd)
+    temporary = Path(temporary_name)
+    try:
+        with zipfile.ZipFile(temporary, "w", compression=zipfile.ZIP_STORED) as archive:
+            for relative in sorted(payloads):
+                if str(safe_name(relative)) != relative:
+                    raise ValueError("unsafe resource path")
+                archive.writestr(relative, payloads[relative])
+        digest = hashlib.sha256()
+        with temporary.open("rb") as stream:
+            while chunk := stream.read(1024 * 1024):
+                digest.update(chunk)
+        size = temporary.stat().st_size
+        if not size:
+            raise OSError("empty expansion archive")
+        os.replace(temporary, target)
+        return {
+            "name": name,
+            "bytes": size,
+            "sha256": digest.hexdigest(),
+            "required": False,
+            "alsoEmbeddedInApk": True,
+            "installPath": f"Android/obb/{package}/{name}",
+            "note": "Optional resource ZIP; the APK retains every resource and does not load the sidecar.",
+        }
+    finally:
+        temporary.unlink(missing_ok=True)
 
 
 def validate_complete_game(

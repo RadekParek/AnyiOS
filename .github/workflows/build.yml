@@ -140,6 +140,8 @@ jobs:
           .local/runtime-magnetometer-test
           rustc --edition=2021 --test tests/runtime_network.rs -o .local/runtime-network-test
           .local/runtime-network-test
+          rustc --edition=2021 --test tests/runtime_audio.rs -o .local/runtime-audio-test
+          .local/runtime-audio-test
       # Cloning dynarmic and assembling Boost's header tree takes over a minute per run
       # and is identical for identical pins. prepare-cpu.sh re-verifies the revision and
       # the reviewed patch, so a restored tree is still proven to be the pinned one.
