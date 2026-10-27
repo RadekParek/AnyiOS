@@ -14,3 +14,14 @@ plugins {
     id 'com.android.library' version '8.9.2' apply false
     id 'org.jetbrains.kotlin.android' version '2.0.21' apply false
 }
+
+// Robolectric downloads Android framework jars independently of Gradle's
+// mavenCentral() repository. Use the same canonical Maven Central endpoint;
+// repo1.maven.org intermittently fails on CI runners. Keep an explicit JVM
+// override for developers using a mirror. No tests are skipped or weakened.
+subprojects {
+    tasks.withType(Test).configureEach {
+        systemProperty 'robolectric.dependency.repo.url',
+                System.getProperty('robolectric.dependency.repo.url', 'https://repo.maven.apache.org/maven2')
+    }
+}

@@ -6,7 +6,7 @@ import java.util.zip.Deflater
 import java.util.zip.ZipEntry
 import java.util.zip.ZipOutputStream
 
-/** A resource-only ZIP laid out like the IPA's .app bundle. Never used to execute code. */
+/** ZIP of non-main bundle files laid out like the IPA's .app. Never used to execute code. */
 internal object ResourceExpansionArchive {
     // The caller passes the publisher's private pending path and a validated,
     // sorted list of resource paths. Any failure is cleaned up by the publisher.

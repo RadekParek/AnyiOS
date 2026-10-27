@@ -563,8 +563,8 @@ def publish_resource_expansion(output: Path, package: str, payloads: dict[str, b
     """Best-effort *optional* bundle-resource sidecar for an already-validated APK.
 
     The complete-game contract still requires every resource inside the APK.
-    Build in the output directory and atomically publish only a finished ZIP;
-    no original IPA or Mach-O executable is added to the sidecar.
+    Build in the output directory and atomically publish only a finished ZIP.
+    The caller supplies the resource payloads already vetted by the assessment.
     """
     if not re.fullmatch(r"dev\.radek\.converted\.p[0-9a-f]{20}", package):
         raise ValueError("invalid bounded converted package")

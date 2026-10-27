@@ -518,13 +518,15 @@ internal class GameRuntimeApkBuilder(private val context: Context) {
             )
             if (expansionError != null) {
                 conversion.remove("expansionObb")
-                conversion.put("expansionObbStatus", JSONObject()
-                    .put("status", "NOT_CREATED")
-                    .put("required", false)
-                    .put("message", "The APK is self-contained; the optional OBB could not be created: $expansionError"))
-                // A full disk may also prevent saving this warning. The already
-                // finalized APK/report remain usable even in that case.
-                try { reportContext.save(dir, report) } catch (_: Exception) { }
+                try {
+                    conversion.put("expansionObbStatus", JSONObject()
+                        .put("status", "NOT_CREATED")
+                        .put("required", false)
+                        .put("message", "The APK is self-contained; the optional OBB could not be created: $expansionError"))
+                    // A full disk may also prevent saving this warning. The already
+                    // finalized APK/report remain usable even in that case.
+                    reportContext.save(dir, report)
+                } catch (_: Exception) { } catch (_: OutOfMemoryError) { }
             }
             progress(100, if (translatedRuntime == null)
                 "Game-runtime APK ready; device execution is unlimited and diagnostics remain available at a real runtime boundary"

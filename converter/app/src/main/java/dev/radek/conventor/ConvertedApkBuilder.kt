@@ -528,11 +528,13 @@ internal class ConvertedApkBuilder(private val context: Context) {
             )
             if (expansionError != null) {
                 conversion.remove("expansionObb")
-                conversion.put("expansionObbStatus", JSONObject()
-                    .put("status", "NOT_CREATED")
-                    .put("required", false)
-                    .put("message", "The APK is self-contained; the optional OBB could not be created: $expansionError"))
-                try { reportContext.save(dir, report) } catch (_: Exception) { }
+                try {
+                    conversion.put("expansionObbStatus", JSONObject()
+                        .put("status", "NOT_CREATED")
+                        .put("required", false)
+                        .put("message", "The APK is self-contained; the optional OBB could not be created: $expansionError"))
+                    reportContext.save(dir, report)
+                } catch (_: Exception) { } catch (_: OutOfMemoryError) { }
             }
             progress(100, "Converted APK ready; the bounded entry routine runs through JNI")
             return conversion
