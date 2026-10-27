@@ -39,10 +39,12 @@ verified mirror of the embedded IPA. The private IPA and saves remain the only
 live source; unavailable, full, or read-only OBB storage must not prevent launch.
 The Converter can also share that IPA under the expansion filename. The mirror
 uses additional storage and verifying it can lengthen startup. The **Native**
-diagnostic builder separately emits an optional resource OBB for sharing; its
-APK keeps the full resources and its launcher does not load OBB-only payloads.
-Android storage restrictions may prevent manually placing either file, and
-these files are not Google Play delivery. Neither path reduces the APK size.
+diagnostic builder and the narrow bounded converter also attempt to emit a
+resource OBB for sharing after building a self-contained APK. Their launchers
+create the app-specific directory when available but do not install or load the
+sidecar; the APK works without it. Android storage restrictions may prevent
+manually placing these files. They are not Google Play delivery and do not
+reduce APK size.
 
 See [architecture](docs/ARCHITECTURE.md), [ANGLE integration](docs/ANGLE_INTEGRATION.md), and [third-party notices](app/src/main/assets/anyiose-runtime-notices.txt).
 

@@ -111,6 +111,46 @@ class ResultProviderPlaceholderTest {
         } finally { directory.deleteRecursively() }
     }
 
+    @Test fun onDeviceCompleteExpansionIsSharedUnderItsOwnName() {
+        val context = RuntimeEnvironment.getApplication()
+        val directory = File(context.filesDir, "games/game-12345678-1234-1234-1234-123456789abc").apply { mkdirs() }
+        val provider = ResultProvider()
+        provider.attachInfo(context, ProviderInfo().apply {
+            authority = "org.podnative.converter.results"
+            exported = false
+            grantUriPermissions = true
+        })
+        try {
+            val source = "a".repeat(64)
+            val signer = "b".repeat(64)
+            val packageName = "dev.radek.converted.p${source.take(20)}${signer.take(8)}"
+            val report = JSONObject().put("source", JSONObject().put("sha256", source).put("originalName", "Game.ipa"))
+                .put("application", JSONObject().put("sha256", source))
+            val apkName = ArtifactNames.apkFileName(report)
+            val apk = File(directory, apkName).apply { writeText("APK") }
+            val name = ArtifactNames.obbFileName(packageName, ArtifactNames.CONVERTED_VERSION_CODE)
+            val obb = File(directory, name).apply { writeText("bounded resources") }
+            report.put("deviceConversion", JSONObject().put("status", "GENERATED_ON_DEVICE")
+                .put("contract", "complete-game-v1").put("completeGameConversion", true)
+                .put("artifact", apkName).put("package", packageName).put("sourceSha256", source)
+                .put("sha256", AnyiOSEmuArtifactContract.sha256(apk))
+                .put("signing", JSONObject().put("certificateSha256", signer))
+                .put("expansionObb", JSONObject().put("name", name).put("bytes", obb.length())
+                    .put("sha256", AnyiOSEmuArtifactContract.sha256(obb)).put("required", false)))
+            report.put("hostConversion", JSONObject().put("status", "ATTACHED").put("origin", "ON_DEVICE")
+                .put("contract", "complete-game-v1").put("completeGameConversion", true)
+                .put("artifact", apkName).put("package", packageName))
+            File(directory, "report.json").writeText(report.toString())
+            val uri = Uri.Builder().scheme("content").authority("org.podnative.converter.results")
+                .appendPath(directory.name).appendPath(name).build()
+            assertEquals("application/octet-stream", provider.getType(uri))
+            assertEquals("bounded resources", ParcelFileDescriptor.AutoCloseInputStream(provider.openFile(uri, "r"))
+                .bufferedReader().use { it.readText() })
+            obb.writeText("tampered")
+            assertThrows(IllegalArgumentException::class.java) { provider.openFile(uri, "r") }
+        } finally { directory.deleteRecursively() }
+    }
+
     private fun makeReport(directory: File): JSONObject {
         val content = "verified-placeholder-fixture".toByteArray()
         val sourceHash = "b".repeat(64)

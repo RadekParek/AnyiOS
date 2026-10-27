@@ -938,6 +938,16 @@ class MainActivity : Activity() {
             text("Statically recompiled reachable functions: ${hostConversion?.optInt("recompiledReachableFunctions", 0) ?: 0} · generated API replacements: ${hostConversion?.optInt("generatedApiReplacements", 0) ?: 0} · unresolved reachable functions: ${hostConversion?.optInt("notRecompiledReachableFunctions", -1) ?: -1}.", 12f, muted)
             button("Install ${hostOutputFile.name}", true) { installArtifact(dir, hostOutputFile.name) }
             button("Share ${hostOutputFile.name}") { shareResultApk(dir, hostOutputFile.name) }
+            if (hostConversion?.optString("origin") == "ON_DEVICE") {
+                val deviceResult = report.optJSONObject("deviceConversion")
+                deviceResult?.optJSONObject("expansionObb")?.optString("name")?.takeIf { it.isNotBlank() }?.let { obb ->
+                    text("Optional resource OBB: $obb. The APK keeps all resources; the launcher does not require the OBB.", 12f, muted)
+                    button("Share $obb") { shareResultExpansion(dir, obb) }
+                }
+                deviceResult?.optJSONObject("expansionObbStatus")?.let { status ->
+                    if (status.optString("status") == "NOT_CREATED") text(status.optString("message"), 12f, muted)
+                }
+            }
             if (app.has("sha256")) button("Open installed converted program") {
                 val pkg = report.optJSONObject("deviceConversion")?.optString("package").orEmpty()
                     .ifBlank { hostConversion?.optString("package").orEmpty() }
@@ -997,6 +1007,10 @@ class MainActivity : Activity() {
                         else "Older build may have resources only in $obb, which the diagnostic launcher cannot extract. Rebuild for a self-contained APK.", 12f, muted)
                     button("Share $obb") { shareResultExpansion(dir, obb) }
                 }
+            }
+            gameRuntimeConversion?.optJSONObject("expansionObbStatus")?.let { status ->
+                if (status.optString("status") == "NOT_CREATED")
+                    text(status.optString("message"), 12f, muted)
             }
             button("Open installed Native runtime") {
                 val intent = gameRuntimeConversion?.optString("package")?.let { packageManager.getLaunchIntentForPackage(it) }

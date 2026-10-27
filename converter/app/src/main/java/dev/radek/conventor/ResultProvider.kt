@@ -30,6 +30,10 @@ class ResultProvider : ContentProvider() {
         if (!nativeObb.isNullOrBlank() && requestedName == nativeObb) {
             return GameRuntimeArtifactContract.validateExpansion(report, entryDirectory, requestedName)
         }
+        val convertedObb = report.optJSONObject("deviceConversion")?.optJSONObject("expansionObb")?.optString("name")
+        if (!convertedObb.isNullOrBlank() && requestedName == convertedObb) {
+            return CompleteGameExpansionContract.validate(report, entryDirectory, requestedName)
+        }
         if (requestedName == ArtifactNames.placeholderApkFileName(report)) {
             return PlaceholderArtifactContract.validate(report, entryDirectory, requestedName)
         }

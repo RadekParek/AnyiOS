@@ -54,6 +54,7 @@ class RuntimeContractTests(unittest.TestCase):
         for constant, template in (
             ("ANYIOSE_VERSION_CODE", "anyiose-template"),
             ("GAME_RUNTIME_VERSION_CODE", "gameruntime-template"),
+            ("CONVERTED_VERSION_CODE", "converted-template"),
         ):
             self.assertIn(f"const val {constant} = 1", names)
             self.assertIn(
@@ -65,6 +66,16 @@ class RuntimeContractTests(unittest.TestCase):
         )
         self.assertNotIn("OBB_ONLY_PAYLOAD_BYTES", builder)
         self.assertIn('Entry.stream("assets/bundle/$relative", payload', builder)
+        converted = read(
+            ROOT
+            / "converter/app/src/main/java/dev/radek/conventor/ConvertedApkBuilder.kt"
+        )
+        for source in (builder, converted):
+            self.assertLess(
+                source.index("finalized = true"),
+                source.index("OptionalExpansionPublisher.publish("),
+            )
+            self.assertIn('conversion.remove("expansionObb")', source)
 
     def test_only_standalone_uses_quiet_error_policy(self):
         options = read(TEMPLATE / "java/org/podnative/StandaloneOptions.java")

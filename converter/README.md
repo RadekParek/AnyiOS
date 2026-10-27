@@ -21,11 +21,13 @@ OBB filename without a second converter-side copy. First launch uses additional
 storage and launches verify the mirror, so startup can take longer. If OBB
 storage is missing, read-only, full or restricted, the private game still runs.
 
-The Native diagnostic builder separately generates a shareable resource ZIP
-OBB using its real Android version code, but keeps all resources inside the APK
-because that launcher currently extracts only APK assets. It creates the
-app-specific OBB directory, but does not install or load the sidecar. These
-optional files are not Google Play expansion delivery and do not shrink either
+The Native diagnostic builder and the narrow `complete-game-v1` builders also
+attempt to produce a shareable resource ZIP OBB after validating the APK. A
+failure to create the extra copy leaves the self-contained APK usable. The
+bundled resources remain inside the APK, and the launchers create the app-specific
+OBB directory when available but do not install or load the sidecar. Desktop
+CLI output includes the sidecar alongside the APK when creation succeeds. These
+optional files are not Google Play expansion delivery and do not shrink the
 APK. Android's picker may prohibit `Android/obb`; no bypass is attempted.
 Existing conversions remain installable without an OBB.
 

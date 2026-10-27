@@ -12,6 +12,7 @@ from .gamepack import (
     assess_complete_conversion,
     build_complete_game,
     complete_game_metadata,
+    publish_resource_expansion,
     validate_complete_game,
 )
 from .game.codegen import generate as generate_full_game_translation
@@ -681,6 +682,25 @@ class Pipeline:
             "READY",
             "Bounded complete conversion finished: the signed APK passed every complete-game-v1 check.",
         )
+        # The verified, self-contained APK and READY report are durable before
+        # optional OBB work consumes any additional storage.
+        try:
+            self.report["completeConversion"]["expansionObb"] = publish_resource_expansion(
+                self.output, metadata["package"], assessment["resourcePayloads"]
+            )
+        except Exception as exc:  # noqa: BLE001 - optional export must not invalidate the APK
+            # An optional extra copy must not invalidate the already-verified APK.
+            self.report["completeConversion"]["expansionObbStatus"] = {
+                "status": "NOT_CREATED",
+                "required": False,
+                "message": f"The APK is self-contained; the optional OBB could not be created: {exc}",
+            }
+        try:
+            self.save(force=True)
+        except OSError:
+            # A full or disappearing output volume must not invalidate the
+            # already-persisted APK/report. The sidecar may be unrecorded.
+            pass
         return self.report
 
     def save(self, force: bool = False):

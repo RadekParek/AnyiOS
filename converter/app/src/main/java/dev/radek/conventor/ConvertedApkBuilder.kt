@@ -497,9 +497,43 @@ internal class ConvertedApkBuilder(private val context: Context) {
                 .put("stage", "VALIDATED")
                 .put("status", "GENERATED_ON_DEVICE")
                 .put("message", "A signed complete-game APK was built and verified on-device for the bounded subset; device gameplay was not tested."))
+            report.put("convertedBuildProgress", JSONObject()
+                .put("percent", 100)
+                .put("status", "GENERATED")
+                .put("message", "The self-contained bounded APK is ready; gameplay is untested.")
+                .put("updatedAt", java.time.Instant.now().toString()))
             reportContext.save(dir, report)
             finalized = true
             backupFile.delete()
+            // The strict conversion still embeds every resource. Only after it
+            // is finalized, attempt a separate resource ZIP for sharing.
+            unsignedFile.delete()
+            signedFile.delete()
+            val obbName = ArtifactNames.obbFileName(packageName, ArtifactNames.CONVERTED_VERSION_CODE)
+            val expansionError = OptionalExpansionPublisher.publish(
+                dir,
+                obbName,
+                { destination -> ResourceExpansionArchive.write(destination, resourceEntries) },
+                { artifact ->
+                    conversion.put("expansionObb", JSONObject()
+                        .put("name", artifact.name)
+                        .put("bytes", artifact.bytes)
+                        .put("sha256", artifact.sha256)
+                        .put("required", false)
+                        .put("alsoEmbeddedInApk", true)
+                        .put("installPath", "Android/obb/$packageName/${artifact.name}")
+                        .put("note", "Optional resource ZIP; the bounded APK retains all resources."))
+                    reportContext.save(dir, report)
+                },
+            )
+            if (expansionError != null) {
+                conversion.remove("expansionObb")
+                conversion.put("expansionObbStatus", JSONObject()
+                    .put("status", "NOT_CREATED")
+                    .put("required", false)
+                    .put("message", "The APK is self-contained; the optional OBB could not be created: $expansionError"))
+                try { reportContext.save(dir, report) } catch (_: Exception) { }
+            }
             progress(100, "Converted APK ready; the bounded entry routine runs through JNI")
             return conversion
         } catch (error: Throwable) {

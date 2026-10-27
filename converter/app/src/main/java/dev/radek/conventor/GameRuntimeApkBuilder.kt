@@ -10,9 +10,6 @@ import java.io.ByteArrayOutputStream
 import java.io.File
 import java.io.RandomAccessFile
 import java.security.MessageDigest
-import java.util.zip.Deflater
-import java.util.zip.ZipEntry
-import java.util.zip.ZipOutputStream
 
 /**
  * Builds a signed, installable game-runtime boot-attempt APK on the device
@@ -49,50 +46,6 @@ internal class GameRuntimeApkBuilder(private val context: Context) {
         private val DEX_NAME_REGEX = Regex("""classes[0-9]+\.dex""")
         private val PNG_SIGNATURE = byteArrayOf(0x89.toByte(), 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a)
 
-    }
-
-    /**
-     * Writes the Android expansion file for the converted game:
-     * `main.<versionCode>.<package>.obb`, a stored (uncompressed) ZIP of the
-     * bundle payload laid out exactly as it sat inside the .app, so the guest's
-     * own relative paths resolve unchanged from `Android/obb/<package>/`.
-     */
-    private fun writeExpansionObb(target: File, resourceEntries: List<Pair<String, File>>) {
-        val pending = File(target.parentFile, ".${target.name}.pending")
-        try {
-            ZipOutputStream(pending.outputStream().buffered()).use { zip ->
-                // Stored, not deflated: game media is usually already compressed,
-                // and an uncompressed OBB can be read without inflating it. STORED
-                // entries require both the size and the CRC-32 to be known before
-                // the entry is written, so each payload is hashed on the way in.
-                zip.setMethod(ZipOutputStream.STORED)
-                zip.setLevel(Deflater.NO_COMPRESSION)
-                val buffer = ByteArray(256 * 1024)
-                for ((relative, payload) in resourceEntries) {
-                    val crc = java.util.zip.CRC32()
-                    payload.inputStream().use { input ->
-                        while (true) {
-                            val read = input.read(buffer)
-                            if (read <= 0) break
-                            crc.update(buffer, 0, read)
-                        }
-                    }
-                    val entry = ZipEntry(relative)
-                    entry.method = ZipEntry.STORED
-                    entry.size = payload.length()
-                    entry.crc = crc.value
-                    entry.time = 0
-                    zip.putNextEntry(entry)
-                    payload.inputStream().use { it.copyTo(zip) }
-                    zip.closeEntry()
-                }
-            }
-            require(pending.isFile && pending.length() > 0) { "could not assemble the expansion OBB" }
-            if (target.exists()) require(target.delete()) { "cannot replace the previous expansion OBB" }
-            require(pending.renameTo(target)) { "could not save the expansion OBB" }
-        } finally {
-            pending.delete()
-        }
     }
 
     private data class MachoSlice(
@@ -148,10 +101,6 @@ internal class GameRuntimeApkBuilder(private val context: Context) {
         val certificateHash = sha256(identity.certificate.encoded)
         var finalized = false
         var resultInstalled = false
-        var installedObb: File? = null
-        var previousObb: File? = null
-        var pendingObb: File? = null
-        var obbInstalled = false
         val previousConversion = report.optJSONObject("gameRuntimeConversion")?.let { JSONObject(it.toString()) }
         try {
             setProgress(4, "CONVERTING", "Re-checking the retained IPA before the game-runtime build")
@@ -268,25 +217,14 @@ internal class GameRuntimeApkBuilder(private val context: Context) {
             val resources = ResourceTablePackagePatcher.customize(templateResources, packageName)
 
             // Expansion-OBB identity, computed up front so both the metadata and
-            // the assembly step agree on the same name. See writeExpansionObb.
+            // the optional sidecar agree on the same name.
             // Match the actual template APK's versionCode; the IPA's version
             // string is not automatically the Android manifest version code.
             val versionCode = ArtifactNames.GAME_RUNTIME_VERSION_CODE
             val obbName = ArtifactNames.obbFileName(packageName, versionCode)
-            val obbFile = File(dir, obbName)
-            val obbBackup = File(dir, ".$obbName.gameruntime-backup")
-            val obbPending = File(dir, ".$obbName.gameruntime-pending")
-            installedObb = obbFile; previousObb = obbBackup; pendingObb = obbPending
-            if (obbBackup.isFile) {
-                if (!obbFile.exists()) require(obbBackup.renameTo(obbFile))
-                else require(obbBackup.delete())
-            }
-            obbPending.delete()
-            // The diagnostic launcher currently extracts assets from the APK,
-            // not the OBB. Never omit large files and produce an incomplete APK.
-            val obbRequired = false
-            // Stage the expansion until the APK has been signed and verified.
-            writeExpansionObb(obbPending, resourceEntries)
+            // The diagnostic launcher extracts assets from the APK, not the
+            // OBB. Build and validate that self-contained APK first, before
+            // even attempting the optional extra copy or its storage cost.
 
             val iconStatus = report.optJSONObject("icon")?.optString("status").orEmpty()
             val iconFile = File(dir, "icon.png")
@@ -308,10 +246,10 @@ internal class GameRuntimeApkBuilder(private val context: Context) {
                 .put("versionCode", versionCode)
                 .put("expansionObb", JSONObject()
                     .put("name", obbName)
-                    .put("bytes", obbPending.length())
-                    .put("required", obbRequired)
-                    .put("alsoEmbeddedInApk", !obbRequired)
-                    .put("installPath", "Android/obb/$packageName/$obbName"))
+                    .put("required", false)
+                    .put("alsoEmbeddedInApk", true)
+                    .put("installPath", "Android/obb/$packageName/$obbName")
+                    .put("note", "An optional copy may be produced separately after the APK is built."))
                 .put("targetAbi", "arm64-v8a")
                 .put("applicationName", appName)
                 .put("source", JSONObject()
@@ -474,12 +412,6 @@ internal class GameRuntimeApkBuilder(private val context: Context) {
             }
             require(finalPending.renameTo(resultFile)) { "could not save the game-runtime APK" }
             resultInstalled = true
-            if (obbFile.exists()) {
-                require(!obbBackup.exists() || obbBackup.delete()) { "cannot remove stale OBB backup" }
-                require(obbFile.renameTo(obbBackup)) { "cannot preserve the previous expansion" }
-            }
-            require(obbPending.renameTo(obbFile)) { "could not save the expansion file" }
-            obbInstalled = true
             val resultHash = sha256(resultFile)
             require(sha256(verification.signerCertificates.first().encoded) == certificateHash) {
                 "game-runtime APK signer changed during packaging"
@@ -500,16 +432,6 @@ internal class GameRuntimeApkBuilder(private val context: Context) {
                 .put("artifact", resultFile.name)
                 .put("package", packageName)
                 .put("versionCode", versionCode)
-                .put("expansionObb", JSONObject()
-                    .put("name", obbName)
-                    .put("bytes", obbFile.length())
-                    .put("sha256", sha256(obbFile))
-                    .put("required", obbRequired)
-                    .put("alsoEmbeddedInApk", !obbRequired)
-                    .put("installPath", "Android/obb/$packageName/$obbName")
-                    .put("note", "Android expansion file named after the game's own bundle id: " +
-                        "main.<versionCode>.<package>.obb. The launcher falls back to the " +
-                        "copy embedded in the APK when the OBB is absent."))
                 .put("targetAbi", "arm64-v8a")
                 .put("applicationName", appName)
                 .put("sourceSha256", sourceHash)
@@ -566,10 +488,44 @@ internal class GameRuntimeApkBuilder(private val context: Context) {
             }
             report.put("gameRuntimeConversion", conversion)
             TranslatedAndroidLink.record(report, translatedRuntime)
+            report.put("gameRuntimeBuildProgress", JSONObject()
+                .put("percent", 100)
+                .put("status", "GENERATED")
+                .put("message", "The self-contained game-runtime APK is ready; gameplay is untested.")
+                .put("updatedAt", java.time.Instant.now().toString()))
             reportContext.save(dir, report)
             finalized = true
             backupFile.delete()
-            obbBackup.delete()
+            // These copies are no longer needed; removing them first leaves
+            // as much free space as possible for the optional expansion.
+            unsignedFile.delete()
+            signedFile.delete()
+            val expansionError = OptionalExpansionPublisher.publish(
+                dir,
+                obbName,
+                { destination -> ResourceExpansionArchive.write(destination, resourceEntries) },
+                { artifact ->
+                    conversion.put("expansionObb", JSONObject()
+                        .put("name", artifact.name)
+                        .put("bytes", artifact.bytes)
+                        .put("sha256", artifact.sha256)
+                        .put("required", false)
+                        .put("alsoEmbeddedInApk", true)
+                        .put("installPath", "Android/obb/$packageName/${artifact.name}")
+                        .put("note", "Optional resource ZIP; the diagnostic launcher uses the copy embedded in the APK."))
+                    reportContext.save(dir, report)
+                },
+            )
+            if (expansionError != null) {
+                conversion.remove("expansionObb")
+                conversion.put("expansionObbStatus", JSONObject()
+                    .put("status", "NOT_CREATED")
+                    .put("required", false)
+                    .put("message", "The APK is self-contained; the optional OBB could not be created: $expansionError"))
+                // A full disk may also prevent saving this warning. The already
+                // finalized APK/report remain usable even in that case.
+                try { reportContext.save(dir, report) } catch (_: Exception) { }
+            }
             progress(100, if (translatedRuntime == null)
                 "Game-runtime APK ready; device execution is unlimited and diagnostics remain available at a real runtime boundary"
             else
@@ -582,11 +538,6 @@ internal class GameRuntimeApkBuilder(private val context: Context) {
             if (!finalized) {
                 if (resultInstalled) resultFile.delete()
                 if (backupFile.isFile && !resultFile.exists()) backupFile.renameTo(resultFile)
-                if (obbInstalled) installedObb?.delete()
-                val oldObb = previousObb
-                val targetObb = installedObb
-                if (oldObb != null && targetObb != null && oldObb.isFile && !targetObb.exists())
-                    oldObb.renameTo(targetObb)
                 if (previousConversion == null) report.remove("gameRuntimeConversion")
                 else report.put("gameRuntimeConversion", previousConversion)
             }
@@ -607,7 +558,6 @@ internal class GameRuntimeApkBuilder(private val context: Context) {
             unsignedFile.delete()
             signedFile.delete()
             finalPending.delete()
-            pendingObb?.delete()
             if (extracted.exists()) extracted.deleteRecursively()
             if (staged.exists()) staged.deleteRecursively()
         }
