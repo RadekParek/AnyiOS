@@ -89,7 +89,7 @@ final class DisplayFrameRate {
             .replaceAll("\\.$", "");
     }
 
-    private static Display displayFor(Context context) {
+    static Display displayFor(Context context) {
         if (Build.VERSION.SDK_INT >= 30 && context instanceof Activity) {
             Display activityDisplay = ((Activity) context).getDisplay();
             if (activityDisplay != null)

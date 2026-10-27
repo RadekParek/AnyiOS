@@ -100,26 +100,60 @@ class RuntimeContractTests(unittest.TestCase):
             update.index("Process.getElapsedCpuTime"),
         )
 
-    def test_main_emulator_defaults_match_standalone_display_geometry(self):
+    def test_main_emulator_defaults_and_manual_display_geometry(self):
         activity = read(ROOT / "app/src/main/java/org/podnative/AnyiOSEmuActivity.java")
         profile = read(ROOT / "app/src/main/java/org/podnative/GameDisplayProfile.java")
         settings = read(ROOT / "app/src/main/java/org/podnative/MainActivity.java")
-        # Both retired manual-resolution preferences must be ignored, even
-        # for an upgraded installation whose settings still contain an old cap.
-        self.assertNotIn('settings.getInt("presentationResolution"', activity)
-        self.assertNotIn('settings.getInt("resolution"', activity)
-        self.assertNotIn('prefs.getInt("presentationResolution"', settings)
-        self.assertNotIn('settingRow(display, "Presentation resolution"', settings)
-        self.assertIn("new PrototypeView(this, testCap, 0,", settings)
+        resolution = read(
+            ROOT / "app/src/main/java/org/podnative/DisplayResolution.java"
+        )
+        self.assertIn("settings.getInt(DisplayResolution.PREFERENCE, 0)", activity)
+        self.assertIn('settingRow(display, "Resolution"', settings)
+        self.assertIn("DisplayResolution.label(", settings)
+        self.assertIn('" · Native"', resolution)
+        self.assertNotIn('settingRow(display, "Game layout"', settings)
+        self.assertIn("GameDisplayProfile.argument(GameDisplayProfile.AUTO)", activity)
         self.assertIn('settings.getInt("dynamicResolution", 100)', activity)
-        self.assertIn("mSurface != null && dynamicMinimum < 100", activity)
-        self.assertIn("new SurfaceResolution(mSurface)", activity)
-        surface = read(ROOT / "app/src/main/java/org/podnative/SurfaceResolution.java")
-        self.assertNotIn("shortEdgeLimit", surface)
+        self.assertIn("surfaceShortEdge > 0 || dynamicMinimum < 100", activity)
+        self.assertIn("new SurfaceResolution(mSurface, surfaceShortEdge)", activity)
         self.assertNotIn('"--screen-size=', activity)
         self.assertIn('return "--device-family=auto"', profile)
-        self.assertIn('"Maximize FPS"', settings)
+        self.assertIn('"Match device Hz"', settings)
+        self.assertIn('prefs.getBoolean("boostDisplayLink", true)', settings)
+        self.assertIn('settings.getBoolean("boostDisplayLink", true)', activity)
         self.assertIn("Some games may run faster", settings)
+        self.assertIn("higher FPS is not guaranteed", settings)
+
+    def test_game_details_use_declared_requirements_and_real_log(self):
+        activity = read(ROOT / "app/src/main/java/org/podnative/MainActivity.java")
+        library = read(ROOT / "app/src/main/java/org/podnative/GameLibrary.java")
+        self.assertIn('"Launch with AnyiOS"', activity)
+        self.assertIn('"Show latest log"', activity)
+        self.assertIn("library.loadRequirements(game", activity)
+        self.assertIn("library.loadLatestLog(game", activity)
+        self.assertIn("LatestGameLog.copy(", activity)
+        self.assertIn("LatestGameLog.preview(", library)
+        self.assertIn("LatestGameLog.prepare(", library)
+
+    def test_real_magnetometer_and_guest_logging_are_wired(self):
+        path = ENGINE / "src/frameworks/core_motion.rs"
+        if not path.is_file():
+            self.skipTest("pinned engine is not initialized in the host-only suite")
+        core_motion = read(path)
+        window = read(ENGINE / "src/window.rs")
+        self.assertIn("window.has_magnetometer()", core_motion)
+        self.assertIn("window.start_magnetometer()", core_motion)
+        self.assertIn("window.stop_magnetometer()", core_motion)
+        self.assertIn("w.get_magnetic_field()", core_motion)
+        self.assertIn("on_parent_stack_in_coroutine", core_motion)
+        self.assertIn("SDL_SensorGetDataWithTimestamp", window)
+        self.assertIn("magnetometer_clients", window)
+        for path in [
+            "src/libc/posix_io.rs",
+            "src/libc/stdio.rs",
+            "src/libc/stdio/printf.rs",
+        ]:
+            self.assertIn("write_guest_output", read(ENGINE / path))
 
 
 if __name__ == "__main__":

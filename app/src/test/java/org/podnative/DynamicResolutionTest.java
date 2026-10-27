@@ -43,16 +43,23 @@ public class DynamicResolutionTest {
     }
 
     @Test public void nativeDefaultKeepsBothOrientationsAtTheViewSize() {
-        assertArrayEquals(new int[] {1440, 3200}, SurfaceResolution.dimensions(1440, 3200, 100));
-        assertArrayEquals(new int[] {3200, 1440}, SurfaceResolution.dimensions(3200, 1440, 100));
-        assertArrayEquals(new int[] {1080, 2400}, SurfaceResolution.dimensions(1440, 3200, 75));
-        assertArrayEquals(new int[] {2400, 1080}, SurfaceResolution.dimensions(3200, 1440, 75));
+        assertArrayEquals(new int[] {1440, 3200}, SurfaceResolution.dimensions(1440, 3200, 0, 100));
+        assertArrayEquals(new int[] {3200, 1440}, SurfaceResolution.dimensions(3200, 1440, 0, 100));
+        assertArrayEquals(new int[] {1080, 2400}, SurfaceResolution.dimensions(1440, 3200, 0, 75));
+        assertArrayEquals(new int[] {2400, 1080}, SurfaceResolution.dimensions(3200, 1440, 0, 75));
+    }
+
+    @Test public void manualAndDynamicScalingComposeWithoutChangingAspect() {
+        assertArrayEquals(new int[] {2316, 1080}, SurfaceResolution.dimensions(3088, 1440, 1080, 100));
+        assertArrayEquals(new int[] {1080, 2316}, SurfaceResolution.dimensions(1440, 3088, 1080, 100));
+        assertArrayEquals(new int[] {1737, 810}, SurfaceResolution.dimensions(3088, 1440, 1080, 75));
+        assertArrayEquals(new int[] {3088, 1440}, SurfaceResolution.dimensions(3088, 1440, 2000, 100));
     }
 
     @Test public void dynamicSizeIsAspectPreservingAndNeverUpscales() {
-        assertArrayEquals(new int[] {720, 1600}, SurfaceResolution.dimensions(1440, 3200, 50));
-        assertArrayEquals(new int[] {720, 1280}, SurfaceResolution.dimensions(720, 1280, 150));
-        assertArrayEquals(new int[] {360, 640}, SurfaceResolution.dimensions(720, 1280, 10));
-        assertArrayEquals(new int[] {0, 0}, SurfaceResolution.dimensions(0, 0, 100));
+        assertArrayEquals(new int[] {720, 1600}, SurfaceResolution.dimensions(1440, 3200, 0, 50));
+        assertArrayEquals(new int[] {720, 1280}, SurfaceResolution.dimensions(720, 1280, 0, 150));
+        assertArrayEquals(new int[] {360, 640}, SurfaceResolution.dimensions(720, 1280, 0, 10));
+        assertArrayEquals(new int[] {0, 0}, SurfaceResolution.dimensions(0, 0, 0, 100));
     }
 }

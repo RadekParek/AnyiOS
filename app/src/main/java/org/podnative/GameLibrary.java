@@ -239,6 +239,36 @@ final class GameLibrary {
             changed();
         });
     }
+    /** Parse the existing private IPA/app asynchronously; old imports need no re-import. */
+    void loadRequirements(Game game, java.util.function.Consumer<GameRequirements> callback) {
+        worker.execute(() -> {
+            GameRequirements requirements;
+            try {
+                requirements = GameInspector.readRequirements(game.source(), game.kind);
+            } catch (Exception e) {
+                Diagnostics.record("GAME_REQUIREMENTS", e.toString());
+                requirements = GameRequirements.unavailable();
+            }
+            GameRequirements result = requirements;
+            main.post(() -> callback.accept(result));
+        });
+    }
+
+    /** Read the real latest per-game runtime file, even if its activity never returned. */
+    void loadLatestLog(Game game, java.util.function.Consumer<String> callback) {
+        worker.execute(() -> {
+            String text;
+            try {
+                text =
+                    LatestGameLog.preview(game.anyioseDataDirectory(), LatestGameLog.PREVIEW_BYTES);
+            } catch (IOException e) {
+                text = "Could not read the game log: " + e.getMessage();
+            }
+            String result = text;
+            main.post(() -> callback.accept(result));
+        });
+    }
+
     void dismissNotice() {
         notice = "";
         error = false;
@@ -1073,6 +1103,7 @@ final class GameLibrary {
                 }
                 ensurePrivateDirectory(sandbox.root, sandbox.anyiose);
                 checkCancelled();
+                LatestGameLog.prepare(sandbox.anyiose);
             } catch (CancellationException e) {
                 runtimeSource = null;
                 error = false;
@@ -1138,8 +1169,7 @@ final class GameLibrary {
                     || report.matches("(?s).*AnyiOSEMU finished with status (?!0\\b)[0-9]+.*");
                 notice = pending
                     ? "AnyiOSEMU started. Its report will be updated when the session closes."
-                    : error
-                    ? "AnyiOSEMU recorded an error. Open the latest session report for details."
+                    : error ? "AnyiOSEMU recorded an error. Open the latest log for details."
                     : completed
                     ? "AnyiOSEMU exited normally; that is not proof of visible rendering or gameplay."
                     : "AnyiOSEMU session ended. The diagnostic log was saved; visual results remain unverified.";

@@ -41,7 +41,7 @@ import java.util.List;
 public final class MainActivity extends Activity {
     private static final int IMPORT_FILE = 10, EXPORT = 11, IMPORT_FOLDER = 12,
                              IMPORT_APP_FOLDER = 13, EXPORT_SANDBOX = 14, RUN_ANYIOSEMU = 15,
-                             EXPORT_SANDBOX_FOLDER = 16;
+                             EXPORT_SANDBOX_FOLDER = 16, EXPORT_GAME_LOG = 17;
     private static final String FOLDER_PICKER_HELP =
         "Android 11+ blocks folder-tree access to the storage root, the Downloads folder, "
         + "Android/data and "
@@ -500,7 +500,7 @@ public final class MainActivity extends Activity {
         card.setPadding(dp(9), dp(9), dp(9), dp(11));
         clickable(card, surface, 18, () -> gameDetails(game));
         card.setContentDescription(game.title + ", " + game.architecture + ", " + game.status
-            + (game.canLaunchInAnyiOSEMU() ? ", open details to launch in AnyiOSEMU"
+            + (game.canLaunchInAnyiOSEMU() ? ", open details to launch with AnyiOS"
                                            : ", game launch unavailable"));
         FrameLayout artwork = new FrameLayout(this);
         GradientDrawable artworkBackdrop = new GradientDrawable(GradientDrawable.Orientation.TL_BR,
@@ -623,22 +623,21 @@ public final class MainActivity extends Activity {
                 + (game.bundleId.isEmpty() ? "" : "\n" + game.bundleId),
             13, muted, false));
         gap(content, 18);
-        content.addView(text(!game.canLaunchInAnyiOSEMU() ? game.status.equals("Encrypted")
-                    ? "Encrypted executable"
-                    : "Cannot launch this import"
-                                                          : "AnyiOSEMU · experimental launch",
-            17, ink, true));
-        gap(content, 8);
-        content.addView(text(!game.blockReason.isEmpty() ? game.blockReason
-                : game.status.equals("Encrypted")
-                ? "The game was added, but its executable is protected. AnyiOSEMU does not bypass DRM."
-                : game.kind.equals("Executable")
-                ? "This executable-only import is retained for inspection, but AnyiOSEMU needs a complete IPA or extracted .app bundle."
-                : game.kind.equals("IPA")
-                ? "AnyiOSEMU launches the original IPA and chooses its validated ARM32 slice. Universal ARM64+ARM32 apps run through ARM32; ARM64-only apps are unsupported. The Android activity handles touch input, and bundled ANGLE is the default graphics driver. Missing iOS services, DRM or a device-specific graphics issue can still stop startup or leave the display blank; a successful build or exit does not prove gameplay."
-                : "AnyiOSEMU launches this private extracted .app copy using its ARM32 executable. Touch input is handled by the runtime, and bundled ANGLE is the default graphics driver. Missing iOS services, DRM or a device-specific graphics issue can still stop startup or leave the display blank.",
-            14, muted, false));
-        Button launch = action("Launch in AnyiOSEMU · experimental", true, () -> {
+        TextView requirements = text("Reading game requirements…", 14, muted, false);
+        content.addView(requirements);
+        if (!game.canLaunchInAnyiOSEMU()) {
+            gap(content, 14);
+            content.addView(text(game.status.equals("Encrypted") ? "Encrypted executable"
+                                                                 : "Cannot launch this import",
+                17, ink, true));
+            gap(content, 8);
+            content.addView(text(!game.blockReason.isEmpty() ? game.blockReason
+                    : game.status.equals("Encrypted")
+                    ? "The executable is protected. AnyiOS does not bypass DRM."
+                    : "A complete supported IPA or extracted .app bundle is required to launch.",
+                14, muted, false));
+        }
+        Button launch = action("Launch with AnyiOS", true, () -> {
             sheet.dismiss();
             launchAnyiOSEMU(game);
         });
@@ -646,21 +645,7 @@ public final class MainActivity extends Activity {
         LinearLayout.LayoutParams launchLp = new LinearLayout.LayoutParams(-1, -2);
         launchLp.topMargin = dp(18);
         content.addView(launch, launchLp);
-        if (!game.launchReport.isEmpty()) {
-            button(content, "Latest AnyiOSEMU session report", false, () -> {
-                TextView output = text(game.launchReport, 12, ink, false);
-                output.setTextIsSelectable(true);
-                output.setPadding(dp(20), dp(16), dp(20), dp(16));
-                ScrollView reportScroll = new ScrollView(this);
-                reportScroll.addView(output);
-                new AlertDialog.Builder(this)
-                    .setTitle("AnyiOSEMU session report")
-                    .setView(reportScroll)
-                    .setPositiveButton("Done", null)
-                    .setNeutralButton("Export", (dialog, which) -> exportReport(game))
-                    .show();
-            });
-        }
+        button(content, "Show latest log", false, () -> showLatestLog(game));
         button(content, "View import report", false, () -> showReport(game));
         button(content, "Export report", false, () -> exportReport(game));
         button(content, "Export game data to folder…", false, () -> exportSandboxFolder(game));
@@ -709,6 +694,37 @@ public final class MainActivity extends Activity {
         sheet.getWindow().setBackgroundDrawableResource(android.R.color.transparent);
         sheet.getWindow().setGravity(Gravity.BOTTOM);
         sheet.getWindow().setLayout(-1, -2);
+        library.loadRequirements(game, details -> {
+            if (sheet.isShowing() && !isFinishing() && !isDestroyed())
+                requirements.setText(details.description());
+        });
+    }
+    private void showLatestLog(GameLibrary.Game game) {
+        TextView output = text("Loading game log…", 12, ink, false);
+        output.setTypeface(Typeface.MONOSPACE);
+        output.setTextIsSelectable(true);
+        output.setPadding(dp(20), dp(16), dp(20), dp(16));
+        ScrollView scroll = new ScrollView(this);
+        scroll.addView(output);
+        AlertDialog dialog =
+            new AlertDialog.Builder(this)
+                .setTitle("Latest game log")
+                .setView(scroll)
+                .setPositiveButton("Done", null)
+                .setNeutralButton("Export log", (ignored, which) -> exportGameLog(game))
+                .show();
+        library.loadLatestLog(game, log -> {
+            if (dialog.isShowing() && !isFinishing() && !isDestroyed())
+                output.setText(log);
+        });
+    }
+    private void exportGameLog(GameLibrary.Game game) {
+        exportGame = game.id;
+        startActivityForResult(new Intent(Intent.ACTION_CREATE_DOCUMENT)
+                                   .setType("text/plain")
+                                   .addCategory(Intent.CATEGORY_OPENABLE)
+                                   .putExtra(Intent.EXTRA_TITLE, "AnyiOS-game-log.txt"),
+            EXPORT_GAME_LOG);
     }
     private void launchAnyiOSEMU(GameLibrary.Game game) {
         if (!game.canLaunchInAnyiOSEMU())
@@ -940,24 +956,30 @@ public final class MainActivity extends Activity {
             "Frame cap", labels.toArray(new String[0]), optionValues, "fps", DisplayFrameRate.AUTO);
     }
 
+    private void chooseResolution() {
+        int[] size = DisplayResolution.displaySize(this);
+        int selected = Math.max(0, prefs.getInt(DisplayResolution.PREFERENCE, 0));
+        int[] choices = DisplayResolution.choices(size[0], size[1], selected);
+        String[] labels = new String[choices.length];
+        for (int i = 0; i < choices.length; i++)
+            labels[i] = DisplayResolution.label(size[0], size[1], choices[i]);
+        choose("Resolution · landscape pixels", labels, choices, DisplayResolution.PREFERENCE,
+            DisplayResolution.NATIVE);
+    }
+
     private void settings(LinearLayout parent) {
         heading(parent, "Settings", "Simple controls. Clear limits.");
         LinearLayout display = card(parent);
         display.addView(text("DISPLAY", 11, muted, true));
-        int gameProfile = prefs.getInt("gameDisplayProfile", GameDisplayProfile.AUTO);
-        settingRow(display, "Game layout",
-            "Auto matches the display. For older fixed-size games, choose their original screen; it is scaled proportionally with matching touch areas and may show bars.",
-            GameDisplayProfile.label(gameProfile),
-            ()
-                -> choose("Game layout",
-                    new String[] {"Automatic · match display", "Classic phone · 320×480",
-                        "Tall phone · 320×568", "Classic tablet · 768×1024"},
-                    new int[] {GameDisplayProfile.AUTO, GameDisplayProfile.CLASSIC_PHONE,
-                        GameDisplayProfile.TALL_PHONE, GameDisplayProfile.TABLET},
-                    "gameDisplayProfile", GameDisplayProfile.AUTO));
+        int[] displaySize = DisplayResolution.displaySize(this);
+        int selectedSize = Math.max(0, prefs.getInt(DisplayResolution.PREFERENCE, 0));
+        settingRow(display, "Resolution",
+            "Native by default · pixel dimensions use the current display mode in landscape; the actual game view may differ in multi-window or around cutouts",
+            DisplayResolution.label(displaySize[0], displaySize[1], selectedSize),
+            this::chooseResolution);
         int dynamicMinimum = prefs.getInt("dynamicResolution", 100);
         settingRow(display, "Dynamic resolution",
-            "Off by default · starts at native size and adapts the surface buffer to measured FPS without resizing the display; game-owned offscreen buffers may not scale",
+            "Off by default · adapts the selected surface resolution to measured FPS without resizing the display; game-owned offscreen buffers may not scale",
             dynamicMinimum >= 100 ? "Off" : "Down to " + dynamicMinimum + "%",
             ()
                 -> choose("Dynamic resolution · minimum surface size",
@@ -966,16 +988,16 @@ public final class MainActivity extends Activity {
         settingRow(display, "Frame cap",
             "Auto requests the fastest supported mode at this resolution; measured FPS can be lower",
             frameCapLabel(), this::chooseFrameCap);
-        settingRow(display, "Maximize FPS",
-            "Try for the highest selected refresh rate by boosting 60 FPS display links. Some games may run faster; higher FPS is not guaranteed.",
-            prefs.getBoolean("boostDisplayLink", false) ? "On" : "Off", () -> {
+        settingRow(display, "Match device Hz",
+            "On by default · boost 60 FPS display links toward the selected refresh-rate cap. Some games may run faster; higher FPS is not guaranteed.",
+            prefs.getBoolean("boostDisplayLink", true) ? "On" : "Off", () -> {
                 prefs.edit()
-                    .putBoolean("boostDisplayLink", !prefs.getBoolean("boostDisplayLink", false))
+                    .putBoolean("boostDisplayLink", !prefs.getBoolean("boostDisplayLink", true))
                     .apply();
                 home();
             });
         settingRow(display, "Performance HUD",
-            "Off by default · process CPU, RAM PSS, driver-reported graphics PSS and measured presentation FPS; GPU utilization is not publicly reported on many devices",
+            "Off by default · app CPU normalized across available cores, RAM PSS, FPS and device GPU load when the driver exposes it",
             prefs.getBoolean("performanceHud", false) ? "On" : "Off", this::togglePerformanceHud);
         settingRow(display, "Session badge", "Brief AnyiOSEMU overlay at launch",
             prefs.getBoolean("showConsole", false) ? "Shown" : "Hidden", this::toggleConsole);
@@ -1051,6 +1073,7 @@ public final class MainActivity extends Activity {
                             prefs.edit()
                                 .remove("resolution")
                                 .remove("presentationResolution")
+                                .remove(DisplayResolution.PREFERENCE)
                                 .remove("gameDisplayProfile")
                                 .remove("dynamicResolution")
                                 .remove("boostDisplayLink")
@@ -1178,7 +1201,7 @@ public final class MainActivity extends Activity {
         card.addView(header);
         gap(card, 5);
         card.addView(text(
-            "Off by default. When enabled, AnyiOSEMU requests Android performance hints and high-capacity CPU cores where supported. Android controls the clocks and may ignore or limit the request; this cannot force CPU/GPU frequencies, and GPU utilization is not exposed portably.",
+            "Off by default. When enabled, AnyiOSEMU requests Android performance hints and high-capacity CPU cores where supported. Android controls the clocks and may ignore or limit the request; this cannot force CPU/GPU frequencies.",
             12, muted, false));
         enabled.setOnCheckedChangeListener((button, checked) -> setMaxClocks(checked));
     }
@@ -1289,12 +1312,13 @@ public final class MainActivity extends Activity {
         int testCap = Math.max(1,
             Math.round(
                 DisplayFrameRate.resolveCap(this, prefs.getInt("fps", DisplayFrameRate.AUTO))));
-        prototype = new PrototypeView(this, testCap, 0, info -> {
-            if (liveStatus != null)
-                liveStatus.setText(info);
-            if (info.startsWith("embedded ANGLE"))
-                prefs.edit().putString("lastBackend", info).apply();
-        });
+        prototype = new PrototypeView(
+            this, testCap, Math.max(0, prefs.getInt(DisplayResolution.PREFERENCE, 0)), info -> {
+                if (liveStatus != null)
+                    liveStatus.setText(info);
+                if (info.startsWith("embedded ANGLE"))
+                    prefs.edit().putString("lastBackend", info).apply();
+            });
         root.addView(prototype, new LinearLayout.LayoutParams(-1, 0, 1));
         setContentView(root);
         enterEmulatorDisplay();
@@ -1415,6 +1439,40 @@ public final class MainActivity extends Activity {
                 library.importIpaFolder(uri);
             else
                 library.importFolder(uri);
+        } else if (request == EXPORT_GAME_LOG) {
+            GameLibrary.Game selected = null;
+            for (GameLibrary.Game game : library.games())
+                if (game.id.equals(exportGame))
+                    selected = game;
+            if (selected == null) {
+                android.widget.Toast
+                    .makeText(this, "Game no longer available", android.widget.Toast.LENGTH_LONG)
+                    .show();
+                return;
+            }
+            final File dataDirectory = selected.anyioseDataDirectory();
+            final android.content.Context app = getApplicationContext();
+            new Thread(() -> {
+                try (OutputStream stream = app.getContentResolver().openOutputStream(uri, "wt")) {
+                    if (stream == null)
+                        throw new java.io.IOException("Provider could not open the destination");
+                    LatestGameLog.copy(dataDirectory, stream);
+                    new android.os.Handler(android.os.Looper.getMainLooper())
+                        .post(()
+                                  -> android.widget.Toast
+                                      .makeText(
+                                          app, "Game log saved", android.widget.Toast.LENGTH_SHORT)
+                                      .show());
+                } catch (Exception e) {
+                    Diagnostics.record("LOG_EXPORT_ERROR", e.toString());
+                    new android.os.Handler(android.os.Looper.getMainLooper())
+                        .post(()
+                                  -> android.widget.Toast
+                                      .makeText(app, "Could not save game log: " + e.getMessage(),
+                                          android.widget.Toast.LENGTH_LONG)
+                                      .show());
+                }
+            }, "game-log-export").start();
         } else if (request == EXPORT) {
             String report = Diagnostics.export();
             if (!exportGame.isEmpty()) {
