@@ -3,8 +3,7 @@ package org.podnative;
 import android.app.Activity;
 import android.content.Intent;
 import android.os.Bundle;
-import android.view.Gravity;
-import android.widget.TextView;
+import android.util.Log;
 import java.io.File;
 import java.io.FileInputStream;
 import java.io.FileOutputStream;
@@ -14,29 +13,28 @@ import org.json.JSONObject;
 
 /** Unpacks the one embedded IPA into this APK's own private storage, off the UI thread. */
 public final class StandaloneLauncherActivity extends Activity {
-    private TextView status;
+    private static final String TAG = "AnyiOSEMU";
+    private static final Object SETUP_LOCK = new Object();
+
     @Override protected void onCreate(Bundle state) {
         super.onCreate(state);
-        status = new TextView(this);
-        status.setGravity(Gravity.CENTER);
-        status.setTextColor(0xffffffff);
-        status.setBackgroundColor(0xff10141d);
-        status.setTextSize(17);
-        status.setPadding(24, 24, 24, 24);
-        status.setText("Preparing your game…");
-        setContentView(status);
+        // Keep extraction and the full integrity check off the main thread. The
+        // transparent launcher has no preparation or error screen.
         new Thread(() -> {
             try {
-                prepareGame();
+                // A recreated launcher must not race another instance's pending file.
+                synchronized (SETUP_LOCK) {
+                    prepareGame();
+                }
                 runOnUiThread(() -> {
                     if (isFinishing() || isDestroyed()) return;
                     startActivity(new Intent(this, StandaloneGameActivity.class));
                     finish();
                 });
             } catch (Exception error) {
+                Log.e(TAG, "Standalone game setup failed", error);
                 runOnUiThread(() -> {
-                    if (!isFinishing() && !isDestroyed())
-                        status.setText("Could not prepare the game: " + error.getMessage() + "\n\nClose and try again.");
+                    if (!isFinishing() && !isDestroyed()) finish();
                 });
             }
         }, "AnyiOSEMU-game-setup").start();

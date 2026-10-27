@@ -4,7 +4,7 @@
 
 AnyiOS remains the Android app shell: its module chooser, library/import/export flow, settings and design are preserved, as is the separate Converter. The Android game-launch path uses the pinned Rust/SDL guest runtime under the first-party product name **AnyiOSEMU**. This is a replacement of the game-execution backend, not a replacement of the AnyiOS product UI or Converter. Converter keeps its existing native diagnostic backend and can also package an independent one-game AnyiOSEMU APK.
 
-Upstream legal notices, MPL-2.0 attribution and source provenance are intentionally retained in [packaged runtime notices](../app/src/main/assets/anyiose-runtime-notices.txt) and the packaged runtime notices. The application-facing name is AnyiOSEMU. This integration does not claim that all games run.
+Upstream legal notices, MPL-2.0 attribution and source provenance are intentionally retained in [packaged runtime notices](../app/src/main/assets/anyiose-runtime-notices.txt). The application-facing name is AnyiOSEMU. This integration does not claim that all games run.
 
 ## Reproducible engine source
 
@@ -31,20 +31,21 @@ The activity must only expose private storage to the runtime, refuse traversal/s
 ## Runtime controls and driver behavior
 
 - Auto FPS cap requests the fastest supported refresh mode at the current resolution. The requested and effective caps are reported separately from measured presentation FPS.
+- Presentation resolution defaults to the unmodified display surface, matching the standalone host. A lower presentation cap is optional and does not change guest logical dimensions or game-owned offscreen buffers. The new presentation setting has its own preference, so a legacy graphics-test resolution does not silently force a buffer on upgrade.
 - Dynamic resolution is off by default. Its selectable minimum scale controls the Android SDL presentation surface based on measured swaps, with hysteresis and restoration if FPS does not improve. It does not currently resize all guest EAGL/offscreen buffers, so it may not improve performance. Touch normalization uses the view dimensions when the surface buffer is scaled.
-- The CADisplayLink implementation honors explicit higher-FPS requests up to the effective display cap. An off-by-default High-refresh boost can promote 60-FPS display links to that cap; callback-driven games may run too fast. Other FPS requests stay unchanged.
+- The CADisplayLink implementation honors explicit higher-FPS requests up to the effective display cap. The off-by-default **Maximize FPS** setting can promote 60-FPS display links to that cap; callback-driven games may run too fast. Other FPS requests stay unchanged.
 - The performance HUD is off by default and reports process CPU, RAM PSS, driver-reported graphics PSS and measured presentation FPS. GPU utilization is shown as unavailable if the platform does not expose it.
 - Max clocks is off by default. It requests supported Android performance hints and high-capacity CPU affinity; the OS controls frequencies and may limit or ignore the request.
 - ANGLE is the bundled default and native GLES is an explicit preference. The runtime records whether the requested driver initialized or whether it fell back.
 - Force Composition and verbose GLES logs are opt-in runtime arguments.
-- Device-family selection defaults to automatic. The emulated OS/device identity and UI label use AnyiOSEMU branding; guest-side identity can affect compatibility, so do not change the profile casually.
+- Game layout defaults to automatic. Classic 320×480, 320×568 and 768×1024 iOS-point profiles can be selected for games with fixed-size layouts; the viewport preserves aspect ratio and input uses the same viewport. Bars may remain and unsupported device families fall back according to the bundle. Guest-side identity can affect compatibility.
 - Runtime log volume is bounded before persistence; repetitive reporting must not overwhelm the UI or overwrite the first useful failure.
 
 The independent C++ ANGLE surface test is not the SDL guest window. Neither a GL call count, instruction count nor process exit proves visible game rendering.
 
 ## Converter runtime choices
 
-**Native runtime** runs the existing `game-runtime-v1` boot-attempt builder (previously the Semi-Emulated choice), not the strict single-routine converter. **Semi-Emulated** builds a distinct `anyiose-standalone-v1` APK with the retained IPA, AnyiOSEMU, SDL, ANGLE dependency closure and notices. Its launcher verifies and copies that one IPA into its own private storage and starts it directly using the current display mode/maximum available refresh. It enables experimental 60-FPS display-link promotion to request that rate, which can accelerate game logic. No AnyiOS installation, library picker or app data is needed after installation. The Semi-Emulated builder rejects unverified/encrypted ARM32 source; ARM64-only is unsupported by AnyiOSEMU. The existing Native diagnostic builder retains its previous source eligibility. Generated metadata is source/signer/hash-bound and explicitly does not claim gameplay verification.
+**Native runtime** runs the existing `game-runtime-v1` boot-attempt builder (previously the Semi-Emulated choice), not the strict single-routine converter. **Semi-Emulated** builds a distinct `anyiose-single-game-v1` APK with the retained IPA, AnyiOSEMU, SDL, ANGLE dependency closure and notices. Its transparent launcher verifies and copies that one IPA off the UI thread into private storage, without a preparation or setup-error screen, and starts it directly using the current display mode/maximum available refresh. It enables experimental 60-FPS display-link promotion by default, which can accelerate game logic. Emulator error and SDL startup dialogs are disabled for this host, but ordinary in-game dialogs are not. The standalone Java exception handler and native fatal-signal policy attempt to close quietly and retain log markers; fatal native exits do not generate Android tombstones. Android can still display its own UI for ANRs, crashes before the handlers are installed, or other system-level failures. No AnyiOS installation, library picker or app data is needed after installation. The Semi-Emulated builder rejects unverified/encrypted ARM32 source; ARM64-only is unsupported by AnyiOSEMU. The existing Native diagnostic builder retains its previous source eligibility. Generated metadata is source/signer/hash-bound and explicitly does not claim gameplay verification.
 
 ## Validation status and release gate
 
