@@ -4,7 +4,7 @@
 
 AnyiOS remains the Android app shell: its module chooser, library/import/export flow, settings and design are preserved, as is the separate Converter. The Android game-launch path uses the pinned Rust/SDL guest runtime under the first-party product name **AnyiOSEMU**. This is a replacement of the game-execution backend, not a replacement of the AnyiOS product UI or Converter. Converter keeps its existing native diagnostic backend and can also package an independent one-game AnyiOSEMU APK.
 
-Upstream legal notices, MPL-2.0 attribution and source provenance are intentionally retained in [`THIRD_PARTY_NOTICES.md`](../THIRD_PARTY_NOTICES.md) and the packaged runtime notices. The application-facing name is AnyiOSEMU. This integration does not claim that all games run.
+Upstream legal notices, MPL-2.0 attribution and source provenance are intentionally retained in [packaged runtime notices](../app/src/main/assets/anyiose-runtime-notices.txt) and the packaged runtime notices. The application-facing name is AnyiOSEMU. This integration does not claim that all games run.
 
 ## Reproducible engine source
 

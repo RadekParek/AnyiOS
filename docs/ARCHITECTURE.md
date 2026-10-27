@@ -61,4 +61,4 @@ Launch reports identify the source build, pinned engine revision, ARM32 selectio
 4. Complete Android lint, JVM tests and debug/release compilation in CI. Compilation alone is not runtime evidence.
 5. Validate a visible game menu, touch response, audio, orientation/lifecycle, per-game saves, folder/ZIP exports, display cap/HUD and graphics fallback on a real device before making compatibility or performance claims.
 
-See [`DEVICE_TESTING.md`](DEVICE_TESTING.md), [`ANGLE_INTEGRATION.md`](ANGLE_INTEGRATION.md), and [`THIRD_PARTY_NOTICES.md`](../THIRD_PARTY_NOTICES.md).
+See [`DEVICE_TESTING.md`](DEVICE_TESTING.md), [`ANGLE_INTEGRATION.md`](ANGLE_INTEGRATION.md), and [packaged runtime notices](../app/src/main/assets/anyiose-runtime-notices.txt).

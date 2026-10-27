@@ -16,4 +16,4 @@
 
 The C++ ARM32/Dynarmic guest runner, custom guest framework/GLES path and ZIP-backed game sandbox described in earlier progress entries are historical prototype work, not the current Android game-launch path. The AnyiOS C++ importer/slice inspection and independent ANGLE surface-test diagnostics remain, but they do not execute games. See [`RUNTIME.md`](RUNTIME.md), [`ARCHITECTURE.md`](ARCHITECTURE.md), and [`DEVICE_TESTING.md`](DEVICE_TESTING.md) for the active path and evidence gates.
 
-Upstream attribution and licenses are retained; rebranding the visible emulator UI does not rename or conceal its source. See [`THIRD_PARTY_NOTICES.md`](../THIRD_PARTY_NOTICES.md).
+Upstream attribution and licenses are retained; rebranding the visible emulator UI does not rename or conceal its source. See [packaged runtime notices](../app/src/main/assets/anyiose-runtime-notices.txt).

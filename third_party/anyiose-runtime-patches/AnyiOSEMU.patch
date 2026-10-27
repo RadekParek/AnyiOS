@@ -1172,20 +1172,20 @@ index 36c2a8b688da0e744e5f35bf48b169e9183215e1..e6504839bbf181780edb80572a5f5b16
          }
  
 diff --git a/src/frameworks/uikit/ui_screen.rs b/src/frameworks/uikit/ui_screen.rs
-index b7cea11a0902e86221aa616edb56fba4b9353f24..be48ba49888142583f4adcc3eb4882a368de48a3 100644
+index b7cea11a0902e86221aa616edb56fba4b9353f24..ae45c71a0068892e7abd54b64442c112095d6d16 100644
 --- a/src/frameworks/uikit/ui_screen.rs
 +++ b/src/frameworks/uikit/ui_screen.rs
-@@ -160,6 +160,10 @@ pub const CLASSES: ClassExports = objc_classes! {
- 
- @implementation UIScreen: NSObject
+@@ -182,6 +182,10 @@ pub const CLASSES: ClassExports = objc_classes! {
+     msg_class![env; NSArray arrayWithObject:main]
+ }
  
 +- (NSInteger)maximumFramesPerSecond {
 +    env.options.fps_limit.unwrap_or(60.0).clamp(1.0, 240.0).round() as NSInteger
 +}
 +
- // MARK: - Singleton
+ // MARK: - Retain / release (singleton — no-ops)
  
- + (id)mainScreen {
+ - (id)retain      { this }
 diff --git a/src/frameworks/uikit/ui_view/ui_window.rs b/src/frameworks/uikit/ui_view/ui_window.rs
 index 25130279d197c09882c966a0e1e3a9e743660363..c3a033529bc3ef4033ae92e786a2256ed279e1c6 100644
 --- a/src/frameworks/uikit/ui_view/ui_window.rs

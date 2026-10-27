@@ -56,4 +56,4 @@ Follow [`DEVICE_TESTING.md`](DEVICE_TESTING.md). For the updated runtime, verify
 
 ## Licensing gate
 
-ANGLE's top-level license is not the license for every compiled dependency. The build conservatively collects upstream license/README notices, but that is not a legal audit. Review the actual pinned source/dependency closure and terms before public production distribution. See [`THIRD_PARTY_NOTICES.md`](../THIRD_PARTY_NOTICES.md).
+ANGLE's top-level license is not the license for every compiled dependency. The build conservatively collects upstream license/README notices, but that is not a legal audit. Review the actual pinned source/dependency closure and terms before public production distribution. See [packaged runtime notices](../app/src/main/assets/anyiose-runtime-notices.txt).
