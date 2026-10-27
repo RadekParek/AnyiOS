@@ -20,8 +20,6 @@ An Android app with the existing **AnyiOS** launcher, shared private game librar
 
 AnyiOS launches an imported game in the pinned Rust/SDL AnyiOSEMU runtime. The Android activity forwards the selected source, private per-game data directory, display-aware frame cap, performance options, ANGLE/native-GLES preference, Force Composition and verbose-GLES preference. Source revisions, selected settings and bounded session logs are recorded in the game's report.
 
-The runtime source and nested dependencies are pinned in the `third_party/hyperhle` submodule. The reviewed AnyiOS integration patch is `third_party/anyiose-runtime-patches/AnyiOSEMU.patch`, applied only to the revision recorded in `third_party/anyiose-runtime-revision.txt`. These paths and upstream identifiers are build/provenance details, not user-facing product names; required attribution is preserved in the third-party notices.
-
 ## Game data and Android storage
 
 The Android application/package ID remains **`org.podnative`** (not `org.anyios.com`), preserving app upgrades. Imported games and writable runtime data stay in internal app-private storage at `/data/user/0/org.podnative/files/games/<game-id>/sandbox/AnyiOSEMU`.
