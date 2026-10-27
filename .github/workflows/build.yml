@@ -82,6 +82,19 @@ jobs:
           # particular, do not restore an older CMakeCache across ABI/patch changes.
           path: third_party/anyiose-engine/target
           key: ${{ runner.os }}-android-ndk-27.2.12479018-anyiose-rust-v3-${{ hashFiles('app/build.gradle', 'third_party/anyiose-runtime-revision.txt', 'third_party/anyiose-runtime-patches/AnyiOSEMU.patch', 'third_party/anyiose-runtime-patches/SDL-Android-NDK-27.patch', 'third_party/anyiose-engine/Cargo.lock', 'third_party/anyiose-engine/**/Cargo.toml') }}
+      - name: Refresh cached Dynarmic CMake state
+        env:
+          VARIANT: ${{ inputs.variant }}
+        run: |
+          # CMake-generated makefiles from a different runner can rebuild unwanted
+          # Dynarmic host tests with stale flags. Reconfigure this one crate while
+          # keeping the remaining cached Rust dependencies and SDL objects.
+          if [ -d third_party/anyiose-engine/target ]; then
+            profile=()
+            if [ "$VARIANT" = release ]; then profile+=(--release); fi
+            cargo clean --locked --manifest-path third_party/anyiose-engine/Cargo.toml \
+              --package touchHLE_dynarmic_wrapper --target aarch64-linux-android "${profile[@]}"
+          fi
       # Development keys only, never release signing material. Cache eviction can
       # change this certificate; durable distribution requires configured signing secrets.
       - name: Reuse development signing identity when cached
@@ -235,13 +248,20 @@ jobs:
         run: |
           BUILD_ROOT="third_party/anyiose-engine/target/aarch64-linux-android/$VARIANT/build"
           CMAKE_CACHE=$(find "$BUILD_ROOT" -path '*/touchHLE_dynarmic_wrapper-*/out/build/CMakeCache.txt' -print -quit)
-          if [ -z "$CMAKE_CACHE" ] || ! grep -Eq '^ARCHITECTURE:[^=]*=arm64$' "$CMAKE_CACHE"; then
-            echo 'Dynarmic Android CMake cache is missing the expected arm64 architecture.' >&2
-            if [ -n "$CMAKE_CACHE" ]; then
-              grep -E '^(ARCHITECTURE|CMAKE_SYSTEM_PROCESSOR|DYNARMIC_TESTS|BUILD_TESTING):' "$CMAKE_CACHE" || true
-            fi
+          if [ -z "$CMAKE_CACHE" ]; then
+            echo 'Dynarmic Android CMake cache was not created.' >&2
             exit 1
           fi
+          for expected in 'ARCHITECTURE=arm64' 'DYNARMIC_TESTS=OFF' \
+                          'DYNARMIC_WARNINGS_AS_ERRORS=OFF' 'BUILD_TESTING=OFF'; do
+            key=${expected%%=*}
+            value=${expected#*=}
+            if ! grep -Eq "^${key}:[^=]*=${value}$" "$CMAKE_CACHE"; then
+              echo "Unexpected Dynarmic Android CMake option: expected $expected" >&2
+              grep -E '^(ARCHITECTURE|CMAKE_SYSTEM_PROCESSOR|DYNARMIC_TESTS|DYNARMIC_WARNINGS_AS_ERRORS|BUILD_TESTING):' "$CMAKE_CACHE" || true
+              exit 1
+            fi
+          done
       - name: Prepare APK and provenance
         env:
           VARIANT: ${{ inputs.variant }}
@@ -345,6 +365,15 @@ jobs:
                   errors.extend(all_lines[max(0, index - 1):min(len(all_lines), index + 4)])
               lines = list(dict.fromkeys(errors + all_lines[-20:]))
               message = (path.name + ': ' + '\n'.join(lines)).replace('%', '%25').replace('\r', '%0D').replace('\n', '%0A')
+              print('::warning::' + message)
+          for path in Path('third_party/anyiose-engine/target').rglob('CMakeCache.txt'):
+              if 'touchHLE_dynarmic_wrapper-' not in str(path):
+                  continue
+              keys = ('ARCHITECTURE:', 'CMAKE_SYSTEM_PROCESSOR:', 'DYNARMIC_TESTS:',
+                      'DYNARMIC_WARNINGS_AS_ERRORS:', 'BUILD_TESTING:')
+              lines = [line for line in path.read_text(errors='replace').splitlines()
+                       if line.startswith(keys)]
+              message = (str(path) + ': ' + '\n'.join(lines)).replace('%', '%25').replace('\r', '%0D').replace('\n', '%0A')
               print('::warning::' + message)
           for root in ('app/build/test-results', 'converter/app/build/test-results'):
               for path in Path(root).rglob('TEST-*.xml'):
