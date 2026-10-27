@@ -124,3 +124,6 @@ dependencies {
     testImplementation("junit:junit:4.13.2")
     testImplementation("org.robolectric:robolectric:4.14.1")
 }
+
+// Self-contained one-game AnyiOSEMU host. Its DEX is independent of the parent app.
+val embedAnyiOSEmuTemplate = registerTemplateEmbedTask(":anyiose-template", "anyiose-template", "generated_anyiose_icon.png", "Lorg/podnative/StandaloneLauncherActivity;")

@@ -95,10 +95,67 @@ index 2bfc71860900556ce0ac1481e7162d2d216cb706..3c0ac5e4fb5917adb293b7377ea53a92
          int channelConfig;
          int sampleSize;
          int frameSize;
+diff --git a/android/app/src/main/java/org/libsdl/app/SDLSurface.java b/android/app/src/main/java/org/libsdl/app/SDLSurface.java
+index dcd26d495c87143ec141972282d02524c1338136..ee4586119a0eaa3626779370bf8678bcd97cb511 100644
+--- a/android/app/src/main/java/org/libsdl/app/SDLSurface.java
++++ b/android/app/src/main/java/org/libsdl/app/SDLSurface.java
+@@ -230,8 +230,8 @@ public class SDLSurface extends SurfaceView implements SurfaceHolder.Callback,
+             // We need to check if we're in relative mouse mode and get the axis offset rather than the x/y values
+             // if we are.  We'll leverage our existing mouse motion listener
+             SDLGenericMotionListener_API12 motionListener = SDLActivity.getMotionListener();
+-            x = motionListener.getEventX(event);
+-            y = motionListener.getEventY(event);
++            x = motionListener.getEventX(event) * mWidth / Math.max(1, getWidth());
++            y = motionListener.getEventY(event) * mHeight / Math.max(1, getHeight());
+ 
+             SDLActivity.onNativeMouse(mouseButton, action, x, y, motionListener.inRelativeMode());
+         } else {
+@@ -239,8 +239,8 @@ public class SDLSurface extends SurfaceView implements SurfaceHolder.Callback,
+                 case MotionEvent.ACTION_MOVE:
+                     for (i = 0; i < pointerCount; i++) {
+                         pointerFingerId = event.getPointerId(i);
+-                        x = event.getX(i) / mWidth;
+-                        y = event.getY(i) / mHeight;
++                        x = event.getX(i) / Math.max(1, getWidth());
++                        y = event.getY(i) / Math.max(1, getHeight());
+                         p = event.getPressure(i);
+                         if (p > 1.0f) {
+                             // may be larger than 1.0f on some devices
+@@ -264,8 +264,8 @@ public class SDLSurface extends SurfaceView implements SurfaceHolder.Callback,
+                     }
+ 
+                     pointerFingerId = event.getPointerId(i);
+-                    x = event.getX(i) / mWidth;
+-                    y = event.getY(i) / mHeight;
++                    x = event.getX(i) / Math.max(1, getWidth());
++                    y = event.getY(i) / Math.max(1, getHeight());
+                     p = event.getPressure(i);
+                     if (p > 1.0f) {
+                         // may be larger than 1.0f on some devices
+@@ -278,8 +278,8 @@ public class SDLSurface extends SurfaceView implements SurfaceHolder.Callback,
+                 case MotionEvent.ACTION_CANCEL:
+                     for (i = 0; i < pointerCount; i++) {
+                         pointerFingerId = event.getPointerId(i);
+-                        x = event.getX(i) / mWidth;
+-                        y = event.getY(i) / mHeight;
++                        x = event.getX(i) / Math.max(1, getWidth());
++                        y = event.getY(i) / Math.max(1, getHeight());
+                         p = event.getPressure(i);
+                         if (p > 1.0f) {
+                             // may be larger than 1.0f on some devices
 diff --git a/android/app/src/main/java/org/touchhle/android/DocumentsProvider.kt b/android/app/src/main/java/org/touchhle/android/DocumentsProvider.kt
-index 29142ee5b4946ad57abae61336598686bfd9f24e..32d31edbb92ff20dcb0e536912f52b57fed2a513 100644
+index 29142ee5b4946ad57abae61336598686bfd9f24e..dbab99a80927477be66d65e4fd9a588c3a58be0f 100644
 --- a/android/app/src/main/java/org/touchhle/android/DocumentsProvider.kt
 +++ b/android/app/src/main/java/org/touchhle/android/DocumentsProvider.kt
+@@ -8,7 +8,7 @@
+  */
+ 
+ //package emu.skyline.provider
+-package org.touchhle.android;
++package org.anyiose.android;
+ 
+ import android.database.Cursor
+ import android.database.MatrixCursor
 @@ -17,6 +17,8 @@ import android.os.ParcelFileDescriptor
  import android.provider.DocumentsContract
  import android.provider.DocumentsProvider
@@ -335,9 +392,18 @@ index 29142ee5b4946ad57abae61336598686bfd9f24e..32d31edbb92ff20dcb0e536912f52b57
          return ParcelFileDescriptor.open(file, accessMode)
      }
 diff --git a/android/app/src/main/java/org/touchhle/android/HostMedia.java b/android/app/src/main/java/org/touchhle/android/HostMedia.java
-index 670dc38476621ac72d7da765d0b5a0229597cd72..c1ff168bf4a88f46f5e4578172befc0d746807d9 100644
+index 670dc38476621ac72d7da765d0b5a0229597cd72..a19935d8af0c0fed72eb0bb6a07508f397c17cea 100644
 --- a/android/app/src/main/java/org/touchhle/android/HostMedia.java
 +++ b/android/app/src/main/java/org/touchhle/android/HostMedia.java
+@@ -3,7 +3,7 @@
+  * License, v. 2.0. If a copy of the MPL was not distributed with this
+  * file, You can obtain one at https://mozilla.org/MPL/2.0/.
+  */
+-package org.touchhle.android;
++package org.anyiose.android;
+ 
+ import android.Manifest;
+ import android.annotation.SuppressLint;
 @@ -226,7 +226,7 @@ public class HostMedia {
              }
              final CountDownLatch done = new CountDownLatch(1);
@@ -357,9 +423,18 @@ index 670dc38476621ac72d7da765d0b5a0229597cd72..c1ff168bf4a88f46f5e4578172befc0d
          return true;
      }
 diff --git a/android/app/src/main/java/org/touchhle/android/MainActivity.java b/android/app/src/main/java/org/touchhle/android/MainActivity.java
-index 7803c18600484c29a067ec1433ddfe275c7c593a..dd5291142f40314fda88e24a68f67d786e50e8c5 100644
+index 7803c18600484c29a067ec1433ddfe275c7c593a..5ff5d9cbee66d79d322a4e72e38596ebd11addea 100644
 --- a/android/app/src/main/java/org/touchhle/android/MainActivity.java
 +++ b/android/app/src/main/java/org/touchhle/android/MainActivity.java
+@@ -6,7 +6,7 @@
+  * Parts of this file are derived from SDL 2's Android project template, which
+  * has a different license. Please see vendor/SDL/LICENSE.txt for details.
+  */
+-package org.touchhle.android;
++package org.anyiose.android;
+ 
+ import android.app.Activity;
+ import android.content.ContentResolver;
 @@ -30,7 +30,7 @@ import java.io.InputStream;
   */
  
@@ -390,6 +465,59 @@ index 7803c18600484c29a067ec1433ddfe275c7c593a..dd5291142f40314fda88e24a68f67d78
          if (!appsDir.exists() && !appsDir.mkdirs()) {
              Log.e(TAG, "Couldn't create " + appsDir);
              return;
+diff --git a/src/android_media.rs b/src/android_media.rs
+index 6015decc1c152027253d58481b2fda342ea44209..274cd787118e0e2ab6e44bce0275ad36145b9d9e 100644
+--- a/src/android_media.rs
++++ b/src/android_media.rs
+@@ -8,7 +8,7 @@
+ //! host hardware on Android.
+ //!
+ //! All calls go through hand-rolled JNI (no `jni` crate dependency) into
+-//! static methods on `org.touchhle.android.HostMedia` — see that file for
++//! static methods on `org.anyiose.android.HostMedia` — see that file for
+ //! the Android side (Camera2 still capture, AudioRecord streaming).
+ //!
+ //! On other platforms (or when the permission is denied / hardware absent)
+@@ -115,7 +115,7 @@ mod imp {
+         }
+ 
+         fn find_host_media_class(&self) -> Option<*mut c_void> {
+-            let name = CString::new("org/touchhle/android/HostMedia").ok()?;
++            let name = CString::new("org/anyiose/android/HostMedia").ok()?;
+             let Some(f): Option<
+                 unsafe extern "C" fn(*mut c_void, *const c_char) -> *mut c_void,
+             > = self.slot(slots::FIND_CLASS)
+@@ -316,7 +316,7 @@ mod imp {
+     /// coroutine stack, and ART resolves `FindClass` through the class loader
+     /// of the calling *managed* frame - there is none on a coroutine stack, so
+     /// it falls back to the system class loader, which does not know the app's
+-    /// own classes. A lazy `FindClass("org/touchhle/android/HostMedia")` from
++    /// own classes. A lazy `FindClass("org/anyiose/android/HostMedia")` from
+     /// guest code therefore returns NULL, and every camera/microphone probe
+     /// silently answers "not available" even on a device that has both.
+     /// Calling the *resolved* methods from a coroutine stack is fine; only the
+diff --git a/src/android_web_view.rs b/src/android_web_view.rs
+index a3bba306f4d10431fe42eaf8c268fc92a6e48110..0f3f2dbba2d52237e648442340720ce0a87c3313 100644
+--- a/src/android_web_view.rs
++++ b/src/android_web_view.rs
+@@ -9,7 +9,7 @@
+ //! layered on top of the SDL surface, so pages load with a real engine
+ //! (HTML/CSS/JS, HTTPS, links, scrolling, back/forward). All calls go through
+ //! hand-rolled JNI (no `jni` crate dependency) into static methods on
+-//! `MainActivity` — see `android/app/src/main/java/org/touchhle/android/`.
++//! `MainActivity` — see `android/app/src/main/java/org/anyiose/android/`.
+ //!
+ //! The MainActivity class reference and the method IDs of every bridge method
+ //! are resolved once at startup by `populate_jni_cache`, on the real
+@@ -139,7 +139,7 @@ mod imp {
+         }
+ 
+         fn find_main_activity_class(&self) -> Option<*mut c_void> {
+-            let name = CString::new("org/touchhle/android/MainActivity").ok()?;
++            let name = CString::new("org/anyiose/android/MainActivity").ok()?;
+             let Some(f): Option<
+                 unsafe extern "C" fn(*mut c_void, *const c_char) -> *mut c_void,
+             > = self.slot(slots::FIND_CLASS)
 diff --git a/src/audio/mic.rs b/src/audio/mic.rs
 index d416bb73bc8dfe72af7a344c71b9ad39c7bb9a75..9521dea0359f35cdd89f87f966329a3e95f1f929 100644
 --- a/src/audio/mic.rs
@@ -723,6 +851,65 @@ index 0dfbed8c67d50dd86e3fd15abb7ed1f92962df10..5f3f921d7fed6315be92bb6e98ecca98
      let bssid = get_static_str(env, "02:00:00:00:00:00");
      let ssid_key = get_static_str(env, "SSID");
      let bssid_key = get_static_str(env, "BSSID");
+diff --git a/src/frameworks/core_animation/ca_display_link.rs b/src/frameworks/core_animation/ca_display_link.rs
+index 6155c5f3eb4e9236342338f56e777255f1e85586..fcfb4b7e6d6790c5d1e6ac4526e2dba41f270d16 100644
+--- a/src/frameworks/core_animation/ca_display_link.rs
++++ b/src/frameworks/core_animation/ca_display_link.rs
+@@ -49,6 +49,7 @@ struct CADisplayLinkHostObject {
+     /// and the value must be `>= 1`.
+     /// <https://developer.apple.com/documentation/quartzcore/cadisplaylink/1648526-frameinterval>
+     frame_interval: NSInteger,
++    preferred_fps: NSInteger,
+ }
+ impl HostObject for CADisplayLinkHostObject {}
+ 
+@@ -62,6 +63,7 @@ pub const CLASSES: ClassExports = objc_classes! {
+     let mut host = CADisplayLinkHostObject::default();
+     // Per Apple's docs, the default frameInterval is 1.
+     host.frame_interval = 1;
++    host.preferred_fps = 60;
+     env.objc.alloc_object(this, Box::new(host), &mut env.mem)
+ }
+ 
+@@ -131,7 +133,10 @@ pub const CLASSES: ClassExports = objc_classes! {
+     // Apple docs state the value must be >= 1; clamp to keep guests alive
+     // rather than raising NSInvalidArgumentException.
+     let safe_interval = frameInterval.max(1);
+-    env.objc.borrow_mut::<CADisplayLinkHostObject>(this).frame_interval = safe_interval;
++    let host = env.objc.borrow_mut::<CADisplayLinkHostObject>(this);
++    host.frame_interval = safe_interval;
++    // Legacy frameInterval was defined on 60 Hz displays; preserve game speed.
++    host.preferred_fps = (60 / safe_interval).max(1);
+     let interval = safe_interval as f64 / 60.0;
+ 
+     let ns_timer = env.objc.borrow::<CADisplayLinkHostObject>(this).ns_timer;
+@@ -141,14 +146,21 @@ pub const CLASSES: ClassExports = objc_classes! {
+ }
+ 
+ - (NSInteger)preferredFramesPerSecond {
+-    let interval = env.objc.borrow::<CADisplayLinkHostObject>(this).frame_interval;
+-    (60 / interval.max(1)).max(1)
++    env.objc.borrow::<CADisplayLinkHostObject>(this).preferred_fps
+ }
+ 
+ - (())setPreferredFramesPerSecond:(NSInteger)fps {
+-    let safe_fps = if fps <= 0 { 60 } else { fps.min(60) };
+-    let interval = (60 / safe_fps).max(1);
+-    () = msg![env; this setFrameInterval:interval];
++    // Honor explicit 90/120 Hz requests, but never speed up a game that asks
++    // for 60. Zero means the fastest host rate, as in the iOS API.
++    let maximum = env.options.fps_limit.unwrap_or(60.0).clamp(1.0, 240.0).round() as NSInteger;
++    let safe_fps = if fps <= 0 { maximum } else { fps.min(maximum).max(1) };
++    let host = env.objc.borrow_mut::<CADisplayLinkHostObject>(this);
++    host.preferred_fps = safe_fps;
++    host.frame_interval = (maximum / safe_fps).max(1);
++    let ns_timer = host.ns_timer;
++    if ns_timer != nil {
++        set_time_interval(env, ns_timer, 1.0 / safe_fps as f64);
++    }
+ }
+ 
+ // Registers the display link with a run loop.
 diff --git a/src/frameworks/core_foundation/cf_net_service.rs b/src/frameworks/core_foundation/cf_net_service.rs
 index 1533dfd65bbdf36784c3ab42ac0398285ee4fd24..82339926df909780b8a8616db517459d97f9bb67 100644
 --- a/src/frameworks/core_foundation/cf_net_service.rs
@@ -784,6 +971,90 @@ index e4f84a2978ea4bf4cfb79d681bc08d76d56124de..291836f0094babac9df71ac879802d00
  }
  
  - (id)arguments {
+diff --git a/src/frameworks/foundation/ns_time_zone.rs b/src/frameworks/foundation/ns_time_zone.rs
+index 7d099a6cc364748929cf0fbfb328543ab1689c4e..ff0b7def70c8d6ec32b0c02943659818cee8d7d5 100644
+--- a/src/frameworks/foundation/ns_time_zone.rs
++++ b/src/frameworks/foundation/ns_time_zone.rs
+@@ -135,7 +135,7 @@ pub const CLASSES: ClassExports = objc_classes! {
+ // call to systemTimeZone re-reads it from the OS / user preferences.
+ // Since touchHLE always uses UTC we just log and no-op.
+ + (())resetSystemTimeZone {
+-    log_dbg!("NSTimeZone resetSystemTimeZone — ignored (touchHLE uses UTC)");
++    log_dbg!("NSTimeZone resetSystemTimeZone — ignored (AnyiOSEMU uses UTC)");
+ }
+ 
+ + (id)defaultTimeZone {
+@@ -248,7 +248,7 @@ pub const CLASSES: ClassExports = objc_classes! {
+ 
+     if locale != nil {
+         log_dbg!(
+-            "-[NSTimeZone localizedName:{} locale:{:?}] for zone {:?} (touchHLE ignores locale)",
++            "-[NSTimeZone localizedName:{} locale:{:?}] for zone {:?} (AnyiOSEMU ignores locale)",
+             style,
+             locale,
+             name_str,
+diff --git a/src/frameworks/foundation/ns_url_session.rs b/src/frameworks/foundation/ns_url_session.rs
+index 7af4d55a864390b6682934ddc7726468a0fd9bb0..e12926b18ec4f760705ef72796d9140df59ab04e 100644
+--- a/src/frameworks/foundation/ns_url_session.rs
++++ b/src/frameworks/foundation/ns_url_session.rs
+@@ -405,7 +405,7 @@ fn start_task_network(env: &mut crate::Environment, task: id) {
+                 if length > 64 * 1024 * 1024 {
+                     Err(url_loading::HttpError {
+                         code: -1103,
+-                        description: "The upload body exceeds touchHLE's 64 MiB safety limit."
++                        description: "The upload body exceeds AnyiOSEMU's 64 MiB safety limit."
+                             .to_string(),
+                     })
+                 } else if length == 0 {
+diff --git a/src/frameworks/foundation/url_loading.rs b/src/frameworks/foundation/url_loading.rs
+index 21b0e0c09fabb62e97ee6565ed461b09acd53067..9a9bb84bad40b1f2a8234d7fd02b2e2ceafc19bc 100644
+--- a/src/frameworks/foundation/url_loading.rs
++++ b/src/frameworks/foundation/url_loading.rs
+@@ -135,7 +135,7 @@ fn read_stream_body(env: &mut Environment, stream: id) -> Result<Vec<u8>, HttpEr
+             () = msg![env; stream close];
+             return Err(http_error(
+                 -1103,
+-                "The request body exceeds touchHLE's 64 MiB safety limit.",
++                "The request body exceeds AnyiOSEMU's 64 MiB safety limit.",
+             ));
+         }
+         body.extend_from_slice(&chunk);
+@@ -191,7 +191,7 @@ pub fn request_from_objc(
+         if length as usize > MAX_REQUEST_BODY_SIZE {
+             return Err(http_error(
+                 -1103,
+-                "The request body exceeds touchHLE's 64 MiB safety limit.",
++                "The request body exceeds AnyiOSEMU's 64 MiB safety limit.",
+             ));
+         }
+         if length == 0 {
+@@ -309,7 +309,7 @@ fn response_from_ureq(response: ureq::Response) -> HttpResult {
+     if body.len() > MAX_RESPONSE_BODY_SIZE {
+         return Err(http_error(
+             -1103,
+-            "The response exceeds touchHLE's 256 MiB safety limit.",
++            "The response exceeds AnyiOSEMU's 256 MiB safety limit.",
+         ));
+     }
+     Ok(HttpResponse {
+@@ -416,7 +416,7 @@ pub fn send_async(request: Result<HttpRequest, HttpError>, network_access: bool)
+         if active >= MAX_CONCURRENT_REQUESTS {
+             let _ = sender.send(Err(http_error(
+                 -1001,
+-                "Too many concurrent HTTP requests are active in touchHLE.",
++                "Too many concurrent HTTP requests are active in AnyiOSEMU.",
+             )));
+             return receiver;
+         }
+@@ -433,7 +433,7 @@ pub fn send_async(request: Result<HttpRequest, HttpError>, network_access: bool)
+ 
+     let worker_sender = sender.clone();
+     let spawn_result = std::thread::Builder::new()
+-        .name("touchHLE HTTP request".to_string())
++        .name("AnyiOSEMU HTTP request".to_string())
+         .spawn(move || {
+             let result = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                 perform_http_request(request)
 diff --git a/src/frameworks/metal.rs b/src/frameworks/metal.rs
 index 871bd0ca7bb2597a59c55b2fdcce92a2e5f79fe5..5bb07a16575336a4fed5a898ae137ef15bb35cee 100644
 --- a/src/frameworks/metal.rs
@@ -850,6 +1121,21 @@ index 36c2a8b688da0e744e5f35bf48b169e9183215e1..e6504839bbf181780edb80572a5f5b16
              return;
          }
  
+diff --git a/src/frameworks/uikit/ui_screen.rs b/src/frameworks/uikit/ui_screen.rs
+index b7cea11a0902e86221aa616edb56fba4b9353f24..be48ba49888142583f4adcc3eb4882a368de48a3 100644
+--- a/src/frameworks/uikit/ui_screen.rs
++++ b/src/frameworks/uikit/ui_screen.rs
+@@ -160,6 +160,10 @@ pub const CLASSES: ClassExports = objc_classes! {
+ 
+ @implementation UIScreen: NSObject
+ 
++- (NSInteger)maximumFramesPerSecond {
++    env.options.fps_limit.unwrap_or(60.0).clamp(1.0, 240.0).round() as NSInteger
++}
++
+ // MARK: - Singleton
+ 
+ + (id)mainScreen {
 diff --git a/src/frameworks/uikit/ui_view/ui_window.rs b/src/frameworks/uikit/ui_view/ui_window.rs
 index 25130279d197c09882c966a0e1e3a9e743660363..c3a033529bc3ef4033ae92e786a2256ed279e1c6 100644
 --- a/src/frameworks/uikit/ui_view/ui_window.rs
@@ -1083,7 +1369,7 @@ index eac9fa37f6fcfada5c0c081dfad6077491ea69d7..d544376169275e70b4f808a6c0910ae1
          current_thread
      );
 diff --git a/src/libc/stdlib.rs b/src/libc/stdlib.rs
-index ac318e86b2950cb6773672641f2a5deaabdb1f71..654eff3762c0d3da468a4441297746c57d2923b9 100644
+index ac318e86b2950cb6773672641f2a5deaabdb1f71..68a8bc55f9321cd5a450fffbf03ecb74886b8d4b 100644
 --- a/src/libc/stdlib.rs
 +++ b/src/libc/stdlib.rs
 @@ -98,7 +98,7 @@ fn malloc(env: &mut Environment, mut size: GuestUSize) -> MutVoidPtr {
@@ -1095,6 +1381,33 @@ index ac318e86b2950cb6773672641f2a5deaabdb1f71..654eff3762c0d3da468a4441297746c5
          size = actual_size;
      }
  
+@@ -120,7 +120,7 @@ fn malloc(env: &mut Environment, mut size: GuestUSize) -> MutVoidPtr {
+     // arithmetic when upstream issues cause initialization failures).
+     if size > 0x2000_0000 {
+         log!(
+-            "TouchHLE::libc::stdlib: malloc({:#x}) refused as out of range — returning NULL",
++            "AnyiOSEMU::libc::stdlib: malloc({:#x}) refused as out of range — returning NULL",
+             size
+         );
+         set_errno(env, crate::libc::errno::ENOMEM);
+@@ -149,7 +149,7 @@ fn calloc(env: &mut Environment, count: GuestUSize, size: GuestUSize) -> MutVoid
+         Some(v) => v,
+         None => {
+             log!(
+-                "TouchHLE::libc::stdlib: calloc({:#x}, {:#x}) overflowed — returning NULL",
++                "AnyiOSEMU::libc::stdlib: calloc({:#x}, {:#x}) overflowed — returning NULL",
+                 count,
+                 size
+             );
+@@ -162,7 +162,7 @@ fn calloc(env: &mut Environment, count: GuestUSize, size: GuestUSize) -> MutVoid
+     // instead of exhausting the guest heap.
+     if total > 0x2000_0000 {
+         log!(
+-            "TouchHLE::libc::stdlib: calloc total {:#x} refused as out of range — returning NULL",
++            "AnyiOSEMU::libc::stdlib: calloc total {:#x} refused as out of range — returning NULL",
+             total
+         );
+         set_errno(env, crate::libc::errno::ENOMEM);
 diff --git a/src/libc/sys/utsname.rs b/src/libc/sys/utsname.rs
 index fe6d0f8024a8d7fb9ab8237b5bbbe7958b8f899a..e67f6890245317acbf1afe097d8e8ee41ec66c9f 100644
 --- a/src/libc/sys/utsname.rs
@@ -1265,10 +1578,10 @@ index f19834ba9b628cb422b8d0a0319650beb3223a3e..ffa8a03a616cd423b00f09204eed4d17
              // titles). On desktop hosts (where the user is likely
              // running Mesa / Apple PowerVR / NVIDIA / AMD, all
 diff --git a/src/paths.rs b/src/paths.rs
-index 5f265c86ab8091c3ac37d76ff9467baf804ee7ea..73fb3656e87b206df49e9a317cabca95b1eac913 100644
+index 5f265c86ab8091c3ac37d76ff9467baf804ee7ea..2b689d12f46a488c51f1d28f4c1c1d47fac3eb05 100644
 --- a/src/paths.rs
 +++ b/src/paths.rs
-@@ -25,6 +25,24 @@ use std::borrow::Cow;
+@@ -25,14 +25,41 @@ use std::borrow::Cow;
  use std::io::{Read, Seek};
  use std::path::{Path, PathBuf};
  
@@ -1292,8 +1605,25 @@ index 5f265c86ab8091c3ac37d76ff9467baf804ee7ea..73fb3656e87b206df49e9a317cabca95
 +
  /// Name of the directory containing ARMv6 dynamic libraries bundled with
  /// touchHLE.
++#[cfg(target_os = "android")]
++pub const DYLIBS_DIR: &str = "AnyiOSEMU_dylibs";
++#[cfg(not(target_os = "android"))]
  pub const DYLIBS_DIR: &str = "touchHLE_dylibs";
-@@ -107,13 +125,13 @@ pub const RESOURCES_ARE_EXTERNAL_FILES: bool =
+ 
+ /// Name of the directory containing fonts bundled with touchHLE.
++#[cfg(target_os = "android")]
++pub const FONTS_DIR: &str = "AnyiOSEMU_fonts";
++#[cfg(not(target_os = "android"))]
+ pub const FONTS_DIR: &str = "touchHLE_fonts";
+ 
+ /// Name of the file containing touchHLE's default options for various apps.
++#[cfg(target_os = "android")]
++pub const DEFAULT_OPTIONS_FILE: &str = "AnyiOSEMU_default_options.txt";
++#[cfg(not(target_os = "android"))]
+ pub const DEFAULT_OPTIONS_FILE: &str = "touchHLE_default_options.txt";
+ 
+ /// The default options file to actually read.
+@@ -107,16 +134,21 @@ pub const RESOURCES_ARE_EXTERNAL_FILES: bool =
  
  /// Name of the directory where the user can put apps if they want them to
  /// appear in the app picker.
@@ -1310,7 +1640,15 @@ index 5f265c86ab8091c3ac37d76ff9467baf804ee7ea..73fb3656e87b206df49e9a317cabca95
  
  /// Names of files the user can put a wallpaper image (for the app picker) in.
  #[allow(unused)]
-@@ -125,10 +143,10 @@ pub const WALLPAPER_FILES: &[&str] = &[
++#[cfg(target_os = "android")]
++pub const WALLPAPER_FILES: &[&str] = &[
++    "AnyiOSEMU_wallpaper.png", "AnyiOSEMU_wallpaper.jpg", "AnyiOSEMU_wallpaper.jpeg",
++];
++#[cfg(not(target_os = "android"))]
+ pub const WALLPAPER_FILES: &[&str] = &[
+     "touchHLE_wallpaper.png",
+     "touchHLE_wallpaper.jpg",
+@@ -125,10 +157,10 @@ pub const WALLPAPER_FILES: &[&str] = &[
  
  /// Name of the directory where touchHLE will store sandboxed app data, e.g.
  /// the `Documents` directory.
@@ -1323,7 +1661,7 @@ index 5f265c86ab8091c3ac37d76ff9467baf804ee7ea..73fb3656e87b206df49e9a317cabca95
  
  /// Name of the directory where touchHLE will store IMG_####.PNG files saved to
  /// the Photo Album.
-@@ -137,6 +155,14 @@ pub const PHOTO_ALBUM_DIR: &str = "DCIM/100APPLE";
+@@ -137,6 +169,14 @@ pub const PHOTO_ALBUM_DIR: &str = "DCIM/100APPLE";
  /// Get a platform-specific base path needed for accessing touchHLE's
  /// user-modifiable files. This is empty on platforms other than Android.
  pub fn user_data_base_path() -> Cow<'static, Path> {
@@ -1338,7 +1676,7 @@ index 5f265c86ab8091c3ac37d76ff9467baf804ee7ea..73fb3656e87b206df49e9a317cabca95
      #[cfg(target_os = "android")]
      unsafe {
          // This is an exception to the rule that SDL2 should only be used
-@@ -170,7 +196,7 @@ pub fn user_data_base_path() -> Cow<'static, Path> {
+@@ -170,7 +210,7 @@ pub fn user_data_base_path() -> Cow<'static, Path> {
          // a standard location.
          if get_bundled_resources_path().is_some() {
              return Cow::from(PathBuf::from(
@@ -1347,7 +1685,7 @@ index 5f265c86ab8091c3ac37d76ff9467baf804ee7ea..73fb3656e87b206df49e9a317cabca95
              ));
          }
          Cow::from(Path::new("."))
-@@ -181,7 +207,7 @@ pub fn user_data_base_path() -> Cow<'static, Path> {
+@@ -181,7 +221,7 @@ pub fn user_data_base_path() -> Cow<'static, Path> {
  /// `android/app/build.gradle`. The documents provider is registered with
  /// `${applicationId}.provider` as its authority, so this must be kept in sync
  /// with the Gradle file (only the branding suffix is appended separately).
@@ -1356,7 +1694,7 @@ index 5f265c86ab8091c3ac37d76ff9467baf804ee7ea..73fb3656e87b206df49e9a317cabca95
  
  /// The authority of the documents provider that exposes the user data
  /// directory to the system file manager on Android. A build with branding
-@@ -287,7 +313,7 @@ pub fn url_for_opening_apps_dir() -> Result<String, String> {
+@@ -287,7 +327,7 @@ pub fn url_for_opening_apps_dir() -> Result<String, String> {
  /// cache was removed (both the in-memory tier and this on-disk tier) because
  /// decoded RGBA8 entries used a lot of host memory and disk space.
  pub fn remove_legacy_pvrtc_disk_cache() {

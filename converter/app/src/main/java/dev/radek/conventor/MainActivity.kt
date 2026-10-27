@@ -372,7 +372,7 @@ class MainActivity : Activity() {
         button("← AnyiOS modules") { finish() }
         val info = card()
         text("Bounded conversion, honest everywhere else", 17f, textColor, true, info)
-        text("The on-device app analyzes every IPA and automatically converts the proven subset: an executable whose whole code is one closed-integer routine becomes a signed APK whose statically recompiled entry runs through JNI. Force convert lets you choose the strict Native runtime when proven or an experimental Semi-Emulated boot-attempt APK that runs the original ARM32 guest code; a source-free preview shell remains a separate fallback. Host APKs are accepted only when they declare a complete game conversion and pass provenance and package checks.", 14f, muted, parent = info)
+        text("The on-device app analyzes every IPA and automatically converts the proven subset: an executable whose whole code is one closed-integer routine becomes a signed APK whose statically recompiled entry runs through JNI. Force convert offers the Native diagnostic runtime or a standalone Semi-Emulated APK containing AnyiOSEMU and the original IPA. Both are experimental; compatibility depends on the game and device. Host APKs are accepted only when they declare a complete game conversion and pass provenance and package checks.", 14f, muted, parent = info)
         val add = button("Choose IPA", true) { authorize() }; add.isEnabled = !SharedCatalog.isBusy()
         button("Import folder of IPAs") {
             startActivity(Intent().setClassName(this, "org.podnative.MainActivity").putExtra("importIpaFolder", true))
@@ -622,7 +622,7 @@ class MainActivity : Activity() {
     }
     private fun authorize() {
         AlertDialog.Builder(this).setTitle("Authorized files only")
-            .setMessage("Confirm that you own this IPA or have permission to convert it. Protection mechanisms will not be bypassed. The source IPA is retained in app-private storage for analysis until you delete this library entry. Force convert offers the strict Native runtime only when its proof passes, plus an experimental Semi-Emulated boot-attempt APK containing the authorized 32-bit ARM executable and bundle. A source-free preview shell is a separate fallback. Complete-game host APKs still require the strict conversion contract.")
+            .setMessage("Confirm that you own this IPA or have permission to convert it. Protection mechanisms will not be bypassed. The source IPA is retained in app-private storage for analysis until you delete this library entry. Force convert offers a Native diagnostic boot-attempt runtime and a standalone Semi-Emulated AnyiOSEMU APK for authorized ARM32 games. A source-free preview shell is a separate fallback. Complete-game host APKs still require the strict conversion contract.")
             .setNegativeButton("Cancel", null).setPositiveButton("I have permission") { _, _ ->
                 startActivityForResult(Intent(Intent.ACTION_OPEN_DOCUMENT).apply { type = "*/*"; addCategory(Intent.CATEGORY_OPENABLE) }, pickerIpa)
             }.show()
@@ -862,7 +862,7 @@ class MainActivity : Activity() {
             val buildCard = card()
             text("Host APK validation/attachment · ${conversion.optInt("percent", 0)}% · ${conversion.optString("status", "NOT_BUILT")}", 16f, statusColor(conversion.optString("status")), true, buildCard)
             text(conversion.optString("message"), 12f, muted, parent = buildCard)
-            text("This is the complete-game APK path; it requires statically recompiled reachable code, API replacements, resources and lifecycle. Force convert offers the proven bounded Native runtime or a Semi-Emulated boot-attempt APK that leaves diagnostics open at a real runtime boundary. A source-free installable preview shell remains a separate fallback.", 12f, muted, parent = buildCard)
+            text("This is the complete-game APK path; it requires statically recompiled reachable code, API replacements, resources and lifecycle. Force convert offers a Native diagnostic boot-attempt runtime or a standalone Semi-Emulated AnyiOSEMU APK. A source-free installable preview shell remains a separate fallback.", 12f, muted, parent = buildCard)
         }
         report.optJSONObject("deviceRecompilation")?.takeIf { it.optString("status") == "PROVEN" && it.optInt("coveragePercent", 0) == 100 }?.let { proof ->
             val proofCard = card()
@@ -906,7 +906,7 @@ class MainActivity : Activity() {
         button("View full machine-readable report") { showText("Conversion report", report.toString(2)) }
         button("View real conversion logs") { showText("Logs", File(dir, "conversion.jsonl").takeIf { it.isFile }?.readText() ?: "No logs") }
         text("APK conversion", 22f, textColor, true)
-        text("A general iOS-to-Android game static recompilation backend and framework/API replacements are not implemented. The Native runtime is limited to executables statically proven to be exactly one closed-integer routine; its signed APK runs the recompiled entry through JNI. The Semi-Emulated runtime is a separate boot-attempt APK containing the original 32-bit ARM executable and bundle; it runs without an artificial instruction/time cutoff and stops at a real runtime boundary while leaving diagnostics open. Framework/input coverage remains game-specific, rendering is not connected to Android EGL/GLES, and gameplay is not claimed. A branded preview shell with no executable remains an explicit fallback.", 14f, muted)
+        text("A general iOS-to-Android game static recompilation backend and framework/API replacements are not implemented. The Native runtime is the former diagnostic guest-CPU boot-attempt path; its renderer is not connected to Android EGL/GLES. The Semi-Emulated runtime packages AnyiOSEMU and the original ARM32 IPA into an independent APK. Neither path guarantees compatibility or gameplay. A branded preview shell with no executable remains an explicit fallback.", 14f, muted)
         button("Copy host analysis command") {
             val abi = preferences.getString("target_abi", "auto") ?: "auto"
             val suffix = if (abi == "auto") "" else " --target-abi $abi"
@@ -977,120 +977,91 @@ class MainActivity : Activity() {
             runCatching { GameRuntimeArtifactContract.validate(report, dir, gameName) }.getOrNull()
         } else null
         if (gameRuntimeConversion?.optString("status") == "GENERATED" && gameOutputFile == null) {
-            text("The Semi-Emulated runtime APK is missing or its digest/metadata is invalid; it cannot be installed or shared.", 13f, statusColor("FAILED"))
+            text("The Native runtime APK is missing or its digest/metadata is invalid; it cannot be installed or shared.", 13f, statusColor("FAILED"))
         }
         report.optJSONObject("gameRuntimeBuildProgress")?.takeIf { it.optString("status") == "FAILED" }?.let { build ->
-            text("Semi-Emulated runtime build failed: ${build.optString("message")}", 13f, statusColor("FAILED"))
+            text("Native runtime build failed: ${build.optString("message")}", 13f, statusColor("FAILED"))
         }
         if (gameOutputFile != null) {
-            val executableBytes = gameRuntimeConversion?.optLong("executableBytes", 0L) ?: 0L
-            val machoFormat = gameRuntimeConversion?.optString("machoFormat").orEmpty().ifBlank { "Mach-O" }
-            val translatedIncluded = gameRuntimeConversion?.optBoolean("translatedPortableCIncluded", false) == true
-            text("Semi-Emulated runtime · independent boot-attempt APK · $machoFormat executable, $executableBytes byte(s) packed", 13f, accent, true)
-            text(
-                if (translatedIncluded) {
-                    "A verified portable-C ARM32 translation and its memory payload are packaged and selected at boot. The current runner is not connected to Android EGL/GLES, so pixels and gameplay are not verified; execution has no frame-based timeout and stops only at a real runtime boundary."
-                } else {
-                    "Runs the real guest boot with no artificial instruction or time cutoff, so an implemented render loop can stay alive. It stops only at a real runtime boundary such as an unimplemented call, guest exception, memory/execution fault, or setup failure; the diagnostic screen stays open instead of crashing. This is not the complete-game static recompilation contract."
-                },
-                12f,
-                muted,
-            )
+            val translated = gameRuntimeConversion?.optBoolean("translatedPortableCIncluded", false) == true
+            text("Native runtime · independent diagnostic boot-attempt APK", 13f, accent, true)
+            text(if (translated) "Includes the validated portable-C handoff. The runner has no Android EGL/GLES renderer; gameplay is unverified."
+                else "Runs the original ARM32 code in the diagnostic guest runtime. It has no Android EGL/GLES renderer and may stop at an unsupported call; gameplay is unverified.", 12f, muted)
             button("Install ${gameOutputFile.name}", true) { installArtifact(dir, gameOutputFile.name) }
             button("Share ${gameOutputFile.name}") { shareResultApk(dir, gameOutputFile.name) }
-            if (app.has("sha256")) button("Open installed Semi-Emulated runtime") {
-                val gamePackage = gameRuntimeConversion?.optString("package").orEmpty()
-                val intent = gamePackage.takeIf { it.isNotBlank() }?.let { packageManager.getLaunchIntentForPackage(it) }
-                if (intent == null) Toast.makeText(this, "Semi-Emulated runtime is not installed or not visible to Android", Toast.LENGTH_LONG).show() else startActivity(intent)
+            button("Open installed Native runtime") {
+                val intent = gameRuntimeConversion?.optString("package")?.let { packageManager.getLaunchIntentForPackage(it) }
+                if (intent == null) Toast.makeText(this, "Native runtime is not installed or not visible to Android", Toast.LENGTH_LONG).show() else startActivity(intent)
             }
         }
-        if (File(dir, "source.bin").isFile && app.has("sha256") && hostOutputFile == null) {
+        val anyioseConversion = report.optJSONObject("anyioseConversion")
+        val anyioseName = ArtifactNames.anyioseApkFileName(report)
+        val anyioseFile = if (anyioseConversion?.optString("status") == "GENERATED") {
+            runCatching { AnyiOSEmuArtifactContract.validate(report, dir, anyioseName) }.getOrNull()
+        } else null
+        if (anyioseConversion?.optString("status") == "GENERATED" && anyioseFile == null)
+            text("The Semi-Emulated APK is missing or failed its integrity check.", 13f, statusColor("FAILED"))
+        report.optJSONObject("anyioseBuildProgress")?.takeIf { it.optString("status") == "FAILED" }?.let { build ->
+            text("Semi-Emulated build failed: ${build.optString("message")}", 13f, statusColor("FAILED"))
+        }
+        if (anyioseFile != null) {
+            text("Semi-Emulated · standalone AnyiOSEMU game APK", 13f, accent, true)
+            text("Contains the original IPA, AnyiOSEMU, SDL and ANGLE. It starts this game directly and keeps its own private saves, so AnyiOS is not required after installation. ARM32 compatibility and gameplay still need device testing.", 12f, muted)
+            button("Install ${anyioseFile.name}", true) { installArtifact(dir, anyioseFile.name) }
+            button("Share ${anyioseFile.name}") { shareResultApk(dir, anyioseFile.name) }
+            button("Open installed Semi-Emulated game") {
+                val intent = anyioseConversion?.optString("package")?.let { packageManager.getLaunchIntentForPackage(it) }
+                if (intent == null) Toast.makeText(this, "Game is not installed or not visible to Android", Toast.LENGTH_LONG).show() else startActivity(intent)
+            }
+        }
+        if (File(dir, "source.bin").isFile && app.has("sha256")) {
             val deviceConvertible = report.optJSONObject("deviceRecompilation")?.let {
                 it.optString("status") == "PROVEN" && it.optInt("coveragePercent", 0) == 100 && it.optInt("functionCount", 0) == 1
             } == true
             val translatedInput = File(dir, "translated-game-runtime-input.zip")
-            if (deviceConvertible) {
-                text("Native runtime is available for this IPA: the whole executable passed the strict one-routine closed-integer proof. This bounded route is not a general iOS game converter.", 12f, muted)
-            } else {
-                text(
-                    if (translatedInput.isFile) {
-                        "A portable-C handoff ZIP is staged but is not accepted as linked code yet. The Semi-Emulated builder will revalidate its ARM64 ELF, dependencies, JNI entry, selected-executable binding, payload hashes, alignment, signature and install structure before use. Rendering and gameplay remain unverified."
-                    } else {
-                        "The strict Native runtime proof did not pass for this IPA. Semi-Emulated builds a separate boot-attempt APK from the original 32-bit ARM executable, bundle and guest runtime. An optional portable-C handoff is accepted only after architecture, dependency, export, JNI-entry, payload and provenance checks. The current runner has no Android EGL/GLES renderer, so neither route promises gameplay."
-                    },
-                    12f,
-                    muted,
-                )
-                button(if (translatedInput.isFile) "Replace portable-C handoff ZIP" else "Import portable-C handoff ZIP") {
-                    chooseTranslatedRuntimeInput(dir)
-                }
+            text("Native builds the former diagnostic boot-attempt runtime. Semi-Emulated embeds AnyiOSEMU and this IPA in an independent APK; it supports ARM32 games only. Neither bypasses encryption or guarantees gameplay.", 12f, muted)
+            button(if (translatedInput.isFile) "Replace Native portable-C handoff ZIP" else "Import Native portable-C handoff ZIP") {
+                chooseTranslatedRuntimeInput(dir)
             }
-            val nativeRebuilt = report.optJSONObject("deviceConversion")
-                ?.optString("status") == "GENERATED_ON_DEVICE"
             dangerButton("Force convert · choose runtime") {
-                showForceConvertChoices(
-                    dir,
-                    deviceConvertible,
-                    nativeRebuilt,
-                    gameOutputFile != null,
-                    translatedInput.isFile,
-                )
+                showForceConvertChoices(dir, gameOutputFile != null, anyioseFile != null, translatedInput.isFile)
             }
-            if (!deviceConvertible) {
-                button(if (placeholderOutputFile != null) "Rebuild preview APK" else "Build preview shell instead") {
-                    startForceConvert(dir, false)
-                }
-            }
+            if (deviceConvertible && hostOutputFile == null)
+                button("Build proven single-routine APK") { startForceConvert(dir, true) }
+            if (!deviceConvertible)
+                button(if (placeholderOutputFile != null) "Rebuild preview APK" else "Build preview shell instead") { startForceConvert(dir, false) }
         }
         button("Delete shared entry") { confirmDelete(dir) }
     }
 
-    private fun showForceConvertChoices(
-        dir: File,
-        nativeConvertible: Boolean,
-        nativeBuilt: Boolean,
-        semiEmulatedBuilt: Boolean,
-        translatedInputPresent: Boolean,
-    ) {
-        val nativeLabel = if (nativeConvertible) "Native runtime" else "Native runtime unavailable"
-        val semiEmulatedLabel = "Semi-Emulated runtime"
-        val rebuildDescription = buildString {
-            if (nativeBuilt)
-                append("\nAn existing Native runtime APK will be rebuilt if selected.")
-            if (semiEmulatedBuilt)
-                append("\nAn existing Semi-Emulated APK will be rebuilt if selected.")
+    private fun showForceConvertChoices(dir: File, nativeBuilt: Boolean, semiEmulatedBuilt: Boolean, translatedInputPresent: Boolean) {
+        val message = "Native runtime builds the existing diagnostic guest-CPU boot-attempt APK. " +
+            (if (translatedInputPresent) "The staged portable-C handoff will be revalidated. " else "") +
+            "It does not have an Android EGL/GLES renderer.\n\n" +
+            "Semi-Emulated builds a self-contained APK containing AnyiOSEMU and the IPA, launches only this game, " +
+            "and uses the device's current resolution and fastest supported refresh mode. AnyiOS can be uninstalled afterwards. " +
+            "It needs an unencrypted ARM32 slice; rendering, FPS and gameplay depend on the game and device." +
+            (if (nativeBuilt || semiEmulatedBuilt) "\n\nSelecting an existing runtime rebuilds that APK." else "")
+        AlertDialog.Builder(this).setTitle("Choose a runtime").setMessage(message)
+            .setPositiveButton("Native runtime") { _, _ -> startGameRuntimeBuild(dir) }
+            .setNeutralButton("Semi-Emulated runtime") { _, _ -> startAnyiOSEmuBuild(dir) }
+            .setNegativeButton("Cancel", null).show()
+    }
+
+    private fun startAnyiOSEmuBuild(dir: File) {
+        if (Jobs.busy) { Toast.makeText(this, "A job is already running", Toast.LENGTH_SHORT).show(); return }
+        if (!File(dir, "source.bin").isFile) { Toast.makeText(this, "Retained IPA not found", Toast.LENGTH_LONG).show(); return }
+        Jobs.begin("Building standalone Semi-Emulated game APK")
+        returnToDetailAfterJob = dir
+        wasBusy = true
+        val started = Jobs.tryRun {
+            AnyiOSEmuApkBuilder(applicationContext).build(dir) { percent, message -> Jobs.update(percent, message) }
         }
-        val nativeDescription = if (nativeConvertible) {
-            "Native runtime is available only because 100% of this executable passed the strict " +
-                "single closed-integer-routine proof. It builds a signed APK that runs the " +
-                "statically recompiled routine through JNI; it is not a general game converter."
-        } else {
-            "Native runtime is unavailable for this IPA because the strict 100% single-routine " +
-                "proof did not pass."
+        if (!started) {
+            wasBusy = false; returnToDetailAfterJob = null
+            Toast.makeText(this, "A job is already running", Toast.LENGTH_SHORT).show(); return
         }
-        val translatedDescription = if (translatedInputPresent)
-            "If you select Semi-Emulated, the staged portable-C handoff will be revalidated. "
-        else
-            "No portable-C handoff is staged; Semi-Emulated uses the original guest code. "
-        val message = nativeDescription + "\n\n" +
-            "Semi-Emulated runtime builds an independent signed APK with its own MAIN/LAUNCHER " +
-            "activity. It boots the original ARM32 executable and bundle through the guest " +
-            "runtime; the boot attempt stops at an unsupported call or real runtime fault. " +
-            translatedDescription + rebuildDescription + "\n\n" +
-            "The current runner has no Android EGL/GLES renderer, so visible output and gameplay " +
-            "are not verified. This is not a complete static game conversion."
-        val dialog = AlertDialog.Builder(this)
-            .setTitle("Choose a runtime")
-            .setMessage(message)
-            .setPositiveButton(nativeLabel) { _, _ ->
-                if (nativeConvertible)
-                    startForceConvert(dir, true)
-            }
-            .setNeutralButton(semiEmulatedLabel) { _, _ -> startGameRuntimeBuild(dir) }
-            .setNegativeButton("Cancel", null)
-            .create()
-        dialog.show()
-        dialog.getButton(AlertDialog.BUTTON_POSITIVE).isEnabled = nativeConvertible
+        home()
     }
 
     private fun startForceConvert(dir: File, convertible: Boolean) {
@@ -1230,9 +1201,9 @@ class MainActivity : Activity() {
         }
         Jobs.begin(
             if (File(dir, "translated-game-runtime-input.zip").isFile)
-                "Building translated Semi-Emulated runtime APK"
+                "Building translated Native runtime APK"
             else
-                "Building Semi-Emulated boot-attempt APK",
+                "Building Native boot-attempt APK",
         )
         returnToDetailAfterJob = dir
         wasBusy = true
@@ -1369,10 +1340,13 @@ class MainActivity : Activity() {
         // failure as "app not installed", which leaves nothing to act on.
         val expectedPackage = runCatching {
             val report = JSONObject(File(dir, "report.json").readText())
-            report.optJSONObject("deviceConversion")?.optString("package").orEmpty()
-                .ifBlank { report.optJSONObject("hostConversion")?.optString("package").orEmpty() }
-                .ifBlank { report.optJSONObject("gameRuntimeConversion")?.optString("package").orEmpty() }
-                .ifBlank { report.optJSONObject("placeholderConversion")?.optString("package").orEmpty() }
+            when (name) {
+                ArtifactNames.anyioseApkFileName(report) -> report.optJSONObject("anyioseConversion")?.optString("package").orEmpty()
+                ArtifactNames.gameApkFileName(report) -> report.optJSONObject("gameRuntimeConversion")?.optString("package").orEmpty()
+                ArtifactNames.placeholderApkFileName(report) -> report.optJSONObject("placeholderConversion")?.optString("package").orEmpty()
+                else -> report.optJSONObject("deviceConversion")?.optString("package").orEmpty()
+                    .ifBlank { report.optJSONObject("hostConversion")?.optString("package").orEmpty() }
+            }
         }.getOrDefault("")
         if (expectedPackage.isNotBlank()) {
             val audit = runCatching { InstallAudit.inspect(this, file, expectedPackage) }.getOrNull()

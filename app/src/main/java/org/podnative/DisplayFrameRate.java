@@ -2,6 +2,7 @@ package org.podnative;
 
 import android.app.Activity;
 import android.content.Context;
+import android.graphics.Point;
 import android.os.Build;
 import android.view.Display;
 import android.view.WindowManager;
@@ -75,6 +76,16 @@ final class DisplayFrameRate {
         WindowManager.LayoutParams attributes = activity.getWindow().getAttributes();
         attributes.preferredDisplayModeId = selected.getModeId();
         activity.getWindow().setAttributes(attributes);
+    }
+
+    /** Current display size capped to the user's short-edge render setting. */
+    static int[] renderSize(Context context, int shortEdgeLimit) {
+        Display display = displayFor(context);
+        if (display == null)
+            return new int[] {0, 0};
+        Point size = new Point();
+        display.getRealSize(size);
+        return SurfaceResolution.dimensions(size.x, size.y, shortEdgeLimit, 100);
     }
 
     static String formatHz(float rate) {

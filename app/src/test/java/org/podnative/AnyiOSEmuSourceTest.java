@@ -40,6 +40,15 @@ public class AnyiOSEmuSourceTest {
                 .put("architecture", "ARM64 + ARM32 universal (ARM32 selected: ARMv7)"));
 
         assertEquals(true, game.canLaunchInAnyiOSEMU());
+        assertEquals("ARM64 + ARM32", game.architectureChip());
+    }
+
+    @Test
+    public void olderUniversalLabelsStillShowArm64FirstInTheChip() throws Exception {
+        File directory = temporary.newFolder("game-old-universal");
+        GameLibrary.Game game = new GameLibrary.Game(directory,
+            new JSONObject().put("kind", "IPA").put("architecture", "ARMv7 · ARM32 + ARM64"));
+        assertEquals("ARM64 + ARM32", game.architectureChip());
     }
 
     @Test

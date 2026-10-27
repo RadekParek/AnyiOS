@@ -2,14 +2,14 @@
 
 ## Scope
 
-AnyiOS remains the Android app shell: its module chooser, library/import/export flow, settings and design are preserved, as is the separate Converter. The Android game-launch path uses the pinned Rust/SDL guest runtime under the first-party product name **AnyiOSEMU**. This is a replacement of the game-execution backend, not a replacement of the AnyiOS product UI or Converter. The Converter's conversion backend remains separate; its requested Force convert choices and shared-icon handling are part of the current UI work.
+AnyiOS remains the Android app shell: its module chooser, library/import/export flow, settings and design are preserved, as is the separate Converter. The Android game-launch path uses the pinned Rust/SDL guest runtime under the first-party product name **AnyiOSEMU**. This is a replacement of the game-execution backend, not a replacement of the AnyiOS product UI or Converter. Converter keeps its existing native diagnostic backend and can also package an independent one-game AnyiOSEMU APK.
 
 Upstream legal notices, MPL-2.0 attribution and source provenance are intentionally retained in [`THIRD_PARTY_NOTICES.md`](../THIRD_PARTY_NOTICES.md) and the packaged runtime notices. The application-facing name is AnyiOSEMU. This integration does not claim that all games run.
 
 ## Reproducible engine source
 
 - `third_party/anyiose-runtime-revision.txt` records the exact upstream source commit.
-- `third_party/hyperhle` is the source submodule, including its pinned SDL, Dynarmic, libxml2, OpenAL Soft and stb submodules.
+- `third_party/anyiose-engine` is the source submodule, including its pinned SDL, Dynarmic, libxml2, OpenAL Soft and stb submodules.
 - `third_party/anyiose-runtime-patches/AnyiOSEMU.patch` is the reviewed AnyiOS integration/rebranding patch. It is applied only at the recorded source revision.
 - `scripts/prepare-anyiose-runtime.sh` initializes/checks source and nested revisions, applies or verifies the patch, and checks required notices.
 - `third_party/anyiose-runtime-boost-version.txt` and `scripts/prepare-anyiose-runtime-boost.sh` provide the exact header dependency expected by the Rust Dynarmic wrapper.
@@ -31,6 +31,8 @@ The activity must only expose private storage to the runtime, refuse traversal/s
 ## Runtime controls and driver behavior
 
 - Auto FPS cap requests the fastest supported refresh mode at the current resolution. The requested and effective caps are reported separately from measured presentation FPS.
+- Dynamic resolution is off by default. Its selectable minimum scale controls the Android SDL presentation surface based on measured swaps, with hysteresis and restoration if FPS does not improve. It does not currently resize all guest EAGL/offscreen buffers, so it may not improve performance. Touch normalization uses the view dimensions when the surface buffer is scaled.
+- The CADisplayLink implementation honors explicit higher-FPS requests up to the effective display cap; legacy 60-Hz frame intervals remain unchanged. A game that deliberately requests 60 FPS is not forced to run at 120.
 - The performance HUD is off by default and reports process CPU, RAM PSS, driver-reported graphics PSS and measured presentation FPS. GPU utilization is shown as unavailable if the platform does not expose it.
 - Max clocks is off by default. It requests supported Android performance hints and high-capacity CPU affinity; the OS controls frequencies and may limit or ignore the request.
 - ANGLE is the bundled default and native GLES is an explicit preference. The runtime records whether the requested driver initialized or whether it fell back.
@@ -40,8 +42,10 @@ The activity must only expose private storage to the runtime, refuse traversal/s
 
 The independent C++ ANGLE surface test is not the SDL guest window. Neither a GL call count, instruction count nor process exit proves visible game rendering.
 
+## Converter runtime choices
+
+**Native runtime** runs the existing `game-runtime-v1` boot-attempt builder (previously the Semi-Emulated choice), not the strict single-routine converter. **Semi-Emulated** builds a distinct `anyiose-standalone-v1` APK with the retained IPA, AnyiOSEMU, SDL, ANGLE dependency closure and notices. Its launcher verifies and copies that one IPA into its own private storage and starts it directly using the current display mode/maximum available refresh. No AnyiOS installation, library picker or app data is needed after installation. The Semi-Emulated builder rejects unverified/encrypted ARM32 source; ARM64-only is unsupported by AnyiOSEMU. The existing Native diagnostic builder retains its previous source eligibility. Generated metadata is source/signer/hash-bound and explicitly does not claim gameplay verification.
+
 ## Validation status and release gate
 
-Formatting, script syntax, source-patch checks and repository diff checks have passed locally. The current sandbox lacks Java, Gradle and the Android SDK, so the Android/Cargo build and JVM tests have not been run here. This PR's CI must pass before merging. No Android device test has been performed; the Android user experience still requires a real ARM32 game menu, touch response and settings/fallback behavior to be checked on-device. See [`DEVICE_TESTING.md`](DEVICE_TESTING.md), [`ARCHITECTURE.md`](ARCHITECTURE.md) and [`ANGLE_INTEGRATION.md`](ANGLE_INTEGRATION.md).
-
-The native Converter test script is intentionally not run in this task. Retain original imports; do not upload game IPAs or extracted app assets to the repository, CI, issue reports or test artifacts.
+Formatting and a full pinned-patch reverse/applicability check passed locally. Java and Kotlin sources and focused JVM controller, source-validation and library-closure tests were checked with temporary Android/signing stubs. These checks do not validate Gradle, signing, native/Cargo compilation or APK packaging; those remain CI gates. No Android device or performance test has been performed. See [`DEVICE_TESTING.md`](DEVICE_TESTING.md) and [`ANGLE_INTEGRATION.md`](ANGLE_INTEGRATION.md). Retain original imports and do not upload game IPAs or extracted app assets to the repository, CI, issues or test artifacts.

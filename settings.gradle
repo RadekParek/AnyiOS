@@ -9,3 +9,5 @@ project(":compat-runtime-v1").projectDir = file("converter/compat-runtime-v1")
 project(":converted-template").projectDir = file("converter/converted-template")
 project(":gameruntime-template").projectDir = file("converter/gameruntime-template")
 project(":placeholder-template").projectDir = file("converter/placeholder-template")
+include ':anyiose-template'
+project(':anyiose-template').projectDir = file('converter/anyiose-template')

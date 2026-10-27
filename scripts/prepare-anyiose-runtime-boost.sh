@@ -2,7 +2,7 @@
 # Fetch the exact Boost release required to build the pinned AnyiOSEMU Dynarmic wrapper.
 set -euo pipefail
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
-RUNTIME_ROOT="$ROOT/third_party/hyperhle"
+RUNTIME_ROOT="$ROOT/third_party/anyiose-engine"
 BOOST_DIR="$RUNTIME_ROOT/vendor/boost"
 VERSION=$(tr -d '\r\n' < "$ROOT/third_party/anyiose-runtime-boost-version.txt")
 [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || {
@@ -42,4 +42,4 @@ if ! check_version "$EXTRACTED/boost/version.hpp"; then
   exit 1
 fi
 mv "$EXTRACTED" "$BOOST_DIR"
-echo "Prepared Boost $VERSION at third_party/hyperhle/vendor/boost"
+echo "Prepared Boost $VERSION at third_party/anyiose-engine/vendor/boost"

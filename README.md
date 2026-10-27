@@ -8,7 +8,7 @@ An Android app with the existing **AnyiOS** launcher, shared private game librar
 - Imports iOS IPA files or extracted `.app` bundles into one private library shared with Converter. Original imports remain untouched.
 - Runs eligible **ARM32** iPhone OS applications. Universal ARM64+ARM32 bundles use their validated ARM32 slice; ARM64-only apps are unsupported.
 - Keeps runtime data private per game, with folder and ZIP export actions. Folder export creates an `org.anyios` directory in a user-selected SAF location when Android permits it.
-- Defaults the emulator frame cap to the fastest supported display mode at the current resolution. An optional performance HUD reports process CPU, RAM PSS, driver-reported graphics PSS and measured presentation FPS; GPU utilization is not reported where Android does not expose it.
+- Defaults the emulator frame cap to the fastest supported display mode at the current resolution. An optional performance HUD reports process CPU, RAM PSS, driver-reported graphics PSS and measured presentation FPS; GPU utilization is not reported where Android does not expose it. Dynamic resolution is off by default; its selectable range adjusts the Android presentation surface in response to measured FPS. Actual game renderbuffers can remain full-size, so a speedup is not guaranteed.
 - Provides an off-by-default **Max clocks** request for best-effort Android performance hints and high-capacity CPU affinity. Android controls frequencies; AnyiOSEMU cannot force them.
 - Builds the bundled ANGLE EGL/GLES libraries from the pinned Google ANGLE source. ANGLE is the default emulator driver; native GLES is an explicit setting, and any fallback is recorded.
 - Keeps the original C++ import inspection and standalone ANGLE surface test as diagnostics; they are not the game execution engine.
@@ -17,6 +17,8 @@ An Android app with the existing **AnyiOS** launcher, shared private game librar
 **Compatibility, visible rendering and gameplay require real-device, per-game validation.** A successful compile, clean exit code, instruction count or GL-call log is not proof that a game menu is visible or playable. See [device testing](docs/DEVICE_TESTING.md) and [current progress](docs/PROGRESS.md).
 
 ## Runtime and architecture
+
+Force convert offers **Native runtime**, which uses the existing diagnostic game-runtime boot attempt, and **Semi-Emulated**, which packages an independent APK with the original IPA and AnyiOSEMU. The latter launches one game and does not require AnyiOS to remain installed; it is not native recompilation and playability is unverified. The Semi-Emulated route requires an analyzed, unencrypted ARM32 slice.
 
 AnyiOS launches an imported game in the pinned Rust/SDL AnyiOSEMU runtime. The Android activity forwards the selected source, private per-game data directory, display-aware frame cap, performance options, ANGLE/native-GLES preference, Force Composition and verbose-GLES preference. Source revisions, selected settings and bounded session logs are recorded in the game's report.
 
@@ -52,6 +54,6 @@ The Android workflow prepares pinned sources, Boost/Rust/ANGLE, runs lint and JV
 
 ## Artifacts and project records
 
-[Android build workflow](https://github.com/RadekParek/AnyiOS/actions/workflows/android.yml) publishes APK and PC diagnostic artifacts after successful jobs. Build provenance and SHA-256 checksums accompany each artifact. Release signing/publication remains subject to the repository's existing signing and license gates.
+[Android build workflow](https://github.com/RadekParek/AnyiOS/actions/workflows/build.yml) publishes APK and PC diagnostic artifacts after successful jobs. Build provenance and SHA-256 checksums accompany each artifact. Release signing/publication remains subject to the repository's existing signing and license gates.
 
 Historical engineering reports describe the earlier independent C++ game-runtime prototype and its tests. The active Android game path is AnyiOSEMU; see the dated status in [`docs/PROGRESS.md`](docs/PROGRESS.md) and the [integration notes](docs/ANYIOS_INTEGRATION.md).

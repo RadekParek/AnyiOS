@@ -23,7 +23,7 @@ AnyiOS launcher / module chooser
 
 The Android app shell, module navigation, library, Converter and visual design remain AnyiOS-owned. `AnyiOSEmuActivity` is the Android host for the pinned Rust/SDL engine; the activity passes the selected game and per-game private data directory, handles result/report transfer, and forwards saved runtime settings. SDL forwards Android touch and lifecycle events to the guest runtime.
 
-The source is pinned as a submodule at `third_party/hyperhle`. `scripts/prepare-anyiose-runtime.sh` verifies its revision and nested dependencies, then applies the reviewed source-form patch in `third_party/anyiose-runtime-patches/AnyiOSEMU.patch`. Upstream notices, licenses and source provenance remain intact; the exact Boost version is recorded in `third_party/anyiose-runtime-boost-version.txt`. These source paths and upstream identifiers are build details, not product branding.
+The source is pinned as a submodule at `third_party/anyiose-engine`. `scripts/prepare-anyiose-runtime.sh` verifies its revision and nested dependencies, then applies the reviewed source-form patch in `third_party/anyiose-runtime-patches/AnyiOSEMU.patch`. Upstream notices, licenses and source provenance remain intact; the exact Boost version is recorded in `third_party/anyiose-runtime-boost-version.txt`. These source paths and upstream identifiers are build details, not product branding.
 
 ## Responsibilities retained in the AnyiOS shell
 

@@ -34,6 +34,10 @@ internal object ArtifactNames {
     fun gameApkFileName(report: JSONObject): String =
         apkFileName(report).removeSuffix(".apk") + "-game.apk"
 
+    /** Independent one-game AnyiOSEMU APK, distinct from the native diagnostic runtime. */
+    fun anyioseApkFileName(report: JSONObject): String =
+        apkFileName(report).removeSuffix(".apk") + "-anyiose.apk"
+
     // ---- Android package id, version code and expansion OBB ----------------
 
     /**

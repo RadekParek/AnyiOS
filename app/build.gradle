@@ -2,7 +2,7 @@ plugins { id 'com.android.application' }
 apply plugin: 'com.github.willir.rust.cargo-ndk-android'
 apply plugin: 'org.jetbrains.kotlin.android'
 
-def anyioseRuntimeRoot = file("$rootDir/third_party/hyperhle")
+def anyioseRuntimeRoot = file("$rootDir/third_party/anyiose-engine")
 def anyioseRuntimeRevision = file("$rootDir/third_party/anyiose-runtime-revision.txt").text.trim()
 def anyioseRuntimeAssets = layout.buildDirectory.dir('generated/anyioseRuntimeAssets')
 def anyioseDebugNoticeAssets = layout.buildDirectory.dir('generated/anyioseRuntimeNotices/debug')
@@ -13,6 +13,10 @@ def syncAnyiOSEmuRuntimeAssets = tasks.register('syncAnyiOSEmuRuntimeAssets', Sy
         include 'touchHLE_fonts/**'
         include 'touchHLE_default_options.txt'
         include 'touchHLE_wallpaper.png'
+        eachFile { details ->
+            details.path = details.path.replaceFirst('^touchHLE_', 'AnyiOSEMU_')
+        }
+        includeEmptyDirs = false
     }
     // Keep the upstream and bundled dependency notices alongside the packaged resources.
     from(anyioseRuntimeRoot) {

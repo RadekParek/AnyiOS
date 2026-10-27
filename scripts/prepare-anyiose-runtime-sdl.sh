@@ -2,7 +2,7 @@
 # Patch the pinned rust-sdl2 SDL submodule used by Cargo's bundled Android build.
 set -euo pipefail
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
-RUNTIME_ROOT="$ROOT/third_party/hyperhle"
+RUNTIME_ROOT="$ROOT/third_party/anyiose-engine"
 PATCH="$ROOT/third_party/anyiose-runtime-patches/SDL-Android-NDK-27.patch"
 
 [[ -f "$PATCH" ]] || { echo "Missing reviewed SDL compatibility patch: $PATCH" >&2; exit 1; }

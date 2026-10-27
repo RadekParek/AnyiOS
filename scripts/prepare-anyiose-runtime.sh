@@ -2,7 +2,7 @@
 # Initialize pinned AnyiOSEMU engine sources and apply reviewed compatibility patches.
 set -euo pipefail
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
-RUNTIME_ROOT="$ROOT/third_party/hyperhle"
+RUNTIME_ROOT="$ROOT/third_party/anyiose-engine"
 PIN_FILE="$ROOT/third_party/anyiose-runtime-revision.txt"
 PATCH="$ROOT/third_party/anyiose-runtime-patches/AnyiOSEMU.patch"
 SDL="$RUNTIME_ROOT/vendor/SDL"
@@ -15,7 +15,7 @@ PIN=$(tr -d '\r\n' < "$PIN_FILE")
   exit 1
 }
 
-git -C "$ROOT" submodule update --init --recursive third_party/hyperhle
+git -C "$ROOT" submodule update --init --recursive third_party/anyiose-engine
 ACTUAL=$(git -C "$RUNTIME_ROOT" rev-parse HEAD)
 [[ "$ACTUAL" == "$PIN" ]] || {
   echo "AnyiOSEMU engine revision mismatch: expected $PIN, found $ACTUAL" >&2
