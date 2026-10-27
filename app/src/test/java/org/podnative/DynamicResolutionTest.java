@@ -42,6 +42,13 @@ public class DynamicResolutionTest {
         assertEquals(120.0, dynamic.target(), 0.001);
     }
 
+    @Test public void nativeDefaultKeepsBothOrientationsAtTheViewSize() {
+        assertArrayEquals(new int[] {1440, 3200}, SurfaceResolution.dimensions(1440, 3200, 0, 100));
+        assertArrayEquals(new int[] {3200, 1440}, SurfaceResolution.dimensions(3200, 1440, 0, 100));
+        assertArrayEquals(new int[] {1080, 2400}, SurfaceResolution.dimensions(1440, 3200, 0, 75));
+        assertArrayEquals(new int[] {2400, 1080}, SurfaceResolution.dimensions(3200, 1440, 0, 75));
+    }
+
     @Test public void sizeIsAspectPreservingAndNeverUpscales() {
         assertArrayEquals(new int[] {1080, 2400}, SurfaceResolution.dimensions(1440, 3200, 1080, 100));
         assertArrayEquals(new int[] {810, 1800}, SurfaceResolution.dimensions(1440, 3200, 1080, 75));

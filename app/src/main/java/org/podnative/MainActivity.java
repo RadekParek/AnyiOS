@@ -944,12 +944,25 @@ public final class MainActivity extends Activity {
         heading(parent, "Settings", "Simple controls. Clear limits.");
         LinearLayout display = card(parent);
         display.addView(text("DISPLAY", 11, muted, true));
-        settingRow(display, "Resolution",
-            "Maximum short edge for the guest and presentation surface; never upscales",
-            prefs.getInt("resolution", 1080) + "p",
+        int resolution = prefs.getInt("resolution", 0);
+        settingRow(display, "Presentation resolution",
+            "Display native by default · lower values reduce the surface buffer, not the game's layout or its own offscreen buffers",
+            resolution <= 0 ? "Display native" : resolution + "p",
             ()
-                -> choose("Render resolution", new String[] {"720p", "1080p · FHD", "1440p · QHD"},
-                    new int[] {720, 1080, 1440}, "resolution", 1080));
+                -> choose("Presentation resolution",
+                    new String[] {"Display native", "720p", "1080p · FHD", "1440p · QHD"},
+                    new int[] {0, 720, 1080, 1440}, "resolution", 0));
+        int gameProfile = prefs.getInt("gameDisplayProfile", GameDisplayProfile.AUTO);
+        settingRow(display, "Game layout",
+            "Auto matches the display. For older fixed-size games, choose their original screen; it is scaled proportionally with matching touch areas and may show bars.",
+            GameDisplayProfile.label(gameProfile),
+            ()
+                -> choose("Game layout",
+                    new String[] {"Automatic · match display", "Classic phone · 320×480",
+                        "Tall phone · 320×568", "Classic tablet · 768×1024"},
+                    new int[] {GameDisplayProfile.AUTO, GameDisplayProfile.CLASSIC_PHONE,
+                        GameDisplayProfile.TALL_PHONE, GameDisplayProfile.TABLET},
+                    "gameDisplayProfile", GameDisplayProfile.AUTO));
         int dynamicMinimum = prefs.getInt("dynamicResolution", 100);
         settingRow(display, "Dynamic resolution",
             "Off by default · adapts the presentation surface to measured FPS; game-owned offscreen buffers may not scale",
@@ -961,8 +974,8 @@ public final class MainActivity extends Activity {
         settingRow(display, "Frame cap",
             "Auto requests the fastest supported mode at this resolution; measured FPS can be lower",
             frameCapLabel(), this::chooseFrameCap);
-        settingRow(display, "High-refresh boost",
-            "Experimental: promote 60 FPS display links to the selected cap; may speed up game logic",
+        settingRow(display, "Maximize FPS",
+            "Try for the highest selected refresh rate by boosting 60 FPS display links. Some games may run faster; higher FPS is not guaranteed.",
             prefs.getBoolean("boostDisplayLink", false) ? "On" : "Off", () -> {
                 prefs.edit()
                     .putBoolean("boostDisplayLink", !prefs.getBoolean("boostDisplayLink", false))
@@ -1045,6 +1058,7 @@ public final class MainActivity extends Activity {
                         (dialog, which) -> {
                             prefs.edit()
                                 .remove("resolution")
+                                .remove("gameDisplayProfile")
                                 .remove("dynamicResolution")
                                 .remove("boostDisplayLink")
                                 .remove("fps")
@@ -1282,7 +1296,7 @@ public final class MainActivity extends Activity {
         int testCap = Math.max(1,
             Math.round(
                 DisplayFrameRate.resolveCap(this, prefs.getInt("fps", DisplayFrameRate.AUTO))));
-        prototype = new PrototypeView(this, testCap, prefs.getInt("resolution", 1080), info -> {
+        prototype = new PrototypeView(this, testCap, prefs.getInt("resolution", 0), info -> {
             if (liveStatus != null)
                 liveStatus.setText(info);
             if (info.startsWith("embedded ANGLE"))

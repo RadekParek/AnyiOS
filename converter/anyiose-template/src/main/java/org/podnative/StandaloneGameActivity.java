@@ -5,7 +5,6 @@ import android.os.Bundle;
 import android.view.Display;
 import android.view.WindowManager;
 import java.io.File;
-import java.util.Locale;
 
 /** A private SDL host for exactly the IPA embedded in this APK. */
 public final class StandaloneGameActivity extends org.anyiose.android.MainActivity {
@@ -20,10 +19,12 @@ public final class StandaloneGameActivity extends org.anyiose.android.MainActivi
     }
     @Override protected String[] getArguments() {
         File source = new File(getFilesDir(), "game.ipa");
-        if (data == null || !data.isDirectory() || !source.isFile()) return new String[] {"--help"};
-        return new String[] {"--anyiose-data-dir=" + data.getAbsolutePath(), source.getAbsolutePath(),
-            "--device-family=auto", "--fps-limit=" + String.format(Locale.ROOT, "%.3f", cap),
-            "--boost-display-link", "--no-gles-native", "--no-force-composition"};
+        if (data == null || !data.isDirectory() || !source.isFile())
+            return StandaloneOptions.noGame();
+        return StandaloneOptions.forGame(data.getAbsolutePath(), source.getAbsolutePath(), cap);
+    }
+    @Override protected boolean shouldShowStartupErrors() {
+        return false;
     }
     private Display display() {
         if (android.os.Build.VERSION.SDK_INT >= 30 && getDisplay() != null) return getDisplay();

@@ -113,6 +113,8 @@ internal class AnyiOSEmuApkBuilder(private val context: Context) {
             val dexText = dexes.joinToString("") { String(it.second, Charsets.ISO_8859_1) }
             require(dexText.contains("Lorg/podnative/StandaloneLauncherActivity;") &&
                 dexText.contains("Lorg/podnative/StandaloneGameActivity;") &&
+                dexText.contains("Lorg/podnative/StandaloneApplication;") &&
+                dexText.contains("Lorg/podnative/StandaloneOptions;") &&
                 dexText.contains("Lorg/libsdl/app/SDLActivity;")) { "Standalone launcher or SDL is missing" }
             val iconPath = SafeZip.validateName(asset("icon-entry-path.txt", 1024).toString(Charsets.UTF_8))
             require(iconPath.startsWith("res/") && iconPath.endsWith("/generated_anyiose_icon.png"))
@@ -158,7 +160,8 @@ internal class AnyiOSEmuApkBuilder(private val context: Context) {
             @Suppress("DEPRECATION")
             val info = context.packageManager.getPackageArchiveInfo(signed.path, android.content.pm.PackageManager.GET_ACTIVITIES)
                 ?: error("Android could not parse the standalone APK")
-            require(info.packageName == packageName && info.activities.orEmpty().any { it.name == "org.podnative.StandaloneLauncherActivity" } &&
+            require(info.packageName == packageName && info.applicationInfo?.className == "org.podnative.StandaloneApplication" &&
+                info.activities.orEmpty().any { it.name == "org.podnative.StandaloneLauncherActivity" } &&
                 info.activities.orEmpty().any { it.name == "org.podnative.StandaloneGameActivity" }) { "Standalone launcher is invalid" }
             require(InstallAudit.inspect(context, signed, packageName).blockers.isEmpty()) { "Standalone APK is not installable on this device" }
             signed.copyTo(pending, overwrite = true)

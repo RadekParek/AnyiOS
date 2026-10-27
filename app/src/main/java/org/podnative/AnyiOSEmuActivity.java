@@ -49,6 +49,7 @@ public final class AnyiOSEmuActivity extends org.anyiose.android.MainActivity {
     private boolean performanceHudEnabled;
     private boolean boostDisplayLink;
     private int resolutionLimit;
+    private int gameDisplayProfile;
     private int dynamicMinimum;
     private DynamicResolution dynamicResolution;
     private SurfaceResolution surfaceResolution;
@@ -83,7 +84,8 @@ public final class AnyiOSEmuActivity extends org.anyiose.android.MainActivity {
         fpsCapPreference = settings.getInt("fps", DisplayFrameRate.AUTO);
         performanceHudEnabled = settings.getBoolean("performanceHud", false);
         boostDisplayLink = settings.getBoolean("boostDisplayLink", false);
-        resolutionLimit = settings.getInt("resolution", 1080);
+        resolutionLimit = settings.getInt("resolution", 0);
+        gameDisplayProfile = settings.getInt("gameDisplayProfile", GameDisplayProfile.AUTO);
         dynamicMinimum = settings.getInt("dynamicResolution", 100);
         maxClocksEnabled = settings.getBoolean("maxClocks", false);
         nativeGlesEnabled = settings.getBoolean("nativeGles", false);
@@ -106,7 +108,7 @@ public final class AnyiOSEmuActivity extends org.anyiose.android.MainActivity {
         super.onCreate(state);
         DisplayFrameRate.requestPreferredMode(this, fpsCapPreference);
         effectiveFpsCap = DisplayFrameRate.resolveCap(this, fpsCapPreference);
-        if (mSurface != null) {
+        if (mSurface != null && (resolutionLimit > 0 || dynamicMinimum < 100)) {
             surfaceResolution = new SurfaceResolution(mSurface, resolutionLimit);
             if (dynamicMinimum < 100)
                 dynamicResolution = new DynamicResolution(dynamicMinimum, effectiveFpsCap);
@@ -131,10 +133,9 @@ public final class AnyiOSEmuActivity extends org.anyiose.android.MainActivity {
         ArrayList<String> arguments = new ArrayList<>();
         arguments.add("--anyiose-data-dir=" + userDataPath);
         arguments.add(sourcePath);
-        arguments.add("--device-family=auto");
-        int[] renderSize = DisplayFrameRate.renderSize(this, resolutionLimit);
-        if (renderSize[0] > 0 && renderSize[1] > 0)
-            arguments.add("--screen-size=" + renderSize[0] + "x" + renderSize[1]);
+        // Keep the guest's logical layout independent of the Android surface buffer.
+        // With the default profile this matches the standalone launch path.
+        arguments.add(GameDisplayProfile.argument(gameDisplayProfile));
         float fpsCap = DisplayFrameRate.resolveCap(this, fpsCapPreference);
         effectiveFpsCap = fpsCap;
         arguments.add("--fps-limit=" + DisplayFrameRate.formatOption(fpsCap));
@@ -382,12 +383,14 @@ public final class AnyiOSEmuActivity extends org.anyiose.android.MainActivity {
             .append(DisplayFrameRate.formatHz(effectiveFpsCap))
             .append(" Hz\nMeasured presentation FPS=")
             .append(measuredFps)
-            .append("\nResolution short-edge limit=")
-            .append(resolutionLimit)
-            .append("p\nDynamic surface resolution=")
+            .append("\nGame layout=")
+            .append(GameDisplayProfile.label(gameDisplayProfile))
+            .append("\nPresentation short-edge limit=")
+            .append(resolutionLimit <= 0 ? "display native" : resolutionLimit + "p")
+            .append("\nDynamic surface resolution=")
             .append(dynamicResolution == null ? "off" : "on, minimum " + dynamicMinimum + "%")
             .append(" (presentation surface only; offscreen game buffers may not scale)")
-            .append("\n60 FPS display-link boost=")
+            .append("\nMaximize FPS (60 FPS display-link boost)=")
             .append(boostDisplayLink)
             .append("\nPerformance HUD=")
             .append(performanceHudEnabled)

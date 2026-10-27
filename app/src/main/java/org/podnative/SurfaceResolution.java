@@ -9,6 +9,7 @@ final class SurfaceResolution implements View.OnLayoutChangeListener {
     private final int shortEdgeLimit;
     private int percent = 100;
     private int lastWidth, lastHeight;
+    private boolean fixedSize;
 
     SurfaceResolution(SurfaceView surface, int shortEdgeLimit) {
         this.surface = surface;
@@ -38,11 +39,25 @@ final class SurfaceResolution implements View.OnLayoutChangeListener {
     }
 
     private void apply() {
-        int[] size = dimensions(surface.getWidth(), surface.getHeight(), shortEdgeLimit, percent);
-        if (size[0] == 0 || size[1] == 0 || (size[0] == lastWidth && size[1] == lastHeight))
+        int width = surface.getWidth(), height = surface.getHeight();
+        int[] size = dimensions(width, height, shortEdgeLimit, percent);
+        if (size[0] == 0 || size[1] == 0)
+            return;
+        if (size[0] == width && size[1] == height) {
+            // Let Android own the native-size buffer instead of fixing an
+            // identical size, especially during the first orientation change.
+            if (fixedSize) {
+                surface.getHolder().setSizeFromLayout();
+                fixedSize = false;
+            }
+            lastWidth = lastHeight = 0;
+            return;
+        }
+        if (fixedSize && size[0] == lastWidth && size[1] == lastHeight)
             return;
         lastWidth = size[0];
         lastHeight = size[1];
+        fixedSize = true;
         surface.getHolder().setFixedSize(lastWidth, lastHeight);
     }
 

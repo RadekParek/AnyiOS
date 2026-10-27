@@ -116,6 +116,9 @@ jobs:
           pipx install ruff==0.11.13
           scripts/check-format.sh
           for script in scripts/*.sh; do bash -n "$script"; done
+          python3 -m unittest discover -s tests -p 'test_runtime_contracts.py'
+          rustc --edition=2021 --test tests/runtime_geometry.rs -o .local/runtime-geometry-test
+          .local/runtime-geometry-test
       # Cloning dynarmic and assembling Boost's header tree takes over a minute per run
       # and is identical for identical pins. prepare-cpu.sh re-verifies the revision and
       # the reviewed patch, so a restored tree is still proven to be the pinned one.
@@ -217,14 +220,14 @@ jobs:
             # Targeted manual builds still compile the app's converter dependency, but do not
             # invoke converter lint or test tasks, or the separate PC converter suite.
             if [ "$VARIANT" = debug ]; then
-              gradle --no-daemon --build-cache --parallel :app:lintDebug :app:testDebugUnitTest :app:assembleDebug 2>&1 | tee .local/logs/android-build.log
+              gradle --no-daemon --build-cache --parallel :app:lintDebug :app:testDebugUnitTest :anyiose-template:testDebugUnitTest :app:assembleDebug 2>&1 | tee .local/logs/android-build.log
             else
-              gradle --no-daemon --build-cache --parallel :app:lintRelease :app:testReleaseUnitTest :app:assembleRelease 2>&1 | tee .local/logs/android-build.log
+              gradle --no-daemon --build-cache --parallel :app:lintRelease :app:testReleaseUnitTest :anyiose-template:testReleaseUnitTest :app:assembleRelease 2>&1 | tee .local/logs/android-build.log
             fi
           elif [ "$VARIANT" = debug ]; then
-            gradle --no-daemon --build-cache --parallel :app:lintDebug :app:testDebugUnitTest :converter:lintDebug :converter:testDebugUnitTest :gameruntime-template:testDebugUnitTest :app:assembleDebug 2>&1 | tee .local/logs/android-build.log
+            gradle --no-daemon --build-cache --parallel :app:lintDebug :app:testDebugUnitTest :converter:lintDebug :converter:testDebugUnitTest :gameruntime-template:testDebugUnitTest :anyiose-template:testDebugUnitTest :app:assembleDebug 2>&1 | tee .local/logs/android-build.log
           else
-            gradle --no-daemon --build-cache --parallel :app:lintRelease :app:testReleaseUnitTest :converter:lintRelease :converter:testReleaseUnitTest :app:assembleRelease 2>&1 | tee .local/logs/android-build.log
+            gradle --no-daemon --build-cache --parallel :app:lintRelease :app:testReleaseUnitTest :converter:lintRelease :converter:testReleaseUnitTest :anyiose-template:testReleaseUnitTest :app:assembleRelease 2>&1 | tee .local/logs/android-build.log
           fi
       - name: Verify Android Dynarmic target architecture
         env:

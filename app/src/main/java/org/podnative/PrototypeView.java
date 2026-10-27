@@ -91,7 +91,8 @@ final class PrototypeView extends SurfaceView implements SurfaceHolder.Callback 
     @Override
     public void surfaceChanged(SurfaceHolder holder, int format, int width, int height) {
         halt();
-        float scale = Math.min(1f, shortEdge / (float) Math.min(width, height));
+        float scale =
+            shortEdge <= 0 ? 1f : Math.min(1f, shortEdge / (float) Math.min(width, height));
         int w = Math.max(1, Math.round(width * scale));
         int h = Math.max(1, Math.round(height * scale));
         running = true;

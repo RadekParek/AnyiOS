@@ -69,6 +69,34 @@ index cf3c9267fbd94e01113a939c37340aae44693215..7f926b62d58249ea62d48158d5390ce7
  
          for (UsbDevice usbDevice : mUsbManager.getDeviceList().values()) {
              handleUsbDeviceAttached(usbDevice);
+diff --git a/android/app/src/main/java/org/libsdl/app/SDLActivity.java b/android/app/src/main/java/org/libsdl/app/SDLActivity.java
+index 391a7e9f7ae3bc8ae6fbddf75d3e8a800ea2e6ce..69da503823eec7ab62c85907dbfaf3c219110a19 100644
+--- a/android/app/src/main/java/org/libsdl/app/SDLActivity.java
++++ b/android/app/src/main/java/org/libsdl/app/SDLActivity.java
+@@ -314,6 +314,11 @@ public class SDLActivity extends Activity implements View.OnSystemUiVisibilityCh
+         mCurrentNativeState = NativeState.INIT;
+     }
+     
++    /** Whether host startup errors should be shown in an SDL dialog. */
++    protected boolean shouldShowStartupErrors() {
++        return true;
++    }
++
+     protected SDLSurface createSDLSurface(Context context) {
+         return new SDLSurface(context);
+     }
+@@ -360,6 +365,11 @@ public class SDLActivity extends Activity implements View.OnSystemUiVisibilityCh
+ 
+         if (mBrokenLibraries) {
+             mSingleton = this;
++            if (!shouldShowStartupErrors()) {
++                Log.e(TAG, "SDL startup failed: " + errorMsgBrokenLib);
++                finish();
++                return;
++            }
+             AlertDialog.Builder dlgAlert  = new AlertDialog.Builder(this);
+             dlgAlert.setMessage("An error occurred while trying to start the application. Please try again and/or reinstall."
+                   + System.getProperty("line.separator")
 diff --git a/android/app/src/main/java/org/libsdl/app/SDLAudioManager.java b/android/app/src/main/java/org/libsdl/app/SDLAudioManager.java
 index 2bfc71860900556ce0ac1481e7162d2d216cb706..3c0ac5e4fb5917adb293b7377ea53a9218cd3d8a 100644
 --- a/android/app/src/main/java/org/libsdl/app/SDLAudioManager.java
@@ -423,7 +451,7 @@ index 670dc38476621ac72d7da765d0b5a0229597cd72..a19935d8af0c0fed72eb0bb6a07508f3
          return true;
      }
 diff --git a/android/app/src/main/java/org/touchhle/android/MainActivity.java b/android/app/src/main/java/org/touchhle/android/MainActivity.java
-index 7803c18600484c29a067ec1433ddfe275c7c593a..5ff5d9cbee66d79d322a4e72e38596ebd11addea 100644
+index 7803c18600484c29a067ec1433ddfe275c7c593a..af2ce3323198c32dc9750d7b669c392242f8f46d 100644
 --- a/android/app/src/main/java/org/touchhle/android/MainActivity.java
 +++ b/android/app/src/main/java/org/touchhle/android/MainActivity.java
 @@ -6,7 +6,7 @@
@@ -444,7 +472,15 @@ index 7803c18600484c29a067ec1433ddfe275c7c593a..5ff5d9cbee66d79d322a4e72e38596eb
  
      // Public accessor for SDLActivity's protected static mSingleton, so
      // helper classes in this package (HostMedia) can reach the Activity.
-@@ -55,7 +55,7 @@ public class MainActivity extends SDLActivity {
+@@ -47,6 +47,7 @@ public class MainActivity extends SDLActivity {
+     @Override
+     protected void onCreate(Bundle savedInstanceState) {
+         super.onCreate(savedInstanceState);
++        if (mSurface != null) mSurface.addOnLayoutChangeListener(webOverlayLayoutListener);
+         // Acquire the multicast lock here (not just declare it): Android
+         // Wi-Fi drivers drop multicast unless the app holds it, which broke
+         // Bonjour/NSNetService LAN discovery (GameKit, Gameloft games).
+@@ -55,7 +56,7 @@ public class MainActivity extends SDLActivity {
                      (android.net.wifi.WifiManager) getApplicationContext()
                              .getSystemService(android.content.Context.WIFI_SERVICE);
              if (wm != null && multicastLock == null) {
@@ -453,7 +489,119 @@ index 7803c18600484c29a067ec1433ddfe275c7c593a..5ff5d9cbee66d79d322a4e72e38596eb
                  multicastLock.setReferenceCounted(false);
                  multicastLock.acquire();
                  Log.i(TAG, "Wi-Fi multicast lock acquired (mDNS discovery enabled)");
-@@ -510,9 +510,9 @@ public class MainActivity extends SDLActivity {
+@@ -67,6 +68,14 @@ public class MainActivity extends SDLActivity {
+ 
+     @Override
+     protected void onDestroy() {
++        if (mSurface != null) mSurface.removeOnLayoutChangeListener(webOverlayLayoutListener);
++        for (android.webkit.WebView webView : webOverlays.values()) {
++            android.view.ViewGroup parent = (android.view.ViewGroup) webView.getParent();
++            if (parent != null) parent.removeView(webView);
++            webView.destroy();
++        }
++        webOverlays.clear();
++        webOverlayGeometry.clear();
+         try {
+             if (multicastLock != null) {
+                 if (multicastLock.isHeld()) {
+@@ -101,7 +110,44 @@ public class MainActivity extends SDLActivity {
+     // =====================================================================
+     private static final java.util.HashMap<Integer, android.webkit.WebView> webOverlays =
+             new java.util.HashMap<Integer, android.webkit.WebView>();
++    private static final java.util.HashMap<Integer, OverlayGeometry> webOverlayGeometry =
++            new java.util.HashMap<Integer, OverlayGeometry>();
+     private static int nextWebOverlayId = 1;
++    private final android.view.View.OnLayoutChangeListener webOverlayLayoutListener =
++            (view, left, top, right, bottom, oldLeft, oldTop, oldRight, oldBottom) -> {
++                if (left == oldLeft && top == oldTop && right == oldRight && bottom == oldBottom) return;
++                for (java.util.Map.Entry<Integer, android.webkit.WebView> entry : webOverlays.entrySet()) {
++                    placeWebOverlay(entry.getValue(), webOverlayGeometry.get(entry.getKey()));
++                }
++            };
++
++    // The Rust viewport is measured in SDL drawable pixels, which can be
++    // smaller than the Android view when resolution scaling is enabled.
++    // Store fractions of the drawable, then lay out in the actual view space.
++    private static OverlayGeometry overlayGeometry(int x, int y, int width, int height) {
++        if (mSurface == null) return OverlayGeometry.fromDrawable(x, y, width, height, 1, 1);
++        android.graphics.Rect buffer = mSurface.getHolder().getSurfaceFrame();
++        int drawableWidth = buffer.width() > 0 ? buffer.width() : mSurface.getWidth();
++        int drawableHeight = buffer.height() > 0 ? buffer.height() : mSurface.getHeight();
++        return OverlayGeometry.fromDrawable(x, y, width, height, drawableWidth, drawableHeight);
++    }
++
++    private static void placeWebOverlay(android.webkit.WebView webView, OverlayGeometry geometry) {
++        if (geometry == null || mSurface == null || mSingleton == null) return;
++        android.view.View content = mSingleton.findViewById(android.R.id.content);
++        if (content == null) return;
++        int[] surfaceLocation = new int[2], contentLocation = new int[2];
++        mSurface.getLocationInWindow(surfaceLocation);
++        content.getLocationInWindow(contentLocation);
++        int[] bounds = geometry.inView(mSurface.getWidth(), mSurface.getHeight(),
++                surfaceLocation[0] - contentLocation[0], surfaceLocation[1] - contentLocation[1]);
++        android.view.ViewGroup.LayoutParams lp = webView.getLayoutParams();
++        lp.width = bounds[2] < 0 ? android.view.ViewGroup.LayoutParams.MATCH_PARENT : bounds[2];
++        lp.height = bounds[3] < 0 ? android.view.ViewGroup.LayoutParams.MATCH_PARENT : bounds[3];
++        webView.setTranslationX(bounds[0]);
++        webView.setTranslationY(bounds[1]);
++        webView.requestLayout();
++    }
+ 
+     // Open a URL in the system browser (or the app that owns the scheme,
+     // e.g. a mailto: handler). Called from Rust via JNI (see
+@@ -228,13 +274,12 @@ public class MainActivity extends SDLActivity {
+ 
+             android.view.ViewGroup content =
+                     (android.view.ViewGroup) act.findViewById(android.R.id.content);
+-            int width = w > 0 ? w : android.view.ViewGroup.LayoutParams.MATCH_PARENT;
+-            int height = h > 0 ? h : android.view.ViewGroup.LayoutParams.MATCH_PARENT;
+             android.widget.FrameLayout.LayoutParams lp =
+-                    new android.widget.FrameLayout.LayoutParams(width, height);
++                    new android.widget.FrameLayout.LayoutParams(1, 1);
+             content.addView(wv, lp);
+-            wv.setTranslationX(x);
+-            wv.setTranslationY(y);
++            OverlayGeometry geometry = overlayGeometry(x, y, w, h);
++            webOverlayGeometry.put(id, geometry);
++            placeWebOverlay(wv, geometry);
+             content.bringChildToFront(wv);
+ 
+             if (url != null && !url.isEmpty()) {
+@@ -271,22 +316,9 @@ public class MainActivity extends SDLActivity {
+                                            final int w, final int h) {
+         withWebOverlay(id, new Runnable() {
+             public void run() {
+-                android.webkit.WebView wv = webOverlays.get(id);
+-                android.view.ViewGroup.LayoutParams lp0 = wv.getLayoutParams();
+-                int width = w > 0 ? w : lp0.width;
+-                int height = h > 0 ? h : lp0.height;
+-                android.widget.FrameLayout.LayoutParams lp;
+-                if (lp0 instanceof android.widget.FrameLayout.LayoutParams) {
+-                    lp = (android.widget.FrameLayout.LayoutParams) lp0;
+-                    lp.width = width;
+-                    lp.height = height;
+-                } else {
+-                    lp = new android.widget.FrameLayout.LayoutParams(width, height);
+-                    wv.setLayoutParams(lp);
+-                }
+-                wv.setTranslationX(x);
+-                wv.setTranslationY(y);
+-                wv.requestLayout();
++                OverlayGeometry geometry = overlayGeometry(x, y, w, h);
++                webOverlayGeometry.put(id, geometry);
++                placeWebOverlay(webOverlays.get(id), geometry);
+             }
+         });
+     }
+@@ -298,6 +330,7 @@ public class MainActivity extends SDLActivity {
+         act.runOnUiThread(new Runnable() {
+             public void run() {
+                 android.webkit.WebView wv = webOverlays.remove(id);
++                webOverlayGeometry.remove(id);
+                 if (wv == null) return;
+                 try {
+                     android.view.ViewGroup parent = (android.view.ViewGroup) wv.getParent();
+@@ -510,9 +543,9 @@ public class MainActivity extends SDLActivity {
      }
  
      private void copyIpa(Uri uri, String name) {
@@ -465,6 +613,43 @@ index 7803c18600484c29a067ec1433ddfe275c7c593a..5ff5d9cbee66d79d322a4e72e38596eb
          if (!appsDir.exists() && !appsDir.mkdirs()) {
              Log.e(TAG, "Couldn't create " + appsDir);
              return;
+diff --git a/android/app/src/main/java/org/touchhle/android/OverlayGeometry.java b/android/app/src/main/java/org/touchhle/android/OverlayGeometry.java
+new file mode 100644
+index 0000000000000000000000000000000000000000..7f4f7c1ceebb26c4449968446f936142368a8524
+--- /dev/null
++++ b/android/app/src/main/java/org/touchhle/android/OverlayGeometry.java
+@@ -0,0 +1,31 @@
++/*
++ * This Source Code Form is subject to the terms of the Mozilla Public
++ * License, v. 2.0. If a copy of the MPL was not distributed with this
++ * file, You can obtain one at https://mozilla.org/MPL/2.0/.
++ */
++package org.anyiose.android;
++
++/** A drawable-pixel rectangle, normalized so surface-buffer changes do not move UI. */
++final class OverlayGeometry {
++    final float x, y, width, height;
++
++    private OverlayGeometry(float x, float y, float width, float height) {
++        this.x = x;
++        this.y = y;
++        this.width = width;
++        this.height = height;
++    }
++
++    static OverlayGeometry fromDrawable(int x, int y, int width, int height,
++                                         int drawableWidth, int drawableHeight) {
++        float dw = Math.max(1, drawableWidth), dh = Math.max(1, drawableHeight);
++        return new OverlayGeometry(x / dw, y / dh,
++                width > 0 ? width / dw : -1, height > 0 ? height / dh : -1);
++    }
++
++    int[] inView(int viewWidth, int viewHeight, int offsetX, int offsetY) {
++        return new int[] {offsetX + Math.round(x * viewWidth), offsetY + Math.round(y * viewHeight),
++                width < 0 ? -1 : Math.max(1, Math.round(width * viewWidth)),
++                height < 0 ? -1 : Math.max(1, Math.round(height * viewHeight))};
++    }
++}
 diff --git a/src/android_media.rs b/src/android_media.rs
 index 6015decc1c152027253d58481b2fda342ea44209..274cd787118e0e2ab6e44bce0275ad36145b9d9e 100644
 --- a/src/android_media.rs
@@ -568,10 +753,21 @@ index 22d9627f80cde83bba3df18afb6d83fe6c4c191e..cceaa9b24462bcb4850b791d7b1a19a4
          build.define("ANDROID", "ON");
          // Without this, CMake's architecture probe sees 32-bit `__arm__` and
 diff --git a/src/crash_handler.rs b/src/crash_handler.rs
-index e8a2cad582c6ffe71df9fa71ab1d94e9acae176f..78b70c2819047192c789493e6f91d4901a837a07 100644
+index e8a2cad582c6ffe71df9fa71ab1d94e9acae176f..672d4d19319a4ad681350a581a75671953e25743 100644
 --- a/src/crash_handler.rs
 +++ b/src/crash_handler.rs
-@@ -85,7 +85,7 @@ pub fn install_panic_hook() {
+@@ -11,7 +11,9 @@
+ //! just closes with no error"). These handlers write a one-line marker with
+ //! the fatal signal and faulting address to the same log file the user can
+ //! share, then restore the default disposition and re-raise so the platform's
+-//! own crash reporting (Android tombstones etc.) still works.
++//! own crash reporting (Android tombstones etc.) still works. The standalone
++//! Android launcher can opt into an immediate quiet exit after a minimal marker
++//! instead; this avoids crash UI but also forgoes the Android tombstone.
+ 
+ /// Append a message to the log file (and stderr). Safe to call from a panic
+ /// hook; uses file-level locking via try_lock so re-entrant panics don't
+@@ -85,7 +87,7 @@ pub fn install_panic_hook() {
              let thread = std::thread::current();
              let thread_name = thread.name().unwrap_or("<unnamed>");
              let msg = format!(
@@ -580,7 +776,51 @@ index e8a2cad582c6ffe71df9fa71ab1d94e9acae176f..78b70c2819047192c789493e6f91d490
                  thread_name,
                  info.location()
                      .map(|l| format!("{}:{}", l.file(), l.line()))
-@@ -351,7 +351,7 @@ mod imp {
+@@ -109,6 +111,15 @@ mod imp {
+     /// safely use the `Mutex<File>` in `log::get_log_file()`) can append to it.
+     static LOG_FD: AtomicI32 = AtomicI32::new(-1);
+ 
++    #[cfg(target_os = "android")]
++    static SILENT_ANDROID_FATAL: std::sync::atomic::AtomicBool =
++        std::sync::atomic::AtomicBool::new(false);
++
++    #[cfg(target_os = "android")]
++    pub fn set_silent_android_fatal() {
++        SILENT_ANDROID_FATAL.store(true, Ordering::SeqCst);
++    }
++
+     /// Runtime-resolved `backtrace()` (bionic exposes it on Android 12+,
+     /// glibc on desktop; resolving via dlsym avoids build-target cfg).
+     static BACKTRACE_SYM: AtomicUsize = AtomicUsize::new(0);
+@@ -320,6 +331,27 @@ mod imp {
+     }
+ 
+     extern "C" fn handler(sig: libc::c_int, info: *mut libc::siginfo_t, uc: *mut libc::c_void) {
++        // The standalone APK deliberately skips Android's fatal-signal UI. Use
++        // only async-signal-safe writes and _exit here: the process may already
++        // be corrupted, so allocations, locks and JNI are not safe.
++        #[cfg(target_os = "android")]
++        if SILENT_ANDROID_FATAL.load(Ordering::Relaxed) {
++            let message: &[u8] = match sig {
++                libc::SIGSEGV => b"\nAnyiOSEMU: fatal SIGSEGV; standalone game closed.\n",
++                libc::SIGBUS => b"\nAnyiOSEMU: fatal SIGBUS; standalone game closed.\n",
++                libc::SIGILL => b"\nAnyiOSEMU: fatal SIGILL; standalone game closed.\n",
++                libc::SIGABRT => b"\nAnyiOSEMU: fatal SIGABRT; standalone game closed.\n",
++                _ => b"\nAnyiOSEMU: fatal signal; standalone game closed.\n",
++            };
++            unsafe {
++                let _ = libc::write(2, message.as_ptr().cast(), message.len());
++                let fd = LOG_FD.load(Ordering::Relaxed);
++                if fd >= 0 {
++                    let _ = libc::write(fd, message.as_ptr().cast(), message.len());
++                }
++                libc::_exit(128 + sig);
++            }
++        }
+         static IN_HANDLER: std::sync::atomic::AtomicBool =
+             std::sync::atomic::AtomicBool::new(false);
+         if IN_HANDLER.swap(true, Ordering::SeqCst) {
+@@ -351,7 +383,7 @@ mod imp {
              format!(" at address {:#x}", addr)
          };
          let msg = format!(
@@ -589,7 +829,17 @@ index e8a2cad582c6ffe71df9fa71ab1d94e9acae176f..78b70c2819047192c789493e6f91d490
              std::str::from_utf8(&name[..name.len() - 1]).unwrap_or("SIGNAL"),
              location
          );
-@@ -548,7 +548,7 @@ mod win_imp {
+@@ -465,6 +497,9 @@ mod imp {
+ #[cfg(unix)]
+ pub use imp::{install, native_backtrace_lines, set_log_fd};
+ 
++#[cfg(target_os = "android")]
++pub use imp::set_silent_android_fatal;
++
+ #[cfg(not(unix))]
+ pub fn set_log_fd(_fd: i32) {}
+ 
+@@ -548,7 +583,7 @@ mod win_imp {
  
          let mut msg = String::new();
          msg.push_str(&format!(
@@ -1239,7 +1489,7 @@ index 4b16094f77e34f32d705ed3345257bc489968a7b..faeb1d05518f14b9698ef46bd540b0d8
              // Update global text cache for on-screen overlay if enabled via
              // environment variable or the runtime flag.
 diff --git a/src/lib.rs b/src/lib.rs
-index ba739ba822a2511182fb10c144a074e7607ec707..586451ddc6d9281419b874f41be3a25461c712ae 100644
+index ba739ba822a2511182fb10c144a074e7607ec707..3e032d6a882875b77bc4a1300a3d574b02a7c24d 100644
 --- a/src/lib.rs
 +++ b/src/lib.rs
 @@ -82,7 +82,7 @@ static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
@@ -1262,7 +1512,7 @@ index ba739ba822a2511182fb10c144a074e7607ec707..586451ddc6d9281419b874f41be3a254
  ) -> std::ffi::c_int {
      // Rust's default panic handler prints to stderr, but on Android that just
      // gets discarded, so we set a custom hook to make debugging easier.
-@@ -188,15 +188,54 @@ pub extern "C" fn SDL_main(
+@@ -188,15 +188,58 @@ pub extern "C" fn SDL_main(
              echo_no_panic!("Panic: {}", payload);
          }
      }));
@@ -1296,6 +1546,10 @@ index ba739ba822a2511182fb10c144a074e7607ec707..586451ddc6d9281419b874f41be3a254
 +                sdl2::log::log(&format!("AnyiOSEMU could not set its private data directory: {error}"));
 +                return 1;
 +            }
++        } else if argument == "--anyiose-silent-fatal" {
++            // A private host option: standalone APKs close on native fatal
++            // signals instead of invoking Android's crash reporter.
++            crash_handler::set_silent_android_fatal();
 +        } else {
 +            app_arguments.push(argument);
 +        }
@@ -1321,7 +1575,7 @@ index ba739ba822a2511182fb10c144a074e7607ec707..586451ddc6d9281419b874f41be3a254
              1
          }
      }
-@@ -204,7 +243,7 @@ pub extern "C" fn SDL_main(
+@@ -204,7 +247,7 @@ pub extern "C" fn SDL_main(
  
  const USAGE: &str = "\
  Usage:
@@ -1330,7 +1584,7 @@ index ba739ba822a2511182fb10c144a074e7607ec707..586451ddc6d9281419b874f41be3a254
  
  PATH should be a path to a .app bundle or .ipa file.
  
-@@ -281,7 +320,7 @@ fn run_session<T: Iterator<Item = String>>(
+@@ -281,7 +324,7 @@ fn run_session<T: Iterator<Item = String>>(
      }
  
      echo!(
@@ -1339,7 +1593,7 @@ index ba739ba822a2511182fb10c144a074e7607ec707..586451ddc6d9281419b874f41be3a254
          branding(),
          if branding().is_empty() { "" } else { " " },
          VERSION,
-@@ -300,7 +339,7 @@ fn run_session<T: Iterator<Item = String>>(
+@@ -300,7 +343,7 @@ fn run_session<T: Iterator<Item = String>>(
  
      {
          let base_path = paths::user_data_base_path();
@@ -1348,7 +1602,7 @@ index ba739ba822a2511182fb10c144a074e7607ec707..586451ddc6d9281419b874f41be3a254
          paths::prepopulate_user_data_dir();
          paths::remove_legacy_pvrtc_disk_cache();
      }
-@@ -533,7 +572,7 @@ fn run_session<T: Iterator<Item = String>>(
+@@ -533,7 +576,7 @@ fn run_session<T: Iterator<Item = String>>(
          // missing post-iOS-9 APIs becomes the rule rather than the exception.
          if major > 9 || (major == 9 && minor > 0) {
              echo!(
@@ -1357,7 +1611,7 @@ index ba739ba822a2511182fb10c144a074e7607ec707..586451ddc6d9281419b874f41be3a254
                   for iOS 2.x–9.0; newer APIs may be missing.",
                  version
              );
-@@ -542,7 +581,7 @@ fn run_session<T: Iterator<Item = String>>(
+@@ -542,7 +585,7 @@ fn run_session<T: Iterator<Item = String>>(
  
      if required_device_capabilities.contains(&"opengles-3") {
          echo!(
@@ -1840,7 +2094,7 @@ index 116377048b0174b12bec8580997c3b8c65e859e0..f6dcce7b8de7f45490c2835505967ee9
 +    ""
  }
 diff --git a/src/window.rs b/src/window.rs
-index 62127476cf0e6bfaae962dd8146cded72f1ad9e8..a024b83a819eb7a430f4f495fdbb129a5ef1c64f 100644
+index 62127476cf0e6bfaae962dd8146cded72f1ad9e8..20dbb910fd4f69cedd420ef88134abd04153daf6 100644
 --- a/src/window.rs
 +++ b/src/window.rs
 @@ -1351,7 +1351,7 @@ impl Window {
@@ -1861,7 +2115,61 @@ index 62127476cf0e6bfaae962dd8146cded72f1ad9e8..a024b83a819eb7a430f4f495fdbb129a
                  // Reset counters
                  *last = now;
                  self.fps_frame_count.set(0);
-@@ -3124,7 +3124,7 @@ pub fn show_error_messagebox(window: Option<&Window>, error_message: &str) {
+@@ -2885,47 +2885,17 @@ impl Window {
+         &self,
+         frame: crate::frameworks::core_graphics::CGRect,
+     ) -> (i32, i32, i32, i32) {
+-        let (vp_x, vp_y, vp_w, vp_h) = self.viewport();
+-        let (app_w, app_h) = self.size_unrotated_unscaled();
+-        let (app_w, app_h) = (app_w as f32, app_h as f32);
+-        if app_w <= 0.0 || app_h <= 0.0 || vp_w == 0 || vp_h == 0 {
+-            return (0, 0, 0, 0);
+-        }
+-        let sx = vp_w as f32 / app_w;
+-        let sy = vp_h as f32 / app_h;
+-        // Rotate the guest rect into the device orientation, then scale to
+-        // viewport pixels (mirrors the composition rotation).
+-        let (x, y, w, h) = match self.device_orientation {
+-            crate::window::DeviceOrientation::Portrait => (
++        geometry::guest_rect_to_drawable(
++            (
+                 frame.origin.x as f32,
+                 frame.origin.y as f32,
+                 frame.size.width as f32,
+                 frame.size.height as f32,
+             ),
+-            crate::window::DeviceOrientation::PortraitUpsideDown => (
+-                app_w - frame.origin.x as f32 - frame.size.width as f32,
+-                app_h - frame.origin.y as f32 - frame.size.height as f32,
+-                frame.size.width as f32,
+-                frame.size.height as f32,
+-            ),
+-            crate::window::DeviceOrientation::LandscapeLeft => (
+-                frame.origin.y as f32,
+-                app_w - frame.origin.x as f32 - frame.size.width as f32,
+-                frame.size.height as f32,
+-                frame.size.width as f32,
+-            ),
+-            crate::window::DeviceOrientation::LandscapeRight => (
+-                app_h - frame.origin.y as f32 - frame.size.height as f32,
+-                frame.origin.x as f32,
+-                frame.size.height as f32,
+-                frame.size.width as f32,
+-            ),
+-        };
+-        let px = (vp_x as f32 + x * sx).round() as i32;
+-        let py = (vp_y as f32 + y * sy).round() as i32;
+-        let pw = (w * sx).round() as i32;
+-        let ph = (h * sy).round() as i32;
+-        (px, py, pw.max(0), ph.max(0))
++            self.size_unrotated_unscaled(),
++            self.device_orientation,
++            self.viewport(),
++        )
+     }
+ 
+     pub fn host_framebuffer(&self) -> u32 {
+@@ -3124,7 +3094,7 @@ pub fn show_error_messagebox(window: Option<&Window>, error_message: &str) {
          messagebox::ButtonData {
              flags: messagebox::MessageBoxButtonFlag::NOTHING,
              button_id: 0,
@@ -1870,7 +2178,7 @@ index 62127476cf0e6bfaae962dd8146cded72f1ad9e8..a024b83a819eb7a430f4f495fdbb129a
          },
          messagebox::ButtonData {
              flags: messagebox::MessageBoxButtonFlag::NOTHING,
-@@ -3136,13 +3136,13 @@ pub fn show_error_messagebox(window: Option<&Window>, error_message: &str) {
+@@ -3136,13 +3106,13 @@ pub fn show_error_messagebox(window: Option<&Window>, error_message: &str) {
      let Ok(clicked_button) = messagebox::show_message_box(
          messagebox::MessageBoxFlag::ERROR,
          &mbox,
@@ -1887,6 +2195,96 @@ index 62127476cf0e6bfaae962dd8146cded72f1ad9e8..a024b83a819eb7a430f4f495fdbb129a
          return;
      };
  
+diff --git a/src/window/geometry.rs b/src/window/geometry.rs
+index 40a6b89bb106df20c3f93203d528176dfd6940b3..aad633b3afb0edb6afe8e86074952066c9f5c96b 100644
+--- a/src/window/geometry.rs
++++ b/src/window/geometry.rs
+@@ -63,6 +63,37 @@ pub(super) fn normalize_viewport_coords(
+     )
+ }
+ 
++/// Map a guest rectangle into the *drawable* viewport, using the same rotated
++/// guest extent as presentation and input. The host view may subsequently
++/// scale this drawable (for example, Android's fixed-size surface buffers).
++pub(super) fn guest_rect_to_drawable(
++    (x, y, width, height): (f32, f32, f32, f32),
++    (guest_width, guest_height): (u32, u32),
++    orientation: super::DeviceOrientation,
++    (vx, vy, vw, vh): (u32, u32, u32, u32),
++) -> (i32, i32, i32, i32) {
++    if guest_width == 0 || guest_height == 0 || vw == 0 || vh == 0 {
++        return (0, 0, 0, 0);
++    }
++    let (gw, gh) = (guest_width as f32, guest_height as f32);
++    let (x, y, width, height, oriented_width, oriented_height) = match orientation {
++        super::DeviceOrientation::Portrait => (x, y, width, height, gw, gh),
++        super::DeviceOrientation::PortraitUpsideDown => {
++            (gw - x - width, gh - y - height, width, height, gw, gh)
++        }
++        super::DeviceOrientation::LandscapeLeft => (y, gw - x - width, height, width, gh, gw),
++        super::DeviceOrientation::LandscapeRight => (gh - y - height, x, height, width, gh, gw),
++    };
++    let sx = vw as f32 / oriented_width;
++    let sy = vh as f32 / oriented_height;
++    (
++        (vx as f32 + x * sx).round() as i32,
++        (vy as f32 + y * sy).round() as i32,
++        ((width * sx).round() as i32).max(0),
++        ((height * sy).round() as i32).max(0),
++    )
++}
++
+ #[cfg(test)]
+ mod tests {
+     use super::*;
+@@ -157,4 +188,47 @@ mod tests {
+             (0.0, 0.0)
+         );
+     }
++    #[test]
++    fn guest_controls_and_native_overlays_follow_each_orientation() {
++        use super::super::DeviceOrientation::*;
++        let button = (20.0, 30.0, 100.0, 50.0);
++        assert_eq!(
++            guest_rect_to_drawable(button, (320, 480), Portrait, (100, 50, 640, 960)),
++            (140, 110, 200, 100)
++        );
++        assert_eq!(
++            guest_rect_to_drawable(button, (320, 480), PortraitUpsideDown, (100, 50, 640, 960)),
++            (500, 850, 200, 100)
++        );
++        let viewport = (0, 100, 960, 640);
++        let left = guest_rect_to_drawable(button, (320, 480), LandscapeLeft, viewport);
++        let right = guest_rect_to_drawable(button, (320, 480), LandscapeRight, viewport);
++        assert_eq!(left, (60, 500, 100, 200));
++        assert_eq!(right, (800, 140, 100, 200));
++
++        // The center of the rendered button maps back to its guest hitbox
++        // through the same inverse 90-degree input rotation.
++        for (rect, left_rotation) in [(left, true), (right, false)] {
++            let center = (
++                rect.0 as f32 + rect.2 as f32 / 2.0,
++                rect.1 as f32 + rect.3 as f32 / 2.0,
++            );
++            let (x, y) = normalize_viewport_coords(center, viewport);
++            let (guest_x, guest_y) = if left_rotation { (-y, x) } else { (y, -x) };
++            assert!(((guest_x + 0.5) * 320.0 - 70.0).abs() < 0.01);
++            assert!(((guest_y + 0.5) * 480.0 - 55.0).abs() < 0.01);
++        }
++    }
++
++    #[test]
++    fn legacy_game_and_input_scale_with_letterboxing() {
++        let native = fit_viewport((480, 320), (2400, 1080));
++        let smaller = fit_viewport((480, 320), (1200, 540));
++        assert_eq!(native, (390, 0, 1620, 1080));
++        assert_eq!(smaller, (195, 0, 810, 540));
++        let a = normalize_viewport_coords((1200.0, 540.0), native);
++        let b = normalize_viewport_coords((600.0, 270.0), smaller);
++        assert_eq!(a, (0.0, 0.0));
++        assert_eq!(a, b);
++    }
+ }
 diff --git a/touchHLE_apps/README.txt b/touchHLE_apps/README.txt
 index 5fb5bfeb73d920cf4ea240f6d0242c7463a7fc1e..49c58e51d1e6e8e12e58ade05ec75ce93bfd1fc8 100644
 --- a/touchHLE_apps/README.txt
