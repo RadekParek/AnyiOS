@@ -17,10 +17,10 @@ public class LatestGameLogTest {
     public void startsFreshAndReadsTheRealFileEvenWithoutAnActivityResult() throws Exception {
         File data = temporary.newFolder("data");
         File log = new File(data, "AnyiOSEMU_log.txt");
-        Files.writeString(log.toPath(), "previous session");
+        Files.write(log.toPath(), "previous session".getBytes(StandardCharsets.UTF_8));
         LatestGameLog.prepare(data);
         assertTrue(LatestGameLog.preview(data, 1024).contains("No log was recorded"));
-        Files.writeString(log.toPath(), "guest printf\ncrash info\n");
+        Files.write(log.toPath(), "guest printf\ncrash info\n".getBytes(StandardCharsets.UTF_8));
         assertEquals("guest printf\ncrash info\n", LatestGameLog.preview(data, 1024));
         ByteArrayOutputStream exported = new ByteArrayOutputStream();
         LatestGameLog.copy(data, exported);
@@ -30,7 +30,8 @@ public class LatestGameLogTest {
     @Test
     public void previewsOnlyTheTailButExportsTheCompleteUtf8Log() throws Exception {
         File data = temporary.newFolder("utf8");
-        Files.writeString(new File(data, "AnyiOSEMU_log.txt").toPath(), "old text ☃ newest\n");
+        Files.write(new File(data, "AnyiOSEMU_log.txt").toPath(),
+            "old text ☃ newest\n".getBytes(StandardCharsets.UTF_8));
         String tail = LatestGameLog.preview(data, 10);
         assertTrue(tail.contains("Earlier log output omitted"));
         assertTrue(tail.endsWith("newest\n"));

@@ -4,6 +4,7 @@ import static org.junit.Assert.*;
 
 import java.io.File;
 import java.nio.file.Files;
+import java.nio.charset.StandardCharsets;
 import org.junit.Rule;
 import org.junit.Test;
 import org.junit.rules.TemporaryFolder;
@@ -39,15 +40,15 @@ public class PerformanceMetricsTest {
         File sys = temporary.newFolder("sys");
         File node = new File(sys, "class/kgsl/kgsl-3d0/gpubusy");
         assertTrue(node.getParentFile().mkdirs());
-        Files.writeString(node.toPath(), "0 0\n");
+        Files.write(node.toPath(), "0 0\n".getBytes(StandardCharsets.UTF_8));
         GpuUsageReader reader = new GpuUsageReader(sys, temporary.newFolder("proc"));
         assertTrue(Double.isNaN(reader.sample(1000)));
-        Files.writeString(node.toPath(), "250 1000\n");
+        Files.write(node.toPath(), "250 1000\n".getBytes(StandardCharsets.UTF_8));
         assertEquals(25.0, reader.sample(2000), 0.001);
-        Files.writeString(node.toPath(), "0 0\n");
+        Files.write(node.toPath(), "0 0\n".getBytes(StandardCharsets.UTF_8));
         assertEquals(25.0, reader.sample(3000), 0.001);
         assertTrue(Double.isNaN(reader.sample(8001)));
-        Files.writeString(node.toPath(), "125 1000\n");
+        Files.write(node.toPath(), "125 1000\n".getBytes(StandardCharsets.UTF_8));
         assertEquals(12.5, reader.sample(8500), 0.001);
         assertTrue(node.delete());
         assertTrue(Double.isNaN(reader.sample(9000)));
@@ -60,8 +61,8 @@ public class PerformanceMetricsTest {
         File mali = new File(sys, "class/misc/mali0/device/utilization");
         assertTrue(kgsl.getParentFile().mkdirs());
         assertTrue(mali.getParentFile().mkdirs());
-        Files.writeString(kgsl.toPath(), "0  0\n");
-        Files.writeString(mali.toPath(), "81\n");
+        Files.write(kgsl.toPath(), "0  0\n".getBytes(StandardCharsets.UTF_8));
+        Files.write(mali.toPath(), "81\n".getBytes(StandardCharsets.UTF_8));
         GpuUsageReader reader = new GpuUsageReader(sys, temporary.newFolder("proc3"));
         assertEquals(81.0, reader.sample(1000), 0.001);
     }
@@ -73,8 +74,8 @@ public class PerformanceMetricsTest {
         File gpu = new File(sys, "class/devfreq/abc.mali/load");
         assertTrue(cpu.getParentFile().mkdirs());
         assertTrue(gpu.getParentFile().mkdirs());
-        Files.writeString(cpu.toPath(), "99");
-        Files.writeString(gpu.toPath(), "42@100000");
+        Files.write(cpu.toPath(), "99".getBytes(StandardCharsets.UTF_8));
+        Files.write(gpu.toPath(), "42@100000".getBytes(StandardCharsets.UTF_8));
         GpuUsageReader reader = new GpuUsageReader(sys, temporary.newFolder("proc2"));
         assertEquals(42.0, reader.sample(1000), 0.001);
         assertTrue(gpu.delete());

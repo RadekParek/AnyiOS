@@ -60,7 +60,8 @@ public class GameInspectorArchiveTest {
         File folder = temporary.newFolder("nested");
         File bundle = new File(folder, "Payload/Game.app");
         assertTrue(bundle.mkdirs());
-        java.nio.file.Files.writeString(new File(bundle, "Info.plist").toPath(), xml);
+        java.nio.file.Files.write(
+            new File(bundle, "Info.plist").toPath(), xml.getBytes(StandardCharsets.UTF_8));
         assertEquals(fromIpa.description(), GameInspector.readRequirements(folder, "Folder").description());
         assertEquals("Unavailable", GameInspector.readRequirements(source, "Executable").minimumIos);
     }
