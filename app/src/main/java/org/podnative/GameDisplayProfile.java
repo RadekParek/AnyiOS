@@ -1,6 +1,6 @@
 package org.podnative;
 
-/** Guest layout in iOS points; presentation resolution is a separate setting. */
+/** Guest layout in iOS points; presentation-buffer sizing is independent. */
 final class GameDisplayProfile {
     static final int AUTO = 0;
     static final int CLASSIC_PHONE = 1;

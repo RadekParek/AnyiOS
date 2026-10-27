@@ -11,3 +11,102 @@ index c8c519f357fa73bc6d4c9db621357c370ab2bbeb..2dc07de1807f7b865143c894a677e9af
          SDL_zero(event);
          while (ASensorEventQueue_getEvents(sensor->hwdata->eventqueue, &event, 1) > 0) {
              SDL_PrivateSensorUpdate(sensor, 0, event.data, SDL_arraysize(event.data));
+diff --git a/src/video/SDL_egl.c b/src/video/SDL_egl.c
+index 500ee0ecb6711e3cdc9f2bf232d6cd77b9db4a69..01a193313de2689e8726a7920a7a902320eb069e 100644
+--- a/src/video/SDL_egl.c
++++ b/src/video/SDL_egl.c
+@@ -436,6 +436,9 @@ SDL_EGL_LoadLibraryInternal(_THIS, const char *egl_path)
+     LOAD_FUNC(eglCreatePbufferSurface);
+     LOAD_FUNC(eglCreateWindowSurface);
+     LOAD_FUNC(eglDestroySurface);
++#if SDL_VIDEO_DRIVER_ANDROID
++    LOAD_FUNC(eglQuerySurface);
++#endif
+     LOAD_FUNC(eglMakeCurrent);
+     LOAD_FUNC(eglSwapBuffers);
+     LOAD_FUNC(eglSwapInterval);
+diff --git a/src/video/SDL_egl_c.h b/src/video/SDL_egl_c.h
+index 68dbd6d9feeb4701c55f889e81b5159eaba703a9..28f3bc409ae1f7d6edd427b6c50529cc1f0333bc 100644
+--- a/src/video/SDL_egl_c.h
++++ b/src/video/SDL_egl_c.h
+@@ -76,6 +76,10 @@ typedef struct SDL_EGL_VideoData
+                                          NativeWindowType window,
+                                          const EGLint * attrib_list);
+     EGLBoolean(EGLAPIENTRY *eglDestroySurface) (EGLDisplay dpy, EGLSurface surface);
++#if SDL_VIDEO_DRIVER_ANDROID
++    EGLBoolean(EGLAPIENTRY *eglQuerySurface) (EGLDisplay dpy, EGLSurface surface,
++                                               EGLint attribute, EGLint *value);
++#endif
+     
+     EGLBoolean(EGLAPIENTRY *eglMakeCurrent) (EGLDisplay dpy, EGLSurface draw,
+                                  EGLSurface read, EGLContext ctx);
+diff --git a/src/video/android/SDL_androidgl.c b/src/video/android/SDL_androidgl.c
+index 0300ff2f8358e9b08e3389f6f96f63b2376c0310..fd541c52014f06d96c1298f29427245a4a9e05dc 100644
+--- a/src/video/android/SDL_androidgl.c
++++ b/src/video/android/SDL_androidgl.c
+@@ -46,6 +46,41 @@ Android_GLES_MakeCurrent(_THIS, SDL_Window * window, SDL_GLContext context)
+     }
+ }
+ 
++/* AnyiOS: Android's reported SurfaceView buffer size can differ from the EGL
++   window surface during fixed-size changes or when a driver ignores the request.
++   SDL_GL_GetDrawableSize must describe the surface actually being drawn to;
++   otherwise the viewport covers only part of the screen. */
++void
++Android_GLES_GetDrawableSize(_THIS, SDL_Window *window, int *w, int *h)
++{
++    EGLint egl_width = 0, egl_height = 0;
++    int width, height;
++    SDL_WindowData *data;
++
++    SDL_LockMutex(Android_ActivityMutex);
++    data = (SDL_WindowData *)window->driverdata;
++    width = window->w;
++    height = window->h;
++    if (data && _this->egl_data && _this->egl_data->eglQuerySurface &&
++        _this->egl_data->egl_display != EGL_NO_DISPLAY &&
++        data->egl_surface != EGL_NO_SURFACE) {
++        EGLBoolean width_ok = _this->egl_data->eglQuerySurface(_this->egl_data->egl_display,
++                                                               data->egl_surface, EGL_WIDTH, &egl_width);
++        EGLBoolean height_ok = width_ok && _this->egl_data->eglQuerySurface(_this->egl_data->egl_display,
++                                                                           data->egl_surface, EGL_HEIGHT, &egl_height);
++        if (width_ok && height_ok && egl_width > 0 && egl_height > 0) {
++            width = egl_width;
++            height = egl_height;
++        } else if ((!width_ok || !height_ok) && _this->egl_data->eglGetError) {
++            /* Do not leave our failed optional query as a pending EGL error. */
++            _this->egl_data->eglGetError();
++        }
++    }
++    SDL_UnlockMutex(Android_ActivityMutex);
++    if (w) *w = width;
++    if (h) *h = height;
++}
++
+ SDL_GLContext
+ Android_GLES_CreateContext(_THIS, SDL_Window * window)
+ {
+diff --git a/src/video/android/SDL_androidgl.h b/src/video/android/SDL_androidgl.h
+index 9af2e5f46669c9f7e327408c09f80d90699de3fa..796a8ac3addc9378f481d0ae94e213d611c4aca9 100644
+--- a/src/video/android/SDL_androidgl.h
++++ b/src/video/android/SDL_androidgl.h
+@@ -25,6 +25,7 @@
+ 
+ SDL_GLContext Android_GLES_CreateContext(_THIS, SDL_Window * window);
+ int Android_GLES_MakeCurrent(_THIS, SDL_Window * window, SDL_GLContext context);
++void Android_GLES_GetDrawableSize(_THIS, SDL_Window *window, int *w, int *h);
+ int Android_GLES_SwapWindow(_THIS, SDL_Window * window);
+ int Android_GLES_LoadLibrary(_THIS, const char *path);
+ 
+diff --git a/src/video/android/SDL_androidvideo.c b/src/video/android/SDL_androidvideo.c
+index a0170f131f23922dfedfd751f4ac8e77cdfefb5c..aebc8e0da1aea4eb2208aee2b5cafcc1d36aab61 100644
+--- a/src/video/android/SDL_androidvideo.c
++++ b/src/video/android/SDL_androidvideo.c
+@@ -135,6 +135,7 @@ Android_CreateDevice(void)
+     device->GL_UnloadLibrary = Android_GLES_UnloadLibrary;
+     device->GL_CreateContext = Android_GLES_CreateContext;
+     device->GL_MakeCurrent = Android_GLES_MakeCurrent;
++    device->GL_GetDrawableSize = Android_GLES_GetDrawableSize;
+     device->GL_SetSwapInterval = Android_GLES_SetSwapInterval;
+     device->GL_GetSwapInterval = Android_GLES_GetSwapInterval;
+     device->GL_SwapWindow = Android_GLES_SwapWindow;

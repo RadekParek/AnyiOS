@@ -12,6 +12,14 @@ public class OverlayGeometryTest {
         assertArrayEquals(expected, half.inView(1600, 900, 10, 20));
     }
 
+    @Test public void actualDrawableDimensionsKeepOverlayAlignedWhenHolderFrameDiffers() {
+        // The holder may report 800x450 even if EGL actually draws at 1600x900.
+        // Rust sends the latter together with the bounds; never normalize by
+        // the stale holder size or the overlay would be twice as large.
+        OverlayGeometry actual = OverlayGeometry.fromDrawable(400, 200, 400, 300, 1600, 900);
+        assertArrayEquals(new int[] {400, 200, 400, 300}, actual.inView(1600, 900, 0, 0));
+    }
+
     @Test public void normalizedOverlayFollowsViewResizeAndMatchParent() {
         OverlayGeometry bounds = OverlayGeometry.fromDrawable(200, 100, 200, 150, 800, 450);
         assertArrayEquals(new int[] {200, 100, 200, 150}, bounds.inView(800, 450, 0, 0));

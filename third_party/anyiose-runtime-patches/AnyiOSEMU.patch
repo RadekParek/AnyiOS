@@ -451,7 +451,7 @@ index 670dc38476621ac72d7da765d0b5a0229597cd72..a19935d8af0c0fed72eb0bb6a07508f3
          return true;
      }
 diff --git a/android/app/src/main/java/org/touchhle/android/MainActivity.java b/android/app/src/main/java/org/touchhle/android/MainActivity.java
-index 7803c18600484c29a067ec1433ddfe275c7c593a..af2ce3323198c32dc9750d7b669c392242f8f46d 100644
+index 7803c18600484c29a067ec1433ddfe275c7c593a..0cc4d7153c16be7769dc6c000b2164fe63921a0a 100644
 --- a/android/app/src/main/java/org/touchhle/android/MainActivity.java
 +++ b/android/app/src/main/java/org/touchhle/android/MainActivity.java
 @@ -6,7 +6,7 @@
@@ -504,7 +504,7 @@ index 7803c18600484c29a067ec1433ddfe275c7c593a..af2ce3323198c32dc9750d7b669c3922
          try {
              if (multicastLock != null) {
                  if (multicastLock.isHeld()) {
-@@ -101,7 +110,44 @@ public class MainActivity extends SDLActivity {
+@@ -101,7 +110,41 @@ public class MainActivity extends SDLActivity {
      // =====================================================================
      private static final java.util.HashMap<Integer, android.webkit.WebView> webOverlays =
              new java.util.HashMap<Integer, android.webkit.WebView>();
@@ -519,14 +519,11 @@ index 7803c18600484c29a067ec1433ddfe275c7c593a..af2ce3323198c32dc9750d7b669c3922
 +                }
 +            };
 +
-+    // The Rust viewport is measured in SDL drawable pixels, which can be
-+    // smaller than the Android view when resolution scaling is enabled.
-+    // Store fractions of the drawable, then lay out in the actual view space.
-+    private static OverlayGeometry overlayGeometry(int x, int y, int width, int height) {
-+        if (mSurface == null) return OverlayGeometry.fromDrawable(x, y, width, height, 1, 1);
-+        android.graphics.Rect buffer = mSurface.getHolder().getSurfaceFrame();
-+        int drawableWidth = buffer.width() > 0 ? buffer.width() : mSurface.getWidth();
-+        int drawableHeight = buffer.height() > 0 ? buffer.height() : mSurface.getHeight();
++    // The dimensions come from the same SDL/EGL drawable used by Rust to
++    // calculate the rectangle. SurfaceHolder's reported frame can lag a resize
++    // or disagree with the actual framebuffer, so it must not be used here.
++    private static OverlayGeometry overlayGeometry(int x, int y, int width, int height,
++                                                   int drawableWidth, int drawableHeight) {
 +        return OverlayGeometry.fromDrawable(x, y, width, height, drawableWidth, drawableHeight);
 +    }
 +
@@ -549,7 +546,30 @@ index 7803c18600484c29a067ec1433ddfe275c7c593a..af2ce3323198c32dc9750d7b669c3922
  
      // Open a URL in the system browser (or the app that owns the scheme,
      // e.g. a mailto: handler). Called from Rust via JNI (see
-@@ -228,13 +274,12 @@ public class MainActivity extends SDLActivity {
+@@ -189,17 +232,19 @@ public class MainActivity extends SDLActivity {
+     // blank). x/y/w/h are in window pixels; w or h <= 0 means "match the
+     // window" on that axis. Returns the overlay id (always > 0).
+     public static int showWebOverlay(final String url, final int x, final int y,
+-                                     final int w, final int h) {
++                                     final int w, final int h,
++                                     final int drawableWidth, final int drawableHeight) {
+         final int id = nextWebOverlayId++;
+         mSingleton.runOnUiThread(new Runnable() {
+             public void run() {
+-                createWebOverlay(id, url, x, y, w, h);
++                createWebOverlay(id, url, x, y, w, h, drawableWidth, drawableHeight);
+             }
+         });
+         return id;
+     }
+ 
+-    private static void createWebOverlay(int id, String url, int x, int y, int w, int h) {
++    private static void createWebOverlay(int id, String url, int x, int y, int w, int h,
++                                         int drawableWidth, int drawableHeight) {
+         android.app.Activity act = mSingleton;
+         if (act == null) return;
+         try {
+@@ -228,13 +273,12 @@ public class MainActivity extends SDLActivity {
  
              android.view.ViewGroup content =
                      (android.view.ViewGroup) act.findViewById(android.R.id.content);
@@ -561,14 +581,19 @@ index 7803c18600484c29a067ec1433ddfe275c7c593a..af2ce3323198c32dc9750d7b669c3922
              content.addView(wv, lp);
 -            wv.setTranslationX(x);
 -            wv.setTranslationY(y);
-+            OverlayGeometry geometry = overlayGeometry(x, y, w, h);
++            OverlayGeometry geometry = overlayGeometry(x, y, w, h, drawableWidth, drawableHeight);
 +            webOverlayGeometry.put(id, geometry);
 +            placeWebOverlay(wv, geometry);
              content.bringChildToFront(wv);
  
              if (url != null && !url.isEmpty()) {
-@@ -271,22 +316,9 @@ public class MainActivity extends SDLActivity {
-                                            final int w, final int h) {
+@@ -268,25 +312,13 @@ public class MainActivity extends SDLActivity {
+ 
+     // Move/resize an existing overlay (window pixels).
+     public static void setWebOverlayBounds(final int id, final int x, final int y,
+-                                           final int w, final int h) {
++                                           final int w, final int h,
++                                           final int drawableWidth, final int drawableHeight) {
          withWebOverlay(id, new Runnable() {
              public void run() {
 -                android.webkit.WebView wv = webOverlays.get(id);
@@ -587,7 +612,7 @@ index 7803c18600484c29a067ec1433ddfe275c7c593a..af2ce3323198c32dc9750d7b669c3922
 -                wv.setTranslationX(x);
 -                wv.setTranslationY(y);
 -                wv.requestLayout();
-+                OverlayGeometry geometry = overlayGeometry(x, y, w, h);
++                OverlayGeometry geometry = overlayGeometry(x, y, w, h, drawableWidth, drawableHeight);
 +                webOverlayGeometry.put(id, geometry);
 +                placeWebOverlay(webOverlays.get(id), geometry);
              }
@@ -682,7 +707,7 @@ index 6015decc1c152027253d58481b2fda342ea44209..274cd787118e0e2ab6e44bce0275ad36
      /// silently answers "not available" even on a device that has both.
      /// Calling the *resolved* methods from a coroutine stack is fine; only the
 diff --git a/src/android_web_view.rs b/src/android_web_view.rs
-index a3bba306f4d10431fe42eaf8c268fc92a6e48110..0f3f2dbba2d52237e648442340720ce0a87c3313 100644
+index a3bba306f4d10431fe42eaf8c268fc92a6e48110..db4108a86bdf8b7107c88edf86b946f009630a29 100644
 --- a/src/android_web_view.rs
 +++ b/src/android_web_view.rs
 @@ -9,7 +9,7 @@
@@ -703,6 +728,103 @@ index a3bba306f4d10431fe42eaf8c268fc92a6e48110..0f3f2dbba2d52237e648442340720ce0
              let Some(f): Option<
                  unsafe extern "C" fn(*mut c_void, *const c_char) -> *mut c_void,
              > = self.slot(slots::FIND_CLASS)
+@@ -470,7 +470,7 @@ mod imp {
+         fn resolve_methods(jni: &Jni, class: *mut c_void) -> Option<JniCache> {
+             Some(JniCache {
+                 class,
+-                show: method(jni, class, "showWebOverlay", "(Ljava/lang/String;IIII)I")?,
++                show: method(jni, class, "showWebOverlay", "(Ljava/lang/String;IIIIII)I")?,
+                 navigate: method(jni, class, "navigateWebOverlay", "(ILjava/lang/String;)V")?,
+                 load_data: method(
+                     jni,
+@@ -478,7 +478,7 @@ mod imp {
+                     "loadDataWebOverlay",
+                     "(ILjava/lang/String;Ljava/lang/String;)V",
+                 )?,
+-                set_bounds: method(jni, class, "setWebOverlayBounds", "(IIIII)V")?,
++                set_bounds: method(jni, class, "setWebOverlayBounds", "(IIIIIII)V")?,
+                 hide: method(jni, class, "hideWebOverlay", "(I)V")?,
+                 go_back: method(jni, class, "goBackWebOverlay", "(I)V")?,
+                 go_forward: method(jni, class, "goForwardWebOverlay", "(I)V")?,
+@@ -519,7 +519,14 @@ mod imp {
+         }
+     }
+ 
+-    pub fn show(url: &str, x: i32, y: i32, w: i32, h: i32) -> OverlayId {
++    pub fn show(
++        url: &str,
++        x: i32,
++        y: i32,
++        w: i32,
++        h: i32,
++        drawable_size: (u32, u32),
++    ) -> OverlayId {
+         let Some(jni) = Jni::attach() else {
+             return -1;
+         };
+@@ -533,6 +540,8 @@ mod imp {
+             JValue { i: y },
+             JValue { i: w },
+             JValue { i: h },
++            JValue { i: drawable_size.0.min(i32::MAX as u32) as i32 },
++            JValue { i: drawable_size.1.min(i32::MAX as u32) as i32 },
+         ];
+         let id = jni.call_static_int(c.class, c.show, &args);
+         jni.delete_local_ref(url_j);
+@@ -567,7 +576,14 @@ mod imp {
+         jni.delete_local_ref(mime_j);
+     }
+ 
+-    pub fn set_bounds(id: OverlayId, x: i32, y: i32, w: i32, h: i32) {
++    pub fn set_bounds(
++        id: OverlayId,
++        x: i32,
++        y: i32,
++        w: i32,
++        h: i32,
++        drawable_size: (u32, u32),
++    ) {
+         let Some(jni) = Jni::attach() else {
+             return;
+         };
+@@ -580,6 +596,8 @@ mod imp {
+             JValue { i: y },
+             JValue { i: w },
+             JValue { i: h },
++            JValue { i: drawable_size.0.min(i32::MAX as u32) as i32 },
++            JValue { i: drawable_size.1.min(i32::MAX as u32) as i32 },
+         ];
+         jni.call_static_void(c.class, c.set_bounds, &args);
+     }
+@@ -701,12 +719,26 @@ mod imp {
+     use super::OverlayId;
+ 
+     pub fn populate_jni_cache() {}
+-    pub fn show(_url: &str, _x: i32, _y: i32, _w: i32, _h: i32) -> OverlayId {
++    pub fn show(
++        _url: &str,
++        _x: i32,
++        _y: i32,
++        _w: i32,
++        _h: i32,
++        _drawable_size: (u32, u32),
++    ) -> OverlayId {
+         -1
+     }
+     pub fn navigate(_id: OverlayId, _url: &str) {}
+     pub fn load_data(_id: OverlayId, _data: &str, _mime: &str) {}
+-    pub fn set_bounds(_id: OverlayId, _x: i32, _y: i32, _w: i32, _h: i32) {}
++    pub fn set_bounds(
++        _id: OverlayId,
++        _x: i32,
++        _y: i32,
++        _w: i32,
++        _h: i32,
++        _drawable_size: (u32, u32),
++    ) {}
+     pub fn hide(_id: OverlayId) {}
+     pub fn go_back(_id: OverlayId) {}
+     pub fn go_forward(_id: OverlayId) {}
 diff --git a/src/audio/mic.rs b/src/audio/mic.rs
 index d416bb73bc8dfe72af7a344c71b9ad39c7bb9a75..9521dea0359f35cdd89f87f966329a3e95f1f929 100644
 --- a/src/audio/mic.rs
@@ -1436,6 +1558,51 @@ index b7cea11a0902e86221aa616edb56fba4b9353f24..ae45c71a0068892e7abd54b64442c112
  // MARK: - Retain / release (singleton — no-ops)
  
  - (id)retain      { this }
+diff --git a/src/frameworks/uikit/ui_view/ui_web_view.rs b/src/frameworks/uikit/ui_view/ui_web_view.rs
+index 9d0896aabe7d493e63da0ee4a814c0822efd8d5b..15a1f8475f7b582502e3270b362eb37ba4beeed8 100644
+--- a/src/frameworks/uikit/ui_view/ui_web_view.rs
++++ b/src/frameworks/uikit/ui_view/ui_web_view.rs
+@@ -894,7 +894,8 @@ fn overlay_show_or_update(env: &mut Environment, this: id) -> Option<i32> {
+         return None;
+     }
+     let frame: CGRect = msg![env; this frame];
+-    let (mut x, mut y, mut w, mut h) = env.window().guest_frame_to_window_px(frame);
++    let ((mut x, mut y, mut w, mut h), mut drawable_size) =
++        env.window().guest_frame_to_window_px(frame);
+     if w <= 0 || h <= 0 {
+         // The view itself has no extent yet. Apps commonly add the web
+         // view to a container and let autoresizing size it — which never
+@@ -904,13 +905,15 @@ fn overlay_show_or_update(env: &mut Environment, this: id) -> Option<i32> {
+         let superview: id = msg![env; this superview];
+         if superview != nil {
+             let super_frame: CGRect = msg![env; superview frame];
+-            let (sx, sy, sw, sh) = env.window().guest_frame_to_window_px(super_frame);
++            let ((sx, sy, sw, sh), super_drawable_size) =
++                env.window().guest_frame_to_window_px(super_frame);
+             if sw > 0 && sh > 0 {
+                 log!("UIWebView overlay: view has no extent yet; using superview frame");
+                 x = sx;
+                 y = sy;
+                 w = sw;
+                 h = sh;
++                drawable_size = super_drawable_size;
+             }
+         }
+     }
+@@ -922,11 +925,11 @@ fn overlay_show_or_update(env: &mut Environment, this: id) -> Option<i32> {
+     if current == -2 {
+         // First show: create the overlay seeded with a blank page; the
+         // caller immediately navigates or loads data into it.
+-        let oid = android_web_view::show("about:blank", x, y, w, h);
++        let oid = android_web_view::show("about:blank", x, y, w, h, drawable_size);
+         env.objc.borrow_mut::<UIWebViewHostObject>(this).overlay_id = oid;
+         Some(oid)
+     } else if current >= 0 {
+-        android_web_view::set_bounds(current, x, y, w, h);
++        android_web_view::set_bounds(current, x, y, w, h, drawable_size);
+         Some(current)
+     } else {
+         None
 diff --git a/src/frameworks/uikit/ui_view/ui_window.rs b/src/frameworks/uikit/ui_view/ui_window.rs
 index 25130279d197c09882c966a0e1e3a9e743660363..c3a033529bc3ef4033ae92e786a2256ed279e1c6 100644
 --- a/src/frameworks/uikit/ui_view/ui_window.rs
@@ -2094,7 +2261,7 @@ index 116377048b0174b12bec8580997c3b8c65e859e0..f6dcce7b8de7f45490c2835505967ee9
 +    ""
  }
 diff --git a/src/window.rs b/src/window.rs
-index 62127476cf0e6bfaae962dd8146cded72f1ad9e8..20dbb910fd4f69cedd420ef88134abd04153daf6 100644
+index 62127476cf0e6bfaae962dd8146cded72f1ad9e8..cc3e5a26f4f78bbfbd755de228cfe2487878889c 100644
 --- a/src/window.rs
 +++ b/src/window.rs
 @@ -1351,7 +1351,7 @@ impl Window {
@@ -2115,10 +2282,48 @@ index 62127476cf0e6bfaae962dd8146cded72f1ad9e8..20dbb910fd4f69cedd420ef88134abd0
                  // Reset counters
                  *last = now;
                  self.fps_frame_count.set(0);
-@@ -2885,47 +2885,17 @@ impl Window {
+@@ -2835,6 +2835,10 @@ impl Window {
+     /// The scale and aspect ratio of this region depend on the host window and
+     /// the desktop aspect-ratio setting; its orientation follows the guest app.
+     pub fn viewport(&self) -> (u32, u32, u32, u32) {
++        self.viewport_for_drawable(self.window.drawable_size())
++    }
++
++    fn viewport_for_drawable(&self, drawable_size: (u32, u32)) -> (u32, u32, u32, u32) {
+         let (app_width, app_height) = size_for_orientation_from_size(
+             self.screen_size(),
+             self.device_orientation,
+@@ -2847,7 +2851,6 @@ impl Window {
+         // backing-pixel rounding can leave the content a pixel off the ratio.
+         #[cfg(not(any(target_os = "android", target_os = "ios")))]
+         {
+-            let drawable_size = self.window.drawable_size();
+             let native_ratio_matches = {
+                 let lhs = drawable_size.0 as u64 * app_height as u64;
+                 let rhs = drawable_size.1 as u64 * app_width as u64;
+@@ -2866,7 +2869,7 @@ impl Window {
+ 
+         // Fit the actual drawable in windowed mode too: the compositor may
+         // resize the window or give it more pixels than its logical size.
+-        geometry::fit_viewport((app_width, app_height), self.window.drawable_size())
++        geometry::fit_viewport((app_width, app_height), drawable_size)
+     }
+ 
+     /// SDL mouse coordinates must use the same pixel space as the viewport.
+@@ -2878,54 +2881,26 @@ impl Window {
+         )
+     }
+ 
+-    /// Map a guest-space `CGRect` (points, possibly rotated/letterboxed) to
+-    /// host window pixels `(x, y, w, h)` for host-side overlays (native
+-    /// Android webviews etc.). Returns `w`/`h` of 0 when nothing is visible.
++    /// Map a guest-space `CGRect` to drawable pixels for host-side overlays.
++    /// Return the exact drawable size used for the mapping as well: Android's
++    /// Java surface-frame size can differ from the EGL drawable while resizing.
+     pub fn guest_frame_to_window_px(
          &self,
          frame: crate::frameworks::core_graphics::CGRect,
-     ) -> (i32, i32, i32, i32) {
+-    ) -> (i32, i32, i32, i32) {
 -        let (vp_x, vp_y, vp_w, vp_h) = self.viewport();
 -        let (app_w, app_h) = self.size_unrotated_unscaled();
 -        let (app_w, app_h) = (app_w as f32, app_h as f32);
@@ -2131,7 +2336,9 @@ index 62127476cf0e6bfaae962dd8146cded72f1ad9e8..20dbb910fd4f69cedd420ef88134abd0
 -        // viewport pixels (mirrors the composition rotation).
 -        let (x, y, w, h) = match self.device_orientation {
 -            crate::window::DeviceOrientation::Portrait => (
-+        geometry::guest_rect_to_drawable(
++    ) -> ((i32, i32, i32, i32), (u32, u32)) {
++        let drawable_size = self.window.drawable_size();
++        let bounds = geometry::guest_rect_to_drawable(
 +            (
                  frame.origin.x as f32,
                  frame.origin.y as f32,
@@ -2164,12 +2371,13 @@ index 62127476cf0e6bfaae962dd8146cded72f1ad9e8..20dbb910fd4f69cedd420ef88134abd0
 -        (px, py, pw.max(0), ph.max(0))
 +            self.size_unrotated_unscaled(),
 +            self.device_orientation,
-+            self.viewport(),
-+        )
++            self.viewport_for_drawable(drawable_size),
++        );
++        (bounds, drawable_size)
      }
  
      pub fn host_framebuffer(&self) -> u32 {
-@@ -3124,7 +3094,7 @@ pub fn show_error_messagebox(window: Option<&Window>, error_message: &str) {
+@@ -3124,7 +3099,7 @@ pub fn show_error_messagebox(window: Option<&Window>, error_message: &str) {
          messagebox::ButtonData {
              flags: messagebox::MessageBoxButtonFlag::NOTHING,
              button_id: 0,
@@ -2178,7 +2386,7 @@ index 62127476cf0e6bfaae962dd8146cded72f1ad9e8..20dbb910fd4f69cedd420ef88134abd0
          },
          messagebox::ButtonData {
              flags: messagebox::MessageBoxButtonFlag::NOTHING,
-@@ -3136,13 +3106,13 @@ pub fn show_error_messagebox(window: Option<&Window>, error_message: &str) {
+@@ -3136,13 +3111,13 @@ pub fn show_error_messagebox(window: Option<&Window>, error_message: &str) {
      let Ok(clicked_button) = messagebox::show_message_box(
          messagebox::MessageBoxFlag::ERROR,
          &mbox,

@@ -19,8 +19,6 @@ import java.io.RandomAccessFile;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Locale;
-import java.util.regex.Matcher;
-import java.util.regex.Pattern;
 
 /** SDL host activity for AnyiOSEMU's pinned ARM32 iPhone OS runtime. */
 public final class AnyiOSEmuActivity extends org.anyiose.android.MainActivity {
@@ -35,9 +33,6 @@ public final class AnyiOSEmuActivity extends org.anyiose.android.MainActivity {
     public static volatile String userDataPath;
 
     private static final int MAX_REPORT_BYTES = 64 * 1024;
-    private static final int MAX_FPS_SCAN_BYTES = 32 * 1024;
-    private static final Pattern PRESENT_FPS =
-        Pattern.compile("AnyiOSEMU_PRESENT_FPS:\\s*([0-9]+(?:\\.[0-9]+)?)");
     private final Handler hudHandler = new Handler(Looper.getMainLooper());
     private String gameId = "";
     private String gameTitle = "Imported game";
@@ -48,7 +43,6 @@ public final class AnyiOSEmuActivity extends org.anyiose.android.MainActivity {
     private float effectiveFpsCap = 60.0f;
     private boolean performanceHudEnabled;
     private boolean boostDisplayLink;
-    private int resolutionLimit;
     private int gameDisplayProfile;
     private int dynamicMinimum;
     private DynamicResolution dynamicResolution;
@@ -61,8 +55,7 @@ public final class AnyiOSEmuActivity extends org.anyiose.android.MainActivity {
     private Runnable performanceHudSampler;
     private long previousHudWallMs;
     private long previousProcessCpuMs;
-    private long lastFpsMarkerPosition = -1;
-    private long lastFpsLogLength = -1;
+    private PresentationFpsReader fpsReader;
     private long lastMeasuredFpsAtMs;
     private double lastMeasuredFps = Double.NaN;
 
@@ -84,7 +77,6 @@ public final class AnyiOSEmuActivity extends org.anyiose.android.MainActivity {
         fpsCapPreference = settings.getInt("fps", DisplayFrameRate.AUTO);
         performanceHudEnabled = settings.getBoolean("performanceHud", false);
         boostDisplayLink = settings.getBoolean("boostDisplayLink", false);
-        resolutionLimit = settings.getInt("presentationResolution", 0);
         gameDisplayProfile = settings.getInt("gameDisplayProfile", GameDisplayProfile.AUTO);
         dynamicMinimum = settings.getInt("dynamicResolution", 100);
         maxClocksEnabled = settings.getBoolean("maxClocks", false);
@@ -93,6 +85,7 @@ public final class AnyiOSEmuActivity extends org.anyiose.android.MainActivity {
         verboseGlesEnabled = settings.getBoolean("verboseLogging", false);
 
         File dataDirectory = new File(dataPath);
+        fpsReader = new PresentationFpsReader(new File(dataDirectory, "AnyiOSEMU_log.txt"));
         boolean dataDirectoryReady = dataDirectory.isDirectory() || dataDirectory.mkdirs();
         try {
             File canonicalData = dataDirectory.getCanonicalFile();
@@ -108,10 +101,9 @@ public final class AnyiOSEmuActivity extends org.anyiose.android.MainActivity {
         super.onCreate(state);
         DisplayFrameRate.requestPreferredMode(this, fpsCapPreference);
         effectiveFpsCap = DisplayFrameRate.resolveCap(this, fpsCapPreference);
-        if (mSurface != null && (resolutionLimit > 0 || dynamicMinimum < 100)) {
-            surfaceResolution = new SurfaceResolution(mSurface, resolutionLimit);
-            if (dynamicMinimum < 100)
-                dynamicResolution = new DynamicResolution(dynamicMinimum, effectiveFpsCap);
+        if (mSurface != null && dynamicMinimum < 100) {
+            surfaceResolution = new SurfaceResolution(mSurface);
+            dynamicResolution = new DynamicResolution(dynamicMinimum, effectiveFpsCap);
         }
         getSharedPreferences("anyiose_runtime", MODE_PRIVATE)
             .edit()
@@ -186,18 +178,6 @@ public final class AnyiOSEmuActivity extends org.anyiose.android.MainActivity {
         }, 5000);
     }
 
-    private static final class FpsSample {
-        final double fps;
-        final long markerPosition;
-        final long logLength;
-
-        FpsSample(double fps, long markerPosition, long logLength) {
-            this.fps = fps;
-            this.markerPosition = markerPosition;
-            this.logLength = logLength;
-        }
-    }
-
     private int dp(int value) {
         return Math.round(value * getResources().getDisplayMetrics().density);
     }
@@ -251,6 +231,18 @@ public final class AnyiOSEmuActivity extends org.anyiose.android.MainActivity {
 
     private void updatePerformanceHud() {
         long nowWall = SystemClock.elapsedRealtime();
+        double sample = fpsReader.poll();
+        if (!Double.isNaN(sample)) {
+            lastMeasuredFps = sample;
+            lastMeasuredFpsAtMs = nowWall;
+            if (dynamicResolution != null && surfaceResolution != null)
+                surfaceResolution.setPercent(dynamicResolution.sample(sample, nowWall));
+        }
+        // Dynamic resolution only needs FPS. Collecting PSS and CPU data when
+        // the HUD is hidden causes unnecessary work on the Android UI thread.
+        if (performanceHud == null)
+            return;
+
         long nowCpu = Process.getElapsedCpuTime();
         String cpu = "—";
         if (previousHudWallMs > 0 && nowWall > previousHudWallMs) {
@@ -271,56 +263,15 @@ public final class AnyiOSEmuActivity extends org.anyiose.android.MainActivity {
             // Some Android versions do not report a graphics PSS category.
         }
         String graphics = graphicsKilobytes > 0 ? (graphicsKilobytes / 1024L) + " MB" : "n/a";
-
-        FpsSample sample = readLatestPresentedFps();
-        if (sample != null) {
-            if (lastFpsLogLength >= 0 && sample.logLength < lastFpsLogLength)
-                lastFpsMarkerPosition = -1;
-            if (sample.markerPosition > lastFpsMarkerPosition) {
-                lastFpsMarkerPosition = sample.markerPosition;
-                lastMeasuredFps = sample.fps;
-                lastMeasuredFpsAtMs = nowWall;
-                if (dynamicResolution != null && surfaceResolution != null)
-                    surfaceResolution.setPercent(dynamicResolution.sample(sample.fps, nowWall));
-            }
-            lastFpsLogLength = sample.logLength;
-        }
         String fps = !Double.isNaN(lastMeasuredFps) && nowWall - lastMeasuredFpsAtMs <= 3000
             ? String.format(Locale.ROOT, "%.1f", lastMeasuredFps)
             : "—";
-        if (performanceHud == null)
-            return;
         performanceHud.setText("FPS " + fps + " · cap " + DisplayFrameRate.formatHz(effectiveFpsCap)
             + " Hz"
             + (dynamicResolution == null ? "" : " · surface " + dynamicResolution.percent() + "%")
             + "\n"
             + "CPU " + cpu + " (process, one-core equivalent) · RAM " + pssMegabytes
             + " MB PSS\nGPU utilization n/a · graphics PSS (within RAM total) " + graphics);
-    }
-
-    private FpsSample readLatestPresentedFps() {
-        File log = new File(dataPath, "AnyiOSEMU_log.txt");
-        if (!log.isFile())
-            return null;
-        try (RandomAccessFile input = new RandomAccessFile(log, "r")) {
-            long length = input.length();
-            long start = Math.max(0, length - MAX_FPS_SCAN_BYTES);
-            input.seek(start);
-            byte[] bytes = new byte[(int) (length - start)];
-            input.readFully(bytes);
-            String tail = new String(bytes, StandardCharsets.UTF_8);
-            Matcher matcher = PRESENT_FPS.matcher(tail);
-            FpsSample latest = null;
-            while (matcher.find()) {
-                double fps = Double.parseDouble(matcher.group(1));
-                long relativeBytes =
-                    tail.substring(0, matcher.start()).getBytes(StandardCharsets.UTF_8).length;
-                latest = new FpsSample(fps, start + relativeBytes, length);
-            }
-            return latest;
-        } catch (Exception ignored) {
-            return null;
-        }
     }
 
     @Override
@@ -385,8 +336,7 @@ public final class AnyiOSEmuActivity extends org.anyiose.android.MainActivity {
             .append(measuredFps)
             .append("\nGame layout=")
             .append(GameDisplayProfile.label(gameDisplayProfile))
-            .append("\nPresentation short-edge limit=")
-            .append(resolutionLimit <= 0 ? "display native" : resolutionLimit + "p")
+            .append("\nPresentation base resolution=display native")
             .append("\nDynamic surface resolution=")
             .append(dynamicResolution == null ? "off" : "on, minimum " + dynamicMinimum + "%")
             .append(" (presentation surface only; offscreen game buffers may not scale)")
