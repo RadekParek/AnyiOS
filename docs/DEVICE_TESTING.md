@@ -6,7 +6,7 @@ No device run of the pinned runtime integration has been performed in this works
 
 1. Download an APK only after its workflow build succeeds. Check `BUILD-INFO.txt` and `SHA256SUMS`; note the app commit, AnyiOSEMU source pin and ANGLE pin. Install over the existing AnyiOS build when applicable.
 2. Launch AnyiOS, open the shared Library and import a legally obtained IPA or extracted `.app` through the existing UI. Originals must remain untouched.
-3. Check the architecture label and report. A thin ARM32 app is eligible; a universal ARM64+ARM32 app must state that ARM32 is selected; an ARM64-only app must remain unsupported. Encrypted or malformed imports must not be offered as runnable.
+3. Check the architecture label and report. A thin ARM32 app is eligible; an ARM32-only universal app must not have an ARM64 badge; a universal ARM64+ARM32 app must state that ARM32 is selected; ARM64_32 must not be mislabeled ARM64; an ARM64-only app must remain unsupported. Encrypted or malformed imports must not be offered as runnable.
 4. Open an eligible game's details and choose **Launch with AnyiOS**. Confirm that the game's own menu or first screen appears—not a picker, boot placeholder, clear-color surface or Android library UI.
 5. Tap through the actual game menu. Confirm that the runtime receives touch and the visible state changes. Capture a screenshot only after observing real game output.
 6. Open **Show latest log** and confirm the latest guest `NSLog`/stdout and runtime output belong to that game, including after a crash or forced stop; export and compare the full file. Check the session report separately. Check engine revision, selected ARM32 source, requested and effective FPS caps, measured presentation FPS if available, ANGLE/native-GLES preference, Force Composition, HUD/Max clocks requests and any initialization/fallback/error lines. A successful return or status 0 is not rendering proof.
@@ -19,6 +19,12 @@ No device run of the pinned runtime integration has been performed in this works
 - Test **Auto** and fixed FPS caps on supported modes. Compare the requested/effective cap with the HUD's measured presentation FPS; the cap is not a promise that the display or game will sustain it.
 - With the HUD enabled, compare process CPU as a fraction of all available cores and confirm it resets after resume; check RAM/graphics PSS and measured FPS. GPU load is device-wide when a readable vendor counter exists and may correctly show unavailable; compare against a trustworthy counter on both permitted and restricted devices. Enable **Max clocks** only for an explicit test; Android may ignore or limit the best-effort hint and it cannot force clock rates.
 - Run the separate **ANGLE surface test** as a graphics diagnostic. Its cube validates a different surface path and is not a substitute for game rendering.
+
+## Game details and networking
+
+- Open existing IPA and extracted-folder imports without reimporting. Check that **Game engine** is identified only when there is matching evidence (otherwise unknown) and that **Runtime** is AnyiOSEMU, separately from the declared minimum iOS version and capabilities.
+- With a game or test app whose servers are known to work, try DNS/HTTP and socket requests in the main emulator and an independent Semi-Emulated APK on Wi-Fi, cellular, another default route/VPN and offline. Toggle airplane mode and switch networks during a session. Check reachability polling and run-loop notifications, reconnect/retry behavior initiated by the game, and Wi-Fi enabled but not connected. Exercise app-specific network blocking, data saver, captive portals and local-only Wi-Fi where available. Verify mobile-data usage and Android settings remain under user control; route availability must not be presented as a guarantee that a particular server is reachable.
+- Confirm unscheduling a guest reachability callback stops further notifications, and test callback changes/reentrancy. Dispatch-queue delivery is not implemented. Record device, Android version, network conditions, title and server status; CI alone does not validate these cases.
 
 ## Converter and dynamic resolution
 

@@ -67,6 +67,47 @@ public class GameInspectorArchiveTest {
     }
 
     @Test
+    public void readsEngineForOldImportsFromTheirOwnAppBundleOnly() throws Exception {
+        String xml = "<plist><dict><key>MinimumOSVersion</key><string>4.3</string>"
+            + "<key>CFBundleExecutable</key><string>Game</string></dict></plist>";
+        File source = ipa("unity.ipa", "Payload/Game.app/Info.plist", xml,
+            "Payload/Game.app/Game", "binary", "Payload/Game.app/Data/Managed/UnityEngine.dll", "managed");
+        GameRequirements ipaDetails = GameInspector.readRequirements(source, "IPA");
+        assertEquals("Unity (detected)", ipaDetails.gameEngine);
+        assertTrue(ipaDetails.description().contains("Game engine: Unity (detected)"));
+        assertTrue(ipaDetails.description().contains("Runtime: AnyiOSEMU"));
+        assertTrue(ipaDetails.description().contains("Minimum iOS version: 4.3"));
+
+        File parent = temporary.newFolder("unity-folder");
+        File bundle = new File(parent, "Payload/Game.app");
+        assertTrue(new File(bundle, "Data/Managed").mkdirs());
+        java.nio.file.Files.write(new File(bundle, "Info.plist").toPath(),
+            xml.getBytes(StandardCharsets.UTF_8));
+        assertTrue(new File(bundle, "Data/Managed/UnityEngine.dll").createNewFile());
+        assertEquals("Unity (detected)", GameInspector.readRequirements(parent, "Folder").gameEngine);
+
+        File unrelated = ipa("other.ipa", "Payload/Game.app/Info.plist", xml,
+            "Payload/Game.app/Game", "binary", "iTunesMetadata/Data/globalgamemanagers", "x");
+        assertEquals("Unknown", GameInspector.readRequirements(unrelated, "IPA").gameEngine);
+    }
+
+    @Test
+    public void mainExecutableSymbolsAreOptionalAndUnsafeNamesCannotEscapeTheApp() throws Exception {
+        String xml = "<plist><dict><key>CFBundleExecutable</key><string>Game</string></dict></plist>";
+        File source = ipa("cocos.ipa", "Payload/Game.app/Info.plist", xml,
+            "Payload/Game.app/Game", "CCDirector...CCSprite");
+        assertEquals("Cocos2d (detected)", GameInspector.readRequirements(source, "IPA").gameEngine);
+        String unsafe = "<plist><dict><key>CFBundleExecutable</key><string>../Outside</string></dict></plist>";
+        File parent = temporary.newFolder("unsafe-executable");
+        File bundle = new File(parent, "Game.app");
+        assertTrue(bundle.mkdirs());
+        java.nio.file.Files.write(new File(bundle, "Info.plist").toPath(), unsafe.getBytes(StandardCharsets.UTF_8));
+        java.nio.file.Files.write(new File(parent, "Outside").toPath(),
+            "CCDirector...CCSprite".getBytes(StandardCharsets.UTF_8));
+        assertEquals("Unknown", GameInspector.readRequirements(parent, "Folder").gameEngine);
+    }
+
+    @Test
     public void oversizedAndInvalidRequirementsDoNotLookLikeEmptyDeclarations() throws Exception {
         File invalid = ipa("invalid.ipa", "Payload/Game.app/Info.plist", "not a plist");
         org.junit.Assert.assertThrows(IOException.class,

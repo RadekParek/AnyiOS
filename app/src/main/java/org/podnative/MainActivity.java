@@ -623,7 +623,7 @@ public final class MainActivity extends Activity {
                 + (game.bundleId.isEmpty() ? "" : "\n" + game.bundleId),
             13, muted, false));
         gap(content, 18);
-        TextView requirements = text("Reading game requirements…", 14, muted, false);
+        TextView requirements = text("Reading game requirements and engine…", 14, muted, false);
         content.addView(requirements);
         if (!game.canLaunchInAnyiOSEMU()) {
             gap(content, 14);

@@ -134,6 +134,9 @@ public final class AnyiOSEmuActivity extends org.anyiose.android.MainActivity {
         ArrayList<String> arguments = new ArrayList<>();
         arguments.add("--anyiose-data-dir=" + userDataPath);
         arguments.add(sourcePath);
+        // Let Android route real requests as connectivity changes, rather than freezing
+        // the engine's network switch to the state observed at launch.
+        arguments.add("--allow-network-access");
         // Keep the guest's logical layout independent of the Android surface buffer.
         // With the default profile this matches the standalone launch path.
         arguments.add(GameDisplayProfile.argument(GameDisplayProfile.AUTO));

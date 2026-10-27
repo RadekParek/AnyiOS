@@ -25,7 +25,7 @@ ACTUAL=$(git -C "$RUNTIME_ROOT" rev-parse HEAD)
 
 # Recognize only exact previously reviewed engine patches.
 "$ROOT/scripts/apply-reviewed-patch.sh" "$RUNTIME_ROOT" "$PATCH" \
-  c0db49133c87ba9b7ba643b2a18d9c0e688792bd588a323301a77ab548971ae7,e6d5e28137a64151125324d6e929eaab9a54ac4b3018217247a2477b514155c3 "AnyiOSEMU engine"
+  c0db49133c87ba9b7ba643b2a18d9c0e688792bd588a323301a77ab548971ae7,e6d5e28137a64151125324d6e929eaab9a54ac4b3018217247a2477b514155c3,bd12e23b8bb0cf5bc00c786302dee711342c824458dbea1a396b2c5792dabcc1 "AnyiOSEMU engine"
 
 SUBMODULE_STATUS=$(git -C "$RUNTIME_ROOT" submodule status --recursive)
 if printf '%s\n' "$SUBMODULE_STATUS" | grep -Eq '^[-+U]'; then

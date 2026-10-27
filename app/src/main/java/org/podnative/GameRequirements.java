@@ -9,10 +9,16 @@ import java.util.Set;
 
 /** The app's declared iOS requirements, not a prediction of emulator compatibility. */
 final class GameRequirements {
-    final String minimumIos, deviceFamilies, required, prohibited;
+    final String minimumIos, deviceFamilies, required, prohibited, gameEngine;
 
     private GameRequirements(
         String minimumIos, String deviceFamilies, String required, String prohibited) {
+        this(minimumIos, deviceFamilies, required, prohibited, "Unknown");
+    }
+
+    private GameRequirements(String minimumIos, String deviceFamilies, String required,
+        String prohibited, String gameEngine) {
+        this.gameEngine = gameEngine;
         this.minimumIos = minimumIos;
         this.deviceFamilies = deviceFamilies;
         this.required = required;
@@ -21,6 +27,10 @@ final class GameRequirements {
 
     static GameRequirements unavailable() {
         return new GameRequirements("Unavailable", "Unavailable", "Unavailable", "");
+    }
+
+    GameRequirements withEngine(String engine) {
+        return new GameRequirements(minimumIos, deviceFamilies, required, prohibited, engine);
     }
 
     // Apple's archived Info.plist reference documents UIDeviceFamily (including its
@@ -155,12 +165,15 @@ final class GameRequirements {
 
     String description() {
         List<String> lines = new ArrayList<>();
+        lines.add("Game engine: " + gameEngine);
+        lines.add("Runtime: AnyiOSEMU");
         lines.add("Minimum iOS version: " + minimumIos);
         lines.add("Designed for: " + deviceFamilies);
         lines.add("Required capabilities: " + required);
         if (!prohibited.isEmpty())
             lines.add("Must not be present: " + prohibited);
-        lines.add("Declared by the app; optional features may not be listed.");
+        lines.add("Requirements are declared by the app; optional features may not be listed.");
+        lines.add("Game engine is a best-effort identification, not a compatibility guarantee.");
         return String.join("\n", lines);
     }
 }
