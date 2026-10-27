@@ -19,7 +19,10 @@ final class SurfaceResolution implements View.OnLayoutChangeListener {
     }
 
     void setPercent(int percent) {
-        this.percent = Math.max(50, Math.min(100, percent));
+        int clamped = Math.max(50, Math.min(100, percent));
+        if (this.percent == clamped)
+            return;
+        this.percent = clamped;
         apply();
     }
 

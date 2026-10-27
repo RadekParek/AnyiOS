@@ -67,6 +67,39 @@ class RuntimeContractTests(unittest.TestCase):
         self.assertIn("SILENT_ANDROID_FATAL", handler)
         self.assertIn("libc::_exit(128 + sig)", handler)
 
+    def test_overlay_jni_receives_the_drawable_used_for_mapping(self):
+        java_path = (
+            ENGINE / "android/app/src/main/java/org/touchhle/android/MainActivity.java"
+        )
+        if not java_path.is_file():
+            self.skipTest("pinned engine is not initialized in the host-only suite")
+        java = read(java_path)
+        native = read(ENGINE / "src/android_web_view.rs")
+        window = read(ENGINE / "src/window.rs")
+        self.assertIn('"showWebOverlay", "(Ljava/lang/String;IIIIII)I"', native)
+        self.assertIn('"setWebOverlayBounds", "(IIIIIII)V"', native)
+        self.assertIn("final int drawableWidth, final int drawableHeight", java)
+        self.assertIn(
+            "overlayGeometry(x, y, w, h, drawableWidth, drawableHeight)", java
+        )
+        self.assertIn("self.viewport_for_drawable(drawable_size)", window)
+        self.assertNotIn("mSurface.getHolder().getSurfaceFrame()", java)
+
+    def test_resolution_only_skips_cpu_and_memory_hud_sampling(self):
+        activity = read(ROOT / "app/src/main/java/org/podnative/AnyiOSEmuActivity.java")
+        update = activity.split("private void updatePerformanceHud()", 1)[1].split(
+            "protected void onResume()", 1
+        )[0]
+        self.assertIn("fpsReader.poll()", update)
+        self.assertLess(
+            update.index("if (performanceHud == null)"),
+            update.index("Debug.getMemoryInfo"),
+        )
+        self.assertLess(
+            update.index("if (performanceHud == null)"),
+            update.index("Process.getElapsedCpuTime"),
+        )
+
     def test_main_emulator_defaults_match_standalone_display_geometry(self):
         activity = read(ROOT / "app/src/main/java/org/podnative/AnyiOSEmuActivity.java")
         profile = read(ROOT / "app/src/main/java/org/podnative/GameDisplayProfile.java")

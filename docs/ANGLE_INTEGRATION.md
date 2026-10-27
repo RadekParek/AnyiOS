@@ -3,9 +3,9 @@
 ## Current source and status
 
 - Upstream: [google/angle](https://github.com/google/angle).
-- Source pin: `9addc2983b90152f628cfdaea194983b46b254bd`, recorded in `third_party/angle/revision.txt`.
+- Source pin: `1ef82576e0e0834b932dfe810064c68a63f615f1`, recorded in `third_party/angle/revision.txt` (2026-10-26).
 - License: upstream BSD-style 3-clause license, retained at `third_party/angle/LICENSE`; CI also collects the checked-out dependency notices into the APK.
-- This revision builds the OpenGL ES 1.1 entry-point library and supplies the bundled driver expected by AnyiOSEMU. Its source build, dependency audit and APK packaging passed Android CI run `40310754631`. No Android device initialization or game rendering is claimed.
+- This update includes upstream fixes for an EGL termination deadlock, default vertex-attribute state, and Mali dynamic-rendering driver issues, as well as Vulkan dependency changes. It retains the existing ES 1.1/ES 2 and EGL build configuration. A source build or passing packaging checks does not establish Android device or game compatibility; see device acceptance below.
 
 ## Why three libraries are built
 
@@ -29,7 +29,7 @@ ANGLE's ES 1.1 library is required by the pinned runtime's Android GLES1 path. C
 
 ## Reproducible source build
 
-ANGLE uses Chromium's DEPS-pinned tools and dependencies. A Linux build environment needs JDK 17, Python 3, Git, depot_tools, the Android SDK/NDK and CMake/Ninja dependencies, substantial free disk space, and network access to Chromium's dependency hosts.
+ANGLE uses Chromium's DEPS-pinned build dependencies and a separately pinned depot_tools bootstrap. A Linux build environment needs JDK 17, Python 3, Git, depot_tools, the Android SDK/NDK and CMake/Ninja dependencies, substantial free disk space, and network access to Chromium's dependency hosts.
 
 ```sh
 scripts/bootstrap-angle-tools.sh
@@ -40,7 +40,7 @@ ANGLE_INSTALL_DEPS=1 scripts/build-angle.sh
 
 The depot_tools pin is `1eb46f8b23b4c6b3caa2be8e05999b6d1f4d0253`. `build-angle.sh` refuses an unexpected tool revision, syncs the exact ANGLE pin and its DEPS, generates GN with unused-argument checking, and builds `libEGL`, `libGLESv1_CM` and `libGLESv2`. Outputs, public headers, source revision and conservative third-party license bundle are created in ignored/generated locations. The app NDK is `27.2.12479018`; ANGLE's own DEPS controls its upstream toolchain.
 
-The local sandbox does not have the Android/Chromium build environment; the pinned source build passed in CI. ANGLE's generated libraries and generated notice bundles are not committed to Git.
+ANGLE's generated libraries and generated notice bundles are not committed to Git. Check the current CI run for the status of this exact pin; source-level updates have not been validated on a device.
 
 ## Driver selection and truthful reporting
 

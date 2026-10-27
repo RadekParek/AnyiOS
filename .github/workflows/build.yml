@@ -130,6 +130,7 @@ jobs:
           scripts/check-format.sh
           for script in scripts/*.sh; do bash -n "$script"; done
           python3 -m unittest discover -s tests -p 'test_runtime_contracts.py'
+          python3 -m unittest discover -s tests -p 'test_sdl_drawable.py'
           rustc --edition=2021 --test tests/runtime_geometry.rs -o .local/runtime-geometry-test
           .local/runtime-geometry-test
       # Cloning dynarmic and assembling Boost's header tree takes over a minute per run
