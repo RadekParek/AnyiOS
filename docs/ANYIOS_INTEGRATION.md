@@ -31,7 +31,7 @@ The activity must only expose private storage to the runtime, refuse traversal/s
 ## Runtime controls and driver behavior
 
 - Auto FPS cap requests the fastest supported refresh mode at the current resolution. The requested and effective caps are reported separately from measured presentation FPS.
-- Presentation resolution defaults to the unmodified display surface, matching the standalone host. A lower presentation cap is optional and does not change guest logical dimensions or game-owned offscreen buffers.
+- Presentation resolution defaults to the unmodified display surface, matching the standalone host. A lower presentation cap is optional and does not change guest logical dimensions or game-owned offscreen buffers. The new presentation setting has its own preference, so a legacy graphics-test resolution does not silently force a buffer on upgrade.
 - Dynamic resolution is off by default. Its selectable minimum scale controls the Android SDL presentation surface based on measured swaps, with hysteresis and restoration if FPS does not improve. It does not currently resize all guest EAGL/offscreen buffers, so it may not improve performance. Touch normalization uses the view dimensions when the surface buffer is scaled.
 - The CADisplayLink implementation honors explicit higher-FPS requests up to the effective display cap. The off-by-default **Maximize FPS** setting can promote 60-FPS display links to that cap; callback-driven games may run too fast. Other FPS requests stay unchanged.
 - The performance HUD is off by default and reports process CPU, RAM PSS, driver-reported graphics PSS and measured presentation FPS. GPU utilization is shown as unavailable if the platform does not expose it.

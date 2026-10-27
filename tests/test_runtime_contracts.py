@@ -66,7 +66,10 @@ class RuntimeContractTests(unittest.TestCase):
         activity = read(ROOT / "app/src/main/java/org/podnative/AnyiOSEmuActivity.java")
         profile = read(ROOT / "app/src/main/java/org/podnative/GameDisplayProfile.java")
         settings = read(ROOT / "app/src/main/java/org/podnative/MainActivity.java")
-        self.assertIn('settings.getInt("resolution", 0)', activity)
+        # An older "resolution" preference used to affect a different graphics
+        # test. Never let that saved value silently force the new SDL buffer.
+        self.assertIn('settings.getInt("presentationResolution", 0)', activity)
+        self.assertNotIn('settings.getInt("resolution",', activity)
         self.assertIn('settings.getInt("dynamicResolution", 100)', activity)
         self.assertIn("resolutionLimit > 0 || dynamicMinimum < 100", activity)
         self.assertNotIn('"--screen-size=', activity)

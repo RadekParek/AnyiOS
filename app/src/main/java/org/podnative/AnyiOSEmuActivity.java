@@ -84,7 +84,7 @@ public final class AnyiOSEmuActivity extends org.anyiose.android.MainActivity {
         fpsCapPreference = settings.getInt("fps", DisplayFrameRate.AUTO);
         performanceHudEnabled = settings.getBoolean("performanceHud", false);
         boostDisplayLink = settings.getBoolean("boostDisplayLink", false);
-        resolutionLimit = settings.getInt("resolution", 0);
+        resolutionLimit = settings.getInt("presentationResolution", 0);
         gameDisplayProfile = settings.getInt("gameDisplayProfile", GameDisplayProfile.AUTO);
         dynamicMinimum = settings.getInt("dynamicResolution", 100);
         maxClocksEnabled = settings.getBoolean("maxClocks", false);
