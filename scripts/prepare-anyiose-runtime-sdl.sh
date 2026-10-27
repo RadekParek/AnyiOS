@@ -52,21 +52,6 @@ if [[ -z "$EXPECTED_SDL_REV" || "$ACTUAL_SDL_REV" != "$EXPECTED_SDL_REV" || "$AC
   exit 1
 fi
 
-if git -C "$SDL" apply --reverse --check "$PATCH" >/dev/null 2>&1; then
-  echo "SDL Android NDK compatibility patch is already applied to rust-sdl2"
-elif git -C "$SDL" apply --check "$PATCH" >/dev/null 2>&1; then
-  git -C "$SDL" apply "$PATCH"
-  echo "Applied SDL Android NDK compatibility patch to rust-sdl2"
-else
-  echo "SDL compatibility patch does not apply to the Cargo-locked SDL revision $ACTUAL_SDL_REV" >&2
-  exit 1
-fi
-
-ACTUAL_PATCH=$(mktemp "${TMPDIR:-/tmp}/anyiose-rust-sdl-patch.XXXXXX")
-trap 'rm -f "$ACTUAL_PATCH"' EXIT
-git -C "$SDL" diff --binary --full-index HEAD > "$ACTUAL_PATCH"
-if ! cmp -s "$PATCH" "$ACTUAL_PATCH"; then
-  echo "Cargo rust-sdl2 SDL source contains changes outside the reviewed compatibility patch" >&2
-  exit 1
-fi
-git -C "$SDL" diff --check
+# Cargo's cached checkout may still contain the previously reviewed SDL patch.
+"$ROOT/scripts/apply-reviewed-patch.sh" "$SDL" "$PATCH" \
+  b7aa90b2df574c765c5f1fb4b189d3b9c3697940b06ff2123fc3c056c579419b "Cargo rust-sdl2 SDL"
