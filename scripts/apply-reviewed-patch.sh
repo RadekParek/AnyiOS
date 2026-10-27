@@ -35,6 +35,13 @@ else
     echo "$LABEL patch does not apply cleanly; refusing to replace unknown local changes" >&2
     exit 1
   fi
+  # Reversing a worktree patch does not update Git's index. Refuse a staged
+  # previous patch rather than leaving stale staged content behind. SDL's
+  # normal intent-to-add entries have no staged contents and are fine.
+  if ! git -C "$CHECKOUT" diff --cached --quiet --ignore-submodules=all HEAD; then
+    echo "$LABEL checkout has staged changes; patch was not upgraded" >&2
+    exit 1
+  fi
   git -C "$CHECKOUT" apply --reverse --check "$ACTUAL"
   git -C "$CHECKOUT" apply --reverse "$ACTUAL"
   if ! git -C "$CHECKOUT" apply --check "$PATCH"; then

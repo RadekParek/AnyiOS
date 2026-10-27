@@ -85,6 +85,22 @@ class ReviewedPatchTests(unittest.TestCase):
             self.patch_new.read_bytes(),
         )
 
+    def test_staged_old_patch_is_not_upgraded_or_unstaged(self):
+        self.git("apply", str(self.patch_old))
+        self.git("add", "tracked", "added")
+        before_index = self.git("diff", "--cached", "--binary", "--full-index", "HEAD")
+        before_worktree = self.git("diff", "--binary", "--full-index", "HEAD")
+        result = self.run_apply(self.old_sha, check=False)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn(b"staged changes; patch was not upgraded", result.stderr)
+        self.assertEqual(
+            before_index,
+            self.git("diff", "--cached", "--binary", "--full-index", "HEAD"),
+        )
+        self.assertEqual(
+            before_worktree, self.git("diff", "--binary", "--full-index", "HEAD")
+        )
+
     def test_conflicting_untracked_file_restores_the_previous_patch(self):
         (self.repo / "tracked").write_text("new\n")
         (self.repo / "added").write_text("new added\n")
