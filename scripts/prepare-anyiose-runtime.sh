@@ -33,6 +33,14 @@ else
   exit 1
 fi
 
+# New files created by `git apply` are untracked, so plain `git diff` would
+# omit them and falsely reject a reviewed patch. Mark only the paths declared
+# as new files by that patch as intent-to-add; unrelated files stay untouched.
+while IFS= read -r created_file; do
+  [[ -n "$created_file" ]] || continue
+  git -C "$RUNTIME_ROOT" add --intent-to-add -- "$created_file"
+done < <(git -C "$RUNTIME_ROOT" apply --summary "$PATCH" | sed -nE 's/^ create mode [0-7]+ //p')
+
 ACTUAL_PATCH=$(mktemp "${TMPDIR:-/tmp}/anyiose-patch.XXXXXX")
 ACTUAL_SDL_PATCH=$(mktemp "${TMPDIR:-/tmp}/anyiose-sdl-patch.XXXXXX")
 trap 'rm -f "$ACTUAL_PATCH" "$ACTUAL_SDL_PATCH"' EXIT
