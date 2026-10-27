@@ -196,6 +196,40 @@ final class GameInspector {
                 "Choose an IPA with one top-level app in Payload, or import the exact .app folder");
         return new ArchiveEntries(bundles.iterator().next(), names);
     }
+    /**
+     * Reads only the bounded Info.plist, including for library entries imported before
+     * requirements were shown. No game executable or artwork needs to be extracted.
+     */
+    static GameRequirements readRequirements(File source, String kind) throws IOException {
+        if (kind.equals("Executable"))
+            return GameRequirements.unavailable();
+        if (kind.equals("Folder")) {
+            List<File> bundles = new ArrayList<>();
+            findBundles(source, 0, bundles);
+            if (bundles.size() != 1)
+                return GameRequirements.unavailable();
+            File plist = new File(bundles.get(0), "Info.plist");
+            if (java.nio.file.Files.isSymbolicLink(plist.toPath())
+                || !plist.getCanonicalFile().toPath().startsWith(
+                    source.getCanonicalFile().toPath()))
+                throw new IOException("Unsafe app metadata path");
+            try (InputStream input = new FileInputStream(plist)) {
+                return GameRequirements.fromPlist(Plist.read(bounded(input, 1024 * 1024)));
+            }
+        }
+        if (!kind.equals("IPA"))
+            return GameRequirements.unavailable();
+        try (ZipFile zip = new ZipFile(source)) {
+            ArchiveEntries archive = listArchiveEntries(zip);
+            ZipEntry plist = zip.getEntry(archive.bundlePrefix + "Info.plist");
+            if (plist == null || plist.isDirectory())
+                return GameRequirements.unavailable();
+            try (InputStream input = zip.getInputStream(plist)) {
+                return GameRequirements.fromPlist(Plist.read(bounded(input, 1024 * 1024)));
+            }
+        }
+    }
+
     private static boolean executableMagic(InputStream in) throws IOException {
         byte[] b = new byte[4];
         int n = 0, read;
@@ -422,7 +456,7 @@ final class GameInspector {
         }
     }
     private static void findBundles(File dir, int depth, List<File> found) {
-        if (depth > 4 || found.size() > 1)
+        if (depth > 4 || found.size() > 1 || java.nio.file.Files.isSymbolicLink(dir.toPath()))
             return;
         if (new File(dir, "Info.plist").isFile()) {
             found.add(dir);

@@ -1,8 +1,8 @@
 diff --git a/src/sensor/android/SDL_androidsensor.c b/src/sensor/android/SDL_androidsensor.c
-index c8c519f357fa73bc6d4c9db621357c370ab2bbeb..2dc07de1807f7b865143c894a677e9af17c71df4 100644
+index c8c519f357fa73bc6d4c9db621357c370ab2bbeb..7ac4dd367612abf7a426f3d6992b21f16ee80f41 100644
 --- a/src/sensor/android/SDL_androidsensor.c
 +++ b/src/sensor/android/SDL_androidsensor.c
-@@ -171,7 +171,7 @@ SDL_ANDROID_SensorUpdate(SDL_Sensor *sensor)
+@@ -171,10 +171,13 @@ SDL_ANDROID_SensorUpdate(SDL_Sensor *sensor)
      ASensorEvent event;
      struct android_poll_source* source;
  
@@ -10,7 +10,14 @@ index c8c519f357fa73bc6d4c9db621357c370ab2bbeb..2dc07de1807f7b865143c894a677e9af
 +    if (ALooper_pollOnce(0, NULL, &events, (void**)&source) == LOOPER_ID_USER) {
          SDL_zero(event);
          while (ASensorEventQueue_getEvents(sensor->hwdata->eventqueue, &event, 1) > 0) {
-             SDL_PrivateSensorUpdate(sensor, 0, event.data, SDL_arraysize(event.data));
+-            SDL_PrivateSensorUpdate(sensor, 0, event.data, SDL_arraysize(event.data));
++            /* Android's monotonic sensor timestamp is nanoseconds; SDL's API
++               exposes microseconds. A zero timestamp means no sample yet. */
++            SDL_PrivateSensorUpdate(sensor, (Uint64)(event.timestamp / 1000), event.data,
++                                    SDL_arraysize(event.data));
+         }
+     }
+ }
 diff --git a/src/video/SDL_egl.c b/src/video/SDL_egl.c
 index 500ee0ecb6711e3cdc9f2bf232d6cd77b9db4a69..01a193313de2689e8726a7920a7a902320eb069e 100644
 --- a/src/video/SDL_egl.c

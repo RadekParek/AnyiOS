@@ -85,6 +85,20 @@ class ReviewedPatchTests(unittest.TestCase):
             self.patch_new.read_bytes(),
         )
 
+    def test_any_one_of_several_exact_previous_hashes_is_upgraded(self):
+        self.git("apply", str(self.patch_old))
+        self.git("add", "--intent-to-add", "added")
+        self.run_apply("0" * 64 + "," + self.old_sha + "," + "f" * 64)
+        self.assertEqual((self.repo / "added").read_text(), "new added\n")
+
+    def test_hash_substrings_and_unlisted_hashes_are_rejected(self):
+        self.git("apply", str(self.patch_old))
+        self.git("add", "--intent-to-add", "added")
+        before = self.git("diff", "--binary", "--full-index", "HEAD")
+        result = self.run_apply("prefix" + self.old_sha + "suffix", check=False)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(before, self.git("diff", "--binary", "--full-index", "HEAD"))
+
     def test_staged_old_patch_is_not_upgraded_or_unstaged(self):
         self.git("apply", str(self.patch_old))
         self.git("add", "tracked", "added")

@@ -47,6 +47,35 @@ public class GameInspectorArchiveTest {
     }
 
     @Test
+    public void readsRequirementsFromExistingIpaAndNestedAppFolder() throws Exception {
+        String xml = "<plist><dict><key>MinimumOSVersion</key><string>4.3</string>"
+            + "<key>UIRequiredDeviceCapabilities</key><array><string>gyroscope</string>"
+            + "</array><key>UIDeviceFamily</key><array><integer>2</integer></array></dict></plist>";
+        File source = ipa("requirements.ipa", "Payload/Game.app/Info.plist", xml,
+            "Payload/Game.app/Game", "mach-o");
+        GameRequirements fromIpa = GameInspector.readRequirements(source, "IPA");
+        assertEquals("4.3", fromIpa.minimumIos);
+        assertEquals("iPad", fromIpa.deviceFamilies);
+        assertEquals("Gyroscope", fromIpa.required);
+        File folder = temporary.newFolder("nested");
+        File bundle = new File(folder, "Payload/Game.app");
+        assertTrue(bundle.mkdirs());
+        java.nio.file.Files.writeString(new File(bundle, "Info.plist").toPath(), xml);
+        assertEquals(fromIpa.description(), GameInspector.readRequirements(folder, "Folder").description());
+        assertEquals("Unavailable", GameInspector.readRequirements(source, "Executable").minimumIos);
+    }
+
+    @Test
+    public void oversizedAndInvalidRequirementsDoNotLookLikeEmptyDeclarations() throws Exception {
+        File invalid = ipa("invalid.ipa", "Payload/Game.app/Info.plist", "not a plist");
+        org.junit.Assert.assertThrows(IOException.class,
+            () -> GameInspector.readRequirements(invalid, "IPA"));
+        File large = ipa("large.ipa", "Payload/Game.app/Info.plist", "x".repeat(1024 * 1024 + 1));
+        org.junit.Assert.assertThrows(IOException.class,
+            () -> GameInspector.readRequirements(large, "IPA"));
+    }
+
+    @Test
     public void rejectsMultipleAppBundlesAsAmbiguous() throws Exception {
         File source = ipa("TwoApps.ipa", "Payload/One.app/Info.plist", "one",
             "Payload/Two.app/Info.plist", "two");

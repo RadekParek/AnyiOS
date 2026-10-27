@@ -1347,6 +1347,232 @@ index 1533dfd65bbdf36784c3ab42ac0398285ee4fd24..82339926df909780b8a8616db517459d
      };
      // Name-conflict auto-rename: if we are already registered under this
      // name and auto-rename is allowed, append a suffix.
+diff --git a/src/frameworks/core_motion.rs b/src/frameworks/core_motion.rs
+index 4466ae898c730ade047fec51a8b34216f90cef98..d314367e177a4058a8d444f56e358700f4fa7d00 100644
+--- a/src/frameworks/core_motion.rs
++++ b/src/frameworks/core_motion.rs
+@@ -14,6 +14,7 @@
+ //!   (CMAcceleration with x, y, z in G-force units).
+ //! - CMGyroData: Contains a single gyroscope reading (CMRotationRate with
+ //!   x, y, z in radians/second).
++//! - CMMagnetometerData: Device-relative magnetic-field values in microteslas.
+ //! - CMDeviceMotion: Contains processed device-motion data combining
+ //!   accelerometer + gyroscope: attitude, rotationRate, gravity,
+ //!   userAcceleration.
+@@ -104,13 +105,39 @@ impl GuestArg for CMRotationRate {
+     }
+ }
+ 
++/// CMMagneticField uses device-relative microteslas, just like Android's
++/// magnetic field sensors. See https://developer.apple.com/documentation/coremotion/cmmagneticfield
++#[derive(Clone, Copy, Debug, Default, PartialEq)]
++#[repr(C, packed)]
++struct CMMagneticField {
++    x: f64,
++    y: f64,
++    z: f64,
++}
++unsafe impl crate::mem::SafeRead for CMMagneticField {}
++impl_GuestRet_for_large_struct!(CMMagneticField);
++impl GuestArg for CMMagneticField {
++    const REG_COUNT: usize = 6;
++    fn from_regs(regs: &[u32]) -> Self {
++        Self { x: f64::from_regs(&regs[0..2]), y: f64::from_regs(&regs[2..4]), z: f64::from_regs(&regs[4..6]) }
++    }
++    fn to_regs(self, regs: &mut [u32]) {
++        let (x, y, z) = (self.x, self.y, self.z);
++        x.to_regs(&mut regs[0..2]);
++        y.to_regs(&mut regs[2..4]);
++        z.to_regs(&mut regs[4..6]);
++    }
++}
++
+ #[derive(Default)]
+ struct CMMotionManagerHostObject {
+     accelerometer_update_interval: f64,
+     gyro_update_interval: f64,
++    magnetometer_update_interval: f64,
+     device_motion_update_interval: f64,
+     accelerometer_active: bool,
+     gyro_active: bool,
++    magnetometer_active: bool,
+     device_motion_active: bool,
+     /// Cached last accelerometer reading
+     last_acceleration: CMAcceleration,
+@@ -140,6 +167,13 @@ struct CMGyroDataHostObject {
+ }
+ impl HostObject for CMGyroDataHostObject {}
+ 
++#[derive(Default)]
++struct CMMagnetometerDataHostObject {
++    magnetic_field: CMMagneticField,
++    timestamp: f64,
++}
++impl HostObject for CMMagnetometerDataHostObject {}
++
+ #[derive(Default)]
+ struct CMDeviceMotionHostObject {
+     /// Gravity component of acceleration
+@@ -308,6 +342,29 @@ fn read_sdl_gyroscope(env: &Environment) -> Option<CMRotationRate> {
+     })
+ }
+ 
++// Apple documents that the pull-mode property is nil when updates have not
++// started or no sample is available:
++// https://developer.apple.com/documentation/coremotion/cmmotionmanager/magnetometerdata
++fn start_magnetometer(env: &mut Environment, this: id) {
++    if env.objc.borrow::<CMMotionManagerHostObject>(this).magnetometer_active {
++        return;
++    }
++    let started = env.window.is_some()
++        && env.on_parent_stack_in_coroutine(|window, _| window.start_magnetometer());
++    env.objc.borrow_mut::<CMMotionManagerHostObject>(this).magnetometer_active = started;
++}
++
++fn stop_magnetometer(env: &mut Environment, this: id) {
++    let active = env.objc.borrow::<CMMotionManagerHostObject>(this).magnetometer_active;
++    if !active {
++        return;
++    }
++    env.objc.borrow_mut::<CMMotionManagerHostObject>(this).magnetometer_active = false;
++    if env.window.is_some() {
++        env.on_parent_stack_in_coroutine(|window, _| window.stop_magnetometer());
++    }
++}
++
+ // =============================================================================
+ // Attitude estimation (complementary gyroscope + accelerometer filter)
+ //
+@@ -723,6 +780,26 @@ const CLASSES: ClassExports = objc_classes! {
+ 
+ @end
+ 
++// =============================================================================
++// CMMagnetometerData: the most recent physical magnetic-field sample.
++// =============================================================================
++
++@implementation CMMagnetometerData: NSObject
++
+++ (id)allocWithZone:(NSZonePtr)_zone {
++    env.objc.alloc_object(this, Box::<CMMagnetometerDataHostObject>::default(), &mut env.mem)
++}
++
++- (CMMagneticField)magneticField {
++    env.objc.borrow::<CMMagnetometerDataHostObject>(this).magnetic_field
++}
++
++- (f64)timestamp {
++    env.objc.borrow::<CMMagnetometerDataHostObject>(this).timestamp
++}
++
++@end
++
+ // =============================================================================
+ // CMAttitude
+ // Per Apple: describes the orientation of the device as roll/pitch/yaw
+@@ -892,9 +969,11 @@ const CLASSES: ClassExports = objc_classes! {
+     let host_object = Box::new(CMMotionManagerHostObject {
+         accelerometer_update_interval: 1.0 / 60.0, // 60Hz default per Apple docs
+         gyro_update_interval: 1.0 / 60.0,
++        magnetometer_update_interval: 1.0 / 60.0,
+         device_motion_update_interval: 1.0 / 60.0,
+         accelerometer_active: false,
+         gyro_active: false,
++        magnetometer_active: false,
+         device_motion_active: false,
+         last_acceleration: CMAcceleration { x: 0.0, y: 0.0, z: -1.0 },
+         last_accel_timestamp: 0.0,
+@@ -904,11 +983,16 @@ const CLASSES: ClassExports = objc_classes! {
+     env.objc.alloc_object(this, host_object, &mut env.mem)
+ }
+ 
++- (())dealloc {
++    stop_magnetometer(env, this);
++    env.objc.dealloc_object(this, &mut env.mem)
++}
++
+ // =========================================================================
+ // Availability checks
+ // Per Apple: These indicate whether the hardware sensor is available.
+-// On the emulator: accelerometer and gyroscope come from SDL sensors (with a
+-// stationary-device stub fallback); magnetometer is not emulated.
++// Accelerometer and gyroscope come from SDL (with stationary fallbacks).
++// Magnetic-field availability follows the real Android sensor.
+ // =========================================================================
+ 
+ - (bool)isAccelerometerAvailable {
+@@ -933,7 +1017,7 @@ const CLASSES: ClassExports = objc_classes! {
+ }
+ 
+ - (bool)isMagnetometerAvailable {
+-    false
++    env.window.as_ref().is_some_and(|window| window.has_magnetometer())
+ }
+ 
+ // =========================================================================
+@@ -1034,35 +1118,46 @@ const CLASSES: ClassExports = objc_classes! {
+     env.objc.borrow::<CMMotionManagerHostObject>(this).device_motion_active
+ }
+ 
+-// `-[CMMotionManager isMagnetometerActive]` — per
+-// <https://developer.apple.com/documentation/coremotion/cmmotionmanager/1616080-magnetometeractive>.
+-// touchHLE never enables the magnetometer (we report `isMagnetometerAvailable`
+-// as `NO`), so this always returns `NO`. Apple's documentation requires
+-// the property be queryable even when the hardware is absent.
++// Like the existing gyro implementation, pull-mode is supported. Queue-based
++// calls activate the sensor, but NSOperationQueue callback delivery is not yet
++// implemented for any of these motion sensors.
+ - (bool)isMagnetometerActive {
+-    false
++    env.objc.borrow::<CMMotionManagerHostObject>(this).magnetometer_active
+ }
+ 
+-// Companion symmetric APIs for the magnetometer-pull-mode API. Apple
+-// documents `startMagnetometerUpdates` / `stopMagnetometerUpdates` and
+-// the `magnetometerData` accessor in
+-// <https://developer.apple.com/documentation/coremotion/cmmotionmanager>.
+-// With no hardware backing we still acknowledge the calls so that apps
+-// guarding magnetometer use behind `isMagnetometerAvailable` continue to
+-// run without crashing if they call these unconditionally.
+ - (())startMagnetometerUpdates {
++    start_magnetometer(env, this);
+ }
++
+ - (())stopMagnetometerUpdates {
++    stop_magnetometer(env, this);
+ }
++
+ - (())startMagnetometerUpdatesToQueue:(id)_queue withHandler:(id)_handler {
++    start_magnetometer(env, this);
+ }
++
+ - (id)magnetometerData {
+-    nil
++    if !env.objc.borrow::<CMMotionManagerHostObject>(this).magnetometer_active {
++        return nil;
++    }
++    let Some(((x, y, z), timestamp)) = env.window.as_ref().and_then(|w| w.get_magnetic_field()) else {
++        return nil;
++    };
++    let data: id = msg_class![env; CMMagnetometerData new];
++    let data_host = env.objc.borrow_mut::<CMMagnetometerDataHostObject>(data);
++    data_host.magnetic_field = CMMagneticField { x: x as f64, y: y as f64, z: z as f64 };
++    data_host.timestamp = timestamp;
++    autorelease(env, data)
+ }
+-- (())setMagnetometerUpdateInterval:(f64)_interval {
++
++- (())setMagnetometerUpdateInterval:(f64)interval {
++    env.objc.borrow_mut::<CMMotionManagerHostObject>(this).magnetometer_update_interval =
++        if interval <= 0.0 { 1.0 / 100.0 } else { interval };
+ }
++
+ - (f64)magnetometerUpdateInterval {
+-    0.0
++    env.objc.borrow::<CMMotionManagerHostObject>(this).magnetometer_update_interval
+ }
+ 
+ // =========================================================================
 diff --git a/src/frameworks/foundation/asidentifier_manager.rs b/src/frameworks/foundation/asidentifier_manager.rs
 index 2b61b70aa995cee6c90c9103ddcf4a4f446b5c94..01f05659f88fadc50bfbba5c98adf132454a1457 100644
 --- a/src/frameworks/foundation/asidentifier_manager.rs
@@ -1826,6 +2052,18 @@ index 1c056ea4b2da9115f1dc6761f9a49559da95ade9..4c9f6d9c7d68326b3494acf1fa240d0b
              "broadcasthost" => [255, 255, 255, 255],
              // Games (e.g. Gameloft titles) broadcast LAN discovery to the
              // name of their own service or to wildcard hostnames; also map
+diff --git a/src/libc/posix_io.rs b/src/libc/posix_io.rs
+index 2530eefbadb02acec70b44b4e7b7382ca0bbd0fa..e230cf0c88407083c29a6ca3df134c7c633e869a 100644
+--- a/src/libc/posix_io.rs
++++ b/src/libc/posix_io.rs
+@@ -730,6 +730,7 @@ pub fn write(
+     // ПЕРЕХВАТ КОНСОЛИ! Ловим stdout и stderr от Unity.
+     if fd == STDOUT_FILENO || fd == STDERR_FILENO {
+         let buffer_slice = env.mem.bytes_at(buffer.cast(), size);
++        crate::log::write_guest_output(buffer_slice);
+         let msg = String::from_utf8_lossy(buffer_slice);
+         print!("{}", msg);
+         return size as GuestISize;
 diff --git a/src/libc/pthread/thread.rs b/src/libc/pthread/thread.rs
 index eac9fa37f6fcfada5c0c081dfad6077491ea69d7..d544376169275e70b4f808a6c0910ae141c1ea82 100644
 --- a/src/libc/pthread/thread.rs
@@ -1839,6 +2077,95 @@ index eac9fa37f6fcfada5c0c081dfad6077491ea69d7..d544376169275e70b4f808a6c0910ae1
          retval,
          current_thread
      );
+diff --git a/src/libc/stdio.rs b/src/libc/stdio.rs
+index 114a94f4648aa96494cbdd7911c6653cc8411549..4d4801fcb953f45a3a314eb50353a8d4f7b7a6bb 100644
+--- a/src/libc/stdio.rs
++++ b/src/libc/stdio.rs
+@@ -658,6 +658,7 @@ fn fwrite(
+         match fd {
+             STDOUT_FILENO => {
+                 let buffer_slice = env.mem.bytes_at(buffer.cast(), total_size);
++                crate::log::write_guest_output(buffer_slice);
+                 match std::io::stdout().write(buffer_slice) {
+                     Ok(bytes_written) => (bytes_written / (item_size as usize)) as GuestUSize,
+                     Err(_err) => {
+@@ -674,6 +675,7 @@ fn fwrite(
+             }
+             STDERR_FILENO => {
+                 let buffer_slice = env.mem.bytes_at(buffer.cast(), total_size);
++                crate::log::write_guest_output(buffer_slice);
+                 match std::io::stderr().write(buffer_slice) {
+                     Ok(bytes_written) => (bytes_written / (item_size as usize)) as GuestUSize,
+                     Err(_err) => {
+@@ -944,6 +946,8 @@ fn puts(env: &mut Environment, s: ConstPtr<u8>) -> i32 {
+     set_errno(env, 0);
+ 
+     wait_for_stdout_lock(env);
++    crate::log::write_guest_output(env.mem.cstr_at(s));
++    crate::log::write_guest_output(b"\n");
+     let ok = std::io::stdout().write_all(env.mem.cstr_at(s)).is_ok()
+         && std::io::stdout().write_all(b"\n").is_ok();
+     if !ok {
+@@ -964,6 +968,7 @@ fn putchar(env: &mut Environment, c: u8) -> i32 {
+     // putchar() returns the written character (as unsigned char cast to
+     // int) on success, or EOF when the write fails.
+     wait_for_stdout_lock(env);
++    crate::log::write_guest_output(std::slice::from_ref(&c));
+     match std::io::stdout().write_all(std::slice::from_ref(&c)) {
+         Ok(_) => c as i32,
+         Err(_) => {
+diff --git a/src/libc/stdio/printf.rs b/src/libc/stdio/printf.rs
+index ee36aa48e218dca4d4fc175a3ee4f6e9a810b5b1..6aa0e43988772d29ba5b437504891115082afd8c 100644
+--- a/src/libc/stdio/printf.rs
++++ b/src/libc/stdio/printf.rs
+@@ -1107,6 +1107,7 @@ fn vprintf(env: &mut Environment, format: ConstPtr<u8>, arg: VaList) -> i32 {
+     let res = printf_inner::<false, _>(env, |mem, idx| mem.read(format + idx), arg);
+     // Real libc returns a negative value when writing to stdout fails
+     // (e.g. a closed pipe); mirror that instead of ignoring the error.
++    crate::log::write_guest_output(&res);
+     if std::io::stdout().write_all(&res).is_err() {
+         log!("Warning: vprintf(): writing to stdout failed; returning EOF.");
+         return EOF;
+@@ -1436,6 +1437,7 @@ fn wprintf(env: &mut Environment, format: ConstPtr<wchar_t>, args: DotDotDot) ->
+ 
+     // Real libc returns a negative value when writing to stdout fails;
+     // mirror that instead of ignoring the error.
++    crate::log::write_guest_output(&res);
+     if std::io::stdout().write_all(&res).is_err() {
+         log!("Warning: wprintf(): writing to stdout failed; returning EOF.");
+         return EOF;
+@@ -1456,6 +1458,7 @@ fn printf(env: &mut Environment, format: ConstPtr<u8>, args: DotDotDot) -> i32 {
+     let res = printf_inner::<false, _>(env, |mem, idx| mem.read(format + idx), args.start());
+     // Real libc returns a negative value when writing to stdout fails
+     // (e.g. a closed pipe); mirror that instead of ignoring the error.
++    crate::log::write_guest_output(&res);
+     if std::io::stdout().write_all(&res).is_err() {
+         log!("Warning: printf(): writing to stdout failed; returning EOF.");
+         return EOF;
+@@ -2223,12 +2226,14 @@ fn vfprintf(env: &mut Environment, stream: MutPtr<FILE>, format: ConstPtr<u8>, a
+                 );
+             }
+             STDOUT_FILENO => {
+-                if std::io::stdout().write_all(&res).is_err() {
++                crate::log::write_guest_output(&res);
++    if std::io::stdout().write_all(&res).is_err() {
+                     log!("Warning: vfprintf(): writing to stdout failed; returning EOF.");
+                     return EOF;
+                 }
+             }
+             STDERR_FILENO => {
++                crate::log::write_guest_output(&res);
+                 if std::io::stderr().write_all(&res).is_err() {
+                     log!("Warning: vfprintf(): writing to stderr failed; returning EOF.");
+                     return EOF;
+@@ -2289,6 +2294,7 @@ fn vwprintf(env: &mut Environment, format: ConstPtr<wchar_t>, arg: VaList) -> i3
+     // Пишем результат напрямую в стандартный вывод (stdout)
+     // Real libc returns a negative value when writing to stdout fails;
+     // mirror that instead of ignoring the error.
++    crate::log::write_guest_output(&res);
+     if std::io::stdout().write_all(&res).is_err() {
+         log!("Warning: vwprintf(): writing to stdout failed; returning EOF.");
+         return EOF;
 diff --git a/src/libc/stdlib.rs b/src/libc/stdlib.rs
 index ac318e86b2950cb6773672641f2a5deaabdb1f71..68a8bc55f9321cd5a450fffbf03ecb74886b8d4b 100644
 --- a/src/libc/stdlib.rs
@@ -1919,7 +2246,7 @@ index 23463eecd8e447efbe649ec638c30a2409d26d43..a1a17de349e93e89de6c94f32def190a
      if namelen <= len {
          // POSIX: name buffer too small -> ENAMETOOLONG. Don't crash the host.
 diff --git a/src/log.rs b/src/log.rs
-index 1b531e5b46c3037b2cb761ab6dd437620065faf9..3ec8ab7b05fee32c633cdcce77624cde09faaba4 100644
+index 1b531e5b46c3037b2cb761ab6dd437620065faf9..bde81117d5eab72c7831c19419ee200029da7e15 100644
 --- a/src/log.rs
 +++ b/src/log.rs
 @@ -16,7 +16,7 @@ use std::sync::{LazyLock, Mutex};
@@ -1931,7 +2258,7 @@ index 1b531e5b46c3037b2cb761ab6dd437620065faf9..3ec8ab7b05fee32c633cdcce77624cde
          #[cfg(unix)]
          crate::crash_handler::set_log_fd(std::os::fd::AsRawFd::as_raw_fd(&file));
          Mutex::new(file)
-@@ -25,13 +25,27 @@ pub fn get_log_file() -> &'static Mutex<File> {
+@@ -25,13 +25,40 @@ pub fn get_log_file() -> &'static Mutex<File> {
      &LOG_FILE
  }
  
@@ -1948,6 +2275,19 @@ index 1b531e5b46c3037b2cb761ab6dd437620065faf9..3ec8ab7b05fee32c633cdcce77624cde
 +    crate::crash_handler::set_log_fd(std::os::fd::AsRawFd::as_raw_fd(&*current));
 +    Ok(())
 +}
++
++/// Mirror bytes written by the guest to its standard output/error into the
++/// per-game Android log. Keep bytes unchanged (including partial lines).
++#[cfg(target_os = "android")]
++pub fn write_guest_output(bytes: &[u8]) {
++    use std::io::Write;
++    if let Ok(mut log_file) = get_log_file().lock() {
++        let _ = log_file.write_all(bytes);
++    }
++}
++
++#[cfg(not(target_os = "android"))]
++pub fn write_guest_output(_bytes: &[u8]) {}
 +
  /// Prints a log message unconditionally. Use this for errors or warnings.
  ///
@@ -2261,10 +2601,80 @@ index 116377048b0174b12bec8580997c3b8c65e859e0..f6dcce7b8de7f45490c2835505967ee9
 +    ""
  }
 diff --git a/src/window.rs b/src/window.rs
-index 62127476cf0e6bfaae962dd8146cded72f1ad9e8..cc3e5a26f4f78bbfbd755de228cfe2487878889c 100644
+index 62127476cf0e6bfaae962dd8146cded72f1ad9e8..92006df216fae3481eeb9f5b8744642fa0a13a00 100644
 --- a/src/window.rs
 +++ b/src/window.rs
-@@ -1351,7 +1351,7 @@ impl Window {
+@@ -13,6 +13,8 @@
+ //! will be needed for the runtime of the app.
+ 
+ mod geometry;
++#[cfg(any(target_os = "android", test))]
++mod magnetometer;
+ mod native_aspect_ratio;
+ 
+ use crate::gles::present::present_frame;
+@@ -935,6 +937,14 @@ pub struct Window {
+     _sensor_ctx: sdl2::SensorSubsystem,
+     accelerometer: Option<sdl2::sensor::Sensor>,
+     gyroscope: Option<sdl2::sensor::Sensor>,
++    #[cfg(target_os = "android")]
++    magnetometer_raw_index: Option<u32>,
++    #[cfg(target_os = "android")]
++    magnetometer_calibrated_index: Option<u32>,
++    #[cfg(target_os = "android")]
++    magnetometer: Option<sdl2::sensor::Sensor>,
++    #[cfg(target_os = "android")]
++    magnetometer_clients: usize,
+     virtual_cursor_last: Option<(f32, f32, bool, bool)>,
+     virtual_cursor_last_unsticky: Option<(f32, f32, Instant)>,
+     virtual_accelerometer_last: Option<(f32, f32, bool)>,
+@@ -1229,11 +1239,34 @@ impl Window {
+             .map_err(|err| format!("Could not initialize SDL sensors: {}", err))?;
+         let mut accelerometer: Option<sdl2::sensor::Sensor> = None;
+         let mut gyroscope: Option<sdl2::sensor::Sensor> = None;
++        #[cfg(target_os = "android")]
++        let mut magnetometer_raw_index = None;
++        #[cfg(target_os = "android")]
++        let mut magnetometer_calibrated_index = None;
+         if let Ok(num_sensors) = sensor_ctx.num_sensors() {
+             for sensor_idx in 0..num_sensors {
++                #[cfg(not(target_os = "android"))]
+                 if accelerometer.is_some() && gyroscope.is_some() {
+                     break;
+                 }
++                #[cfg(target_os = "android")]
++                {
++                    // SDL2 calls magnetometers "unknown", but its Android backend
++                    // exposes their native sensor type and their complete sample data.
++                    let native_type = unsafe {
++                        sdl2::sys::SDL_SensorGetDeviceNonPortableType(sensor_idx as i32)
++                    };
++                    match magnetometer::priority(native_type) {
++                        2 if magnetometer_raw_index.is_none() => magnetometer_raw_index = Some(sensor_idx),
++                        1 if magnetometer_calibrated_index.is_none() => magnetometer_calibrated_index = Some(sensor_idx),
++                        _ => {}
++                    }
++                    // Do not enable unrelated Android sensors while looking for a
++                    // magnetic field sensor. Open that sensor only if a guest asks.
++                    if native_type != 1 && native_type != 4 {
++                        continue;
++                    }
++                }
+                 if let Ok(sensor) = sensor_ctx.open(sensor_idx) {
+                     match sensor.sensor_type() {
+                         sdl2::sensor::SensorType::Accelerometer => {
+@@ -1348,10 +1381,18 @@ impl Window {
+             _sensor_ctx: sensor_ctx,
+             accelerometer,
+             gyroscope,
++            #[cfg(target_os = "android")]
++            magnetometer_raw_index,
++            #[cfg(target_os = "android")]
++            magnetometer_calibrated_index,
++            #[cfg(target_os = "android")]
++            magnetometer: None,
++            #[cfg(target_os = "android")]
++            magnetometer_clients: 0,
              virtual_cursor_last: None,
              virtual_cursor_last_unsticky: None,
              virtual_accelerometer_last: None,
@@ -2273,7 +2683,87 @@ index 62127476cf0e6bfaae962dd8146cded72f1ad9e8..cc3e5a26f4f78bbfbd755de228cfe248
              fps_frame_count: Cell::new(0),
              fps_last_log: RefCell::new(Instant::now()),
              perf_hints: crate::perf_hints::PerfHints::new(
-@@ -2686,7 +2686,7 @@ impl Window {
+@@ -2372,6 +2413,79 @@ impl Window {
+         Some((x, y, z))
+     }
+ 
++    /// Whether Android exposes a magnetic-field sensor. Other hosts do not
++    /// currently provide one through SDL's portable sensor API.
++    pub fn has_magnetometer(&self) -> bool {
++        #[cfg(target_os = "android")]
++        {
++            self.magnetometer_raw_index.is_some() || self.magnetometer_calibrated_index.is_some()
++        }
++        #[cfg(not(target_os = "android"))]
++        {
++            false
++        }
++    }
++
++    /// Open lazily, on the SDL parent stack, and share the sensor across managers.
++    pub fn start_magnetometer(&mut self) -> bool {
++        #[cfg(target_os = "android")]
++        {
++            if self.magnetometer.is_none() {
++                for index in [self.magnetometer_raw_index, self.magnetometer_calibrated_index]
++                    .into_iter().flatten()
++                {
++                    if let Ok(sensor) = self._sensor_ctx.open(index) {
++                        log!("Magnetometer detected: {}.", sensor.name());
++                        self.magnetometer = Some(sensor);
++                        break;
++                    }
++                }
++            }
++            if self.magnetometer.is_some() {
++                self.magnetometer_clients = self.magnetometer_clients.saturating_add(1);
++                return true;
++            }
++        }
++        false
++    }
++
++    pub fn stop_magnetometer(&mut self) {
++        #[cfg(target_os = "android")]
++        {
++            self.magnetometer_clients = self.magnetometer_clients.saturating_sub(1);
++            if self.magnetometer_clients == 0 {
++                self.magnetometer = None;
++            }
++        }
++    }
++
++    /// Return device-relative microteslas and the sample's boot-relative time.
++    pub fn get_magnetic_field(&self) -> Option<((f32, f32, f32), f64)> {
++        #[cfg(target_os = "android")]
++        {
++            let sensor = self.magnetometer.as_ref()?;
++            // rust-sdl2 exposes unknown sensor data but not the SDL timestamp.
++            // SDL owns this handle while `sensor` is alive on the same thread.
++            let raw = unsafe { sdl2::sys::SDL_SensorFromInstanceID(sensor.instance_id() as i32) };
++            if raw.is_null() {
++                return None;
++            }
++            let mut data = [0.0_f32; 6];
++            let mut timestamp = 0_u64;
++            let status = unsafe {
++                sdl2::sys::SDL_SensorGetDataWithTimestamp(raw, &mut timestamp, data.as_mut_ptr(), 6)
++            };
++            if status != 0 {
++                return None;
++            }
++            return magnetometer::sample(data, timestamp);
++        }
++        #[cfg(not(target_os = "android"))]
++        {
++            None
++        }
++    }
++
+     /// For use when redrawing the screen: Get the cached on-screen position and
+     /// press state of the analog stick-controlled virtual cursor, if it is
+     /// visible.
+@@ -2686,7 +2800,7 @@ impl Window {
                  // Compute FPS (frames in elapsed duration)
                  let fps = (frames as f32) / (elapsed.as_secs_f32().max(1e-6));
                  // Log to stdout / echo
@@ -2282,7 +2772,7 @@ index 62127476cf0e6bfaae962dd8146cded72f1ad9e8..cc3e5a26f4f78bbfbd755de228cfe248
                  // Reset counters
                  *last = now;
                  self.fps_frame_count.set(0);
-@@ -2835,6 +2835,10 @@ impl Window {
+@@ -2835,6 +2949,10 @@ impl Window {
      /// The scale and aspect ratio of this region depend on the host window and
      /// the desktop aspect-ratio setting; its orientation follows the guest app.
      pub fn viewport(&self) -> (u32, u32, u32, u32) {
@@ -2293,7 +2783,7 @@ index 62127476cf0e6bfaae962dd8146cded72f1ad9e8..cc3e5a26f4f78bbfbd755de228cfe248
          let (app_width, app_height) = size_for_orientation_from_size(
              self.screen_size(),
              self.device_orientation,
-@@ -2847,7 +2851,6 @@ impl Window {
+@@ -2847,7 +2965,6 @@ impl Window {
          // backing-pixel rounding can leave the content a pixel off the ratio.
          #[cfg(not(any(target_os = "android", target_os = "ios")))]
          {
@@ -2301,7 +2791,7 @@ index 62127476cf0e6bfaae962dd8146cded72f1ad9e8..cc3e5a26f4f78bbfbd755de228cfe248
              let native_ratio_matches = {
                  let lhs = drawable_size.0 as u64 * app_height as u64;
                  let rhs = drawable_size.1 as u64 * app_width as u64;
-@@ -2866,7 +2869,7 @@ impl Window {
+@@ -2866,7 +2983,7 @@ impl Window {
  
          // Fit the actual drawable in windowed mode too: the compositor may
          // resize the window or give it more pixels than its logical size.
@@ -2310,7 +2800,7 @@ index 62127476cf0e6bfaae962dd8146cded72f1ad9e8..cc3e5a26f4f78bbfbd755de228cfe248
      }
  
      /// SDL mouse coordinates must use the same pixel space as the viewport.
-@@ -2878,54 +2881,26 @@ impl Window {
+@@ -2878,54 +2995,26 @@ impl Window {
          )
      }
  
@@ -2377,7 +2867,7 @@ index 62127476cf0e6bfaae962dd8146cded72f1ad9e8..cc3e5a26f4f78bbfbd755de228cfe248
      }
  
      pub fn host_framebuffer(&self) -> u32 {
-@@ -3124,7 +3099,7 @@ pub fn show_error_messagebox(window: Option<&Window>, error_message: &str) {
+@@ -3124,7 +3213,7 @@ pub fn show_error_messagebox(window: Option<&Window>, error_message: &str) {
          messagebox::ButtonData {
              flags: messagebox::MessageBoxButtonFlag::NOTHING,
              button_id: 0,
@@ -2386,7 +2876,7 @@ index 62127476cf0e6bfaae962dd8146cded72f1ad9e8..cc3e5a26f4f78bbfbd755de228cfe248
          },
          messagebox::ButtonData {
              flags: messagebox::MessageBoxButtonFlag::NOTHING,
-@@ -3136,13 +3111,13 @@ pub fn show_error_messagebox(window: Option<&Window>, error_message: &str) {
+@@ -3136,13 +3225,13 @@ pub fn show_error_messagebox(window: Option<&Window>, error_message: &str) {
      let Ok(clicked_button) = messagebox::show_message_box(
          messagebox::MessageBoxFlag::ERROR,
          &mbox,
@@ -2493,6 +2983,59 @@ index 40a6b89bb106df20c3f93203d528176dfd6940b3..aad633b3afb0edb6afe8e86074952066
 +        assert_eq!(a, b);
 +    }
  }
+diff --git a/src/window/magnetometer.rs b/src/window/magnetometer.rs
+new file mode 100644
+index 0000000000000000000000000000000000000000..664b5b7344f264497b4453e0f3a0cf87a3cafcf8
+--- /dev/null
++++ b/src/window/magnetometer.rs
+@@ -0,0 +1,47 @@
++/*
++ * This Source Code Form is subject to the terms of the Mozilla Public
++ * License, v. 2.0. If a copy of the MPL was not distributed with this
++ * file, You can obtain one at https://mozilla.org/MPL/2.0/.
++ */
++//! Android magnetic-field sensor selection and sample validation.
++
++/// Android sensor types 14 and 2 are uncalibrated and calibrated fields,
++/// respectively; both use microteslas and the same device axes as iOS.
++pub(super) fn priority(android_type: i32) -> u8 {
++    match android_type {
++        14 => 2,
++        2 => 1,
++        _ => 0,
++    }
++}
++
++/// SDL exposes the Android boot-relative timestamp in microseconds. Do not
++/// report a sample until the sensor has delivered one, or pass NaNs to a guest.
++pub(super) fn sample(data: [f32; 6], timestamp_us: u64) -> Option<((f32, f32, f32), f64)> {
++    if timestamp_us == 0 || !data[0..3].iter().all(|value| value.is_finite()) {
++        return None;
++    }
++    Some(((data[0], data[1], data[2]), timestamp_us as f64 / 1_000_000.0))
++}
++
++#[cfg(test)]
++mod tests {
++    use super::{priority, sample};
++
++    // https://developer.apple.com/documentation/coremotion/cmmagnetometerdata
++    // CMMagneticField represents three device-relative values in microteslas.
++    #[test]
++    fn prefers_raw_sensor_and_preserves_axes_and_units() {
++        assert!(priority(14) > priority(2));
++        assert_eq!(priority(1), 0);
++        assert_eq!(sample([12.5, -31.0, 8.25, 1.0, 2.0, 3.0], 2_500_000),
++            Some(((12.5, -31.0, 8.25), 2.5)));
++    }
++
++    #[test]
++    fn unavailable_and_invalid_samples_are_not_fabricated() {
++        assert_eq!(sample([0.0; 6], 0), None);
++        assert_eq!(sample([f32::NAN, 1.0, 2.0, 0.0, 0.0, 0.0], 1), None);
++        assert_eq!(sample([0.0; 6], 1), Some(((0.0, 0.0, 0.0), 0.000001)));
++    }
++}
 diff --git a/touchHLE_apps/README.txt b/touchHLE_apps/README.txt
 index 5fb5bfeb73d920cf4ea240f6d0242c7463a7fc1e..49c58e51d1e6e8e12e58ade05ec75ce93bfd1fc8 100644
 --- a/touchHLE_apps/README.txt

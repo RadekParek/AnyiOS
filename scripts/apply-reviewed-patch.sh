@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 # Apply an exact reviewed patch without discarding unrelated local changes.
-# The optional SHA-256 permits migrating exactly one known previous patch.
+# A comma-separated SHA-256 allowlist permits migrating only exact previous patches.
 set -euo pipefail
 if [[ $# != 4 ]]; then
-  echo "Usage: $0 <checkout> <patch> <previous-patch-sha256-or-dash> <label>" >&2
+  echo "Usage: $0 <checkout> <patch> <previous-patch-sha256-list-or-dash> <label>" >&2
   exit 2
 fi
 CHECKOUT=$1
@@ -31,7 +31,7 @@ else
   # Never reset or overwrite a tree with any other tracked modifications.
   git -C "$CHECKOUT" diff --binary --full-index --ignore-submodules=all HEAD > "$ACTUAL"
   actual_sha=$(python3 -c 'import hashlib,sys; print(hashlib.sha256(open(sys.argv[1], "rb").read()).hexdigest())' "$ACTUAL")
-  if [[ "$PREVIOUS_SHA" == - || "$actual_sha" != "$PREVIOUS_SHA" ]]; then
+  if [[ "$PREVIOUS_SHA" == - || ",$PREVIOUS_SHA," != *",$actual_sha,"* ]]; then
     echo "$LABEL patch does not apply cleanly; refusing to replace unknown local changes" >&2
     exit 1
   fi

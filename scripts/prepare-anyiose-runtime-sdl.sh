@@ -54,4 +54,4 @@ fi
 
 # Cargo's cached checkout may still contain the previously reviewed SDL patch.
 "$ROOT/scripts/apply-reviewed-patch.sh" "$SDL" "$PATCH" \
-  b7aa90b2df574c765c5f1fb4b189d3b9c3697940b06ff2123fc3c056c579419b "Cargo rust-sdl2 SDL"
+  b7aa90b2df574c765c5f1fb4b189d3b9c3697940b06ff2123fc3c056c579419b,3d2ebd14a784066e5353997f40fbc48e764ace20d4897c6e9d162e0112100b14 "Cargo rust-sdl2 SDL"

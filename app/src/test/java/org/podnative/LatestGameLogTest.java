@@ -1,0 +1,51 @@
+package org.podnative;
+
+import static org.junit.Assert.*;
+
+import java.io.ByteArrayOutputStream;
+import java.io.File;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import org.junit.Rule;
+import org.junit.Test;
+import org.junit.rules.TemporaryFolder;
+
+public class LatestGameLogTest {
+    @Rule public TemporaryFolder temporary = new TemporaryFolder();
+
+    @Test
+    public void startsFreshAndReadsTheRealFileEvenWithoutAnActivityResult() throws Exception {
+        File data = temporary.newFolder("data");
+        File log = new File(data, "AnyiOSEMU_log.txt");
+        Files.writeString(log.toPath(), "previous session");
+        LatestGameLog.prepare(data);
+        assertTrue(LatestGameLog.preview(data, 1024).contains("No log was recorded"));
+        Files.writeString(log.toPath(), "guest printf\ncrash info\n");
+        assertEquals("guest printf\ncrash info\n", LatestGameLog.preview(data, 1024));
+        ByteArrayOutputStream exported = new ByteArrayOutputStream();
+        LatestGameLog.copy(data, exported);
+        assertEquals("guest printf\ncrash info\n", exported.toString(StandardCharsets.UTF_8));
+    }
+
+    @Test
+    public void previewsOnlyTheTailButExportsTheCompleteUtf8Log() throws Exception {
+        File data = temporary.newFolder("utf8");
+        Files.writeString(new File(data, "AnyiOSEMU_log.txt").toPath(), "old text ☃ newest\n");
+        String tail = LatestGameLog.preview(data, 10);
+        assertTrue(tail.contains("Earlier log output omitted"));
+        assertTrue(tail.endsWith("newest\n"));
+        assertFalse(tail.contains("\ufffd"));
+        ByteArrayOutputStream exported = new ByteArrayOutputStream();
+        LatestGameLog.copy(data, exported);
+        assertEquals("old text ☃ newest\n", exported.toString(StandardCharsets.UTF_8));
+    }
+
+    @Test
+    public void missingAndEmptyLogsAreNotConfusedWithPreviousReports() throws Exception {
+        File data = temporary.newFolder("empty");
+        assertTrue(LatestGameLog.preview(data, 100).contains("No log was recorded"));
+        LatestGameLog.prepare(data);
+        assertThrows(java.io.IOException.class,
+            () -> LatestGameLog.copy(data, new ByteArrayOutputStream()));
+    }
+}

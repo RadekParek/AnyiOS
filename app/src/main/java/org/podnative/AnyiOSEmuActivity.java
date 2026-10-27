@@ -19,6 +19,9 @@ import java.io.RandomAccessFile;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Locale;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 /** SDL host activity for AnyiOSEMU's pinned ARM32 iPhone OS runtime. */
 public final class AnyiOSEmuActivity extends org.anyiose.android.MainActivity {
@@ -43,7 +46,7 @@ public final class AnyiOSEmuActivity extends org.anyiose.android.MainActivity {
     private float effectiveFpsCap = 60.0f;
     private boolean performanceHudEnabled;
     private boolean boostDisplayLink;
-    private int gameDisplayProfile;
+    private int surfaceShortEdge;
     private int dynamicMinimum;
     private DynamicResolution dynamicResolution;
     private SurfaceResolution surfaceResolution;
@@ -52,6 +55,9 @@ public final class AnyiOSEmuActivity extends org.anyiose.android.MainActivity {
     private boolean forceCompositionEnabled;
     private boolean verboseGlesEnabled;
     private TextView performanceHud;
+    private ExecutorService metricsWorker;
+    private final AtomicBoolean metricsPending = new AtomicBoolean();
+    private final GpuUsageReader gpuUsageReader = new GpuUsageReader();
     private Runnable performanceHudSampler;
     private long previousHudWallMs;
     private long previousProcessCpuMs;
@@ -76,8 +82,8 @@ public final class AnyiOSEmuActivity extends org.anyiose.android.MainActivity {
         android.content.SharedPreferences settings = getSharedPreferences("settings", MODE_PRIVATE);
         fpsCapPreference = settings.getInt("fps", DisplayFrameRate.AUTO);
         performanceHudEnabled = settings.getBoolean("performanceHud", false);
-        boostDisplayLink = settings.getBoolean("boostDisplayLink", false);
-        gameDisplayProfile = settings.getInt("gameDisplayProfile", GameDisplayProfile.AUTO);
+        boostDisplayLink = settings.getBoolean("boostDisplayLink", true);
+        surfaceShortEdge = Math.max(0, settings.getInt(DisplayResolution.PREFERENCE, 0));
         dynamicMinimum = settings.getInt("dynamicResolution", 100);
         maxClocksEnabled = settings.getBoolean("maxClocks", false);
         nativeGlesEnabled = settings.getBoolean("nativeGles", false);
@@ -101,10 +107,10 @@ public final class AnyiOSEmuActivity extends org.anyiose.android.MainActivity {
         super.onCreate(state);
         DisplayFrameRate.requestPreferredMode(this, fpsCapPreference);
         effectiveFpsCap = DisplayFrameRate.resolveCap(this, fpsCapPreference);
-        if (mSurface != null && dynamicMinimum < 100) {
-            surfaceResolution = new SurfaceResolution(mSurface);
+        if (mSurface != null && (surfaceShortEdge > 0 || dynamicMinimum < 100))
+            surfaceResolution = new SurfaceResolution(mSurface, surfaceShortEdge);
+        if (surfaceResolution != null && dynamicMinimum < 100)
             dynamicResolution = new DynamicResolution(dynamicMinimum, effectiveFpsCap);
-        }
         getSharedPreferences("anyiose_runtime", MODE_PRIVATE)
             .edit()
             .putString("last_data_path", userDataPath)
@@ -112,8 +118,11 @@ public final class AnyiOSEmuActivity extends org.anyiose.android.MainActivity {
         setTitle("AnyiOSEMU · " + gameTitle);
         if (intent != null && intent.getBooleanExtra(EXTRA_SHOW_CONSOLE, false))
             showSessionBadge();
-        if (performanceHudEnabled)
+        if (performanceHudEnabled) {
             showPerformanceHud();
+            if (performanceHud != null)
+                metricsWorker = Executors.newSingleThreadExecutor(r -> new Thread(r, "anyios-hud"));
+        }
         if (performanceHudEnabled || dynamicResolution != null)
             createPerformanceSampler();
     }
@@ -127,7 +136,7 @@ public final class AnyiOSEmuActivity extends org.anyiose.android.MainActivity {
         arguments.add(sourcePath);
         // Keep the guest's logical layout independent of the Android surface buffer.
         // With the default profile this matches the standalone launch path.
-        arguments.add(GameDisplayProfile.argument(gameDisplayProfile));
+        arguments.add(GameDisplayProfile.argument(GameDisplayProfile.AUTO));
         float fpsCap = DisplayFrameRate.resolveCap(this, fpsCapPreference);
         effectiveFpsCap = fpsCap;
         arguments.add("--fps-limit=" + DisplayFrameRate.formatOption(fpsCap));
@@ -244,39 +253,58 @@ public final class AnyiOSEmuActivity extends org.anyiose.android.MainActivity {
             return;
 
         long nowCpu = Process.getElapsedCpuTime();
-        String cpu = "—";
-        if (previousHudWallMs > 0 && nowWall > previousHudWallMs) {
-            double percent =
-                (nowCpu - previousProcessCpuMs) * 100.0 / (nowWall - previousHudWallMs);
-            cpu = String.format(Locale.ROOT, "%.0f%%", Math.max(0.0, percent));
-        }
+        int processors = Math.max(1, Runtime.getRuntime().availableProcessors());
+        double processPercent =
+            CpuUsage.percent(previousProcessCpuMs, nowCpu, previousHudWallMs, nowWall, processors);
         previousHudWallMs = nowWall;
         previousProcessCpuMs = nowCpu;
-
-        Debug.MemoryInfo memory = new Debug.MemoryInfo();
-        Debug.getMemoryInfo(memory);
-        long pssMegabytes = Math.max(0, memory.getTotalPss()) / 1024L;
-        long graphicsKilobytes = 0;
-        try {
-            graphicsKilobytes = Long.parseLong(memory.getMemoryStats().get("summary.graphics"));
-        } catch (Exception ignored) {
-            // Some Android versions do not report a graphics PSS category.
-        }
-        String graphics = graphicsKilobytes > 0 ? (graphicsKilobytes / 1024L) + " MB" : "n/a";
+        String cpu = Double.isNaN(processPercent)
+            ? "—"
+            : String.format(Locale.ROOT, "%.1f%%", processPercent);
         String fps = !Double.isNaN(lastMeasuredFps) && nowWall - lastMeasuredFpsAtMs <= 3000
             ? String.format(Locale.ROOT, "%.1f", lastMeasuredFps)
             : "—";
-        performanceHud.setText("FPS " + fps + " · cap " + DisplayFrameRate.formatHz(effectiveFpsCap)
-            + " Hz"
-            + (dynamicResolution == null ? "" : " · surface " + dynamicResolution.percent() + "%")
-            + "\n"
-            + "CPU " + cpu + " (process, one-core equivalent) · RAM " + pssMegabytes
-            + " MB PSS\nGPU utilization n/a · graphics PSS (within RAM total) " + graphics);
+        String surface =
+            dynamicResolution == null ? "" : " · surface " + dynamicResolution.percent() + "%";
+        if (metricsWorker == null || !metricsPending.compareAndSet(false, true))
+            return;
+        metricsWorker.execute(() -> {
+            try {
+                double gpuPercent = gpuUsageReader.sample(nowWall);
+                String gpu = Double.isNaN(gpuPercent)
+                    ? "unavailable"
+                    : String.format(Locale.ROOT, "%.1f%%", gpuPercent);
+                Debug.MemoryInfo memory = new Debug.MemoryInfo();
+                Debug.getMemoryInfo(memory);
+                long pssMegabytes = Math.max(0, memory.getTotalPss()) / 1024L;
+                long graphicsKilobytes = 0;
+                try {
+                    graphicsKilobytes =
+                        Long.parseLong(memory.getMemoryStats().get("summary.graphics"));
+                } catch (Exception ignored) {
+                    // Some Android versions do not report a graphics PSS category.
+                }
+                String graphics =
+                    graphicsKilobytes > 0 ? (graphicsKilobytes / 1024L) + " MB" : "unavailable";
+                String text = "FPS " + fps + " · cap " + DisplayFrameRate.formatHz(effectiveFpsCap)
+                    + " Hz" + surface + "\nCPU " + cpu + " (app / " + processors + " cores) · RAM "
+                    + pssMegabytes + " MB PSS\nGPU " + gpu + " (device) · graphics PSS " + graphics;
+                hudHandler.post(() -> {
+                    if (!isFinishing() && !isDestroyed() && performanceHud != null)
+                        performanceHud.setText(text);
+                });
+            } finally {
+                metricsPending.set(false);
+            }
+        });
     }
 
     @Override
     protected void onResume() {
         super.onResume();
+        // Do not include background/suspended time in the next CPU sample.
+        previousHudWallMs = 0;
+        previousProcessCpuMs = 0;
         if (performanceHudSampler != null) {
             hudHandler.removeCallbacks(performanceHudSampler);
             hudHandler.post(performanceHudSampler);
@@ -294,6 +322,8 @@ public final class AnyiOSEmuActivity extends org.anyiose.android.MainActivity {
     protected void onDestroy() {
         if (performanceHudSampler != null)
             hudHandler.removeCallbacks(performanceHudSampler);
+        if (metricsWorker != null)
+            metricsWorker.shutdownNow();
         if (surfaceResolution != null)
             surfaceResolution.close();
         // SDL joins its native thread during super.onDestroy(); capture the log only after
@@ -335,12 +365,14 @@ public final class AnyiOSEmuActivity extends org.anyiose.android.MainActivity {
             .append(" Hz\nMeasured presentation FPS=")
             .append(measuredFps)
             .append("\nGame layout=")
-            .append(GameDisplayProfile.label(gameDisplayProfile))
-            .append("\nPresentation base resolution=display native")
+            .append(GameDisplayProfile.label(GameDisplayProfile.AUTO))
+            .append("\nPresentation base resolution=")
+            .append(surfaceShortEdge == 0 ? "native view"
+                                          : "up to " + surfaceShortEdge + " px short edge")
             .append("\nDynamic surface resolution=")
             .append(dynamicResolution == null ? "off" : "on, minimum " + dynamicMinimum + "%")
             .append(" (presentation surface only; offscreen game buffers may not scale)")
-            .append("\nMaximize FPS (60 FPS display-link boost)=")
+            .append("\nMatch device Hz (60 FPS display-link boost)=")
             .append(boostDisplayLink)
             .append("\nPerformance HUD=")
             .append(performanceHudEnabled)
