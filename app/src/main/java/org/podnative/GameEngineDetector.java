@@ -11,6 +11,10 @@ import java.util.Set;
 /** Best-effort engine identification from bounded, engine-specific bundle evidence. */
 final class GameEngineDetector {
     private static final int MAX_BINARY_BYTES = 32 * 1024 * 1024;
+    // Specific source path from Codeglue's Octarine engine, not the generic
+    // word "Octarine" or a game/bundle ID. Codeglue identifies it here:
+    // https://www.leovst.com/terraria
+    static final String OCTARINE_SOURCE = "Octarine/Sound/HSSSoundManager.cpp";
     private final Set<String> engines = new LinkedHashSet<>();
 
     // Unity's iOS project contains UnityFramework and its compiled Data folder:
@@ -32,6 +36,10 @@ final class GameEngineDetector {
             || path.equals("data/managed/unityengine.dll")
             || path.equals("data/globalgamemanagers"))
             engines.add("Unity");
+        // GameMaker's iOS VM game data is named game.ios:
+        // https://tcrf.net/Help:Contents/Finding_Content/Game_Engines/GameMaker:_Studio
+        if (path.equals("game.ios"))
+            engines.add("GameMaker");
         // UE3 iOS packages include CookedIPhone/Engine.xxx; generic .pak or
         // "engine" filenames alone are not reliable evidence.
         int slash = path.indexOf('/');
@@ -42,13 +50,15 @@ final class GameEngineDetector {
     }
 
     /**
-     * Symbols are deliberately paired, and scanned only in the declared main
-     * executable. Embedded libraries can still produce false positives, so the
-     * UI describes these results as best effort. No full binary is retained.
+     * Generic symbols are deliberately paired; a full engine-specific source
+     * path also counts. Scanned only in the declared main executable. Embedded libraries can still
+     * produce false positives, so the UI describes these results as best effort. No full binary is
+     * retained.
      */
     void observeExecutable(InputStream input) throws IOException {
         Match[] symbols = {new Match("UnityAppController"), new Match("UnityInitRuntime"),
-            new Match("CCDirector"), new Match("CCSprite")};
+            new Match("CCDirector"), new Match("CCSprite"), new Match(OCTARINE_SOURCE),
+            new Match("Octarine\\Sound\\HSSSoundManager.cpp")};
         byte[] buffer = new byte[16384];
         int remaining = MAX_BINARY_BYTES;
         while (remaining > 0) {
@@ -64,9 +74,28 @@ final class GameEngineDetector {
                 engines.add("Unity");
             if (symbols[2].found && symbols[3].found)
                 engines.add("Cocos2d");
-            if (symbols[0].found && symbols[1].found && symbols[2].found && symbols[3].found)
+            if (symbols[4].found || symbols[5].found)
+                engines.add("Octarine");
+            if (symbols[0].found && symbols[1].found && symbols[2].found && symbols[3].found
+                && (symbols[4].found || symbols[5].found))
                 break;
         }
+    }
+
+    /** The latest private game log can contain an assertion's full source path. */
+    void observeRuntimeLog(String log) {
+        if (log.contains(OCTARINE_SOURCE) || log.contains("Octarine\\Sound\\HSSSoundManager.cpp"))
+            engines.add("Octarine");
+    }
+
+    static String merge(String first, String second) {
+        Set<String> found = new java.util.TreeSet<>();
+        for (String value : new String[] {first, second}) {
+            if (value.endsWith(" (detected)"))
+                for (String name : value.substring(0, value.length() - 11).split(", "))
+                    found.add(name);
+        }
+        return found.isEmpty() ? "Unknown" : String.join(", ", found) + " (detected)";
     }
 
     String result() {

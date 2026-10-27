@@ -30,6 +30,7 @@ from .icons import extract as extract_icon, launcher as launcher_icon
 from .ir import Unsupported
 from .llvm_ir import emit as emit_llvm_ir, verify as verify_llvm_ir
 from .plan import plan_coverage
+from .ghidra import inspect as ghidra_inspect
 from .recon import reconstruct
 from .recon.report import blockers as recon_blockers, markdown as recon_markdown, summary as recon_summary
 
@@ -75,6 +76,7 @@ class Pipeline:
         self.report = {
             "schemaVersion": 1,
             "state": None,
+            "ghidra": {"status": "NOT_REQUESTED", "attempted": False, "completeGameConversion": False},
             "events": [],
             "capabilities": capabilities(),
             "apiImplementationGeneration": {
@@ -716,6 +718,7 @@ class Pipeline:
         authorized: bool,
         analyze_only=False,
         target_abi: str = "auto",
+        ghidra_home: Path | None = None,
     ):
         try:
             if not authorized:
@@ -752,6 +755,16 @@ class Pipeline:
                 graph = dependency_graph(app, executable, mach)
                 self.report["machO"] = mach
                 self.report["dependencies"] = graph
+                try:
+                    self.report["ghidra"] = ghidra_inspect(executable, mach, self.output, ghidra_home)
+                except Exception as exc:  # noqa: BLE001 - optional diagnostics never decide conversion gates
+                    self.report["ghidra"] = {
+                        "status": "FAILED", "attempted": ghidra_home is not None,
+                        "completeGameConversion": False,
+                        "message": f"Optional local Ghidra analysis failed: {exc}",
+                    }
+                if ghidra_home is not None:
+                    self.log("ANALYZING", "Optional Ghidra: " + self.report["ghidra"]["message"])
                 self.log(
                     "ANALYZING",
                     f'Analyzed {len(mach["slices"])} architecture slice(s), {len(graph["nodes"])} Mach-O image(s), {len(graph["edges"])} dependency edge(s)',

@@ -11,6 +11,19 @@ No device run of the pinned runtime integration has been performed in this works
 5. Tap through the actual game menu. Confirm that the runtime receives touch and the visible state changes. Capture a screenshot only after observing real game output.
 6. Open **Show latest log** and confirm the latest guest `NSLog`/stdout and runtime output belong to that game, including after a crash or forced stop; export and compare the full file. Check the session report separately. Check engine revision, selected ARM32 source, requested and effective FPS caps, measured presentation FPS if available, ANGLE/native-GLES preference, Force Composition, HUD/Max clocks requests and any initialization/fallback/error lines. A successful return or status 0 is not rendering proof.
 
+## Audio assertion investigation
+
+- On the affected Terraria version, run a fresh build and export the full latest
+  game log. If the sound assertion still occurs, retain the bounded `Audio diagnostics`
+  section, register dump and stack trace, plus device/Android version and APK commit.
+  Do not upload the IPA. Check whether the guest aborts cleanly rather than falling
+  through to a scheduler deadlock. The log's API statuses are emulator returns;
+  they do not establish Hekkus's own result or prove the game is fixed.
+- On other games/test apps using RemoteIO and AUGraph, check audible playback,
+  callback bus routing, initialization/stop/restart/dispose, interruptions and
+  callback reentrancy; compare against a previous working build. CI host stubs do
+  not exercise a real OpenAL device or validate game audio.
+
 ## Graphics, input and lifecycle
 
 - Confirm ANGLE is the driver that actually initialized in the default setting. The APK should contain `libEGL_angle.so`, `libGLESv1_CM_angle.so` and `libGLESv2_angle.so` for `arm64-v8a`. If ANGLE is unavailable, verify the log accurately identifies a native GLES fallback rather than claiming ANGLE.
@@ -30,6 +43,8 @@ No device run of the pinned runtime integration has been performed in this works
 
 - From the Converter's Force convert dialog, confirm **Native runtime** produces the existing diagnostic game-runtime artifact. Confirm **Semi-Emulated** generates a separately named/signed APK with the embedded IPA and runtime, refuses encrypted/ARM64-only inputs, and opens only that game without a picker.
 - Install the Semi-Emulated APK and check both first and repeat launch: no preparation or emulator crash/setup-error screen should appear. Try a controlled guest error and a failed payload verification; verify ordinary in-game alerts still work. Test early native failures and ANRs separately because Android may show system UI before handlers run; native quiet exits intentionally lack Android tombstones. Remove AnyiOS, reboot and launch it again. Verify its private saves persist and no host application is required; then repeat after an APK update signed with the same key. Check actual maximum resolution/refresh on a high-refresh device.
+- On first and repeat launch of a newly built Semi-Emulated APK, verify `main.1.<actual-package>.obb` in the package's app-specific OBB directory matches the original IPA SHA-256. Test unavailable, read-only and full external storage: the verified private game and existing saves must still work. Measure startup time and disk usage. Delete/corrupt the mirror, relaunch and confirm it is rebuilt; do not execute it from shared storage. Share the OBB from the Converter and verify its display name and bytes. Test Android 11+ picker restrictions without expecting a bypass.
+- For Native diagnostic builds, include a bundle above 100 MiB: verify all assets are still in the APK, the optional shared OBB uses the actual manifest version code, and the APK boots its existing diagnostic path with the OBB absent. The diagnostic launcher does not load an OBB-only payload.
 - Confirm **Game layout** is hidden and an old saved profile no longer overrides automatic layout. Test fixed-size games, including letterbox edges, WebView controls and touch hitboxes.
 - Verify **Resolution** defaults to native and shows actual landscape pixel dimensions from the current display mode. Select smaller dimensions, rotate, resume, and confirm aspect ratio/touch alignment and full physical view bounds. Old retired resolution preferences remain ignored; the separate graphics test stays native.
 - Verify Dynamic resolution starts Off, that the selected minimum is respected, and that changing the range takes effect on the next game launch. At 90%, 75% and 50% compare the physical game/view bounds against Off in the same scene: lowering buffer resolution must not shrink the displayed image (normal aspect-ratio bars may remain). Check both bundled ANGLE and native GLES, touch targets and WebView overlays, portrait/landscape rotation, background/resume and surface recreation at every scale. Compare measured FPS and image detail with Off, including a CPU-bound scene. A driver may ignore a requested fixed buffer, and the presentation surface alone may not affect offscreen rendering workload; do not claim gains without measurement.

@@ -1417,6 +1417,2005 @@ index cfd9d53f21db4ba7581a69cb1037a50e6d17b26d..a0bc9ada707ab6cbf61db3319fd9e5b9
          )
          .call();
      let response = check_response(response)?;
+diff --git a/src/frameworks/audio_toolbox.rs b/src/frameworks/audio_toolbox.rs
+index 0483db13e10f74ebfb044b6261dba607677c67f6..86acc663b00982684c66a49e5584c9cb08b23604 100644
+--- a/src/frameworks/audio_toolbox.rs
++++ b/src/frameworks/audio_toolbox.rs
+@@ -66,6 +66,7 @@ pub struct State {
+     au_graph: au_graph::State,
+     ext_audio_file: ext_audio_file::State,
+     al_context: LazyALContext,
++    audio_diagnostics: AudioDiagnostics,
+ }
+ impl State {
+     pub fn make_al_context_current<'s, 'manager: 's>(
+@@ -76,6 +77,57 @@ impl State {
+     }
+ }
+ 
++/// Recent initialization calls only, never sample data or guest strings.
++/// The fixed-size ring is printed at guest assertions rather than spamming logs.
++#[derive(Default)]
++struct AudioDiagnostics(std::collections::VecDeque<String>);
++
++impl AudioDiagnostics {
++    const CAPACITY: usize = 32;
++    fn record(&mut self, event: String) {
++        if self.0.len() == Self::CAPACITY {
++            self.0.pop_front();
++        }
++        self.0.push_back(event);
++    }
++}
++
++pub(crate) fn record_audio_event(env: &mut crate::Environment, event: String) {
++    let thread = env.current_thread;
++    env.framework_state
++        .audio_toolbox
++        .audio_diagnostics
++        .record(format!("thread {thread}: {event}"));
++}
++
++pub(crate) fn dump_audio_diagnostics(env: &crate::Environment) {
++    let events = &env.framework_state.audio_toolbox.audio_diagnostics.0;
++    if events.is_empty() {
++        echo!("Audio diagnostics: no recorded AudioSession or AudioUnit setup calls.");
++    } else {
++        echo!("Audio diagnostics: recent setup calls (status is the emulated API result):");
++        for event in events {
++            echo!("  {}", event);
++        }
++    }
++    echo!("Audio diagnostics do not identify a guest sound library's own return value.");
++}
++
++#[cfg(test)]
++mod diagnostics_tests {
++    use super::AudioDiagnostics;
++    #[test]
++    fn setup_history_is_bounded_and_keeps_the_latest_events() {
++        let mut history = AudioDiagnostics::default();
++        for i in 0..40 {
++            history.record(i.to_string());
++        }
++        assert_eq!(history.0.len(), AudioDiagnostics::CAPACITY);
++        assert_eq!(history.0.front().unwrap(), "8");
++        assert_eq!(history.0.back().unwrap(), "39");
++    }
++}
++
+ #[derive(Default)]
+ pub struct LazyALContext(Option<OpenALContext>);
+ 
+diff --git a/src/frameworks/audio_toolbox/au_graph.rs b/src/frameworks/audio_toolbox/au_graph.rs
+index 5afa36bcb2ee9d4c5f8aa745d49e2999645f2121..e71dfe534d77b02090817cf5b5c7e837ffc34311 100644
+--- a/src/frameworks/audio_toolbox/au_graph.rs
++++ b/src/frameworks/audio_toolbox/au_graph.rs
+@@ -22,11 +22,10 @@ use crate::frameworks::audio_toolbox::audio_components::{
+     self, AURenderCallbackStruct, AudioComponentInstance,
+ };
+ use crate::frameworks::audio_toolbox::audio_unit::{
+-    notify_audio_unit_is_running, setup_audio_unit_for_render, AudioUnit,
++    setup_audio_unit_for_render, stop_audio_unit_for_graph, AudioUnit, AudioUnitInitialize_impl,
++    AudioUnitUninitialize,
+ };
+ use crate::frameworks::carbon_core::{paramErr, OSStatus};
+-use crate::frameworks::core_foundation::cf_run_loop::CFRunLoopGetMain;
+-use crate::frameworks::foundation::ns_run_loop;
+ use crate::mem::{guest_size_of, ConstPtr, MutPtr, SafeRead};
+ 
+ // =========================================================================
+@@ -47,12 +46,12 @@ pub type AUGraph = MutPtr<OpaqueAUGraph>;
+ /// Описание компонента, как у `AudioComponentDescription` в `audio_components`.
+ #[repr(C, packed)]
+ #[derive(Copy, Clone, Default)]
+-struct ComponentDesc {
+-    component_type: u32,
+-    component_sub_type: u32,
+-    component_manufacturer: u32,
+-    component_flags: u32,
+-    component_flags_mask: u32,
++pub(crate) struct ComponentDesc {
++    pub(crate) component_type: u32,
++    pub(crate) component_sub_type: u32,
++    pub(crate) component_manufacturer: u32,
++    pub(crate) component_flags: u32,
++    pub(crate) component_flags_mask: u32,
+ }
+ unsafe impl SafeRead for ComponentDesc {}
+ 
+@@ -75,6 +74,9 @@ struct GraphNode {
+ struct GraphState {
+     nodes: HashMap<AUNode, GraphNode>,
+     connections: Vec<AudioUnitNodeConnection>,
++    /// Graph-level callback interactions survive close/reopen, unlike the
++    /// instantiated audio units and their individual properties.
++    input_callbacks: HashMap<(AUNode, u32), AURenderCallbackStruct>,
+     next_node_id: AUNode,
+     is_open: bool,
+     is_initialized: bool,
+@@ -106,7 +108,7 @@ const kAudioUnitSubType_RemoteIO: u32 = u32::from_be_bytes(*b"rioc");
+ // MARK: - Жизненный цикл графа
+ // =========================================================================
+ 
+-fn NewAUGraph(env: &mut Environment, out_graph: MutPtr<AUGraph>) -> OSStatus {
++pub(crate) fn NewAUGraph(env: &mut Environment, out_graph: MutPtr<AUGraph>) -> OSStatus {
+     let g: AUGraph = env.mem.alloc_and_write(OpaqueAUGraph { _pad: 0 });
+     State::get(&mut env.framework_state)
+         .graphs
+@@ -116,12 +118,19 @@ fn NewAUGraph(env: &mut Environment, out_graph: MutPtr<AUGraph>) -> OSStatus {
+     0
+ }
+ 
+-fn DisposeAUGraph(env: &mut Environment, graph: AUGraph) -> OSStatus {
++pub(crate) fn DisposeAUGraph(env: &mut Environment, graph: AUGraph) -> OSStatus {
+     log_dbg!("DisposeAUGraph({:?})", graph);
+-    State::get(&mut env.framework_state).graphs.remove(&graph);
+-    if !graph.is_null() {
+-        env.mem.free(graph.cast());
++    if !State::get(&mut env.framework_state)
++        .graphs
++        .contains_key(&graph)
++    {
++        return paramErr;
+     }
++    // Disposing a graph closes its units and releases the resources it owns.
++    // https://developer.apple.com/documentation/audiotoolbox/1400024-disposeaugraph
++    let _ = AUGraphClose(env, graph);
++    State::get(&mut env.framework_state).graphs.remove(&graph);
++    env.mem.free(graph.cast());
+     0
+ }
+ 
+@@ -129,7 +138,7 @@ fn DisposeAUGraph(env: &mut Environment, graph: AUGraph) -> OSStatus {
+ // MARK: - Узлы
+ // =========================================================================
+ 
+-fn AUGraphAddNode(
++pub(crate) fn AUGraphAddNode(
+     env: &mut Environment,
+     graph: AUGraph,
+     in_desc: ConstPtr<ComponentDesc>,
+@@ -158,7 +167,27 @@ fn AUGraphAddNode(
+         state.output_node = Some(node_id);
+     }
+ 
++    let already_open = state.is_open;
+     env.mem.write(out_node, node_id);
++    if already_open {
++        // Apple allows nodes to be added to an already open graph. The new
++        // instance is not initialized until the caller prepares it.
++        let unit = audio_components::create_audio_unit_instance(
++            env,
++            Some((
++                desc.component_type,
++                desc.component_sub_type,
++                desc.component_manufacturer,
++            )),
++        );
++        if let Some(node) = State::get(&mut env.framework_state)
++            .graphs
++            .get_mut(&graph)
++            .and_then(|s| s.nodes.get_mut(&node_id))
++        {
++            node.audio_unit = Some(unit);
++        }
++    }
+ 
+     // Вытаскиваем значения в локальные переменные (копии),
+     // чтобы избежать UB при взятии ссылки макросом log! из упакованной
+@@ -177,13 +206,22 @@ fn AUGraphAddNode(
+     0
+ }
+ 
+-fn AUGraphRemoveNode(env: &mut Environment, graph: AUGraph, node: AUNode) -> OSStatus {
+-    if let Some(state) = State::get(&mut env.framework_state).graphs.get_mut(&graph) {
+-        state.nodes.remove(&node);
+-        // Очищаем любые соединения, связанные с удаленным узлом
++pub(crate) fn AUGraphRemoveNode(env: &mut Environment, graph: AUGraph, node: AUNode) -> OSStatus {
++    let unit = if let Some(state) = State::get(&mut env.framework_state).graphs.get_mut(&graph) {
++        let unit = state.nodes.remove(&node).and_then(|node| node.audio_unit);
+         state
+             .connections
+             .retain(|c| c.source_node != node && c.dest_node != node);
++        state.input_callbacks.retain(|(dest, _), _| *dest != node);
++        if state.output_node == Some(node) {
++            state.output_node = None;
++        }
++        unit
++    } else {
++        return paramErr;
++    };
++    if let Some(unit) = unit {
++        let _ = audio_components::AudioComponentInstanceDispose(env, unit);
+     }
+     0
+ }
+@@ -216,7 +254,7 @@ fn AUGraphGetIndNode(
+     0
+ }
+ 
+-fn AUGraphNodeInfo(
++pub(crate) fn AUGraphNodeInfo(
+     env: &mut Environment,
+     graph: AUGraph,
+     node: AUNode,
+@@ -243,8 +281,9 @@ fn AUGraphNodeInfo(
+ // MARK: - Open / Initialize / Start / Stop
+ // =========================================================================
+ 
+-fn AUGraphOpen(env: &mut Environment, graph: AUGraph) -> OSStatus {
++pub(crate) fn AUGraphOpen(env: &mut Environment, graph: AUGraph) -> OSStatus {
+     let node_ids: Vec<AUNode> = match State::get(&mut env.framework_state).graphs.get(&graph) {
++        Some(s) if s.is_open => return 0,
+         Some(s) => s.nodes.keys().copied().collect(),
+         None => return paramErr,
+     };
+@@ -267,9 +306,25 @@ fn AUGraphOpen(env: &mut Environment, graph: AUGraph) -> OSStatus {
+             });
+         let guest_instance: AudioComponentInstance =
+             audio_components::create_audio_unit_instance(env, component_desc);
+-        if let Some(state) = State::get(&mut env.framework_state).graphs.get_mut(&graph) {
+-            if let Some(graph_node) = state.nodes.get_mut(&node_id) {
+-                graph_node.audio_unit = Some(guest_instance);
++        let callbacks: Vec<_> =
++            if let Some(state) = State::get(&mut env.framework_state).graphs.get_mut(&graph) {
++                if let Some(graph_node) = state.nodes.get_mut(&node_id) {
++                    graph_node.audio_unit = Some(guest_instance);
++                }
++                state
++                    .input_callbacks
++                    .iter()
++                    .filter_map(|(&(node, bus), &cb)| (node == node_id).then_some((bus, cb)))
++                    .collect()
++            } else {
++                Vec::new()
++            };
++        if let Some(unit) = audio_components::State::get(&mut env.framework_state)
++            .audio_component_instances
++            .get_mut(&guest_instance)
++        {
++            for (bus, callback) in callbacks {
++                unit.set_render_callback(true, bus, Some(callback));
+             }
+         }
+     }
+@@ -280,22 +335,43 @@ fn AUGraphOpen(env: &mut Environment, graph: AUGraph) -> OSStatus {
+     0
+ }
+ 
+-fn AUGraphClose(env: &mut Environment, graph: AUGraph) -> OSStatus {
+-    if let Some(state) = State::get(&mut env.framework_state).graphs.get_mut(&graph) {
+-        state.is_open = false;
++pub(crate) fn AUGraphClose(env: &mut Environment, graph: AUGraph) -> OSStatus {
++    let (units, bridged): (Vec<AudioUnit>, Option<AudioUnit>) =
++        match State::get(&mut env.framework_state).graphs.get_mut(&graph) {
++            Some(state) => {
++                state.is_open = false;
++                state.is_initialized = false;
++                state.is_running = false;
++                let bridged = state.bridged_output.take();
++                let units = state
++                    .nodes
++                    .values_mut()
++                    .filter_map(|node| node.audio_unit.take())
++                    .collect();
++                (units, bridged)
++            }
++            None => return paramErr,
++        };
++    if let Some(output) = bridged {
++        stop_audio_unit_for_graph(env, output);
++    }
++    for unit in units {
++        let _ = audio_components::AudioComponentInstanceDispose(env, unit);
+     }
+     0
+ }
+ 
+-fn AUGraphInitialize(env: &mut Environment, graph: AUGraph) -> OSStatus {
++pub(crate) fn AUGraphInitialize(env: &mut Environment, graph: AUGraph) -> OSStatus {
+     let units: Vec<AudioUnit> = match State::get(&mut env.framework_state).graphs.get(&graph) {
+         Some(s) => s.nodes.values().filter_map(|n| n.audio_unit).collect(),
+         None => return paramErr,
+     };
+ 
+-    let run_loop = CFRunLoopGetMain(env);
+     for unit in units {
+-        ns_run_loop::add_audio_unit(env, run_loop, unit);
++        let status = AudioUnitInitialize_impl(env, unit);
++        if status != 0 {
++            return status;
++        }
+     }
+ 
+     if let Some(state) = State::get(&mut env.framework_state).graphs.get_mut(&graph) {
+@@ -304,27 +380,56 @@ fn AUGraphInitialize(env: &mut Environment, graph: AUGraph) -> OSStatus {
+     0
+ }
+ 
+-fn AUGraphUninitialize(env: &mut Environment, graph: AUGraph) -> OSStatus {
+-    if let Some(state) = State::get(&mut env.framework_state).graphs.get_mut(&graph) {
+-        state.is_initialized = false;
++pub(crate) fn AUGraphUninitialize(env: &mut Environment, graph: AUGraph) -> OSStatus {
++    let (units, bridged): (Vec<AudioUnit>, Option<AudioUnit>) =
++        match State::get(&mut env.framework_state).graphs.get_mut(&graph) {
++            Some(state) => {
++                state.is_initialized = false;
++                state.is_running = false;
++                let bridged = state.bridged_output.take();
++                let units = state
++                    .nodes
++                    .values()
++                    .filter_map(|node| node.audio_unit)
++                    .collect();
++                (units, bridged)
++            }
++            None => return paramErr,
++        };
++    if let Some(output) = bridged {
++        stop_audio_unit_for_graph(env, output);
++    }
++    for unit in units {
++        let _ = AudioUnitUninitialize(env, unit);
+     }
+     0
+ }
+ 
+-fn AUGraphStart(env: &mut Environment, graph: AUGraph) -> OSStatus {
+-    let units: Vec<AudioUnit> = match State::get(&mut env.framework_state).graphs.get(&graph) {
+-        Some(s) => s.nodes.values().filter_map(|n| n.audio_unit).collect(),
++pub(crate) fn AUGraphStart(env: &mut Environment, graph: AUGraph) -> OSStatus {
++    let units: Vec<AudioUnit> = match State::get(&mut env.framework_state).graphs.get_mut(&graph) {
++        Some(state) => {
++            // Set the state before notifying guest listeners during setup, so a
++            // reentrant stop/close is not overwritten after the callback.
++            state.is_running = true;
++            state
++                .nodes
++                .values()
++                .filter_map(|node| node.audio_unit)
++                .collect()
++        }
+         None => return paramErr,
+     };
+     log_dbg!("AUGraphStart({:?}) {} unit(s)", graph, units.len());
+-
+     for unit in units {
++        let still_running = State::get(&mut env.framework_state)
++            .graphs
++            .get(&graph)
++            .is_some_and(|state| state.is_running);
++        if !still_running {
++            break;
++        }
+         setup_audio_unit_for_render(env, unit);
+     }
+-
+-    if let Some(state) = State::get(&mut env.framework_state).graphs.get_mut(&graph) {
+-        state.is_running = true;
+-    }
+     0
+ }
+ 
+@@ -360,7 +465,11 @@ pub fn start_graph_for_output(env: &mut Environment, output_unit: AudioUnit) ->
+                 }
+                 Some((
+                     *graph,
+-                    state.nodes.values().filter_map(|node| node.audio_unit).collect(),
++                    state
++                        .nodes
++                        .values()
++                        .filter_map(|node| node.audio_unit)
++                        .collect(),
+                     !contains_output,
+                 ))
+             })
+@@ -420,51 +529,31 @@ pub fn stop_graph_for_output(env: &mut Environment, output_unit: AudioUnit) {
+             state.bridged_output = None;
+         }
+         for unit in units {
+-            let was_started = audio_components::State::get(&mut env.framework_state)
+-                .audio_component_instances
+-                .get(&unit)
+-                .map(|obj| obj.started)
+-                .unwrap_or(false);
+-            if let Some(obj) = audio_components::State::get(&mut env.framework_state)
+-                .audio_component_instances
+-                .get_mut(&unit)
+-            {
+-                obj.started = false;
+-            }
+-            if was_started {
+-                notify_audio_unit_is_running(env, unit);
+-            }
++            stop_audio_unit_for_graph(env, unit);
+         }
+     }
+ }
+ 
+-fn AUGraphStop(env: &mut Environment, graph: AUGraph) -> OSStatus {
+-    let units: Vec<AudioUnit> = match State::get(&mut env.framework_state).graphs.get(&graph) {
+-        Some(s) => s.nodes.values().filter_map(|n| n.audio_unit).collect(),
+-        None => return paramErr,
+-    };
+-
+-    for unit in units {
+-        let was_started = audio_components::State::get(&mut env.framework_state)
+-            .audio_component_instances
+-            .get(&unit)
+-            .map(|obj| obj.started)
+-            .unwrap_or(false);
+-
+-        if let Some(obj) = audio_components::State::get(&mut env.framework_state)
+-            .audio_component_instances
+-            .get_mut(&unit)
+-        {
+-            obj.started = false;
+-        }
+-
+-        if was_started {
+-            notify_audio_unit_is_running(env, unit);
+-        }
++pub(crate) fn AUGraphStop(env: &mut Environment, graph: AUGraph) -> OSStatus {
++    let (units, bridged): (Vec<AudioUnit>, Option<AudioUnit>) =
++        match State::get(&mut env.framework_state).graphs.get_mut(&graph) {
++            Some(state) => {
++                state.is_running = false;
++                let bridged = state.bridged_output.take();
++                let units = state
++                    .nodes
++                    .values()
++                    .filter_map(|node| node.audio_unit)
++                    .collect();
++                (units, bridged)
++            }
++            None => return paramErr,
++        };
++    if let Some(output) = bridged {
++        stop_audio_unit_for_graph(env, output);
+     }
+-
+-    if let Some(state) = State::get(&mut env.framework_state).graphs.get_mut(&graph) {
+-        state.is_running = false;
++    for unit in units {
++        stop_audio_unit_for_graph(env, unit);
+     }
+     0
+ }
+@@ -503,7 +592,7 @@ fn AUGraphIsRunning(env: &mut Environment, graph: AUGraph, out_v: MutPtr<u8>) ->
+ // MARK: - Connections / Callbacks
+ // =========================================================================
+ 
+-fn AUGraphConnectNodeInput(
++pub(crate) fn AUGraphConnectNodeInput(
+     env: &mut Environment,
+     graph: AUGraph,
+     src_node: AUNode,
+@@ -534,7 +623,7 @@ fn AUGraphConnectNodeInput(
+     0
+ }
+ 
+-fn AUGraphDisconnectNodeInput(
++pub(crate) fn AUGraphDisconnectNodeInput(
+     env: &mut Environment,
+     graph: AUGraph,
+     dest_node: AUNode,
+@@ -547,6 +636,20 @@ fn AUGraphDisconnectNodeInput(
+     state
+         .connections
+         .retain(|c| !(c.dest_node == dest_node && c.dest_input_number == dest_input_number));
++    let had_callback = state
++        .input_callbacks
++        .remove(&(dest_node, dest_input_number))
++        .is_some();
++    let unit = state.nodes.get(&dest_node).and_then(|node| node.audio_unit);
++    if had_callback {
++        if let Some(unit) = unit.and_then(|unit| {
++            audio_components::State::get(&mut env.framework_state)
++                .audio_component_instances
++                .get_mut(&unit)
++        }) {
++            unit.set_render_callback(true, dest_input_number, None);
++        }
++    }
+ 
+     log_dbg!(
+         "AUGraphDisconnectNodeInput({:?}): dest_node={} in={}",
+@@ -557,37 +660,58 @@ fn AUGraphDisconnectNodeInput(
+     0
+ }
+ 
+-fn AUGraphSetNodeInputCallback(
++pub(crate) fn AUGraphSetNodeInputCallback(
+     env: &mut Environment,
+     graph: AUGraph,
+     dest_node: AUNode,
+     dest_input_number: u32,
+     in_input_callback: ConstPtr<AURenderCallbackStruct>,
+ ) -> OSStatus {
++    if in_input_callback.is_null() {
++        return paramErr;
++    }
+     let cb = env
+         .mem
+         .read::<AURenderCallbackStruct, false>(in_input_callback);
+-    let dest_unit: Option<AudioUnit> = State::get(&mut env.framework_state)
+-        .graphs
+-        .get(&graph)
+-        .and_then(|s| s.nodes.get(&dest_node))
+-        .and_then(|n| n.audio_unit);
+-
+-    let Some(dest_unit) = dest_unit else {
+-        return paramErr;
++    if cb.input_proc.addr_with_thumb_bit() == 0 {
++        return AUGraphDisconnectNodeInput(env, graph, dest_node, dest_input_number);
++    }
++    let dest_unit = {
++        let Some(state) = State::get(&mut env.framework_state).graphs.get_mut(&graph) else {
++            return paramErr;
++        };
++        let Some(node) = state.nodes.get(&dest_node) else {
++            return paramErr;
++        };
++        let unit = node.audio_unit;
++        // A graph callback is an interaction, preserved by graph close/reopen.
++        // Apple also documents disconnecting it via AUGraphDisconnectNodeInput:
++        // https://developer.apple.com/library/archive/documentation/MusicAudio/Conceptual/AudioUnitHostingGuide_iOS/AudioUnitHostingFundamentals/AudioUnitHostingFundamentals.html
++        state
++            .input_callbacks
++            .insert((dest_node, dest_input_number), cb);
++        unit
+     };
+-
+     let proc_copy = cb.input_proc;
+     let ref_con_copy = cb.input_proc_ref_con;
+-
+-    if let Some(obj) = audio_components::State::get(&mut env.framework_state)
+-        .audio_component_instances
+-        .get_mut(&dest_unit)
+-    {
+-        let bus = obj.mixer_buses.entry(dest_input_number).or_default();
+-        bus.render_callback = Some(cb);
+-        if bus.last_render_time.is_none() {
+-            bus.last_render_time = Some(Instant::now());
++    if let Some(dest_unit) = dest_unit {
++        let started = if let Some(obj) = audio_components::State::get(&mut env.framework_state)
++            .audio_component_instances
++            .get_mut(&dest_unit)
++        {
++            obj.set_render_callback(true, dest_input_number, Some(cb));
++            if obj.is_3d_mixer {
++                let bus = obj.mixer_buses.entry(dest_input_number).or_default();
++                if bus.last_render_time.is_none() {
++                    bus.last_render_time = Some(Instant::now());
++                }
++            }
++            obj.started
++        } else {
++            false
++        };
++        if started {
++            setup_audio_unit_for_render(env, dest_unit);
+         }
+     }
+ 
+diff --git a/src/frameworks/audio_toolbox/audio_components.rs b/src/frameworks/audio_toolbox/audio_components.rs
+index 7f392545559e215ec1045b5bee62c0d43ae7073d..cea13e32f994d9dc0d9936268d950428a8243ac3 100644
+--- a/src/frameworks/audio_toolbox/audio_components.rs
++++ b/src/frameworks/audio_toolbox/audio_components.rs
+@@ -98,27 +98,38 @@ impl Default for MixerBusState {
+ 
+ #[derive(Default)]
+ pub struct State {
+-    pub audio_component: AudioComponent,
++    /// Stable opaque component handles. Finding another component must not
++    /// change the identity of a handle already returned to the guest.
++    pub audio_components: HashMap<AudioComponent, (u32, u32, u32)>,
+     pub audio_component_instances:
+         HashMap<AudioComponentInstance, AudioComponentInstanceHostObject>,
+-    /// Описание (type, subtype, manufacturer) последнего компонента,
+-    /// найденного `AudioComponentFindNext`. Используется, чтобы заполнить
+-    /// `AudioComponentInstanceHostObject::component_desc` при создании
+-    /// инстанса — для ответов на `kAudioUnitProperty_ClassInfo`.
+-    pub pending_component_desc: Option<(u32, u32, u32)>,
+     /// Connections made with `kAudioUnitProperty_MakeConnection`, from
+     /// (destination unit, input bus) to the source unit feeding it.
+     pub connections: HashMap<(AudioComponentInstance, u32), AudioComponentInstance>,
++    /// Monotonic render identity prevents a disposed/reused guest pointer from
++    /// being confused with the render that was active before disposal.
++    pub next_render_token: u64,
+ }
+ impl State {
+     pub fn get(framework_state: &mut crate::frameworks::State) -> &mut Self {
+         &mut framework_state.audio_toolbox.audio_components
+     }
++
++    fn component_description(&self, handle: AudioComponent) -> Option<(u32, u32, u32)> {
++        self.audio_components.get(&handle).copied()
++    }
++
++    fn component_handle(&self, description: (u32, u32, u32)) -> Option<AudioComponent> {
++        self.audio_components
++            .iter()
++            .find_map(|(&handle, &candidate)| (candidate == description).then_some(handle))
++    }
+ }
+ 
+ #[derive(Clone)]
+ pub struct AudioComponentInstanceHostObject {
+     pub started: bool,
++    pub initialized: bool,
+     pub maximum_frames_per_slice: u32,
+     pub global_stream_format: AudioStreamBasicDescription,
+     pub input_stream_format: Option<AudioStreamBasicDescription>,
+@@ -127,6 +138,8 @@ pub struct AudioComponentInstanceHostObject {
+     pub last_render_time: Option<Instant>,
+     pub al_source: Option<ALuint>,
+     pub is_running_handler: bool,
++    render_token: u64,
++    render_cancelled: bool,
+ 
+     /// Running total of frames handed to this unit's render callback, used as
+     /// the `mSampleTime` of the `AudioTimeStamp` we pass to it (see
+@@ -170,10 +183,96 @@ pub struct AudioComponentInstanceHostObject {
+     pub render_notifies: Vec<(AURenderCallback, ConstVoidPtr)>,
+ }
+ 
++impl AudioComponentInstanceHostObject {
++    fn for_component(component_desc: Option<(u32, u32, u32)>) -> Self {
++        Self {
++            is_3d_mixer: component_desc.is_some_and(|(kind, _, _)| kind == kAudioUnitType_Mixer),
++            component_desc,
++            ..Self::default()
++        }
++    }
++
++    pub(crate) fn mark_initialized(&mut self) -> bool {
++        let changed = !self.initialized;
++        self.initialized = true;
++        changed
++    }
++
++    pub(crate) fn mark_uninitialized(&mut self) -> bool {
++        let changed = self.initialized;
++        self.initialized = false;
++        changed
++    }
++
++    /// RemoteIO (and pass-through units) use a unit-level input callback;
++    /// mixer input elements have independent callbacks per bus.
++    pub(crate) fn set_render_callback(
++        &mut self,
++        input_scope: bool,
++        element: u32,
++        callback: Option<AURenderCallbackStruct>,
++    ) {
++        // A guest callback may replace/disconnect a bus while its render plan
++        // is being processed. Invalidate that snapshot before the next bus.
++        self.cancel_render();
++        if input_scope && self.is_3d_mixer {
++            self.mixer_buses.entry(element).or_default().render_callback = callback;
++        } else {
++            self.render_callback = callback;
++        }
++    }
++
++    /// A run-loop callback may re-enter the run loop before it returns.
++    pub(crate) fn begin_render(&mut self, token: u64) -> bool {
++        if !self.started || self.is_running_handler {
++            return false;
++        }
++        self.is_running_handler = true;
++        self.render_token = token;
++        self.render_cancelled = false;
++        true
++    }
++
++    pub(crate) fn render_is_current(&self, token: u64) -> bool {
++        self.started
++            && self.is_running_handler
++            && !self.render_cancelled
++            && self.render_token == token
++    }
++
++    pub(crate) fn cancel_render(&mut self) {
++        if self.is_running_handler {
++            self.render_cancelled = true;
++        }
++    }
++
++    pub(crate) fn end_render(&mut self, token: u64) {
++        if self.is_running_handler && self.render_token == token {
++            self.is_running_handler = false;
++            self.render_cancelled = false;
++        }
++    }
++
++    /// Detach all OpenAL sources so stop/dispose cannot keep playing a bus.
++    pub(crate) fn take_sources(&mut self) -> Vec<ALuint> {
++        self.cancel_render();
++        self.started = false;
++        self.last_render_time = None;
++        let mut sources = Vec::new();
++        sources.extend(self.al_source.take());
++        for bus in self.mixer_buses.values_mut() {
++            bus.last_render_time = None;
++            sources.extend(bus.al_source.take());
++        }
++        sources
++    }
++}
++
+ impl Default for AudioComponentInstanceHostObject {
+     fn default() -> Self {
+         AudioComponentInstanceHostObject {
+             started: false,
++            initialized: false,
+             maximum_frames_per_slice: 1024,
+             global_stream_format: AudioStreamBasicDescription {
+                 sample_rate: 44100.0,
+@@ -195,6 +294,8 @@ impl Default for AudioComponentInstanceHostObject {
+             last_render_time: None,
+             al_source: None,
+             is_running_handler: false,
++            render_token: 0,
++            render_cancelled: false,
+             sample_time: 0.0,
+             property_listeners: Vec::new(),
+             is_3d_mixer: false,
+@@ -309,18 +410,20 @@ fn find_component_desc(
+ ) -> Option<(u32, u32)> {
+     let mut passed_after = after.is_none();
+     for &(component_type, sub_type) in AVAILABLE_COMPONENTS {
+-        if !component_field_matches(desc.component_type, component_type)
+-            || !component_field_matches(desc.component_sub_type, sub_type)
+-            || !component_field_matches(desc.component_manufacturer, kAudioUnitManufacturer_Apple)
+-        {
+-            continue;
+-        }
++        // The previous reference marks the starting point in the component
++        // registry, even if the new description does not itself match it.
+         if !passed_after {
+             if after == Some((component_type, sub_type)) {
+                 passed_after = true;
+             }
+             continue;
+         }
++        if !component_field_matches(desc.component_type, component_type)
++            || !component_field_matches(desc.component_sub_type, sub_type)
++            || !component_field_matches(desc.component_manufacturer, kAudioUnitManufacturer_Apple)
++        {
++            continue;
++        }
+         return Some((component_type, sub_type));
+     }
+     None
+@@ -331,15 +434,23 @@ fn AudioComponentFindNext(
+     in_component: AudioComponent,
+     in_desc: ConstPtr<AudioComponentDescription>,
+ ) -> AudioComponent {
++    if in_desc.is_null() {
++        return MutPtr::null();
++    }
+     let desc = env.mem.read::<_, false>(in_desc);
+ 
+-    // Calling with a component found earlier continues the search, so a unit
+-    // whose first match the app did not like can still reach the next one.
++    // Apple specifies that previously returned references identify a component
++    // and may be used later to continue enumeration or create an instance:
++    // https://developer.apple.com/library/archive/documentation/MusicAudio/Conceptual/AudioUnitHostingGuide_iOS/AudioUnitHostingFundamentals/AudioUnitHostingFundamentals.html
+     let after = if in_component.is_null() {
+         None
+     } else {
+-        let previous = env.mem.read::<_, true>(in_component);
+-        Some((previous.component_type, previous.component_sub_type))
++        let Some((kind, subtype, _)) =
++            State::get(&mut env.framework_state).component_description(in_component)
++        else {
++            return MutPtr::null();
++        };
++        Some((kind, subtype))
+     };
+ 
+     let Some((component_type, sub_type)) = find_component_desc(&desc, after) else {
+@@ -354,31 +465,41 @@ fn AudioComponentFindNext(
+             want_sub_type,
+             want_manufacturer,
+         );
++        super::record_audio_event(env, format!(
++            "AudioComponentFindNext(type={:#010x}, subtype={:#010x}, manufacturer={:#010x}) -> no match",
++            want_type, want_sub_type, want_manufacturer,
++        ));
+         return MutPtr::null();
+     };
+     let component_manufacturer = kAudioUnitManufacturer_Apple;
+ 
+-    let state = State::get(&mut env.framework_state);
+-    if state.audio_component.is_null() {
+-        state.audio_component = env.mem.alloc_and_write(OpaqueAudioComponent::default());
+-    }
+-    env.mem.write(
+-        state.audio_component,
+-        OpaqueAudioComponent {
++    let component_desc = (component_type, sub_type, component_manufacturer);
++    let existing = State::get(&mut env.framework_state).component_handle(component_desc);
++    let component = existing.unwrap_or_else(|| {
++        let handle = env.mem.alloc_and_write(OpaqueAudioComponent {
+             component_type,
+             component_sub_type: sub_type,
+             component_manufacturer,
+-        },
+-    );
+-
++        });
++        State::get(&mut env.framework_state)
++            .audio_components
++            .insert(handle, component_desc);
++        handle
++    });
+     log_dbg!(
+         "AudioComponentFindNext: matched type=0x{:08x} sub_type=0x{:08x} -> {:?}",
+         component_type,
+         sub_type,
+-        state.audio_component
++        component
+     );
+-    state.pending_component_desc = Some((component_type, sub_type, component_manufacturer));
+-    state.audio_component
++    super::record_audio_event(
++        env,
++        format!(
++            "AudioComponentFindNext(type={:#010x}, subtype={:#010x}) -> {:?}",
++            component_type, sub_type, component,
++        ),
++    );
++    component
+ }
+ 
+ fn AudioComponentInstanceNew(
+@@ -386,15 +507,27 @@ fn AudioComponentInstanceNew(
+     in_component: AudioComponent,
+     out_instance: MutPtr<AudioComponentInstance>,
+ ) -> OSStatus {
+-    if in_component.is_null() {
++    let status = AudioComponentInstanceNew_impl(env, in_component, out_instance);
++    super::record_audio_event(
++        env,
++        format!(
++            "AudioComponentInstanceNew({:?}) status={}",
++            in_component, status
++        ),
++    );
++    status
++}
++
++fn AudioComponentInstanceNew_impl(
++    env: &mut Environment,
++    in_component: AudioComponent,
++    out_instance: MutPtr<AudioComponentInstance>,
++) -> OSStatus {
++    let component_desc = State::get(&mut env.framework_state).component_description(in_component);
++    if component_desc.is_none() || out_instance.is_null() {
+         return paramErr;
+     }
+-
+-    let mut host_object = AudioComponentInstanceHostObject::default();
+-    host_object.is_3d_mixer = true;
+-    // Описание компонента, запомненное последним AudioComponentFindNext
+-    // (см. State::pending_component_desc) — для kAudioUnitProperty_ClassInfo.
+-    host_object.component_desc = State::get(&mut env.framework_state).pending_component_desc;
++    let host_object = AudioComponentInstanceHostObject::for_component(component_desc);
+ 
+     let guest_instance: AudioComponentInstance = env
+         .mem
+@@ -423,9 +556,7 @@ pub fn create_audio_unit_instance(
+     env: &mut Environment,
+     component_desc: Option<(u32, u32, u32)>,
+ ) -> AudioComponentInstance {
+-    let mut host_object = AudioComponentInstanceHostObject::default();
+-    host_object.is_3d_mixer = true;
+-    host_object.component_desc = component_desc;
++    let host_object = AudioComponentInstanceHostObject::for_component(component_desc);
+     let guest_instance: AudioComponentInstance = env
+         .mem
+         .alloc_and_write(OpaqueAudioComponentInstance { _pad: 0 });
+@@ -435,7 +566,7 @@ pub fn create_audio_unit_instance(
+     guest_instance
+ }
+ 
+-fn AudioComponentInstanceDispose(
++pub(crate) fn AudioComponentInstanceDispose(
+     env: &mut Environment,
+     in_instance: AudioComponentInstance,
+ ) -> OSStatus {
+@@ -444,6 +575,14 @@ fn AudioComponentInstanceDispose(
+         return paramErr;
+     }
+ 
++    if !State::get(&mut env.framework_state)
++        .audio_component_instances
++        .contains_key(&in_instance)
++    {
++        return paramErr;
++    }
++    // Disposal must also remove run-loop registration and owned sources.
++    super::audio_unit::dispose_audio_unit(env, in_instance);
+     let state = State::get(&mut env.framework_state);
+     state.audio_component_instances.remove(&in_instance);
+     state
+@@ -474,6 +613,114 @@ mod component_search_tests {
+         }
+     }
+ 
++    /// A RemoteIO input-scope callback is unit-level, not a mixer bus.
++    /// Apple's iOS Audio Unit Hosting Guide uses input scope / element 0.
++    #[test]
++    fn remote_io_and_mixer_callbacks_are_routed_independently() {
++        let callback = AURenderCallbackStruct {
++            input_proc: GuestFunction::from_addr_with_thumb_bit(0x1001),
++            input_proc_ref_con: ConstVoidPtr::null(),
++        };
++        let mut remote = AudioComponentInstanceHostObject::for_component(Some((
++            kAudioUnitType_Output,
++            kAudioUnitSubType_RemoteIO,
++            kAudioUnitManufacturer_Apple,
++        )));
++        remote.set_render_callback(true, 0, Some(callback));
++        assert!(remote.render_callback.is_some());
++        assert!(remote.mixer_buses.is_empty());
++        remote.set_render_callback(true, 0, None);
++        assert!(remote.render_callback.is_none());
++
++        let mut mixer = AudioComponentInstanceHostObject::for_component(Some((
++            kAudioUnitType_Mixer,
++            kAudioUnitSubType_3DMixer,
++            kAudioUnitManufacturer_Apple,
++        )));
++        mixer.set_render_callback(true, 3, Some(callback));
++        assert!(mixer.render_callback.is_none());
++        assert!(mixer.mixer_buses.get(&3).unwrap().render_callback.is_some());
++        mixer.started = true;
++        assert!(mixer.begin_render(1));
++        mixer.set_render_callback(true, 3, None);
++        assert!(!mixer.render_is_current(1));
++        mixer.end_render(1);
++        assert!(mixer.begin_render(2));
++        mixer.end_render(2);
++    }
++
++    #[test]
++    fn render_guard_and_stop_release_every_bus_source() {
++        let mut unit = AudioComponentInstanceHostObject::default();
++        assert!(!unit.begin_render(1));
++        unit.started = true;
++        assert!(unit.begin_render(2));
++        assert!(unit.render_is_current(2));
++        assert!(!unit.begin_render(3));
++        unit.al_source = Some(11);
++        unit.mixer_buses.entry(0).or_default().al_source = Some(12);
++        unit.mixer_buses.entry(1).or_default().al_source = Some(13);
++        let mut sources = unit.take_sources();
++        sources.sort_unstable();
++        assert_eq!(sources, vec![11, 12, 13]);
++        assert!(!unit.started);
++        assert!(unit.take_sources().is_empty());
++        assert!(!unit.render_is_current(2));
++        // A stop/restart during a callback cannot revive its old render pass.
++        unit.started = true;
++        assert!(!unit.render_is_current(2));
++        assert!(!unit.begin_render(3));
++        unit.end_render(2);
++        assert!(unit.begin_render(3));
++        // An old completion must not clear a newer render at a reused handle.
++        unit.end_render(2);
++        assert!(unit.render_is_current(3));
++        unit.end_render(3);
++    }
++
++    #[test]
++    fn initialization_registration_is_idempotent() {
++        let mut unit = AudioComponentInstanceHostObject::default();
++        assert!(!unit.mark_uninitialized());
++        assert!(unit.mark_initialized());
++        assert!(!unit.mark_initialized());
++        assert!(unit.mark_uninitialized());
++        assert!(!unit.mark_uninitialized());
++        assert!(unit.mark_initialized());
++    }
++
++    #[test]
++    fn component_handles_keep_their_own_description() {
++        let mut state = State::default();
++        let remote = AudioComponent::from_bits(0x1000);
++        let mixer = AudioComponent::from_bits(0x2000);
++        let r = (
++            kAudioUnitType_Output,
++            kAudioUnitSubType_RemoteIO,
++            kAudioUnitManufacturer_Apple,
++        );
++        let m = (
++            kAudioUnitType_Mixer,
++            kAudioUnitSubType_3DMixer,
++            kAudioUnitManufacturer_Apple,
++        );
++        state.audio_components.insert(remote, r);
++        state.audio_components.insert(mixer, m);
++        assert_eq!(state.component_description(remote), Some(r));
++        assert_eq!(state.component_description(mixer), Some(m));
++        assert_eq!(state.component_handle(r), Some(remote));
++        assert_eq!(state.component_handle(m), Some(mixer));
++        assert_eq!(state.component_description(AudioComponent::null()), None);
++        assert!(
++            !AudioComponentInstanceHostObject::for_component(state.component_description(remote))
++                .is_3d_mixer
++        );
++        assert!(
++            AudioComponentInstanceHostObject::for_component(state.component_description(mixer))
++                .is_3d_mixer
++        );
++    }
++
+     /// Getting the exact RemoteIO unit apps ask for by name.
+     #[test]
+     fn finds_remote_io_by_name() {
+@@ -533,5 +780,10 @@ mod component_search_tests {
+         let second = find_component_desc(&any_mixer, Some(first)).unwrap();
+         assert_ne!(first, second);
+         assert_eq!(second.1, fourcc(b"mcmx"));
++        // The previous reference need not match the next query. It still
++        // marks a position in the registry, per AudioComponentFindNext.
++        let only_mixers = desc(fourcc(b"aumx"), 0, 0);
++        let remote = (fourcc(b"auou"), fourcc(b"rioc"));
++        assert_eq!(find_component_desc(&only_mixers, Some(remote)), Some(first));
+     }
+ }
+diff --git a/src/frameworks/audio_toolbox/audio_session.rs b/src/frameworks/audio_toolbox/audio_session.rs
+index 6df62233b81cb4a977b4a66fd14bbee0a25a136d..741fec7a319fbd92f3439268d374c1acd08b64e1 100644
+--- a/src/frameworks/audio_toolbox/audio_session.rs
++++ b/src/frameworks/audio_toolbox/audio_session.rs
+@@ -152,19 +152,21 @@ fn get_audio_session_property_size(in_id: AudioSessionPropertyID) -> u32 {
+ }
+ 
+ pub fn AudioSessionInitialize(
+-    _env: &mut Environment,
++    env: &mut Environment,
+     _in_run_loop: CFRunLoopRef,
+     _in_run_loop_mode: CFRunLoopMode,
+     _in_interruption_listener: AudioSessionInterruptionListener,
+     _in_client_data: ConstVoidPtr,
+ ) -> OSStatus {
+     log_dbg!("AudioSessionInitialize");
++    super::record_audio_event(env, "AudioSessionInitialize status=0".to_string());
+     kAudioSessionNoErr
+ }
+ 
+ pub fn AudioSessionSetActive(env: &mut Environment, active: u32) -> OSStatus {
+     log_dbg!("AudioSessionSetActive({})", active != 0);
+     env.framework_state.audio_toolbox.audio_session.active = active != 0;
++    super::record_audio_event(env, format!("AudioSessionSetActive({active}) status=0"));
+     kAudioSessionNoErr
+ }
+ 
+@@ -189,6 +191,23 @@ pub fn AudioSessionGetProperty(
+     in_id: AudioSessionPropertyID,
+     io_data_size: MutPtr<u32>,
+     out_data: MutVoidPtr,
++) -> OSStatus {
++    let status = AudioSessionGetProperty_impl(env, in_id, io_data_size, out_data);
++    super::record_audio_event(
++        env,
++        format!(
++            "AudioSessionGetProperty(property={:#010x}) status={}",
++            in_id, status
++        ),
++    );
++    status
++}
++
++fn AudioSessionGetProperty_impl(
++    env: &mut Environment,
++    in_id: AudioSessionPropertyID,
++    io_data_size: MutPtr<u32>,
++    out_data: MutVoidPtr,
+ ) -> OSStatus {
+     log_dbg!("AudioSessionGetProperty {}", debug_fourcc(in_id));
+ 
+@@ -315,6 +334,23 @@ pub fn AudioSessionSetProperty(
+     in_id: AudioSessionPropertyID,
+     in_data_size: u32,
+     in_data: ConstVoidPtr,
++) -> OSStatus {
++    let status = AudioSessionSetProperty_impl(env, in_id, in_data_size, in_data);
++    super::record_audio_event(
++        env,
++        format!(
++            "AudioSessionSetProperty(property={:#010x}) status={}",
++            in_id, status
++        ),
++    );
++    status
++}
++
++fn AudioSessionSetProperty_impl(
++    env: &mut Environment,
++    in_id: AudioSessionPropertyID,
++    in_data_size: u32,
++    in_data: ConstVoidPtr,
+ ) -> OSStatus {
+     log_dbg!(
+         "AudioSessionSetProperty {} ({} bytes)",
+diff --git a/src/frameworks/audio_toolbox/audio_unit.rs b/src/frameworks/audio_toolbox/audio_unit.rs
+index 71d3a6a80ff6678b04ba798472de26aa3b39dd44..6e6883c133292c57ea0cf00791ed2360a0c0843b 100644
+--- a/src/frameworks/audio_toolbox/audio_unit.rs
++++ b/src/frameworks/audio_toolbox/audio_unit.rs
+@@ -227,17 +227,80 @@ const k3DMixerParam_PlaybackRate: AudioUnitParameterID = 4;
+ // =========================================================================
+ 
+ fn AudioUnitInitialize(env: &mut Environment, in_unit: AudioUnit) -> OSStatus {
++    let status = AudioUnitInitialize_impl(env, in_unit);
++    super::record_audio_event(
++        env,
++        format!("AudioUnitInitialize({:?}) status={}", in_unit, status),
++    );
++    status
++}
++
++pub(crate) fn AudioUnitInitialize_impl(env: &mut Environment, in_unit: AudioUnit) -> OSStatus {
+     log_dbg!("AudioUnitInitialize({:?})", in_unit);
+-    let run_loop = CFRunLoopGetMain(env);
+-    ns_run_loop::add_audio_unit(env, run_loop, in_unit);
++    let Some(obj) = audio_components::State::get(&mut env.framework_state)
++        .audio_component_instances
++        .get_mut(&in_unit)
++    else {
++        return paramErr;
++    };
++    if obj.mark_initialized() {
++        let run_loop = CFRunLoopGetMain(env);
++        ns_run_loop::add_audio_unit(env, run_loop, in_unit);
++    }
++    0
++}
++
++pub(crate) fn AudioUnitUninitialize(env: &mut Environment, in_unit: AudioUnit) -> OSStatus {
++    let Some(obj) = audio_components::State::get(&mut env.framework_state)
++        .audio_component_instances
++        .get_mut(&in_unit)
++    else {
++        return paramErr;
++    };
++    if obj.mark_uninitialized() {
++        let run_loop = CFRunLoopGetMain(env);
++        let _ = ns_run_loop::remove_audio_unit(env, run_loop, in_unit);
++    }
++    // Uninitialization tears down render resources even if the caller did not
++    // explicitly stop first; invalidate a currently executing callback too.
++    release_audio_unit_sources(env, in_unit);
+     0
+ }
+ 
+-fn AudioUnitUninitialize(env: &mut Environment, in_unit: AudioUnit) -> OSStatus {
+-    let run_loop = CFRunLoopGetMain(env);
+-    match ns_run_loop::remove_audio_unit(env, run_loop, in_unit) {
+-        Ok(_) => 0,
+-        Err(_) => paramErr,
++/// Remove the unit from the run loop and release its owned OpenAL sources.
++/// Apple documents stop, uninitialization and component disposal separately:
++/// https://developer.apple.com/library/archive/documentation/MusicAudio/Conceptual/AudioUnitHostingGuide_iOS/ConstructingAudioUnitApps/ConstructingAudioUnitApps.html
++pub(crate) fn dispose_audio_unit(env: &mut Environment, unit: AudioUnit) {
++    let _ = AudioUnitUninitialize(env, unit);
++}
++
++fn release_audio_unit_sources(env: &mut Environment, unit: AudioUnit) {
++    let sources = audio_components::State::get(&mut env.framework_state)
++        .audio_component_instances
++        .get_mut(&unit)
++        .map(|obj| obj.take_sources())
++        .unwrap_or_default();
++    if sources.is_empty() {
++        return;
++    }
++    let context = env
++        .framework_state
++        .audio_toolbox
++        .make_al_context_current(&mut env.openal_manager);
++    for source in sources {
++        unsafe {
++            context.SourceStop(source);
++            let mut queued = 0;
++            context.GetSourcei(source, AL_BUFFERS_QUEUED, &mut queued);
++            let mut buffers = vec![0; queued.clamp(0, 1024) as usize];
++            if !buffers.is_empty() {
++                context.SourceUnqueueBuffers(source, buffers.len() as i32, buffers.as_mut_ptr());
++            }
++            context.DeleteSources(1, &source);
++            if !buffers.is_empty() {
++                context.DeleteBuffers(buffers.len() as i32, buffers.as_ptr());
++            }
++        }
+     }
+ }
+ 
+@@ -267,10 +330,8 @@ fn notify_audio_unit_property(
+         .unwrap_or_default();
+ 
+     for (_, callback, ref_con) in listeners {
+-        let _: OSStatus = callback.call_from_host(
+-            env,
+-            (ref_con, in_unit, in_id, in_scope, in_element),
+-        );
++        let _: OSStatus =
++            callback.call_from_host(env, (ref_con, in_unit, in_id, in_scope, in_element));
+     }
+ }
+ 
+@@ -392,12 +453,13 @@ fn AudioUnitRemovePropertyListenerWithUserData(
+     };
+ 
+     // Удаляется только одно полное совпадение (см. AudioUnitAddPropertyListener).
+-    if let Some(index) = host_object
+-        .property_listeners
+-        .iter()
+-        .position(|&(property_id, callback, ref_con)| {
+-            property_id == in_id && callback == in_proc && ref_con == in_proc_ref_con
+-        })
++    if let Some(index) =
++        host_object
++            .property_listeners
++            .iter()
++            .position(|&(property_id, callback, ref_con)| {
++                property_id == in_id && callback == in_proc && ref_con == in_proc_ref_con
++            })
+     {
+         host_object.property_listeners.remove(index);
+     }
+@@ -417,6 +479,37 @@ fn AudioUnitSetProperty(
+     in_element: AudioUnitElement,
+     in_data: ConstVoidPtr,
+     in_data_size: u32,
++) -> OSStatus {
++    let status = AudioUnitSetProperty_impl(
++        env,
++        in_unit,
++        in_id,
++        in_scope,
++        in_element,
++        in_data,
++        in_data_size,
++    );
++    if status != 0
++        || matches!(
++            in_id,
++            kAudioUnitProperty_StreamFormat
++                | kAudioUnitProperty_SetRenderCallback
++                | kAudioOutputUnitProperty_EnableIO
++        )
++    {
++        super::record_audio_event(env, format!("AudioUnitSetProperty(unit={:?}, property={}, scope={}, element={}, bytes={}) status={}", in_unit, in_id, in_scope, in_element, in_data_size, status));
++    }
++    status
++}
++
++fn AudioUnitSetProperty_impl(
++    env: &mut Environment,
++    in_unit: AudioUnit,
++    in_id: AudioUnitPropertyID,
++    in_scope: AudioUnitScope,
++    in_element: AudioUnitElement,
++    in_data: ConstVoidPtr,
++    in_data_size: u32,
+ ) -> OSStatus {
+     log_dbg!(
+         "AudioUnitSetProperty(unit={:?}, prop={}, scope={}, element={}, \
+@@ -479,12 +572,14 @@ fn AudioUnitSetProperty(
+                 } else {
+                     Some(render_callback)
+                 };
+-                if in_scope == kAudioUnitScope_Input {
+-                    let bus = host_object.mixer_buses.entry(in_element).or_default();
+-                    bus.render_callback = callback;
+-                } else {
+-                    host_object.render_callback = callback;
+-                }
++                // Apple's RemoteIO example uses Input scope / output element 0,
++                // but that callback is not a mixer-bus callback:
++                // https://developer.apple.com/library/archive/documentation/MusicAudio/Conceptual/AudioUnitHostingGuide_iOS/ConstructingAudioUnitApps/ConstructingAudioUnitApps.html
++                host_object.set_render_callback(
++                    in_scope == kAudioUnitScope_Input,
++                    in_element,
++                    callback,
++                );
+                 // A unit that is already rendering needs an OpenAL source for
+                 // the new callback.
+                 set_up_running_unit = callback.is_some() && host_object.started;
+@@ -555,8 +650,10 @@ fn AudioUnitSetProperty(
+                         host_object.input_stream_format = Some(stream_format);
+                         // Для 3D Mixer: формат шины N задаётся
+                         // scope=Input, element=N.
+-                        let bus = host_object.mixer_buses.entry(in_element).or_default();
+-                        bus.stream_format = Some(stream_format);
++                        if host_object.is_3d_mixer {
++                            let bus = host_object.mixer_buses.entry(in_element).or_default();
++                            bus.stream_format = Some(stream_format);
++                        }
+                     }
+                     _ => log_dbg!(
+                         "AudioUnitSetProperty StreamFormat: \
+@@ -656,10 +753,7 @@ fn AudioUnitSetProperty(
+                 // 32-байтовый layout с одним AudioChannelDescription) —
+                 // возвращаем их затем через AudioUnitGetProperty.
+                 if !in_data.is_null() && in_data_size > 0 {
+-                    let bytes = env
+-                        .mem
+-                        .bytes_at(in_data.cast(), in_data_size)
+-                        .to_vec();
++                    let bytes = env.mem.bytes_at(in_data.cast(), in_data_size).to_vec();
+                     host_object
+                         .audio_channel_layouts
+                         .insert((in_scope, in_element), bytes);
+@@ -796,7 +890,10 @@ fn set_units_running(env: &mut Environment, units: Vec<AudioUnit>, running: bool
+                 .is_some_and(|obj| {
+                     !obj.started
+                         && (obj.render_callback.is_some()
+-                            || obj.mixer_buses.values().any(|bus| bus.render_callback.is_some()))
++                            || obj
++                                .mixer_buses
++                                .values()
++                                .any(|bus| bus.render_callback.is_some()))
+                 });
+             if needs_start {
+                 setup_audio_unit_for_render(env, unit);
+@@ -808,6 +905,7 @@ fn set_units_running(env: &mut Environment, units: Vec<AudioUnit>, running: bool
+             // Stop pulling on the callbacks. The OpenAL sources are kept so
+             // that what is already queued plays out, and are reused when the
+             // unit is connected again.
++            obj.cancel_render();
+             obj.started = false;
+             obj.last_render_time = None;
+             for bus in obj.mixer_buses.values_mut() {
+@@ -819,12 +917,7 @@ fn set_units_running(env: &mut Environment, units: Vec<AudioUnit>, running: bool
+     }
+ }
+ 
+-fn connect_audio_units(
+-    env: &mut Environment,
+-    dest: AudioUnit,
+-    dest_input: u32,
+-    source: AudioUnit,
+-) {
++fn connect_audio_units(env: &mut Environment, dest: AudioUnit, dest_input: u32, source: AudioUnit) {
+     let connections = &mut audio_components::State::get(&mut env.framework_state).connections;
+     let old_source = if source.is_null() {
+         connections.remove(&(dest, dest_input))
+@@ -865,7 +958,12 @@ fn apply_mixer_bus_gain_and_rate(env: &mut Environment, mixer: AudioUnit, bus_id
+         .and_then(|unit| state.audio_component_instances.get(unit))
+     {
+         sources.extend(source_unit.al_source);
+-        sources.extend(source_unit.mixer_buses.values().filter_map(|bus| bus.al_source));
++        sources.extend(
++            source_unit
++                .mixer_buses
++                .values()
++                .filter_map(|bus| bus.al_source),
++        );
+     }
+     if sources.is_empty() {
+         return;
+@@ -912,6 +1010,36 @@ fn AudioUnitGetProperty(
+     in_element: AudioUnitElement,
+     out_data: MutVoidPtr,
+     io_data_size: MutPtr<u32>,
++) -> OSStatus {
++    let status = AudioUnitGetProperty_impl(
++        env,
++        in_unit,
++        in_id,
++        in_scope,
++        in_element,
++        out_data,
++        io_data_size,
++    );
++    if status != 0 || in_id == kAudioUnitProperty_StreamFormat {
++        super::record_audio_event(
++            env,
++            format!(
++                "AudioUnitGetProperty(unit={:?}, property={}, scope={}, element={}) status={}",
++                in_unit, in_id, in_scope, in_element, status
++            ),
++        );
++    }
++    status
++}
++
++fn AudioUnitGetProperty_impl(
++    env: &mut Environment,
++    in_unit: AudioUnit,
++    in_id: AudioUnitPropertyID,
++    in_scope: AudioUnitScope,
++    in_element: AudioUnitElement,
++    out_data: MutVoidPtr,
++    io_data_size: MutPtr<u32>,
+ ) -> OSStatus {
+     log_dbg!(
+         "AudioUnitGetProperty(unit={:?}, prop={}, scope={}, element={})",
+@@ -1039,8 +1167,7 @@ fn AudioUnitGetProperty(
+             write_if_nonnull(env, out_data.cast(), flag);
+             write_if_nonnull(env, io_data_size, guest_size_of::<u32>());
+         }
+-        kAudioUnitProperty_InPlaceProcessing
+-        | kAudioUnitProperty_BypassEffect => {
++        kAudioUnitProperty_InPlaceProcessing | kAudioUnitProperty_BypassEffect => {
+             // Булевые свойства — возвращаем 1 (да/включено) как заглушку.
+             write_if_nonnull(env, out_data.cast(), 1u32);
+             write_if_nonnull(env, io_data_size, guest_size_of::<u32>());
+@@ -1273,6 +1400,21 @@ fn AudioUnitReset(
+ // =========================================================================
+ 
+ fn AudioOutputUnitStart(env: &mut Environment, ci: AudioUnit) -> OSStatus {
++    let status = AudioOutputUnitStart_impl(env, ci);
++    super::record_audio_event(
++        env,
++        format!("AudioOutputUnitStart({:?}) status={}", ci, status),
++    );
++    status
++}
++
++fn AudioOutputUnitStart_impl(env: &mut Environment, ci: AudioUnit) -> OSStatus {
++    if !audio_components::State::get(&mut env.framework_state)
++        .audio_component_instances
++        .contains_key(&ci)
++    {
++        return paramErr;
++    }
+     let has_callback = audio_components::State::get(&mut env.framework_state)
+         .audio_component_instances
+         .get(&ci)
+@@ -1386,6 +1528,28 @@ pub fn setup_audio_unit_for_render(env: &mut Environment, ci: AudioUnit) {
+ }
+ 
+ fn AudioOutputUnitStop(env: &mut Environment, ci: AudioUnit) -> OSStatus {
++    let status = AudioOutputUnitStop_impl(env, ci);
++    super::record_audio_event(
++        env,
++        format!("AudioOutputUnitStop({:?}) status={}", ci, status),
++    );
++    status
++}
++
++/// Stop an AUGraph-owned unit, including its bus sources. Called using a
++/// snapshot because a running-state listener may reconfigure or dispose it.
++pub(crate) fn stop_audio_unit_for_graph(env: &mut Environment, unit: AudioUnit) {
++    let was_started = audio_components::State::get(&mut env.framework_state)
++        .audio_component_instances
++        .get(&unit)
++        .is_some_and(|obj| obj.started);
++    release_audio_unit_sources(env, unit);
++    if was_started {
++        notify_audio_unit_is_running(env, unit);
++    }
++}
++
++fn AudioOutputUnitStop_impl(env: &mut Environment, ci: AudioUnit) -> OSStatus {
+     au_graph::stop_graph_for_output(env, ci);
+     set_upstream_units_running(env, ci, false);
+     let was_started = audio_components::State::get(&mut env.framework_state)
+@@ -1394,34 +1558,17 @@ fn AudioOutputUnitStop(env: &mut Environment, ci: AudioUnit) -> OSStatus {
+         .map(|obj| obj.started)
+         .unwrap_or(false);
+ 
+-    let result = {
+-        let at_state = &mut env.framework_state.audio_toolbox;
+-        let context = at_state
+-            .al_context
+-            .make_al_context_current(&mut env.openal_manager);
+-
+-        if let Some(audio_unit_state) = at_state
+-            .audio_components
+-            .audio_component_instances
+-            .get_mut(&ci)
+-        {
+-            audio_unit_state.started = false;
+-            if let Some(al_source) = audio_unit_state.al_source {
+-                unsafe {
+-                    context.DeleteSources(1, &al_source);
+-                }
+-            }
+-            audio_unit_state.al_source = None;
+-            0
+-        } else {
+-            -1
+-        }
+-    };
+-
+-    if result == 0 && was_started {
++    if !audio_components::State::get(&mut env.framework_state)
++        .audio_component_instances
++        .contains_key(&ci)
++    {
++        return paramErr;
++    }
++    release_audio_unit_sources(env, ci);
++    if was_started {
+         notify_audio_unit_is_running(env, ci);
+     }
+-    result
++    0
+ }
+ 
+ // =========================================================================
+@@ -1473,6 +1620,22 @@ fn AudioUnitRemoveRenderNotify(
+     0
+ }
+ 
++fn render_is_current(env: &mut Environment, unit: AudioUnit, token: u64) -> bool {
++    audio_components::State::get(&mut env.framework_state)
++        .audio_component_instances
++        .get(&unit)
++        .is_some_and(|obj| obj.render_is_current(token))
++}
++
++fn end_render(env: &mut Environment, unit: AudioUnit, token: u64) {
++    if let Some(obj) = audio_components::State::get(&mut env.framework_state)
++        .audio_component_instances
++        .get_mut(&unit)
++    {
++        obj.end_render(token);
++    }
++}
++
+ /// Invoke every render notify registered on this unit, mimicking CoreAudio's
+ /// pre/post-render notification pass. `action_flags_ptr` is written with
+ /// `flag` before each call so guest code can tell the phases apart; the
+@@ -1480,6 +1643,7 @@ fn AudioUnitRemoveRenderNotify(
+ fn call_render_notifies(
+     env: &mut Environment,
+     audio_unit: AudioUnit,
++    token: u64,
+     action_flags_ptr: MutPtr<u32>,
+     flag: u32,
+     timestamp: ConstVoidPtr,
+@@ -1502,6 +1666,9 @@ fn call_render_notifies(
+     };
+     env.mem.write(action_flags_ptr, flag);
+     for (proc, ref_con) in notifies {
++        if !render_is_current(env, audio_unit, token) {
++            break;
++        }
+         let _: OSStatus = proc.call_from_host(
+             env,
+             (ref_con, action_flags_ptr, timestamp, bus, frames, io_data),
+@@ -1597,7 +1764,8 @@ fn fill_mic_input(
+     };
+ 
+     // Convert to the requested sample format.
+-    let is_float = stream_format.format_flags & crate::frameworks::core_audio_types::kAudioFormatFlagIsFloat
++    let is_float = stream_format.format_flags
++        & crate::frameworks::core_audio_types::kAudioFormatFlagIsFloat
+         != 0;
+     let bytes_per_out = (stream_format.bits_per_channel / 8) as usize;
+     let channels = stream_format.channels_per_frame.max(1) as usize;
+@@ -1637,9 +1805,10 @@ fn fill_mic_input(
+         slice.copy_from_slice(&out[..n]);
+         // Zero the remainder rather than leaving stale guest memory.
+         if n < b.data_byte_size as usize {
+-            let rest = env
+-                .mem
+-                .bytes_at_mut(b.data.cast::<u8>() + n as u32, (b.data_byte_size as usize - n) as u32);
++            let rest = env.mem.bytes_at_mut(
++                b.data.cast::<u8>() + n as u32,
++                (b.data_byte_size as usize - n) as u32,
++            );
+             rest.fill(0);
+         }
+     }
+@@ -1741,7 +1910,7 @@ pub(crate) fn alloc_render_timestamp(env: &mut Environment, sample_time: f64) ->
+ /// callback на отдельные шины. Для каждой такой шины вызывает гостевой
+ /// callback, получает PCM и складывает его в свой OpenAL-источник.
+ /// OpenAL Soft сам микширует все источники вместе.
+-fn render_audio_unit_buses(env: &mut Environment, audio_unit: AudioUnit) {
++fn render_audio_unit_buses(env: &mut Environment, audio_unit: AudioUnit, token: u64) {
+     use crate::frameworks::core_audio_types::{
+         kAudioFormatFlagIsNonInterleaved, kAudioFormatFlagIsPacked,
+         kAudioFormatFlagIsSignedInteger, kAudioFormatLinearPCM,
+@@ -1809,6 +1978,9 @@ fn render_audio_unit_buses(env: &mut Environment, audio_unit: AudioUnit) {
+ 
+     let now = Instant::now();
+     for (bus_id, callback, al_source, last_render_time, fmt, start_sample_time) in plan {
++        if !render_is_current(env, audio_unit, token) {
++            break;
++        }
+         // Frames rendered for this bus so far; handed to the callback through
+         // the `AudioTimeStamp` below and advanced by every render pass.
+         let mut sample_time = start_sample_time;
+@@ -1864,7 +2036,10 @@ fn render_audio_unit_buses(env: &mut Environment, audio_unit: AudioUnit) {
+         }
+ 
+         let elapsed = now.duration_since(last_render_time);
+-        let nominal_frames = ((env.framework_state.audio_toolbox.audio_session
++        let nominal_frames = ((env
++            .framework_state
++            .audio_toolbox
++            .audio_session
+             .current_hardware_io_buffer_duration as f64)
+             * fmt.sample_rate as f64) as u32;
+         let mut frames = ((elapsed.as_secs_f64() * fmt.sample_rate) as u32).clamp(64, 4096);
+@@ -1906,8 +2081,7 @@ fn render_audio_unit_buses(env: &mut Environment, audio_unit: AudioUnit) {
+         // один тик. После underrun дозаполнение по одному буферу за тик
+         // восстанавливало запас слишком медленно, и звук продолжал хрипеть на
+         // протяжённых хитчах главного потока.
+-        let render_passes = (AUDIO_RENDER_TARGET_DEPTH - (queued - processed))
+-            .max(1) as usize;
++        let render_passes = (AUDIO_RENDER_TARGET_DEPTH - (queued - processed)).max(1) as usize;
+ 
+         let input_proc = callback.input_proc;
+         let input_proc_ref = callback.input_proc_ref_con;
+@@ -1963,6 +2137,7 @@ fn render_audio_unit_buses(env: &mut Environment, audio_unit: AudioUnit) {
+             call_render_notifies(
+                 env,
+                 audio_unit,
++                token,
+                 action_flags,
+                 kAudioUnitRenderAction_PreRender,
+                 timestamp.cast_const(),
+@@ -1970,28 +2145,43 @@ fn render_audio_unit_buses(env: &mut Environment, audio_unit: AudioUnit) {
+                 frames,
+                 abl.cast::<std::ffi::c_void>(),
+             );
+-            env.mem.write(action_flags, 0u32);
+-            let _: OSStatus = input_proc.call_from_host(
+-                env,
+-                (
+-                    input_proc_ref,
++            if render_is_current(env, audio_unit, token) {
++                env.mem.write(action_flags, 0u32);
++                let _: OSStatus = input_proc.call_from_host(
++                    env,
++                    (
++                        input_proc_ref,
++                        action_flags,
++                        timestamp.cast_const(),
++                        bus_id,
++                        frames,
++                        abl,
++                    ),
++                );
++            }
++            if render_is_current(env, audio_unit, token) {
++                call_render_notifies(
++                    env,
++                    audio_unit,
++                    token,
+                     action_flags,
++                    kAudioUnitRenderAction_PostRender,
+                     timestamp.cast_const(),
+                     bus_id,
+                     frames,
+-                    abl,
+-                ),
+-            );
+-            call_render_notifies(
+-                env,
+-                audio_unit,
+-                action_flags,
+-                kAudioUnitRenderAction_PostRender,
+-                timestamp.cast_const(),
+-                bus_id,
+-                frames,
+-                abl.cast::<std::ffi::c_void>(),
+-            );
++                    abl.cast::<std::ffi::c_void>(),
++                );
++            }
++            if !render_is_current(env, audio_unit, token) {
++                env.mem.free(action_flags.cast_void());
++                env.mem.free(buffer_data.cast_void());
++                if let Some(right) = second_buffer_data {
++                    env.mem.free(right.cast_void());
++                }
++                env.mem.free(abl);
++                env.mem.free(timestamp);
++                break;
++            }
+             sample_time += frames as f64;
+ 
+             let (al_fmt, _, processed) = if let Some(right) = second_buffer_data {
+@@ -1999,11 +2189,9 @@ fn render_audio_unit_buses(env: &mut Environment, audio_unit: AudioUnit) {
+                     env.mem.bytes_at(buffer_data.cast(), buffer_size),
+                     env.mem.bytes_at(right.cast(), buffer_size),
+                 ];
+-                let interleaved = interleave_planar_pcm(
+-                    &planes,
+-                    (fmt.bits_per_channel / 8) as usize,
+-                )
+-                .unwrap_or_default();
++                let interleaved =
++                    interleave_planar_pcm(&planes, (fmt.bits_per_channel / 8) as usize)
++                        .unwrap_or_default();
+                 let interleaved_format = interleaved_format_for_planar_pcm(fmt);
+                 decode_buffer_from_bytes(&interleaved_format, &interleaved, &[])
+             } else {
+@@ -2070,7 +2258,10 @@ fn render_audio_unit_buses(env: &mut Environment, audio_unit: AudioUnit) {
+             }
+         }
+ 
+-        // Обновляем last_render_time и sample_time для шины.
++        // Only update the unit for this render, not a recycled guest handle.
++        if !render_is_current(env, audio_unit, token) {
++            break;
++        }
+         if let Some(obj) = audio_components::State::get(&mut env.framework_state)
+             .audio_component_instances
+             .get_mut(&audio_unit)
+@@ -2103,6 +2294,7 @@ const kAudioUnitRenderAction_PostRender: u32 = 1 << 3;
+ fn pump_render_notifies(
+     env: &mut Environment,
+     audio_unit: AudioUnit,
++    token: u64,
+     sample_rate: f64,
+     format: &AudioStreamBasicDescription,
+     last_render_time: Instant,
+@@ -2177,6 +2369,7 @@ fn pump_render_notifies(
+         call_render_notifies(
+             env,
+             audio_unit,
++            token,
+             action_flags,
+             flag,
+             timestamp.cast_const(),
+@@ -2193,12 +2386,14 @@ fn pump_render_notifies(
+         env.mem.free(second);
+     }
+ 
+-    if let Some(obj) = audio_components::State::get(&mut env.framework_state)
+-        .audio_component_instances
+-        .get_mut(&audio_unit)
+-    {
+-        obj.last_render_time = Some(now);
+-        obj.sample_time = sample_time + f64::from(frames);
++    if render_is_current(env, audio_unit, token) {
++        if let Some(obj) = audio_components::State::get(&mut env.framework_state)
++            .audio_component_instances
++            .get_mut(&audio_unit)
++        {
++            obj.last_render_time = Some(now);
++            obj.sample_time = sample_time + f64::from(frames);
++        }
+     }
+ }
+ 
+@@ -2208,14 +2403,28 @@ pub fn render_audio_unit(env: &mut Environment, audio_unit: AudioUnit) {
+         return;
+     }
+ 
+-    // Прокачиваем все input-шины (3D Mixer / AUGraph): каждой шине свой
+-    // OpenAL-источник.
+-    render_audio_unit_buses(env, audio_unit);
++    // Hold the reentrancy guard before *any* bus callback can enter guest
++    // code. A callback may pump the run loop and recursively reach this unit.
++    let token = {
++        let state = audio_components::State::get(&mut env.framework_state);
++        state.next_render_token = state.next_render_token.wrapping_add(1).max(1);
++        let token = state.next_render_token;
++        let Some(obj) = state.audio_component_instances.get_mut(&audio_unit) else {
++            return;
++        };
++        if !obj.begin_render(token) {
++            return;
++        }
++        token
++    };
++    render_audio_unit_buses(env, audio_unit, token);
++    if !render_is_current(env, audio_unit, token) {
++        end_render(env, audio_unit, token);
++        return;
++    }
+ 
+     let (
+         sample_rate,
+-        started,
+-        is_running,
+         stream_format,
+         has_input_format,
+         al_source,
+@@ -2229,7 +2438,7 @@ pub fn render_audio_unit(env: &mut Environment, audio_unit: AudioUnit) {
+             .audio_component_instances
+             .get_mut(&audio_unit)
+         else {
+-            log_once!("render_audio_unit: instance not found");
++            // The guest disposed the unit during the bus callback.
+             return;
+         };
+         let stream_format = obj
+@@ -2240,8 +2449,6 @@ pub fn render_audio_unit(env: &mut Environment, audio_unit: AudioUnit) {
+                 &stream_format,
+                 at.audio_session.current_hardware_sample_rate,
+             ),
+-            obj.started,
+-            obj.is_running_handler,
+             stream_format,
+             obj.input_stream_format.is_some(),
+             obj.al_source,
+@@ -2251,49 +2458,14 @@ pub fn render_audio_unit(env: &mut Environment, audio_unit: AudioUnit) {
+         )
+     };
+ 
+-    if !started {
+-        log_once!("render_audio_unit: skipped (started=false)");
+-        return;
+-    }
+-    if is_running {
+-        log_once!("render_audio_unit: skipped (already running handler)");
+-        return;
+-    }
+-
+-    if let Some(obj) = env
+-        .framework_state
+-        .audio_toolbox
+-        .audio_components
+-        .audio_component_instances
+-        .get_mut(&audio_unit)
+-    {
+-        obj.is_running_handler = true;
+-    }
+-
+     let Some(al_source) = al_source else {
+         log_once!("render_audio_unit: skipped (al_source = None)");
+-        if let Some(obj) = env
+-            .framework_state
+-            .audio_toolbox
+-            .audio_components
+-            .audio_component_instances
+-            .get_mut(&audio_unit)
+-        {
+-            obj.is_running_handler = false;
+-        }
++        end_render(env, audio_unit, token);
+         return;
+     };
+     let Some(last_render_time) = last_render_time else {
+         log_once!("render_audio_unit: skipped (last_render_time = None)");
+-        if let Some(obj) = env
+-            .framework_state
+-            .audio_toolbox
+-            .audio_components
+-            .audio_component_instances
+-            .get_mut(&audio_unit)
+-        {
+-            obj.is_running_handler = false;
+-        }
++        end_render(env, audio_unit, token);
+         return;
+     };
+     let Some(callback) = callback else {
+@@ -2303,20 +2475,13 @@ pub fn render_audio_unit(env: &mut Environment, audio_unit: AudioUnit) {
+         pump_render_notifies(
+             env,
+             audio_unit,
++            token,
+             sample_rate,
+             &stream_format,
+             last_render_time,
+             start_sample_time,
+         );
+-        if let Some(obj) = env
+-            .framework_state
+-            .audio_toolbox
+-            .audio_components
+-            .audio_component_instances
+-            .get_mut(&audio_unit)
+-        {
+-            obj.is_running_handler = false;
+-        }
++        end_render(env, audio_unit, token);
+         return;
+     };
+     let now = Instant::now();
+@@ -2370,8 +2535,8 @@ pub fn render_audio_unit(env: &mut Environment, audio_unit: AudioUnit) {
+             .get_mut(&audio_unit)
+         {
+             obj.last_render_time = Some(now);
+-            obj.is_running_handler = false;
+         }
++        end_render(env, audio_unit, token);
+         return;
+     }
+ 
+@@ -2500,6 +2665,7 @@ pub fn render_audio_unit(env: &mut Environment, audio_unit: AudioUnit) {
+         call_render_notifies(
+             env,
+             audio_unit,
++            token,
+             action_flags,
+             kAudioUnitRenderAction_PreRender,
+             timestamp.cast_const(),
+@@ -2507,28 +2673,42 @@ pub fn render_audio_unit(env: &mut Environment, audio_unit: AudioUnit) {
+             frames,
+             audio_buffer_list,
+         );
+-        env.mem.write(action_flags, 0u32);
+-        let _: OSStatus = input_proc.call_from_host(
+-            env,
+-            (
+-                input_proc_ref,
++        if render_is_current(env, audio_unit, token) {
++            env.mem.write(action_flags, 0u32);
++            let _: OSStatus = input_proc.call_from_host(
++                env,
++                (
++                    input_proc_ref,
++                    action_flags,
++                    timestamp.cast_const(),
++                    0u32,
++                    frames,
++                    audio_buffer_list,
++                ),
++            );
++        }
++        if render_is_current(env, audio_unit, token) {
++            call_render_notifies(
++                env,
++                audio_unit,
++                token,
+                 action_flags,
++                kAudioUnitRenderAction_PostRender,
+                 timestamp.cast_const(),
+                 0u32,
+                 frames,
+                 audio_buffer_list,
+-            ),
+-        );
+-        call_render_notifies(
+-            env,
+-            audio_unit,
+-            action_flags,
+-            kAudioUnitRenderAction_PostRender,
+-            timestamp.cast_const(),
+-            0u32,
+-            frames,
+-            audio_buffer_list,
+-        );
++            );
++        }
++        if !render_is_current(env, audio_unit, token) {
++            env.mem.free(audio_buffer_list.cast_void());
++            env.mem.free(buffer1_data.cast_void());
++            env.mem.free(timestamp);
++            if let Some(b2) = buffer2_data {
++                env.mem.free(b2.cast_void());
++            }
++            break;
++        }
+         sample_time += frames as f64;
+ 
+         let wrote_interleaved_frames = planar_stereo_buffers
+@@ -2635,17 +2815,16 @@ pub fn render_audio_unit(env: &mut Environment, audio_unit: AudioUnit) {
+ 
+     env.mem.free(action_flags.cast_void());
+ 
+-    if let Some(obj) = env
+-        .framework_state
+-        .audio_toolbox
+-        .audio_components
+-        .audio_component_instances
+-        .get_mut(&audio_unit)
+-    {
+-        obj.last_render_time = Some(now);
+-        obj.is_running_handler = false;
+-        obj.sample_time = sample_time;
++    if render_is_current(env, audio_unit, token) {
++        if let Some(obj) = audio_components::State::get(&mut env.framework_state)
++            .audio_component_instances
++            .get_mut(&audio_unit)
++        {
++            obj.last_render_time = Some(now);
++            obj.sample_time = sample_time;
++        }
+     }
++    end_render(env, audio_unit, token);
+ }
+ 
+ pub const FUNCTIONS: FunctionExports = &[
 diff --git a/src/frameworks/avfoundation/av_capture.rs b/src/frameworks/avfoundation/av_capture.rs
 index 6815788e6958a7e014ce1cd17d8375082731233f..5cd2d5864649e7199596bb66e20b417f1f8dd78f 100644
 --- a/src/frameworks/avfoundation/av_capture.rs
@@ -2754,19 +4753,33 @@ index ee36aa48e218dca4d4fc175a3ee4f6e9a810b5b1..857f51dd8355d113b26ca76b9d031aa6
          log!("Warning: vwprintf(): writing to stdout failed; returning EOF.");
          return EOF;
 diff --git a/src/libc/stdlib.rs b/src/libc/stdlib.rs
-index ac318e86b2950cb6773672641f2a5deaabdb1f71..68a8bc55f9321cd5a450fffbf03ecb74886b8d4b 100644
+index ac318e86b2950cb6773672641f2a5deaabdb1f71..7587063f7ef9f895f3f7886dbb2010396da234b1 100644
 --- a/src/libc/stdlib.rs
 +++ b/src/libc/stdlib.rs
-@@ -98,7 +98,7 @@ fn malloc(env: &mut Environment, mut size: GuestUSize) -> MutVoidPtr {
+@@ -35,6 +35,8 @@ pub struct State {
+     /// `0x1234ABCD330E` until `srand48`/`seed48` are called.
+     drand48: Drand48State,
+     pub atexit_handlers: Vec<GuestFunction>,
++    /// Thread currently executing an assertion's abort, if any.
++    assertion_thread: Option<usize>,
+     /// Buffer returned by the last `ecvt`/`fcvt` call.
+     cvt_buffer: Option<MutPtr<u8>>,
+ }
+@@ -98,7 +100,12 @@ fn malloc(env: &mut Environment, mut size: GuestUSize) -> MutVoidPtr {
      // =========================================================================
      if size > 0xF000_0000 {
          let actual_size = (-(size as i32)) as GuestUSize;
 -        log!("TouchHLE::libc::stdlib: Hack! malloc passed negative size {:#x} ({}). Allocating {} bytes instead.", size, size as i32, actual_size);
-+        log!("malloc passed negative size {:#x} ({}); allocating {} bytes instead.", size, size as i32, actual_size);
++        log!(
++            "malloc passed negative size {:#x} ({}); allocating {} bytes instead.",
++            size,
++            size as i32,
++            actual_size
++        );
          size = actual_size;
      }
  
-@@ -120,7 +120,7 @@ fn malloc(env: &mut Environment, mut size: GuestUSize) -> MutVoidPtr {
+@@ -120,7 +127,7 @@ fn malloc(env: &mut Environment, mut size: GuestUSize) -> MutVoidPtr {
      // arithmetic when upstream issues cause initialization failures).
      if size > 0x2000_0000 {
          log!(
@@ -2775,7 +4788,7 @@ index ac318e86b2950cb6773672641f2a5deaabdb1f71..68a8bc55f9321cd5a450fffbf03ecb74
              size
          );
          set_errno(env, crate::libc::errno::ENOMEM);
-@@ -149,7 +149,7 @@ fn calloc(env: &mut Environment, count: GuestUSize, size: GuestUSize) -> MutVoid
+@@ -149,7 +156,7 @@ fn calloc(env: &mut Environment, count: GuestUSize, size: GuestUSize) -> MutVoid
          Some(v) => v,
          None => {
              log!(
@@ -2784,7 +4797,7 @@ index ac318e86b2950cb6773672641f2a5deaabdb1f71..68a8bc55f9321cd5a450fffbf03ecb74
                  count,
                  size
              );
-@@ -162,7 +162,7 @@ fn calloc(env: &mut Environment, count: GuestUSize, size: GuestUSize) -> MutVoid
+@@ -162,7 +169,7 @@ fn calloc(env: &mut Environment, count: GuestUSize, size: GuestUSize) -> MutVoid
      // instead of exhausting the guest heap.
      if total > 0x2000_0000 {
          log!(
@@ -2793,6 +4806,70 @@ index ac318e86b2950cb6773672641f2a5deaabdb1f71..68a8bc55f9321cd5a450fffbf03ecb74
              total
          );
          set_errno(env, crate::libc::errno::ENOMEM);
+@@ -809,6 +816,14 @@ pub(crate) fn recover_guest_termination(env: &mut Environment, termination: &str
+         return false;
+     }
+ 
++    // A real assertion is not a recoverable DRM exit. Apple's assert(3)
++    // calls abort(3), which terminates unless its signal handler does not return:
++    // https://developer.apple.com/library/archive/documentation/System/Conceptual/ManPages_iPhoneOS/man3/assert.3.html
++    if env.libc_state.stdlib.assertion_thread == Some(env.current_thread) {
++        echo!("Guest assertion: refusing unsafe frame recovery; preserving the original failure.");
++        return false;
++    }
++
+     if let Some(path) = env.missing_unity_player_archive() {
+         echo!(
+             "Guest {} follows unavailable Unity player archive {:?}; refusing \
+@@ -1410,6 +1425,21 @@ fn kevent(
+     0
+ }
+ 
++fn abort_assertion(env: &mut Environment) {
++    echo!("Guest registers at assertion entry (arguments may overwrite earlier return values):");
++    env.cpu.dump_regs();
++    env.stack_trace_current();
++    crate::frameworks::audio_toolbox::dump_audio_diagnostics(env);
++    let previous = env
++        .libc_state
++        .stdlib
++        .assertion_thread
++        .replace(env.current_thread);
++    abort(env);
++    // A guest signal handler can legally redirect control without returning.
++    env.libc_state.stdlib.assertion_thread = previous;
++}
++
+ fn __assert_rtn(
+     env: &mut Environment,
+     func: ConstPtr<u8>,
+@@ -1427,7 +1457,7 @@ fn __assert_rtn(
+         file_str,
+         line
+     );
+-    abort(env);
++    abort_assertion(env);
+ }
+ 
+ fn __assert(env: &mut Environment, expr: ConstPtr<u8>, file: ConstPtr<u8>, line: i32) {
+@@ -1439,7 +1469,7 @@ fn __assert(env: &mut Environment, expr: ConstPtr<u8>, file: ConstPtr<u8>, line:
+         file_str,
+         line
+     );
+-    abort(env);
++    abort_assertion(env);
+ }
+ 
+ fn __assert_fail(
+@@ -1459,7 +1489,7 @@ fn __assert_fail(
+         file_str,
+         line
+     );
+-    abort(env);
++    abort_assertion(env);
+ }
+ 
+ fn read_cstr_safe(env: &mut Environment, ptr: ConstPtr<u8>) -> String {
 diff --git a/src/libc/sys/utsname.rs b/src/libc/sys/utsname.rs
 index fe6d0f8024a8d7fb9ab8237b5bbbe7958b8f899a..e67f6890245317acbf1afe097d8e8ee41ec66c9f 100644
 --- a/src/libc/sys/utsname.rs

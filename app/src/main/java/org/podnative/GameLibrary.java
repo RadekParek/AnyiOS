@@ -245,6 +245,14 @@ final class GameLibrary {
                 Diagnostics.record("GAME_REQUIREMENTS", e.toString());
                 requirements = GameRequirements.unavailable();
             }
+            try {
+                GameEngineDetector logEvidence = new GameEngineDetector();
+                logEvidence.observeRuntimeLog(LatestGameLog.preview(
+                    game.anyioseDataDirectory(), LatestGameLog.PREVIEW_BYTES));
+                requirements = requirements.withEngine(
+                    GameEngineDetector.merge(requirements.gameEngine, logEvidence.result()));
+            } catch (IOException | SecurityException ignored) { /* Optional local evidence. */
+            }
             GameRequirements result = requirements;
             main.post(() -> callback.accept(result));
         });

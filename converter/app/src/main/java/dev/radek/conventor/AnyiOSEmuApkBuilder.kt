@@ -115,6 +115,7 @@ internal class AnyiOSEmuApkBuilder(private val context: Context) {
                 dexText.contains("Lorg/podnative/StandaloneGameActivity;") &&
                 dexText.contains("Lorg/podnative/StandaloneApplication;") &&
                 dexText.contains("Lorg/podnative/StandaloneOptions;") &&
+                dexText.contains("Lorg/podnative/StandaloneGameStorage;") &&
                 dexText.contains("Lorg/libsdl/app/SDLActivity;")) { "Standalone launcher or SDL is missing" }
             val iconPath = SafeZip.validateName(asset("icon-entry-path.txt", 1024).toString(Charsets.UTF_8))
             require(iconPath.startsWith("res/") && iconPath.endsWith("/generated_anyiose_icon.png"))
@@ -172,6 +173,14 @@ internal class AnyiOSEmuApkBuilder(private val context: Context) {
                 .put("artifact", name).put("package", packageName).put("sourceSha256", sourceHash)
                 .put("sha256", AnyiOSEmuArtifactContract.sha256(result)).put("certificateSha256", certificateHash)
                 .put("embeddedSource", true).put("embeddedRuntime", true).put("installableAndroidPackage", true)
+                .put("expansionObb", JSONObject()
+                    .put("name", ArtifactNames.obbFileName(packageName, ArtifactNames.ANYIOSE_VERSION_CODE))
+                    .put("bytes", source.length()).put("sha256", sourceHash)
+                    .put("required", false).put("embeddedInApk", true)
+                    .put("format", "unchanged IPA ZIP")
+                    .put("installPath", "Android/obb/$packageName/" +
+                        ArtifactNames.obbFileName(packageName, ArtifactNames.ANYIOSE_VERSION_CODE))
+                    .put("provisioning", "best-effort mirror on first launch; private IPA remains authoritative"))
                 .put("completeGameConversion", false).put("gamePlayable", false).put("runtimeExecution", "NOT_TESTED")
                 .put("graphics", "Bundled ANGLE with native GLES fallback").put("targetAbi", "arm64-v8a")
             report.put("anyioseConversion", conversion)

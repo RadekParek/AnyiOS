@@ -22,6 +22,14 @@ class ResultProvider : ContentProvider() {
         require(entryDirectory.path.startsWith(root.path + File.separator) && entryDirectory.isDirectory)
         val report = JSONObject(File(entryDirectory, "report.json").readText())
         val requestedName = parts[1]
+        val anyioseObb = report.optJSONObject("anyioseConversion")?.optJSONObject("expansionObb")?.optString("name")
+        if (!anyioseObb.isNullOrBlank() && requestedName == anyioseObb) {
+            return AnyiOSEmuArtifactContract.validateExpansion(report, entryDirectory, requestedName)
+        }
+        val nativeObb = report.optJSONObject("gameRuntimeConversion")?.optJSONObject("expansionObb")?.optString("name")
+        if (!nativeObb.isNullOrBlank() && requestedName == nativeObb) {
+            return GameRuntimeArtifactContract.validateExpansion(report, entryDirectory, requestedName)
+        }
         if (requestedName == ArtifactNames.placeholderApkFileName(report)) {
             return PlaceholderArtifactContract.validate(report, entryDirectory, requestedName)
         }
@@ -52,7 +60,8 @@ class ResultProvider : ContentProvider() {
 
     override fun getType(uri: Uri): String {
         entry(uri)
-        return "application/vnd.android.package-archive"
+        return if (uri.lastPathSegment?.endsWith(".obb") == true) "application/octet-stream"
+            else "application/vnd.android.package-archive"
     }
 
     override fun query(uri: Uri, projection: Array<out String>?, selection: String?, selectionArgs: Array<out String>?, sortOrder: String?): Cursor {
@@ -60,7 +69,7 @@ class ResultProvider : ContentProvider() {
         val columns = projection ?: arrayOf(OpenableColumns.DISPLAY_NAME, OpenableColumns.SIZE)
         return MatrixCursor(columns).apply {
             addRow(columns.map { when (it) {
-                OpenableColumns.DISPLAY_NAME -> file.name
+                OpenableColumns.DISPLAY_NAME -> (uri.lastPathSegment ?: file.name)
                 OpenableColumns.SIZE -> file.length()
                 else -> null
             } })

@@ -57,6 +57,32 @@ class GameRuntimeArtifactContractTest {
         }
     }
 
+    @Test fun expansionRequiresCorrectNameSizeAndDigest() {
+        val directory = Files.createTempDirectory("game-obb-result").toFile()
+        try {
+            val report = reportFor(directory)
+            val conversion = report.getJSONObject("gameRuntimeConversion")
+            val version = 1
+            val name = ArtifactNames.obbFileName(conversion.getString("package"), version)
+            val obb = directory.resolve(name).apply { writeText("resource zip") }
+            val hash = MessageDigest.getInstance("SHA-256").digest(obb.readBytes())
+                .joinToString("") { "%02x".format(it.toInt() and 0xff) }
+            conversion.put("versionCode", version).put("expansionObb", JSONObject()
+                .put("name", name).put("bytes", obb.length()).put("sha256", hash))
+            assertEquals(obb.canonicalFile, GameRuntimeArtifactContract.validateExpansion(report, directory, name))
+            assertThrows(IllegalArgumentException::class.java) {
+                GameRuntimeArtifactContract.validateExpansion(report, directory, "../$name")
+            }
+            obb.writeText("corrupt")
+            assertThrows(IllegalArgumentException::class.java) {
+                GameRuntimeArtifactContract.validateExpansion(report, directory, name)
+            }
+            // A missing or corrupt optional OBB must not invalidate the self-contained APK.
+            assertEquals(ArtifactNames.gameApkFileName(report), GameRuntimeArtifactContract.validate(
+                report, directory, ArtifactNames.gameApkFileName(report)).name)
+        } finally { directory.deleteRecursively() }
+    }
+
     private fun reportFor(directory: java.io.File): JSONObject {
         val hash = "a".repeat(64)
         val report = JSONObject()

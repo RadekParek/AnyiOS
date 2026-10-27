@@ -42,6 +42,30 @@ public class LatestGameLogTest {
     }
 
     @Test
+    public void engineEvidenceUsesOnlyTheCurrentBoundedLogTail() throws Exception {
+        File data = temporary.newFolder("engine");
+        File log = new File(data, "AnyiOSEMU_log.txt");
+        byte[] padding = new byte[LatestGameLog.PREVIEW_BYTES];
+        java.util.Arrays.fill(padding, (byte) 'x');
+        try (java.io.FileOutputStream output = new java.io.FileOutputStream(log)) {
+            output.write(("old " + GameEngineDetector.OCTARINE_SOURCE + "\n")
+                .getBytes(StandardCharsets.UTF_8));
+            output.write(padding);
+        }
+        GameEngineDetector detector = new GameEngineDetector();
+        detector.observeRuntimeLog(LatestGameLog.preview(data, LatestGameLog.PREVIEW_BYTES));
+        assertEquals("Unknown", detector.result());
+
+        Files.write(log.toPath(), ("/Users/codeglue/" + GameEngineDetector.OCTARINE_SOURCE)
+            .getBytes(StandardCharsets.UTF_8));
+        detector.observeRuntimeLog(LatestGameLog.preview(data, LatestGameLog.PREVIEW_BYTES));
+        assertEquals("Octarine, Unity (detected)",
+            GameEngineDetector.merge("Unity (detected)", detector.result()));
+        assertEquals("Octarine (detected)",
+            GameEngineDetector.merge(detector.result(), detector.result()));
+    }
+
+    @Test
     public void missingAndEmptyLogsAreNotConfusedWithPreviousReports() throws Exception {
         File data = temporary.newFolder("empty");
         assertTrue(LatestGameLog.preview(data, 100).contains("No log was recorded"));

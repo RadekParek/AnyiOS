@@ -39,9 +39,32 @@ class RuntimeContractTests(unittest.TestCase):
         self.assertNotIn("Could not prepare the game:", source)
         self.assertIn("new Thread(", source)
         self.assertIn("synchronized (SETUP_LOCK)", source)
-        self.assertIn('MessageDigest.getInstance("SHA-256")', source)
-        self.assertIn("Game payload failed its integrity check", source)
-        self.assertIn("pending.delete()", source)
+        storage = read(TEMPLATE / "java/org/podnative/StandaloneGameStorage.java")
+        self.assertIn('MessageDigest.getInstance("SHA-256")', storage)
+        self.assertIn("Game payload failed its integrity check", storage)
+        self.assertIn("pending.delete()", storage)
+        self.assertIn('return "main.1." + packageName + ".obb"', storage)
+        self.assertIn('new File(privateDirectory, "game.ipa")', storage)
+        self.assertIn("StandaloneGameStorage.prepare", source)
+
+    def test_expansion_versions_match_templates_and_native_assets_stay_embedded(self):
+        names = read(
+            ROOT / "converter/app/src/main/java/dev/radek/conventor/ArtifactNames.kt"
+        )
+        for constant, template in (
+            ("ANYIOSE_VERSION_CODE", "anyiose-template"),
+            ("GAME_RUNTIME_VERSION_CODE", "gameruntime-template"),
+        ):
+            self.assertIn(f"const val {constant} = 1", names)
+            self.assertIn(
+                "versionCode = 1", read(ROOT / f"converter/{template}/build.gradle.kts")
+            )
+        builder = read(
+            ROOT
+            / "converter/app/src/main/java/dev/radek/conventor/GameRuntimeApkBuilder.kt"
+        )
+        self.assertNotIn("OBB_ONLY_PAYLOAD_BYTES", builder)
+        self.assertIn('Entry.stream("assets/bundle/$relative", payload', builder)
 
     def test_only_standalone_uses_quiet_error_policy(self):
         options = read(TEMPLATE / "java/org/podnative/StandaloneOptions.java")

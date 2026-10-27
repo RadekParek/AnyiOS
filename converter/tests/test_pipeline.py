@@ -20,6 +20,33 @@ class PipelineTests(unittest.TestCase):
         source = ipa(self.root / "input.ipa", exe)
         return Pipeline(self.root / "job").run(source, True, **kwargs)
 
+    def test_ghidra_requires_authorization_before_any_launch(self):
+        source = ipa(self.root / "input.ipa")
+        with patch("radek.pipeline.ghidra_inspect") as inspect:
+            report = Pipeline(self.root / "job").run(source, False, ghidra_home=self.root / "ghidra")
+        inspect.assert_not_called()
+        self.assertEqual(report["state"], "FAILED")
+        self.assertIn("authorization", report["error"]["message"])
+
+    def test_requested_ghidra_report_does_not_claim_conversion(self):
+        fake = {"status": "UNAVAILABLE", "attempted": False, "completeGameConversion": False,
+                "message": "Ghidra is not installed"}
+        with patch("radek.pipeline.ghidra_inspect", return_value=fake) as inspect:
+            report = self.run_fixture(analyze_only=True, ghidra_home=self.root / "missing")
+        self.assertEqual(inspect.call_count, 1)
+        self.assertEqual(report["ghidra"]["status"], "UNAVAILABLE")
+        self.assertEqual(report["state"], "PARTIAL")
+        self.assertFalse(report["ghidra"]["completeGameConversion"])
+        saved = json.loads((self.root / "job/report.json").read_text())
+        self.assertEqual(saved["ghidra"]["status"], "UNAVAILABLE")
+
+    def test_unexpected_optional_ghidra_failure_does_not_fail_analysis(self):
+        with patch("radek.pipeline.ghidra_inspect", side_effect=OSError("bad install")):
+            report = self.run_fixture(analyze_only=True, ghidra_home=self.root / "broken")
+        self.assertEqual(report["ghidra"]["status"], "FAILED")
+        self.assertIn("bad install", report["ghidra"]["message"])
+        self.assertEqual(report["state"], "PARTIAL")
+
     def test_api_generation_source_architecture_matches_requested_abi(self):
         mach_report = {"slices": [
             {"architecture": "arm64"},

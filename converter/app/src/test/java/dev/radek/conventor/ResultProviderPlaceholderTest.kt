@@ -68,6 +68,49 @@ class ResultProviderPlaceholderTest {
         }
     }
 
+    @Test fun standaloneExpansionIsSharedWithItsObbNameAndVerifiedContents() {
+        val context = RuntimeEnvironment.getApplication()
+        val directory = File(context.filesDir, "games/game-12345678-1234-1234-1234-123456789abc").apply { mkdirs() }
+        val provider = ResultProvider()
+        provider.attachInfo(context, ProviderInfo().apply {
+            authority = "org.podnative.converter.results"
+            exported = false
+            grantUriPermissions = true
+        })
+        try {
+            val bytes = "verified IPA expansion".toByteArray()
+            val source = File(directory, "source.bin").apply { writeBytes(bytes) }
+            val sourceHash = AnyiOSEmuArtifactContract.sha256(source)
+            val signer = "e".repeat(64)
+            val report = JSONObject().put("source", JSONObject().put("sha256", sourceHash).put("originalName", "Game.ipa"))
+                .put("application", JSONObject().put("sha256", sourceHash))
+            val apkName = ArtifactNames.anyioseApkFileName(report)
+            val apk = File(directory, apkName).apply { writeText("signed standalone fixture") }
+            val pkg = AnyiOSEmuArtifactContract.packageName(sourceHash, signer)
+            val obbName = ArtifactNames.obbFileName(pkg, ArtifactNames.ANYIOSE_VERSION_CODE)
+            report.put("anyioseConversion", JSONObject().put("status", "GENERATED")
+                .put("contract", AnyiOSEmuArtifactContract.CONTRACT).put("artifact", apkName)
+                .put("package", pkg).put("sourceSha256", sourceHash).put("certificateSha256", signer)
+                .put("sha256", AnyiOSEmuArtifactContract.sha256(apk))
+                .put("embeddedSource", true).put("embeddedRuntime", true).put("installableAndroidPackage", true)
+                .put("completeGameConversion", false).put("gamePlayable", false)
+                .put("expansionObb", JSONObject().put("name", obbName).put("bytes", bytes.size)
+                    .put("sha256", sourceHash).put("required", false)))
+            File(directory, "report.json").writeText(report.toString())
+            val uri = Uri.Builder().scheme("content").authority("org.podnative.converter.results")
+                .appendPath(directory.name).appendPath(obbName).build()
+            assertEquals("application/octet-stream", provider.getType(uri))
+            provider.query(uri, null, null, null, null).use { cursor ->
+                cursor!!.moveToFirst()
+                assertEquals(obbName, cursor.getString(cursor.getColumnIndexOrThrow(android.provider.OpenableColumns.DISPLAY_NAME)))
+            }
+            val contents = ParcelFileDescriptor.AutoCloseInputStream(provider.openFile(uri, "r")).use { it.readBytes() }
+            assertEquals(String(bytes), String(contents))
+            source.writeText("corrupted source")
+            assertThrows(IllegalArgumentException::class.java) { provider.openFile(uri, "r") }
+        } finally { directory.deleteRecursively() }
+    }
+
     private fun makeReport(directory: File): JSONObject {
         val content = "verified-placeholder-fixture".toByteArray()
         val sourceHash = "b".repeat(64)

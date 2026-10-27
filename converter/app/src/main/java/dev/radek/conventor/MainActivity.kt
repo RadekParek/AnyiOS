@@ -989,6 +989,15 @@ class MainActivity : Activity() {
                 else "Runs the original ARM32 code in the diagnostic guest runtime. It has no Android EGL/GLES renderer and may stop at an unsupported call; gameplay is unverified.", 12f, muted)
             button("Install ${gameOutputFile.name}", true) { installArtifact(dir, gameOutputFile.name) }
             button("Share ${gameOutputFile.name}") { shareResultApk(dir, gameOutputFile.name) }
+            gameRuntimeConversion?.optJSONObject("expansionObb")?.let { expansion ->
+                val obb = expansion.optString("name")
+                if (obb.isNotBlank()) {
+                    val embedded = expansion.optBoolean("alsoEmbeddedInApk", false) && !expansion.optBoolean("required", true)
+                    text(if (embedded) "Optional game-resource OBB: $obb. The APK also contains the resources."
+                        else "Older build may have resources only in $obb, which the diagnostic launcher cannot extract. Rebuild for a self-contained APK.", 12f, muted)
+                    button("Share $obb") { shareResultExpansion(dir, obb) }
+                }
+            }
             button("Open installed Native runtime") {
                 val intent = gameRuntimeConversion?.optString("package")?.let { packageManager.getLaunchIntentForPackage(it) }
                 if (intent == null) Toast.makeText(this, "Native runtime is not installed or not visible to Android", Toast.LENGTH_LONG).show() else startActivity(intent)
@@ -1009,6 +1018,10 @@ class MainActivity : Activity() {
             text("Contains the original IPA, AnyiOSEMU, SDL and ANGLE. It starts this game directly and keeps its own private saves, so AnyiOS is not required after installation. ARM32 compatibility and gameplay still need device testing.", 12f, muted)
             button("Install ${anyioseFile.name}", true) { installArtifact(dir, anyioseFile.name) }
             button("Share ${anyioseFile.name}") { shareResultApk(dir, anyioseFile.name) }
+            anyioseConversion?.optJSONObject("expansionObb")?.optString("name")?.takeIf { it.isNotBlank() }?.let { obb ->
+                text("The game creates an optional OBB copy on first launch when Android allows it. This uses extra storage and may slow startup; the APK stays self-contained and private data remains authoritative.", 12f, muted)
+                button("Share $obb") { shareResultExpansion(dir, obb) }
+            }
             button("Open installed Semi-Emulated game") {
                 val intent = anyioseConversion?.optString("package")?.let { packageManager.getLaunchIntentForPackage(it) }
                 if (intent == null) Toast.makeText(this, "Game is not installed or not visible to Android", Toast.LENGTH_LONG).show() else startActivity(intent)
@@ -1237,6 +1250,21 @@ class MainActivity : Activity() {
             addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
         }
         startActivity(Intent.createChooser(share, "Share APK result"))
+    }
+
+    private fun shareResultExpansion(dir: File, name: String) {
+        // ResultProvider validates the exact name, source binding and digest.
+        // On recent Android, the user may not be able to pick Android/obb in
+        // the system file picker; the standalone game provisions its own copy.
+        val uri = Uri.Builder().scheme("content").authority("${packageName}.converter.results")
+            .appendPath(dir.name).appendPath(name).build()
+        val share = Intent(Intent.ACTION_SEND).apply {
+            type = "application/octet-stream"
+            putExtra(Intent.EXTRA_STREAM, uri)
+            clipData = android.content.ClipData.newUri(contentResolver, name, uri)
+            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        }
+        startActivity(Intent.createChooser(share, "Share expansion file"))
     }
 
     private fun ndkNeedsHeader(name: String, bundleId: String, version: String): String {
