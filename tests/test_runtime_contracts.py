@@ -47,20 +47,25 @@ class RuntimeContractTests(unittest.TestCase):
         options = read(TEMPLATE / "java/org/podnative/StandaloneOptions.java")
         activity = read(TEMPLATE / "java/org/podnative/StandaloneGameActivity.java")
         application = read(TEMPLATE / "java/org/podnative/StandaloneApplication.java")
-        sdl = read(ENGINE / "android/app/src/main/java/org/libsdl/app/SDLActivity.java")
-        native = read(ENGINE / "src/lib.rs")
-        handler = read(ENGINE / "src/crash_handler.rs")
         self.assertIn('"--boost-display-link"', options)
         self.assertIn('"--no-error-popup"', options)
         self.assertIn('"--anyiose-silent-fatal"', options)
         self.assertIn("shouldShowStartupErrors()", activity)
-        self.assertIn("protected boolean shouldShowStartupErrors()", sdl)
         self.assertIn("setDefaultUncaughtExceptionHandler", application)
+        # Guest dialogs are separate from SDL startup and emulator error dialogs.
+        self.assertNotIn("messageboxShowMessageBox", activity)
+
+    def test_patched_engine_honors_standalone_quiet_policy(self):
+        sdl_path = ENGINE / "android/app/src/main/java/org/libsdl/app/SDLActivity.java"
+        if not sdl_path.is_file():
+            self.skipTest("pinned engine is not initialized in the host-only suite")
+        sdl = read(sdl_path)
+        native = read(ENGINE / "src/lib.rs")
+        handler = read(ENGINE / "src/crash_handler.rs")
+        self.assertIn("protected boolean shouldShowStartupErrors()", sdl)
         self.assertIn('argument == "--anyiose-silent-fatal"', native)
         self.assertIn("SILENT_ANDROID_FATAL", handler)
         self.assertIn("libc::_exit(128 + sig)", handler)
-        # Guest dialogs are separate from SDL startup and emulator error dialogs.
-        self.assertNotIn("messageboxShowMessageBox", activity)
 
     def test_main_emulator_defaults_match_standalone_display_geometry(self):
         activity = read(ROOT / "app/src/main/java/org/podnative/AnyiOSEmuActivity.java")
