@@ -135,6 +135,47 @@ class RuntimeContractTests(unittest.TestCase):
         self.assertIn("LatestGameLog.preview(", library)
         self.assertIn("LatestGameLog.prepare(", library)
 
+    def test_network_access_and_route_monitor_are_shared_by_both_hosts(self):
+        activity = read(ROOT / "app/src/main/java/org/podnative/AnyiOSEmuActivity.java")
+        options = read(TEMPLATE / "java/org/podnative/StandaloneOptions.java")
+        self.assertIn('"--allow-network-access"', activity)
+        self.assertIn('"--allow-network-access"', options)
+        for manifest_path in [
+            ROOT / "app/src/main/AndroidManifest.xml",
+            TEMPLATE / "AndroidManifest.xml",
+        ]:
+            manifest = ET.parse(manifest_path).getroot()
+            permissions = {
+                item.get(ANDROID + "name")
+                for item in manifest.findall("uses-permission")
+            }
+            self.assertIn("android.permission.INTERNET", permissions)
+            self.assertIn("android.permission.ACCESS_NETWORK_STATE", permissions)
+        path = (
+            ENGINE
+            / "android/app/src/main/java/org/touchhle/android/NetworkRouteMonitor.java"
+        )
+        if not path.is_file():
+            self.skipTest("pinned engine is not initialized in the host-only suite")
+        java = read(path)
+        host = read(
+            ENGINE / "android/app/src/main/java/org/touchhle/android/MainActivity.java"
+        )
+        native = read(ENGINE / "src/android_network.rs")
+        reachability = read(
+            ENGINE / "src/frameworks/system_configuration/sc_network_reachability.rs"
+        )
+        self.assertIn("registerDefaultNetworkCallback", java)
+        self.assertIn("onBlockedStatusChanged", java)
+        self.assertIn("networkRouteMonitor.start()", host)
+        self.assertIn("networkRouteMonitor.stop()", host)
+        self.assertIn(
+            "Java_org_anyiose_android_NetworkRouteMonitor_nativeSetNetworkRoute", native
+        )
+        self.assertIn("crate::android_network::route()", reachability)
+        self.assertIn("_anyiose_pollReachability", reachability)
+        self.assertIn("timer invalidate", reachability)
+
     def test_real_magnetometer_and_guest_logging_are_wired(self):
         path = ENGINE / "src/frameworks/core_motion.rs"
         if not path.is_file():

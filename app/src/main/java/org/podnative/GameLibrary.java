@@ -103,13 +103,9 @@ final class GameLibrary {
                 || architectureFamily.equals("ARMV7") || architectureFamily.equals("ARMV7F")
                 || architectureFamily.equals("ARMV7S");
         }
-        /** Make both architectures visible in the green chip, including old imports. */
+        /** Only positive slice labels count; explanatory text can say "no ARM64". */
         String architectureChip() {
-            String name = architecture.toUpperCase(java.util.Locale.ROOT);
-            boolean has64 = name.contains("ARM64");
-            boolean has32 =
-                name.contains("ARM32") || name.contains("ARMV6") || name.contains("ARMV7");
-            return has64 && has32 ? "ARM64 + ARM32" : "ARM32";
+            return GameArchitecture.chip(architecture);
         }
         File source() {
             return new File(directory, kind.equals("Folder") ? "bundle" : "source.bin");

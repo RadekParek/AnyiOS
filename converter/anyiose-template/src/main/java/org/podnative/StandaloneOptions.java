@@ -8,7 +8,7 @@ final class StandaloneOptions {
 
     static String[] forGame(String dataPath, String sourcePath, float cap) {
         return new String[] {"--anyiose-data-dir=" + dataPath, sourcePath,
-            "--device-family=auto", "--fps-limit=" + String.format(Locale.ROOT, "%.3f", cap),
+            "--allow-network-access", "--device-family=auto", "--fps-limit=" + String.format(Locale.ROOT, "%.3f", cap),
             "--boost-display-link", "--no-error-popup", "--anyiose-silent-fatal",
             "--no-gles-native", "--no-force-composition"};
     }

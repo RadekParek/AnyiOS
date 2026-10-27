@@ -196,26 +196,48 @@ final class GameInspector {
                 "Choose an IPA with one top-level app in Payload, or import the exact .app folder");
         return new ArchiveEntries(bundles.iterator().next(), names);
     }
-    /**
-     * Reads only the bounded Info.plist, including for library entries imported before
-     * requirements were shown. No game executable or artwork needs to be extracted.
-     */
+    /** Read requirements and optional engine signatures without reimporting a game. */
     static GameRequirements readRequirements(File source, String kind) throws IOException {
-        if (kind.equals("Executable"))
-            return GameRequirements.unavailable();
+        GameEngineDetector engine = new GameEngineDetector();
+        if (kind.equals("Executable")) {
+            try (InputStream input = new FileInputStream(source)) {
+                engine.observeExecutable(input);
+            } catch (IOException | SecurityException ignored) { /* Optional evidence. */
+            }
+            return GameRequirements.unavailable().withEngine(engine.result());
+        }
         if (kind.equals("Folder")) {
             List<File> bundles = new ArrayList<>();
             findBundles(source, 0, bundles);
             if (bundles.size() != 1)
                 return GameRequirements.unavailable();
-            File plist = new File(bundles.get(0), "Info.plist");
+            File bundle = bundles.get(0);
+            File plist = new File(bundle, "Info.plist");
             if (java.nio.file.Files.isSymbolicLink(plist.toPath())
                 || !plist.getCanonicalFile().toPath().startsWith(
                     source.getCanonicalFile().toPath()))
                 throw new IOException("Unsafe app metadata path");
+            Map<String, Object> info;
             try (InputStream input = new FileInputStream(plist)) {
-                return GameRequirements.fromPlist(Plist.read(bounded(input, 1024 * 1024)));
+                info = Plist.read(bounded(input, 1024 * 1024));
             }
+            engine.observeMetadata(info);
+            observeFolderEnginePaths(bundle, engine);
+            Object declared = info.get("CFBundleExecutable");
+            if (declared instanceof String) {
+                try {
+                    File executable = new File(bundle, LibraryRules.fileName((String) declared));
+                    if (!java.nio.file.Files.isSymbolicLink(executable.toPath())
+                        && executable.getCanonicalFile().getParentFile().equals(
+                            bundle.getCanonicalFile())
+                        && executable.isFile())
+                        try (InputStream input = new FileInputStream(executable)) {
+                            engine.observeExecutable(input);
+                        }
+                } catch (IOException | SecurityException ignored) { /* Optional evidence. */
+                }
+            }
+            return GameRequirements.fromPlist(info).withEngine(engine.result());
         }
         if (!kind.equals("IPA"))
             return GameRequirements.unavailable();
@@ -224,9 +246,56 @@ final class GameInspector {
             ZipEntry plist = zip.getEntry(archive.bundlePrefix + "Info.plist");
             if (plist == null || plist.isDirectory())
                 return GameRequirements.unavailable();
+            Map<String, Object> info;
             try (InputStream input = zip.getInputStream(plist)) {
-                return GameRequirements.fromPlist(Plist.read(bounded(input, 1024 * 1024)));
+                info = Plist.read(bounded(input, 1024 * 1024));
             }
+            engine.observeMetadata(info);
+            for (String name : archive.names)
+                if (name.startsWith(archive.bundlePrefix))
+                    engine.observePath(name.substring(archive.bundlePrefix.length()));
+            Object declared = info.get("CFBundleExecutable");
+            if (declared instanceof String) {
+                try {
+                    ZipEntry executable = zip.getEntry(
+                        archive.bundlePrefix + LibraryRules.fileName((String) declared));
+                    if (executable != null && !executable.isDirectory())
+                        try (InputStream input = zip.getInputStream(executable)) {
+                            engine.observeExecutable(input);
+                        }
+                } catch (IOException | SecurityException ignored) { /* Optional evidence. */
+                }
+            }
+            return GameRequirements.fromPlist(info).withEngine(engine.result());
+        }
+    }
+
+    private static void observeFolderEnginePaths(File bundle, GameEngineDetector engine) {
+        java.nio.file.Path root = bundle.toPath();
+        try {
+            // Do not follow symlinks; cap both depth and entries for old/hostile imports.
+            java.nio.file.Files.walkFileTree(root,
+                java.util.EnumSet.noneOf(java.nio.file.FileVisitOption.class), 8,
+                new java.nio.file.SimpleFileVisitor<java.nio.file.Path>() {
+                    private int visited;
+                    @Override
+                    public java.nio.file.FileVisitResult preVisitDirectory(
+                        java.nio.file.Path dir, java.nio.file.attribute.BasicFileAttributes attrs) {
+                        return ++visited > 30000 ? java.nio.file.FileVisitResult.TERMINATE
+                                                 : java.nio.file.FileVisitResult.CONTINUE;
+                    }
+                    @Override
+                    public java.nio.file.FileVisitResult visitFile(java.nio.file.Path file,
+                        java.nio.file.attribute.BasicFileAttributes attrs) {
+                        if (++visited > 30000)
+                            return java.nio.file.FileVisitResult.TERMINATE;
+                        if (attrs.isRegularFile())
+                            engine.observePath(
+                                root.relativize(file).toString().replace(File.separatorChar, '/'));
+                        return java.nio.file.FileVisitResult.CONTINUE;
+                    }
+                });
+        } catch (IOException | SecurityException ignored) { /* Optional evidence. */
         }
     }
 

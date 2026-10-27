@@ -11,6 +11,7 @@ public class StandaloneOptionsTest {
         List<String> arguments = Arrays.asList(StandaloneOptions.forGame("/private/data", "/private/game.ipa", 120));
         assertTrue(arguments.contains("--anyiose-data-dir=/private/data"));
         assertTrue(arguments.contains("/private/game.ipa"));
+        assertTrue(arguments.contains("--allow-network-access"));
         assertTrue(arguments.contains("--device-family=auto"));
         assertTrue(arguments.contains("--fps-limit=120.000"));
         assertTrue(arguments.contains("--boost-display-link"));

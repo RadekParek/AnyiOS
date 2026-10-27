@@ -52,6 +52,34 @@ public class AnyiOSEmuSourceTest {
     }
 
     @Test
+    public void negativeArm64NoteDoesNotBecomeAPositiveBadge() throws Exception {
+        File directory = temporary.newFolder("game-arm32-universal");
+        GameLibrary.Game game = new GameLibrary.Game(directory,
+            new JSONObject().put("kind", "IPA").put("architecture",
+                "ARMv7 · ARM32 universal (no ARM64 slice detected)"));
+        assertEquals(true, game.canLaunchInAnyiOSEMU());
+        assertEquals("ARM32", game.architectureChip());
+        GameLibrary.Game old = new GameLibrary.Game(directory,
+            new JSONObject().put("kind", "IPA").put("architecture",
+                "ARMv7 · ARM32 universal - no ARM64 slice detected"));
+        assertEquals("ARM32", old.architectureChip());
+    }
+
+    @Test
+    public void arm64_32IsNotMisrepresentedAsAnArm64Slice() throws Exception {
+        File directory = temporary.newFolder("game-arm64-32");
+        GameLibrary.Game game = new GameLibrary.Game(directory,
+            new JSONObject().put("kind", "IPA").put("architecture",
+                "ARM64_32 + ARM32 universal (ARM32 selected: ARMv7)"));
+        assertEquals(true, game.canLaunchInAnyiOSEMU());
+        assertEquals("ARM64_32 + ARM32", game.architectureChip());
+        GameLibrary.Game both = new GameLibrary.Game(directory,
+            new JSONObject().put("kind", "IPA").put("architecture",
+                "ARM64 + ARM64_32 + ARM32 universal (ARM32 selected: ARMv7)"));
+        assertEquals("ARM64 + ARM64_32 + ARM32", both.architectureChip());
+    }
+
+    @Test
     public void supportedArmV7fSliceIsLaunchable() throws Exception {
         File gameDirectory = temporary.newFolder("game-armv7f");
         GameLibrary.Game game = new GameLibrary.Game(gameDirectory,

@@ -451,7 +451,7 @@ index 670dc38476621ac72d7da765d0b5a0229597cd72..a19935d8af0c0fed72eb0bb6a07508f3
          return true;
      }
 diff --git a/android/app/src/main/java/org/touchhle/android/MainActivity.java b/android/app/src/main/java/org/touchhle/android/MainActivity.java
-index 7803c18600484c29a067ec1433ddfe275c7c593a..0cc4d7153c16be7769dc6c000b2164fe63921a0a 100644
+index 7803c18600484c29a067ec1433ddfe275c7c593a..94d74844a90400535c5f8f112a4e059d0e483580 100644
 --- a/android/app/src/main/java/org/touchhle/android/MainActivity.java
 +++ b/android/app/src/main/java/org/touchhle/android/MainActivity.java
 @@ -6,7 +6,7 @@
@@ -472,15 +472,22 @@ index 7803c18600484c29a067ec1433ddfe275c7c593a..0cc4d7153c16be7769dc6c000b2164fe
  
      // Public accessor for SDLActivity's protected static mSingleton, so
      // helper classes in this package (HostMedia) can reach the Activity.
-@@ -47,6 +47,7 @@ public class MainActivity extends SDLActivity {
+@@ -43,10 +43,14 @@ public class MainActivity extends SDLActivity {
+     // Bonjour/CFNetService local multiplayer discovery. Held for the process
+     // lifetime; released when the activity is destroyed.
+     private static android.net.wifi.WifiManager.MulticastLock multicastLock;
++    private NetworkRouteMonitor networkRouteMonitor;
+ 
      @Override
      protected void onCreate(Bundle savedInstanceState) {
          super.onCreate(savedInstanceState);
++        networkRouteMonitor = new NetworkRouteMonitor(getApplicationContext());
++        networkRouteMonitor.start();
 +        if (mSurface != null) mSurface.addOnLayoutChangeListener(webOverlayLayoutListener);
          // Acquire the multicast lock here (not just declare it): Android
          // Wi-Fi drivers drop multicast unless the app holds it, which broke
          // Bonjour/NSNetService LAN discovery (GameKit, Gameloft games).
-@@ -55,7 +56,7 @@ public class MainActivity extends SDLActivity {
+@@ -55,7 +59,7 @@ public class MainActivity extends SDLActivity {
                      (android.net.wifi.WifiManager) getApplicationContext()
                              .getSystemService(android.content.Context.WIFI_SERVICE);
              if (wm != null && multicastLock == null) {
@@ -489,10 +496,11 @@ index 7803c18600484c29a067ec1433ddfe275c7c593a..0cc4d7153c16be7769dc6c000b2164fe
                  multicastLock.setReferenceCounted(false);
                  multicastLock.acquire();
                  Log.i(TAG, "Wi-Fi multicast lock acquired (mDNS discovery enabled)");
-@@ -67,6 +68,14 @@ public class MainActivity extends SDLActivity {
+@@ -67,6 +71,15 @@ public class MainActivity extends SDLActivity {
  
      @Override
      protected void onDestroy() {
++        if (networkRouteMonitor != null) networkRouteMonitor.stop();
 +        if (mSurface != null) mSurface.removeOnLayoutChangeListener(webOverlayLayoutListener);
 +        for (android.webkit.WebView webView : webOverlays.values()) {
 +            android.view.ViewGroup parent = (android.view.ViewGroup) webView.getParent();
@@ -504,7 +512,7 @@ index 7803c18600484c29a067ec1433ddfe275c7c593a..0cc4d7153c16be7769dc6c000b2164fe
          try {
              if (multicastLock != null) {
                  if (multicastLock.isHeld()) {
-@@ -101,7 +110,41 @@ public class MainActivity extends SDLActivity {
+@@ -101,7 +114,41 @@ public class MainActivity extends SDLActivity {
      // =====================================================================
      private static final java.util.HashMap<Integer, android.webkit.WebView> webOverlays =
              new java.util.HashMap<Integer, android.webkit.WebView>();
@@ -546,7 +554,7 @@ index 7803c18600484c29a067ec1433ddfe275c7c593a..0cc4d7153c16be7769dc6c000b2164fe
  
      // Open a URL in the system browser (or the app that owns the scheme,
      // e.g. a mailto: handler). Called from Rust via JNI (see
-@@ -189,17 +232,19 @@ public class MainActivity extends SDLActivity {
+@@ -189,17 +236,19 @@ public class MainActivity extends SDLActivity {
      // blank). x/y/w/h are in window pixels; w or h <= 0 means "match the
      // window" on that axis. Returns the overlay id (always > 0).
      public static int showWebOverlay(final String url, final int x, final int y,
@@ -569,7 +577,7 @@ index 7803c18600484c29a067ec1433ddfe275c7c593a..0cc4d7153c16be7769dc6c000b2164fe
          android.app.Activity act = mSingleton;
          if (act == null) return;
          try {
-@@ -228,13 +273,12 @@ public class MainActivity extends SDLActivity {
+@@ -228,13 +277,12 @@ public class MainActivity extends SDLActivity {
  
              android.view.ViewGroup content =
                      (android.view.ViewGroup) act.findViewById(android.R.id.content);
@@ -587,7 +595,7 @@ index 7803c18600484c29a067ec1433ddfe275c7c593a..0cc4d7153c16be7769dc6c000b2164fe
              content.bringChildToFront(wv);
  
              if (url != null && !url.isEmpty()) {
-@@ -268,25 +312,13 @@ public class MainActivity extends SDLActivity {
+@@ -268,25 +316,13 @@ public class MainActivity extends SDLActivity {
  
      // Move/resize an existing overlay (window pixels).
      public static void setWebOverlayBounds(final int id, final int x, final int y,
@@ -618,7 +626,7 @@ index 7803c18600484c29a067ec1433ddfe275c7c593a..0cc4d7153c16be7769dc6c000b2164fe
              }
          });
      }
-@@ -298,6 +330,7 @@ public class MainActivity extends SDLActivity {
+@@ -298,6 +334,7 @@ public class MainActivity extends SDLActivity {
          act.runOnUiThread(new Runnable() {
              public void run() {
                  android.webkit.WebView wv = webOverlays.remove(id);
@@ -626,7 +634,7 @@ index 7803c18600484c29a067ec1433ddfe275c7c593a..0cc4d7153c16be7769dc6c000b2164fe
                  if (wv == null) return;
                  try {
                      android.view.ViewGroup parent = (android.view.ViewGroup) wv.getParent();
-@@ -510,9 +543,9 @@ public class MainActivity extends SDLActivity {
+@@ -510,9 +547,9 @@ public class MainActivity extends SDLActivity {
      }
  
      private void copyIpa(Uri uri, String name) {
@@ -638,6 +646,192 @@ index 7803c18600484c29a067ec1433ddfe275c7c593a..0cc4d7153c16be7769dc6c000b2164fe
          if (!appsDir.exists() && !appsDir.mkdirs()) {
              Log.e(TAG, "Couldn't create " + appsDir);
              return;
+diff --git a/android/app/src/main/java/org/touchhle/android/NetworkRouteMonitor.java b/android/app/src/main/java/org/touchhle/android/NetworkRouteMonitor.java
+new file mode 100644
+index 0000000000000000000000000000000000000000..f3d37be73d7ca923ca65e50b9508535c81e80769
+--- /dev/null
++++ b/android/app/src/main/java/org/touchhle/android/NetworkRouteMonitor.java
+@@ -0,0 +1,110 @@
++/*
++ * This Source Code Form is subject to the terms of the Mozilla Public
++ * License, v. 2.0. If a copy of the MPL was not distributed with this
++ * file, You can obtain one at https://mozilla.org/MPL/2.0/.
++ */
++package org.anyiose.android;
++
++import android.content.Context;
++import android.net.ConnectivityManager;
++import android.net.Network;
++import android.net.NetworkCapabilities;
++import android.os.Handler;
++import android.os.Looper;
++import android.util.Log;
++
++/** Sends the app's changing default route to native code without JNI from a guest stack. */
++final class NetworkRouteMonitor {
++    private static final String TAG = "AnyiOSEMU";
++    // A destroyed, older activity must not overwrite a replacement activity's state.
++    private static NetworkRouteMonitor active;
++    private final ConnectivityManager manager;
++    private final NetworkRouteTracker<Network> tracker = new NetworkRouteTracker<>();
++    private boolean registered;
++
++    private static native void nativeSetNetworkRoute(int route);
++
++    NetworkRouteMonitor(Context context) {
++        manager = (ConnectivityManager) context.getSystemService(Context.CONNECTIVITY_SERVICE);
++    }
++
++    // All callbacks and lifecycle methods run on the main looper. Android says not
++    // to perform synchronous ConnectivityManager queries inside callbacks: use
++    // their ordered arguments instead. See:
++    // https://developer.android.com/reference/android/net/ConnectivityManager.NetworkCallback
++    private final ConnectivityManager.NetworkCallback callback =
++        new ConnectivityManager.NetworkCallback() {
++            @Override public void onAvailable(Network network) {
++                publish(tracker.available(network));
++            }
++            @Override public void onCapabilitiesChanged(Network network, NetworkCapabilities caps) {
++                publish(tracker.capabilities(network, route(caps)));
++            }
++            @Override public void onBlockedStatusChanged(Network network, boolean blocked) {
++                publish(tracker.blocked(network, blocked));
++            }
++            @Override public void onLost(Network network) {
++                publish(tracker.lost(network));
++            }
++        };
++
++    void start() {
++        active = this;
++        if (manager == null) {
++            publish(NetworkRouteTracker.UNKNOWN);
++            return;
++        }
++        try {
++            // Register before the initial snapshot. The handler serializes queued
++            // callbacks after this UI-thread snapshot, including handovers.
++            manager.registerDefaultNetworkCallback(callback, new Handler(Looper.getMainLooper()));
++            registered = true;
++            Network network = manager.getActiveNetwork();
++            NetworkCapabilities caps = network == null ? null : manager.getNetworkCapabilities(network);
++            publish(tracker.snapshot(network, route(caps)));
++        } catch (RuntimeException error) {
++            Log.w(TAG, "Could not monitor the app's default network", error);
++            publish(NetworkRouteTracker.UNKNOWN);
++        }
++    }
++
++    void stop() {
++        if (registered) {
++            try {
++                manager.unregisterNetworkCallback(callback);
++            } catch (RuntimeException error) {
++                Log.w(TAG, "Could not unregister network monitor", error);
++            }
++            registered = false;
++        }
++        if (active == this) {
++            publish(NetworkRouteTracker.UNKNOWN);
++            active = null;
++        }
++    }
++
++    private static int route(NetworkCapabilities caps) {
++        if (caps == null)
++            return NetworkRouteTracker.UNKNOWN;
++        if (!caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_NOT_SUSPENDED))
++            return NetworkRouteTracker.NONE;
++        boolean wifi = caps.hasTransport(NetworkCapabilities.TRANSPORT_WIFI);
++        boolean cellular = caps.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR);
++        if (wifi && !cellular)
++            return NetworkRouteTracker.WIFI;
++        if (cellular && !wifi)
++            return NetworkRouteTracker.CELLULAR;
++        return NetworkRouteTracker.OTHER; // VPN, ethernet, or an ambiguous underlying path.
++    }
++
++    private void publish(int route) {
++        if (active != this)
++            return;
++        try {
++            nativeSetNetworkRoute(route);
++        } catch (UnsatisfiedLinkError error) {
++            // SDL may have failed to load the native runtime; do not crash its host.
++            Log.w(TAG, "Native network state bridge is unavailable", error);
++        }
++    }
++}
+diff --git a/android/app/src/main/java/org/touchhle/android/NetworkRouteTracker.java b/android/app/src/main/java/org/touchhle/android/NetworkRouteTracker.java
+new file mode 100644
+index 0000000000000000000000000000000000000000..5faab48547216649f4bf72d3f370ee674f76a79f
+--- /dev/null
++++ b/android/app/src/main/java/org/touchhle/android/NetworkRouteTracker.java
+@@ -0,0 +1,64 @@
++/*
++ * This Source Code Form is subject to the terms of the Mozilla Public
++ * License, v. 2.0. If a copy of the MPL was not distributed with this
++ * file, You can obtain one at https://mozilla.org/MPL/2.0/.
++ */
++package org.anyiose.android;
++
++import java.util.Objects;
++
++/** Ordered default-network events; this class has no Android or JNI dependencies. */
++public final class NetworkRouteTracker<T> {
++    public static final int UNKNOWN = -1, NONE = 0, WIFI = 1, CELLULAR = 2, OTHER = 3;
++    private T current;
++    private int transport = UNKNOWN;
++    private boolean blocked, blockKnown;
++
++    public int snapshot(T network, int route) {
++        current = network;
++        transport = network == null ? NONE : route;
++        blocked = false;
++        blockKnown = true; // getActiveNetwork excludes networks blocked for this app.
++        return value();
++    }
++
++    public int available(T network) {
++        current = network;
++        transport = UNKNOWN;
++        blocked = true;
++        blockKnown = false;
++        return value();
++    }
++
++    public int capabilities(T network, int route) {
++        if (current != null && Objects.equals(current, network))
++            transport = route;
++        return value();
++    }
++
++    public int blocked(T network, boolean isBlocked) {
++        if (current != null && Objects.equals(current, network)) {
++            blocked = isBlocked;
++            blockKnown = true;
++        }
++        return value();
++    }
++
++    public int lost(T network) {
++        if (current != null && Objects.equals(current, network)) {
++            current = null;
++            transport = NONE;
++            blocked = false;
++            blockKnown = true;
++        }
++        return value();
++    }
++
++    public int value() {
++        if (current == null)
++            return transport == UNKNOWN ? UNKNOWN : NONE;
++        if (!blockKnown)
++            return UNKNOWN;
++        return blocked ? NONE : transport;
++    }
++}
 diff --git a/android/app/src/main/java/org/touchhle/android/OverlayGeometry.java b/android/app/src/main/java/org/touchhle/android/OverlayGeometry.java
 new file mode 100644
 index 0000000000000000000000000000000000000000..7f4f7c1ceebb26c4449968446f936142368a8524
@@ -706,6 +900,101 @@ index 6015decc1c152027253d58481b2fda342ea44209..274cd787118e0e2ab6e44bce0275ad36
      /// guest code therefore returns NULL, and every camera/microphone probe
      /// silently answers "not available" even on a device that has both.
      /// Calling the *resolved* methods from a coroutine stack is fine; only the
+diff --git a/src/android_network.rs b/src/android_network.rs
+new file mode 100644
+index 0000000000000000000000000000000000000000..4c6fec76f8c5e0b345b90a879c239632dfa17aa3
+--- /dev/null
++++ b/src/android_network.rs
+@@ -0,0 +1,89 @@
++/*
++ * This Source Code Form is subject to the terms of the Mozilla Public
++ * License, v. 2.0. If a copy of the MPL was not distributed with this
++ * file, You can obtain one at https://mozilla.org/MPL/2.0/.
++ */
++//! Android default-network state, published by Java without calling JNI from
++//! the guest's coroutine stack. It is only a route hint, not a server probe.
++
++use std::sync::atomic::{AtomicI32, Ordering};
++
++pub const UNKNOWN: i32 = -1;
++pub const NONE: i32 = 0;
++pub const WIFI: i32 = 1;
++pub const CELLULAR: i32 = 2;
++pub const OTHER: i32 = 3;
++
++static ROUTE: AtomicI32 = AtomicI32::new(UNKNOWN);
++
++#[cfg(target_os = "android")]
++#[no_mangle]
++pub extern "system" fn Java_org_anyiose_android_NetworkRouteMonitor_nativeSetNetworkRoute(
++    _env: *mut std::ffi::c_void,
++    _class: *mut std::ffi::c_void,
++    route: i32,
++) {
++    set_route(route);
++}
++
++fn set_route(route: i32) {
++    let route = match route {
++        NONE | WIFI | CELLULAR | OTHER => route,
++        _ => UNKNOWN,
++    };
++    ROUTE.store(route, Ordering::Release);
++}
++
++pub fn route() -> i32 {
++    ROUTE.load(Ordering::Acquire)
++}
++
++/// SCNetworkReachability is a route hint; an apparent route does not promise
++/// DNS, Internet access or a response from the specific host. Apple says to
++/// attempt the request rather than preflight it:
++/// https://developer.apple.com/library/archive/documentation/NetworkingInternetWeb/Conceptual/NetworkingOverview/WhyNetworkingIsHard/WhyNetworkingIsHard.html
++pub fn reachability_flags(network_access: bool, iap_emulation: bool, route: i32) -> u32 {
++    const REACHABLE: u32 = 1 << 1;
++    const IS_WWAN: u32 = 1 << 18;
++    if !network_access {
++        // Preserve the explicit local-StoreKit compatibility option when real
++        // networking is disabled; this hint itself never enables transport.
++        return if iap_emulation { REACHABLE } else { 0 };
++    }
++    match route {
++        WIFI | OTHER => REACHABLE,
++        CELLULAR => REACHABLE | IS_WWAN,
++        _ => 0,
++    }
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++
++    #[test]
++    fn route_changes_are_visible_and_unknown_values_do_not_claim_a_route() {
++        set_route(WIFI);
++        assert_eq!(route(), WIFI);
++        set_route(CELLULAR);
++        assert_eq!(route(), CELLULAR);
++        set_route(NONE);
++        assert_eq!(route(), NONE);
++        set_route(900);
++        assert_eq!(route(), UNKNOWN);
++    }
++
++    #[test]
++    fn flags_reflect_route_and_never_enable_real_network_transport() {
++        const REACHABLE: u32 = 1 << 1;
++        const WWAN: u32 = 1 << 18;
++        assert_eq!(reachability_flags(true, false, UNKNOWN), 0);
++        assert_eq!(reachability_flags(true, false, NONE), 0);
++        assert_eq!(reachability_flags(true, true, NONE), 0);
++        assert_eq!(reachability_flags(true, false, WIFI), REACHABLE);
++        assert_eq!(reachability_flags(true, false, OTHER), REACHABLE);
++        assert_eq!(reachability_flags(true, false, CELLULAR), REACHABLE | WWAN);
++        assert_eq!(reachability_flags(false, false, WIFI), 0);
++        assert_eq!(reachability_flags(false, true, NONE), REACHABLE);
++    }
++}
 diff --git a/src/android_web_view.rs b/src/android_web_view.rs
 index a3bba306f4d10431fe42eaf8c268fc92a6e48110..db4108a86bdf8b7107c88edf86b946f009630a29 100644
 --- a/src/android_web_view.rs
@@ -1740,6 +2029,281 @@ index 871bd0ca7bb2597a59c55b2fdcce92a2e5f79fe5..5bb07a16575336a4fed5a898ae137ef1
  - (bool)hasUnifiedMemory { true }
  - (NSUInteger)recommendedMaxWorkingSetSize { 0 }
  - (bool)supportsFamily:(NSUInteger)_family { false }
+diff --git a/src/frameworks/system_configuration/sc_network_reachability.rs b/src/frameworks/system_configuration/sc_network_reachability.rs
+index 9f0f7cc8c4facc23748f99cdee20bba435786f9e..c472fdd99c60209b3a264ffed918a9e537754a30 100644
+--- a/src/frameworks/system_configuration/sc_network_reachability.rs
++++ b/src/frameworks/system_configuration/sc_network_reachability.rs
+@@ -11,8 +11,9 @@ use crate::abi::{CallFromHost, GuestFunction};
+ use crate::dyld::{export_c_func, FunctionExports};
+ use crate::frameworks::core_foundation::cf_allocator::CFAllocatorRef;
+ use crate::frameworks::core_foundation::{CFRelease, CFRetain, CFTypeRef};
++use crate::frameworks::foundation::{ns_run_loop, ns_string};
+ use crate::mem::{guest_size_of, ConstPtr, GuestISize, Mem, MutPtr, MutVoidPtr, SafeRead};
+-use crate::objc::{objc_classes, ClassExports, HostObject};
++use crate::objc::{id, msg, msg_class, nil, objc_classes, ClassExports, HostObject};
+ use crate::Environment;
+ 
+ type SCNetworkReachabilityFlags = u32;
+@@ -29,6 +30,9 @@ const kSCNetworkReachabilityFlagsIsWWAN: SCNetworkReachabilityFlags = 1 << 18;
+ pub const CLASSES: ClassExports = objc_classes! {
+     (env, this, _cmd);
+     @implementation _touchHLE_SCNetworkReachability: NSObject
++    - (())_anyiose_pollReachability:(id)timer {
++        notify_if_changed(env, this, timer);
++    }
+     - (())dealloc {
+         let (context, retired) = {
+             let host = env.objc.borrow_mut::<SCNetworkReachabilityHostObject>(this);
+@@ -109,6 +113,13 @@ fn release_context(env: &mut Environment, context: Option<SCNetworkReachabilityC
+     }
+ }
+ 
++struct ReachabilitySchedule {
++    run_loop: id,
++    mode: String,
++    timer: id, // owned by the run loop; its target retains the reachability object
++    last_flags: Option<SCNetworkReachabilityFlags>,
++}
++
+ #[derive(Default)]
+ struct SCNetworkReachabilityHostObject {
+     name: Option<String>,
+@@ -116,6 +127,7 @@ struct SCNetworkReachabilityHostObject {
+     context: Option<SCNetworkReachabilityContext>,
+     active_callbacks: usize,
+     retired_contexts: Vec<SCNetworkReachabilityContext>,
++    schedules: Vec<ReachabilitySchedule>,
+ }
+ impl HostObject for SCNetworkReachabilityHostObject {}
+ 
+@@ -127,6 +139,9 @@ impl SCNetworkReachabilityHostObject {
+         context: Option<SCNetworkReachabilityContext>,
+     ) -> Option<SCNetworkReachabilityContext> {
+         self.callout = callout;
++        for schedule in &mut self.schedules {
++            schedule.last_flags = None;
++        }
+         let old = std::mem::replace(&mut self.context, context);
+         if self.active_callbacks == 0 {
+             return old;
+@@ -137,6 +152,20 @@ impl SCNetworkReachabilityHostObject {
+         None
+     }
+ 
++    fn changed_for_timer(&mut self, timer: id, flags: SCNetworkReachabilityFlags) -> bool {
++        if self.callout.is_none() {
++            return false;
++        }
++        let Some(schedule) = self.schedules.iter_mut().find(|item| item.timer == timer) else {
++            return false;
++        };
++        if schedule.last_flags == Some(flags) {
++            return false;
++        }
++        schedule.last_flags = Some(flags);
++        true
++    }
++
+     fn finish_callback(&mut self) -> Vec<SCNetworkReachabilityContext> {
+         self.active_callbacks -= 1;
+         if self.active_callbacks == 0 {
+@@ -232,6 +261,7 @@ fn SCNetworkReachabilityCreateWithAddressPair(
+ /// This is only a reachability hint: it must never enable sockets or HTTP.
+ /// Unity and common Reachability wrappers check Reachable and ConnectionRequired
+ /// before attempting StoreKit calls, even if the purchase itself is local.
++#[cfg(any(test, not(target_os = "android")))]
+ fn reachability_flags(network_access: bool, iap_emulation: bool) -> SCNetworkReachabilityFlags {
+     if network_access || iap_emulation {
+         kSCNetworkReachabilityFlagsReachable
+@@ -241,10 +271,21 @@ fn reachability_flags(network_access: bool, iap_emulation: bool) -> SCNetworkRea
+ }
+ 
+ fn current_flags(env: &Environment) -> SCNetworkReachabilityFlags {
+-    reachability_flags(
+-        env.options.network_access,
+-        crate::frameworks::store_kit::emulation_enabled(),
+-    )
++    #[cfg(target_os = "android")]
++    {
++        crate::android_network::reachability_flags(
++            env.options.network_access,
++            crate::frameworks::store_kit::emulation_enabled(),
++            crate::android_network::route(),
++        )
++    }
++    #[cfg(not(target_os = "android"))]
++    {
++        reachability_flags(
++            env.options.network_access,
++            crate::frameworks::store_kit::emulation_enabled(),
++        )
++    }
+ }
+ 
+ fn SCNetworkReachabilityGetFlags(
+@@ -297,33 +338,32 @@ fn SCNetworkReachabilitySetCallback(
+     true
+ }
+ 
+-fn SCNetworkReachabilityScheduleWithRunLoop(
++/// Deliver on the guest run loop, never from Android's callback thread.
++fn notify_if_changed(env: &mut Environment, target: SCNetworkReachabilityRef, timer: id) {
++    let flags = current_flags(env);
++    let changed = env
++        .objc
++        .borrow_mut::<SCNetworkReachabilityHostObject>(target)
++        .changed_for_timer(timer, flags);
++    if changed {
++        dispatch_callback(env, target, flags);
++    }
++}
++
++fn dispatch_callback(
+     env: &mut Environment,
+     target: SCNetworkReachabilityRef,
+-    _run_loop: CFTypeRef,
+-    _run_loop_mode: CFTypeRef,
+-) -> bool {
+-    if !is_reachability(env, target) {
+-        return false;
+-    }
+-    // Keep the existing immediate-notification stub for now. A real run-loop
+-    // source/network-change implementation is separate from this ABI fix.
++    flags: SCNetworkReachabilityFlags,
++) {
+     CFRetain(env, target);
+     let (callback, info) = {
+-        let host = env
+-            .objc
+-            .borrow_mut::<SCNetworkReachabilityHostObject>(target);
++        let host = env.objc.borrow_mut::<SCNetworkReachabilityHostObject>(target);
+         if host.callout.is_some() {
+             host.active_callbacks += 1;
+         }
+-        (
+-            host.callout,
+-            host.context.map_or(MutVoidPtr::null(), |c| c.info),
+-        )
++        (host.callout, host.context.map_or(MutVoidPtr::null(), |c| c.info))
+     };
+     if let Some(callback) = callback {
+-        // Match GetFlags: do not invent a cellular/direct connection here.
+-        let flags = current_flags(env);
+         let _: () = callback.call_from_host(env, (target, flags, info));
+         let retired = env
+             .objc
+@@ -334,16 +374,77 @@ fn SCNetworkReachabilityScheduleWithRunLoop(
+         }
+     }
+     CFRelease(env, target);
++}
++
++// Apple schedules change notifications on the specified run loop and mode:
++// https://developer.apple.com/library/archive/documentation/Networking/Conceptual/SystemConfigFrameworks/SC_ReachConnect/SC_ReachConnect.html
++// Poll the atomic route at a modest interval on that run loop. This approximates
++// change delivery, but does not claim to probe the particular target's server.
++fn SCNetworkReachabilityScheduleWithRunLoop(
++    env: &mut Environment,
++    target: SCNetworkReachabilityRef,
++    run_loop: CFTypeRef,
++    run_loop_mode: CFTypeRef,
++) -> bool {
++    if !is_reachability(env, target)
++        || run_loop.is_null()
++        || run_loop_mode.is_null()
++        || !env.objc.get_host_object(run_loop).is_some_and(|object| {
++            object.as_any().is::<ns_run_loop::NSRunLoopHostObject>()
++        })
++    {
++        return false;
++    }
++    let mode = ns_string::to_rust_string(env, run_loop_mode).to_string();
++    if env.objc.borrow::<SCNetworkReachabilityHostObject>(target).schedules.iter()
++        .any(|schedule| schedule.run_loop == run_loop && schedule.mode == mode)
++    {
++        return true;
++    }
++    // Timer retains target and the loop retains timer. Unscheduling invalidates
++    // the timer and breaks that ownership chain, even from inside the callback.
++    CFRetain(env, target);
++    let selector = env.objc.lookup_selector("_anyiose_pollReachability:").unwrap_or_else(|| {
++        env.objc.register_host_selector("_anyiose_pollReachability:".to_string(), &mut env.mem)
++    });
++    let timer: id = msg_class![env; NSTimer timerWithTimeInterval:0.5_f64 target:target
++                              selector:selector userInfo:nil repeats:true];
++    let _: () = msg![env; run_loop addTimer:timer forMode:run_loop_mode];
++    env.objc.borrow_mut::<SCNetworkReachabilityHostObject>(target).schedules.push(
++        ReachabilitySchedule { run_loop, mode, timer, last_flags: None },
++    );
++    notify_if_changed(env, target, timer);
++    CFRelease(env, target);
+     true
+ }
++
+ fn SCNetworkReachabilityUnscheduleFromRunLoop(
+-    _env: &mut Environment,
+-    _target: SCNetworkReachabilityRef,
+-    _run_loop: CFTypeRef,
+-    _run_loop_mode: CFTypeRef,
++    env: &mut Environment,
++    target: SCNetworkReachabilityRef,
++    run_loop: CFTypeRef,
++    run_loop_mode: CFTypeRef,
+ ) -> bool {
+-    false
++    if !is_reachability(env, target) || run_loop.is_null() || run_loop_mode.is_null() {
++        return false;
++    }
++    let mode = ns_string::to_rust_string(env, run_loop_mode).to_string();
++    let timer = {
++        let host = env.objc.borrow_mut::<SCNetworkReachabilityHostObject>(target);
++        host.schedules.iter().position(|item| item.run_loop == run_loop && item.mode == mode)
++            .map(|index| host.schedules.remove(index).timer)
++    };
++    if let Some(timer) = timer {
++        CFRetain(env, target);
++        CFRetain(env, timer);
++        let _: () = msg![env; timer invalidate];
++        CFRelease(env, timer);
++        CFRelease(env, target);
++        true
++    } else {
++        false
++    }
+ }
++
+ fn SCNetworkReachabilitySetDispatchQueue(
+     _env: &mut Environment,
+     _target: SCNetworkReachabilityRef,
+diff --git a/src/frameworks/system_configuration/sc_network_reachability/tests.rs b/src/frameworks/system_configuration/sc_network_reachability/tests.rs
+index 3253a5d59aa1a7cb48dffdb25057fd212a7f94c7..5d86b80213f619482ac3ed44482c82e75da58f87 100644
+--- a/src/frameworks/system_configuration/sc_network_reachability/tests.rs
++++ b/src/frameworks/system_configuration/sc_network_reachability/tests.rs
+@@ -120,3 +120,24 @@ fn reachable_route_is_wifi_without_connection_or_intervention_requirements() {
+         );
+     }
+ }
++
++#[test]
++fn scheduled_notifications_change_once_and_reset_after_callback_replacement() {
++    let timer = id::from_bits(0x1234);
++    let run_loop = id::from_bits(0x3456);
++    let mut host = SCNetworkReachabilityHostObject::default();
++    host.schedules.push(ReachabilitySchedule {
++        run_loop, mode: "default".to_string(), timer, last_flags: None,
++    });
++    assert!(!host.changed_for_timer(timer, 0)); // no callback registered
++    let callback = Some(GuestFunction::from_addr_with_thumb_bit(0x1001));
++    host.replace_callback(callback, None);
++    assert!(host.changed_for_timer(timer, 0));
++    assert!(!host.changed_for_timer(timer, 0));
++    assert!(host.changed_for_timer(timer, kSCNetworkReachabilityFlagsReachable));
++    assert!(!host.changed_for_timer(id::from_bits(0x5678), 0));
++    host.replace_callback(callback, None);
++    assert!(host.changed_for_timer(timer, kSCNetworkReachabilityFlagsReachable));
++    host.schedules.clear();
++    assert!(!host.changed_for_timer(timer, 0));
++}
 diff --git a/src/frameworks/uikit/ui_image_picker_controller.rs b/src/frameworks/uikit/ui_image_picker_controller.rs
 index 85a066f4bcb5d313af5637ac052485d27901e6df..98ad0be1ac687ea4feadfadbcc26493fa780c561 100644
 --- a/src/frameworks/uikit/ui_image_picker_controller.rs
@@ -1897,10 +2461,19 @@ index 4b16094f77e34f32d705ed3345257bc489968a7b..faeb1d05518f14b9698ef46bd540b0d8
              // Update global text cache for on-screen overlay if enabled via
              // environment variable or the runtime flag.
 diff --git a/src/lib.rs b/src/lib.rs
-index ba739ba822a2511182fb10c144a074e7607ec707..3e032d6a882875b77bc4a1300a3d574b02a7c24d 100644
+index ba739ba822a2511182fb10c144a074e7607ec707..c0c4811ee43e38656527cac70394ee9319297ac1 100644
 --- a/src/lib.rs
 +++ b/src/lib.rs
-@@ -82,7 +82,7 @@ static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
+@@ -31,6 +31,8 @@ mod fastmap;
+ mod abi;
+ mod android_jni;
+ mod android_media;
++#[cfg(target_os = "android")]
++mod android_network;
+ mod android_web_view;
+ mod audio;
+ mod bundle;
+@@ -82,7 +84,7 @@ static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
  
  pub use touchHLE_version::*;
  
@@ -1909,7 +2482,7 @@ index ba739ba822a2511182fb10c144a074e7607ec707..3e032d6a882875b77bc4a1300a3d574b
  
  #[cfg(target_os = "ios")]
  static HOST_EXIT_REQUESTED: AtomicBool = AtomicBool::new(false);
-@@ -169,8 +169,8 @@ fn take_host_exit_request() -> bool {
+@@ -169,8 +171,8 @@ fn take_host_exit_request() -> bool {
  #[cfg(target_os = "android")]
  #[no_mangle]
  pub extern "C" fn SDL_main(
@@ -1920,7 +2493,7 @@ index ba739ba822a2511182fb10c144a074e7607ec707..3e032d6a882875b77bc4a1300a3d574b
  ) -> std::ffi::c_int {
      // Rust's default panic handler prints to stderr, but on Android that just
      // gets discarded, so we set a custom hook to make debugging easier.
-@@ -188,15 +188,58 @@ pub extern "C" fn SDL_main(
+@@ -188,15 +190,58 @@ pub extern "C" fn SDL_main(
              echo_no_panic!("Panic: {}", payload);
          }
      }));
@@ -1983,7 +2556,7 @@ index ba739ba822a2511182fb10c144a074e7607ec707..3e032d6a882875b77bc4a1300a3d574b
              1
          }
      }
-@@ -204,7 +247,7 @@ pub extern "C" fn SDL_main(
+@@ -204,7 +249,7 @@ pub extern "C" fn SDL_main(
  
  const USAGE: &str = "\
  Usage:
@@ -1992,7 +2565,7 @@ index ba739ba822a2511182fb10c144a074e7607ec707..3e032d6a882875b77bc4a1300a3d574b
  
  PATH should be a path to a .app bundle or .ipa file.
  
-@@ -281,7 +324,7 @@ fn run_session<T: Iterator<Item = String>>(
+@@ -281,7 +326,7 @@ fn run_session<T: Iterator<Item = String>>(
      }
  
      echo!(
@@ -2001,7 +2574,7 @@ index ba739ba822a2511182fb10c144a074e7607ec707..3e032d6a882875b77bc4a1300a3d574b
          branding(),
          if branding().is_empty() { "" } else { " " },
          VERSION,
-@@ -300,7 +343,7 @@ fn run_session<T: Iterator<Item = String>>(
+@@ -300,7 +345,7 @@ fn run_session<T: Iterator<Item = String>>(
  
      {
          let base_path = paths::user_data_base_path();
@@ -2010,7 +2583,7 @@ index ba739ba822a2511182fb10c144a074e7607ec707..3e032d6a882875b77bc4a1300a3d574b
          paths::prepopulate_user_data_dir();
          paths::remove_legacy_pvrtc_disk_cache();
      }
-@@ -533,7 +576,7 @@ fn run_session<T: Iterator<Item = String>>(
+@@ -533,7 +578,7 @@ fn run_session<T: Iterator<Item = String>>(
          // missing post-iOS-9 APIs becomes the rule rather than the exception.
          if major > 9 || (major == 9 && minor > 0) {
              echo!(
@@ -2019,7 +2592,7 @@ index ba739ba822a2511182fb10c144a074e7607ec707..3e032d6a882875b77bc4a1300a3d574b
                   for iOS 2.x–9.0; newer APIs may be missing.",
                  version
              );
-@@ -542,7 +585,7 @@ fn run_session<T: Iterator<Item = String>>(
+@@ -542,7 +587,7 @@ fn run_session<T: Iterator<Item = String>>(
  
      if required_device_capabilities.contains(&"opengles-3") {
          echo!(
