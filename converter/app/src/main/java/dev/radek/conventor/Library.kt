@@ -134,6 +134,25 @@ class Library(private val context: Context) {
                             .put("message", "Conversion was interrupted before it finished; retry Force convert to rebuild the APK.")
                         changed = true
                     }
+                report.optJSONObject("anyioseBuildProgress")
+                    ?.takeIf { it.optString("status") in listOf("CONVERTING", "PACKAGING", "SIGNING", "VERIFYING") }
+                    ?.let { build ->
+                        val name = ArtifactNames.anyioseApkFileName(report)
+                        val result = File(dir, name)
+                        val backup = File(dir, ".$name.previous")
+                        if (backup.isFile) {
+                            result.delete()
+                            backup.renameTo(result)
+                        } else if (report.optJSONObject("anyioseConversion") == null) {
+                            result.delete()
+                        }
+                        build.put("status", "FAILED").put("percent", 0)
+                            .put("message", "Semi-Emulated build was interrupted; retry to rebuild.")
+                        changed = true
+                    }
+                File(dir, "anyiose-packaging-workspace").deleteRecursively()
+                File(dir, ".anyiose-unsigned.apk").delete()
+                File(dir, ".anyiose-signed.apk").delete()
                 File(dir, "convert-workspace").deleteRecursively()
                 if (changed) save(dir, report)
             }
@@ -686,7 +705,7 @@ class Library(private val context: Context) {
                     "This bundle needs work that is not implemented: $evidence.$apiBlocker The analysis itself completed."
                 }
                 deviceProven -> "The executable is fully covered by the proven closed-integer subset. Force convert builds a real signed APK whose statically recompiled entry routine runs through JNI; general games remain unsupported."
-                else -> "Analysis completed; this executable is not in the statically-proven single-routine subset, so no complete static game conversion is generated. Force convert builds a game-runtime boot-attempt APK that runs the original 32-bit ARM executable and bundle through the guest runtime with no artificial instruction/time cutoff, stopping only at a real runtime boundary; a source-free preview shell remains available as a fallback."
+                else -> "Analysis completed; this executable is not in the statically-proven single-routine subset, so no complete static game conversion is generated. Force convert offers a Native diagnostic boot attempt or a standalone Semi-Emulated AnyiOSEMU APK. ARM32 compatibility and gameplay remain device-dependent; a preview shell is also available."
             }
             report.put("blockers", JSONArray().put(reason)).put("hostCommand", "python3 -m radek analyze input.ipa --authorized --output workspace/analysis")
             val terminalState = if (encrypted || incompatible || !hasCandidate) ConversionState.BLOCKED else ConversionState.PARTIAL

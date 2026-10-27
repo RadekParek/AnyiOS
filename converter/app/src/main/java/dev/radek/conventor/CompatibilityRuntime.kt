@@ -21,7 +21,7 @@ internal object CompatibilityRuntime {
     /** Guest-CPU boot-attempt runtime (contract "game-runtime-v1") shipped by :compat-runtime-v1. */
     const val GAMERUNTIME_SONAME = "libcompat_runtime_v1.so"
     private const val LIBCXX_SONAME = "libc++_shared.so"
-    private const val MAX_LIBRARY_BYTES = 128L * 1024 * 1024
+    private const val MAX_LIBRARY_BYTES = 512L * 1024 * 1024
     private const val ELF_HEADER_BYTES = 64
     private const val EM_AARCH64 = 183
 
@@ -63,6 +63,33 @@ internal object CompatibilityRuntime {
             listOf(GAMERUNTIME_SONAME, LIBCXX_SONAME),
             setOf(GAMERUNTIME_SONAME),
         )
+
+    /** Copy the exact AnyiOSEMU/SDL/ANGLE binaries already shipped with this installation. */
+    fun extractAnyiOSEmuInstalled(context: Context, destination: File): List<Library> {
+        val info = context.applicationInfo
+        val apks = listOfNotNull(info.sourceDir?.takeIf { it.isNotBlank() }?.let(::File)) +
+            info.splitSourceDirs.orEmpty().map(::File)
+        return extractAnyiOSEmuFromApks(apks.distinctBy { it.absolutePath }, destination)
+    }
+
+    internal fun extractAnyiOSEmuFromApks(apks: List<File>, destination: File): List<Library> {
+        val names = listOf("libtouchHLE.so", "libSDL2.so", LIBCXX_SONAME,
+            "libEGL_angle.so", "libGLESv1_CM_angle.so", "libGLESv2_angle.so")
+        val libraries = extractSonames(apks, destination, names, names.toSet())
+        // build-angle.sh installs byte-identical ANGLE aliases, but the main app's
+        // CMake target only packages the EGL and GLES2 original names. Recreate
+        // all original SONAMEs from the verified aliases, including GLES1,
+        // so DT_NEEDED resolution remains self-contained in the standalone APK.
+        val originals = listOf("EGL", "GLESv1_CM", "GLESv2").map { driver ->
+            val source = libraries.first { it.soname == "lib${driver}_angle.so" }
+            val name = "lib${driver}_podnative.so"
+            val target = File(destination, name)
+            source.file.copyTo(target, overwrite = true)
+            require(sha256(target) == source.sha256) { "ANGLE alias copy failed integrity verification" }
+            Library(name, "lib/$ABI/$name", target, source.sha256)
+        }
+        return libraries + originals
+    }
 
     /** Handles App Bundle installs where native libraries live in ABI split APKs. */
     internal fun extractFromApks(sourceApks: List<File>, destination: File): List<Library> =

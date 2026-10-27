@@ -45,6 +45,30 @@ class CompatibilityRuntimeTest {
     }
 
     @Test
+    fun `standalone runtime requires the entire SDL and ANGLE dependency closure`() {
+        val directory = Files.createTempDirectory("anyiose-runtime").toFile()
+        try {
+            val apk = directory.resolve("base.apk")
+            val names = listOf("libtouchHLE.so", "libSDL2.so", "libc++_shared.so",
+                "libEGL_angle.so", "libGLESv1_CM_angle.so", "libGLESv2_angle.so")
+            val originals = listOf("libEGL_podnative.so", "libGLESv1_CM_podnative.so", "libGLESv2_podnative.so")
+            ZipOutputStream(apk.outputStream()).use { zip ->
+                names.forEach { name ->
+                    zip.putNextEntry(ZipEntry("lib/arm64-v8a/$name"))
+                    zip.write(minimalElf(machine = 183))
+                    zip.closeEntry()
+                }
+            }
+            val libraries = CompatibilityRuntime.extractAnyiOSEmuFromApks(listOf(apk), directory.resolve("staged"))
+            assertEquals(names + originals, libraries.map { it.soname })
+            assertArrayEquals(libraries[4].file.readBytes(), libraries[7].file.readBytes())
+            org.junit.Assert.assertThrows(IllegalArgumentException::class.java) {
+                CompatibilityRuntime.extractAnyiOSEmuFromApks(emptyList(), directory.resolve("missing"))
+            }
+        } finally { directory.deleteRecursively() }
+    }
+
+    @Test
     fun `extracts the statically linked game runtime without the bounded converter runtime`() {
         val directory = Files.createTempDirectory("game-runtime").toFile()
         try {

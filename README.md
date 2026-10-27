@@ -1,6 +1,6 @@
 # AnyiOS
 
-An Android app with the existing **AnyiOS** launcher, shared private game library and separate **Converter**. **AnyiOSEMU** is the first-party name for the experimental ARM32 iPhone OS runtime. Its source is pinned; upstream licensing and provenance are retained in [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md).
+An Android app with the existing **AnyiOS** launcher, shared private game library and separate **Converter**. **AnyiOSEMU** is the first-party name for the experimental ARM32 iPhone OS runtime. Its source is pinned; upstream licensing and provenance are retained in [packaged notices](app/src/main/assets/anyiose-runtime-notices.txt).
 
 ## What it does
 
@@ -8,15 +8,17 @@ An Android app with the existing **AnyiOS** launcher, shared private game librar
 - Imports iOS IPA files or extracted `.app` bundles into one private library shared with Converter. Original imports remain untouched.
 - Runs eligible **ARM32** iPhone OS applications. Universal ARM64+ARM32 bundles use their validated ARM32 slice; ARM64-only apps are unsupported.
 - Keeps runtime data private per game, with folder and ZIP export actions. Folder export creates an `org.anyios` directory in a user-selected SAF location when Android permits it.
-- Defaults the emulator frame cap to the fastest supported display mode at the current resolution. An optional performance HUD reports process CPU, RAM PSS, driver-reported graphics PSS and measured presentation FPS; GPU utilization is not reported where Android does not expose it.
+- Defaults the emulator frame cap to the fastest supported display mode at the current resolution. An optional performance HUD reports process CPU, RAM PSS, driver-reported graphics PSS and measured presentation FPS; GPU utilization is not reported where Android does not expose it. Dynamic resolution is off by default; its selectable range adjusts the Android presentation surface in response to measured FPS. Actual game renderbuffers can remain full-size, so a speedup is not guaranteed. An optional high-refresh boost can promote 60-FPS display links to the display cap, but may accelerate game logic.
 - Provides an off-by-default **Max clocks** request for best-effort Android performance hints and high-capacity CPU affinity. Android controls frequencies; AnyiOSEMU cannot force them.
 - Builds the bundled ANGLE EGL/GLES libraries from the pinned Google ANGLE source. ANGLE is the default emulator driver; native GLES is an explicit setting, and any fallback is recorded.
 - Keeps the original C++ import inspection and standalone ANGLE surface test as diagnostics; they are not the game execution engine.
-- Keeps Converter separate. Its Force convert flow offers a narrowly proven Native runtime or a separate Semi-Emulated boot-attempt APK; neither implies general conversion or gameplay success.
+- Keeps Converter separate. Force convert offers the existing Native diagnostic boot attempt or an independent Semi-Emulated game APK; neither implies general conversion or gameplay success.
 
 **Compatibility, visible rendering and gameplay require real-device, per-game validation.** A successful compile, clean exit code, instruction count or GL-call log is not proof that a game menu is visible or playable. See [device testing](docs/DEVICE_TESTING.md) and [current progress](docs/PROGRESS.md).
 
 ## Runtime and architecture
+
+Force convert offers **Native runtime**, which uses the existing diagnostic game-runtime boot attempt, and **Semi-Emulated**, which packages an independent APK with the original IPA and AnyiOSEMU. The latter launches one game, requests high-refresh display-link callbacks, and does not require AnyiOS to remain installed; it is not native recompilation and playability is unverified. The Semi-Emulated route requires an analyzed, unencrypted ARM32 slice.
 
 AnyiOS launches an imported game in the pinned Rust/SDL AnyiOSEMU runtime. The Android activity forwards the selected source, private per-game data directory, display-aware frame cap, performance options, ANGLE/native-GLES preference, Force Composition and verbose-GLES preference. Source revisions, selected settings and bounded session logs are recorded in the game's report.
 
@@ -26,7 +28,7 @@ The Android application/package ID remains **`org.podnative`** (not `org.anyios.
 
 In a game's details, choose **Export game data to folder…** to copy its data beneath `org.anyios` in a folder selected through Android's document picker, or **Export game data as ZIP…** to save an archive. The folder export is a copy; live saves remain private. The picker may block storage roots, Downloads, `Android/data` and `Android/obb` on recent Android versions. Choose a permitted location; AnyiOS does not bypass those restrictions. Rebuildable caches are excluded.
 
-See [architecture](docs/ARCHITECTURE.md), [ANGLE integration](docs/ANGLE_INTEGRATION.md), and [third-party notices](THIRD_PARTY_NOTICES.md).
+See [architecture](docs/ARCHITECTURE.md), [ANGLE integration](docs/ANGLE_INTEGRATION.md), and [third-party notices](app/src/main/assets/anyiose-runtime-notices.txt).
 
 ## Build and test
 

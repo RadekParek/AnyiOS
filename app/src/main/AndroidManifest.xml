@@ -25,7 +25,7 @@
             android:launchMode="singleTop"
             android:preferMinimalPostProcessing="true"
             android:theme="@android:style/Theme.NoTitleBar.Fullscreen" />
-        <provider android:name="org.touchhle.android.DocumentsProvider"
+        <provider android:name="org.anyiose.android.DocumentsProvider"
             android:authorities="${applicationId}.provider" android:exported="true"
             android:grantUriPermissions="true" android:permission="android.permission.MANAGE_DOCUMENTS">
             <intent-filter>

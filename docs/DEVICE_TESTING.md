@@ -20,6 +20,13 @@ No device run of the pinned runtime integration has been performed in this works
 - With the HUD enabled, verify process CPU, RAM PSS, driver-reported graphics PSS and measured FPS. GPU utilization may correctly show unavailable. Enable **Max clocks** only for an explicit test; Android may ignore or limit the best-effort hint and it cannot force clock rates.
 - Run the separate **ANGLE surface test** as a graphics diagnostic. Its cube validates a different surface path and is not a substitute for game rendering.
 
+## Converter and dynamic resolution
+
+- From the Converter's Force convert dialog, confirm **Native runtime** produces the existing diagnostic game-runtime artifact. Confirm **Semi-Emulated** generates a separately named/signed APK with the embedded IPA and runtime, refuses encrypted/ARM64-only inputs, and opens only that game without a picker.
+- Install the Semi-Emulated APK, remove AnyiOS, reboot and launch it again. Verify its private saves persist and no host application is required; then repeat after an APK update signed with the same key. Check actual maximum resolution/refresh on a high-refresh device.
+- Verify Dynamic resolution starts Off, that the selected minimum is respected, and that changing the range takes effect on the next game launch. Compare measured FPS and visual resolution against the disabled setting on the same scene, including a CPU-bound scene. Check touch, orientation, background/resume and surface recreation at every scale. The presentation surface alone may not affect offscreen rendering workload; do not claim gains without measurement.
+- Test games requesting 60 FPS and >60 FPS separately on a 120-Hz device. Confirm High-refresh boost is off by default in the Emulator, and compare game speed and measured FPS when enabled; standalone APKs request boost. It may accelerate callback-driven simulation and cannot override every game-specific cap.
+
 ## Storage, icons and reports
 
 - Relaunch the same game and confirm private per-game AnyiOSEMU data persists and remains isolated. Export to a permitted SAF tree and verify that the browsable copy is under `org.anyios`; also test ZIP export. Do not expect the picker to grant storage-root, Downloads, `Android/data` or `Android/obb` access on restricted Android versions.
@@ -32,11 +39,11 @@ No device run of the pinned runtime integration has been performed in this works
 
 | Check | Current status |
 |---|---|
-| Pinned source and runtime patch | Targeted patch applicability check passed for the changed pinned `src/window.rs` hunk; full source preparation/build awaits CI |
+| Pinned source and runtime patch | Full tracked patch reverse-check and exact worktree comparison passed; native build awaits CI |
 | ARM32/ARM64/ARM64_32 FAT slice detection | Previously passed standalone warning-clean g++ regressions; current Android/JVM tests are not run locally |
 | Artwork resolution and shared-icon fallback | Implementation and regression tests updated; tests not run locally |
 | SAF folder/ZIP export and Android restrictions | Implementation review only; no device/provider test |
-| Converter Force convert choice and APK contracts | UI updated; `scripts/test-converter.sh` was inadvertently invoked during PR description creation and failed in its Python suite because Capstone is unavailable; it has not been rerun |
+| Converter Force convert choice and APK contracts | Routing, integrity/DRM and native-library closure tests added; focused JVM tests passed with temporary stubs; real APK/device tests pending |
 | Repository formatting, script syntax and diff checks | Passed locally |
 | Android lint, JVM tests, native/Cargo compilation and APK packaging | Pending this PR's CI |
 | AnyiOSEMU initialization on a real Android device | Not tested |

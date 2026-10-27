@@ -162,11 +162,11 @@ public final class MainActivity extends Activity {
         String[] noticeAssets = {"vendor/SDL/LICENSE.txt", "vendor/dynarmic/LICENSE.txt",
             "vendor/dynarmic/README.md", "vendor/openal-soft/COPYING", "vendor/libxml2/Copyright",
             "vendor/stb/LICENSE", "vendor/PVRTDecompress/LICENSE.md",
-            "vendor/symphonia-codec-aac/LICENSE", "touchHLE_dylibs/README.md",
-            "touchHLE_dylibs/COPYING.libgcc", "touchHLE_dylibs/COPYING.libsqlite3",
-            "touchHLE_dylibs/COPYING.libstdcxx", "touchHLE_dylibs/COPYING.libz",
-            "touchHLE_fonts/README.md", "touchHLE_fonts/LICENSE.liberation",
-            "touchHLE_fonts/LICENSE.noto", "anyiose-rust-dependencies.txt",
+            "vendor/symphonia-codec-aac/LICENSE", "AnyiOSEMU_dylibs/README.md",
+            "AnyiOSEMU_dylibs/COPYING.libgcc", "AnyiOSEMU_dylibs/COPYING.libsqlite3",
+            "AnyiOSEMU_dylibs/COPYING.libstdcxx", "AnyiOSEMU_dylibs/COPYING.libz",
+            "AnyiOSEMU_fonts/README.md", "AnyiOSEMU_fonts/LICENSE.liberation",
+            "AnyiOSEMU_fonts/LICENSE.noto", "anyiose-rust-dependencies.txt",
             "anyiose-dynarmic-license.txt"};
         for (String name : noticeAssets) appendNoticeAsset(notices, name, name);
         appendNoticeAssetsUnder(notices, "angle-notices");
@@ -536,7 +536,7 @@ public final class MainActivity extends Activity {
         // The chip states what the runtime knows, never a compatibility score.
         String chip = !game.canLaunchInAnyiOSEMU()
             ? game.status.equals("Encrypted") ? "Encrypted" : game.status
-            : "ARM32 · experimental";
+            : game.architectureChip() + " · experimental";
         TextView status = text(chip, 9, accent, true);
         status.setPadding(dp(7), dp(4), dp(7), dp(4));
         status.setBackground(shape(soft, 6, false));
@@ -944,14 +944,31 @@ public final class MainActivity extends Activity {
         heading(parent, "Settings", "Simple controls. Clear limits.");
         LinearLayout display = card(parent);
         display.addView(text("DISPLAY", 11, muted, true));
-        settingRow(display, "Resolution", "Short edge; never upscales the surface",
+        settingRow(display, "Resolution",
+            "Maximum short edge for the guest and presentation surface; never upscales",
             prefs.getInt("resolution", 1080) + "p",
             ()
                 -> choose("Render resolution", new String[] {"720p", "1080p · FHD", "1440p · QHD"},
                     new int[] {720, 1080, 1440}, "resolution", 1080));
+        int dynamicMinimum = prefs.getInt("dynamicResolution", 100);
+        settingRow(display, "Dynamic resolution",
+            "Off by default · adapts the presentation surface to measured FPS; game-owned offscreen buffers may not scale",
+            dynamicMinimum >= 100 ? "Off" : "Down to " + dynamicMinimum + "%",
+            ()
+                -> choose("Dynamic resolution · minimum surface size",
+                    new String[] {"Off", "90% · light", "75% · balanced", "50% · performance"},
+                    new int[] {100, 90, 75, 50}, "dynamicResolution", 100));
         settingRow(display, "Frame cap",
             "Auto requests the fastest supported mode at this resolution; measured FPS can be lower",
             frameCapLabel(), this::chooseFrameCap);
+        settingRow(display, "High-refresh boost",
+            "Experimental: promote 60 FPS display links to the selected cap; may speed up game logic",
+            prefs.getBoolean("boostDisplayLink", false) ? "On" : "Off", () -> {
+                prefs.edit()
+                    .putBoolean("boostDisplayLink", !prefs.getBoolean("boostDisplayLink", false))
+                    .apply();
+                home();
+            });
         settingRow(display, "Performance HUD",
             "Off by default · process CPU, RAM PSS, driver-reported graphics PSS and measured presentation FPS; GPU utilization is not publicly reported on many devices",
             prefs.getBoolean("performanceHud", false) ? "On" : "Off", this::togglePerformanceHud);
@@ -966,7 +983,7 @@ public final class MainActivity extends Activity {
         settingRow(display, "Appearance", "Choose your preferred look", dark ? "Dark" : "Light",
             () -> choose("Appearance", appearances, new int[] {1, 2}, "theme", dark ? 2 : 1));
         display.addView(text(
-            "Frame cap, HUD and scheduler options apply on the next AnyiOSEMU launch; render resolution is for the separate ANGLE surface test.",
+            "Display and scheduler options apply on the next AnyiOSEMU launch. Dynamic resolution aims for 60 FPS, and higher only when the game actually reaches it; results depend on the game and device.",
             12, muted, false));
         maxClocksCard(parent);
         LinearLayout graphics = card(parent);
@@ -1028,6 +1045,8 @@ public final class MainActivity extends Activity {
                         (dialog, which) -> {
                             prefs.edit()
                                 .remove("resolution")
+                                .remove("dynamicResolution")
+                                .remove("boostDisplayLink")
                                 .remove("fps")
                                 .remove("performanceHud")
                                 .remove("maxClocks")

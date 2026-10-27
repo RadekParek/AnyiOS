@@ -23,7 +23,7 @@ import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 /** SDL host activity for AnyiOSEMU's pinned ARM32 iPhone OS runtime. */
-public final class AnyiOSEmuActivity extends org.touchhle.android.MainActivity {
+public final class AnyiOSEmuActivity extends org.anyiose.android.MainActivity {
     public static final String EXTRA_GAME_ID = "org.podnative.anyiose.GAME_ID";
     public static final String EXTRA_GAME_TITLE = "org.podnative.anyiose.GAME_TITLE";
     public static final String EXTRA_SOURCE_PATH = "org.podnative.anyiose.SOURCE_PATH";
@@ -47,6 +47,11 @@ public final class AnyiOSEmuActivity extends org.touchhle.android.MainActivity {
     private int fpsCapPreference = DisplayFrameRate.AUTO;
     private float effectiveFpsCap = 60.0f;
     private boolean performanceHudEnabled;
+    private boolean boostDisplayLink;
+    private int resolutionLimit;
+    private int dynamicMinimum;
+    private DynamicResolution dynamicResolution;
+    private SurfaceResolution surfaceResolution;
     private boolean maxClocksEnabled;
     private boolean nativeGlesEnabled;
     private boolean forceCompositionEnabled;
@@ -77,6 +82,9 @@ public final class AnyiOSEmuActivity extends org.touchhle.android.MainActivity {
         android.content.SharedPreferences settings = getSharedPreferences("settings", MODE_PRIVATE);
         fpsCapPreference = settings.getInt("fps", DisplayFrameRate.AUTO);
         performanceHudEnabled = settings.getBoolean("performanceHud", false);
+        boostDisplayLink = settings.getBoolean("boostDisplayLink", false);
+        resolutionLimit = settings.getInt("resolution", 1080);
+        dynamicMinimum = settings.getInt("dynamicResolution", 100);
         maxClocksEnabled = settings.getBoolean("maxClocks", false);
         nativeGlesEnabled = settings.getBoolean("nativeGles", false);
         forceCompositionEnabled = settings.getBoolean("forceComposition", false);
@@ -98,6 +106,11 @@ public final class AnyiOSEmuActivity extends org.touchhle.android.MainActivity {
         super.onCreate(state);
         DisplayFrameRate.requestPreferredMode(this, fpsCapPreference);
         effectiveFpsCap = DisplayFrameRate.resolveCap(this, fpsCapPreference);
+        if (mSurface != null) {
+            surfaceResolution = new SurfaceResolution(mSurface, resolutionLimit);
+            if (dynamicMinimum < 100)
+                dynamicResolution = new DynamicResolution(dynamicMinimum, effectiveFpsCap);
+        }
         getSharedPreferences("anyiose_runtime", MODE_PRIVATE)
             .edit()
             .putString("last_data_path", userDataPath)
@@ -107,6 +120,8 @@ public final class AnyiOSEmuActivity extends org.touchhle.android.MainActivity {
             showSessionBadge();
         if (performanceHudEnabled)
             showPerformanceHud();
+        if (performanceHudEnabled || dynamicResolution != null)
+            createPerformanceSampler();
     }
 
     @Override
@@ -117,12 +132,16 @@ public final class AnyiOSEmuActivity extends org.touchhle.android.MainActivity {
         arguments.add("--anyiose-data-dir=" + userDataPath);
         arguments.add(sourcePath);
         arguments.add("--device-family=auto");
+        int[] renderSize = DisplayFrameRate.renderSize(this, resolutionLimit);
+        if (renderSize[0] > 0 && renderSize[1] > 0)
+            arguments.add("--screen-size=" + renderSize[0] + "x" + renderSize[1]);
         float fpsCap = DisplayFrameRate.resolveCap(this, fpsCapPreference);
         effectiveFpsCap = fpsCap;
         arguments.add("--fps-limit=" + DisplayFrameRate.formatOption(fpsCap));
+        arguments.add(boostDisplayLink ? "--boost-display-link" : "--no-boost-display-link");
         arguments.add(maxClocksEnabled ? "--perf-hints" : "--no-perf-hints");
         arguments.add(maxClocksEnabled ? "--affinity=big" : "--affinity=off");
-        if (performanceHudEnabled)
+        if (performanceHudEnabled || dynamicMinimum < 100)
             arguments.add("--print-fps");
         arguments.add(nativeGlesEnabled ? "--gles-native" : "--no-gles-native");
         arguments.add(forceCompositionEnabled ? "--force-composition" : "--no-force-composition");
@@ -215,10 +234,13 @@ public final class AnyiOSEmuActivity extends org.touchhle.android.MainActivity {
             : dp(10);
         params.rightMargin = dp(10);
         surface.addView(performanceHud, params);
+    }
+
+    private void createPerformanceSampler() {
         performanceHudSampler = new Runnable() {
             @Override
             public void run() {
-                if (performanceHud == null || isFinishing() || isDestroyed())
+                if (isFinishing() || isDestroyed())
                     return;
                 updatePerformanceHud();
                 hudHandler.postDelayed(this, 1000);
@@ -257,14 +279,20 @@ public final class AnyiOSEmuActivity extends org.touchhle.android.MainActivity {
                 lastFpsMarkerPosition = sample.markerPosition;
                 lastMeasuredFps = sample.fps;
                 lastMeasuredFpsAtMs = nowWall;
+                if (dynamicResolution != null && surfaceResolution != null)
+                    surfaceResolution.setPercent(dynamicResolution.sample(sample.fps, nowWall));
             }
             lastFpsLogLength = sample.logLength;
         }
         String fps = !Double.isNaN(lastMeasuredFps) && nowWall - lastMeasuredFpsAtMs <= 3000
             ? String.format(Locale.ROOT, "%.1f", lastMeasuredFps)
             : "—";
+        if (performanceHud == null)
+            return;
         performanceHud.setText("FPS " + fps + " · cap " + DisplayFrameRate.formatHz(effectiveFpsCap)
-            + " Hz\n"
+            + " Hz"
+            + (dynamicResolution == null ? "" : " · surface " + dynamicResolution.percent() + "%")
+            + "\n"
             + "CPU " + cpu + " (process, one-core equivalent) · RAM " + pssMegabytes
             + " MB PSS\nGPU utilization n/a · graphics PSS (within RAM total) " + graphics);
     }
@@ -297,7 +325,7 @@ public final class AnyiOSEmuActivity extends org.touchhle.android.MainActivity {
     @Override
     protected void onResume() {
         super.onResume();
-        if (performanceHudEnabled && performanceHudSampler != null) {
+        if (performanceHudSampler != null) {
             hudHandler.removeCallbacks(performanceHudSampler);
             hudHandler.post(performanceHudSampler);
         }
@@ -314,6 +342,8 @@ public final class AnyiOSEmuActivity extends org.touchhle.android.MainActivity {
     protected void onDestroy() {
         if (performanceHudSampler != null)
             hudHandler.removeCallbacks(performanceHudSampler);
+        if (surfaceResolution != null)
+            surfaceResolution.close();
         // SDL joins its native thread during super.onDestroy(); capture the log only after
         // that shutdown has finished so the final runtime status is not cut off.
         super.onDestroy();
@@ -329,8 +359,8 @@ public final class AnyiOSEmuActivity extends org.touchhle.android.MainActivity {
         StringBuilder report = new StringBuilder();
         int requestedFps = fpsCapPreference;
         long reportTime = SystemClock.elapsedRealtime();
-        boolean recentFpsSample = performanceHudEnabled && !Double.isNaN(lastMeasuredFps)
-            && lastMeasuredFpsAtMs > 0 && reportTime - lastMeasuredFpsAtMs <= 3000;
+        boolean recentFpsSample = !Double.isNaN(lastMeasuredFps) && lastMeasuredFpsAtMs > 0
+            && reportTime - lastMeasuredFpsAtMs <= 3000;
         String measuredFps = recentFpsSample
             ? String.format(Locale.ROOT, "%.1f FPS (last presented-frame sample)", lastMeasuredFps)
             : "not recorded (HUD off, no sample, or last sample older than three seconds)";
@@ -352,6 +382,13 @@ public final class AnyiOSEmuActivity extends org.touchhle.android.MainActivity {
             .append(DisplayFrameRate.formatHz(effectiveFpsCap))
             .append(" Hz\nMeasured presentation FPS=")
             .append(measuredFps)
+            .append("\nResolution short-edge limit=")
+            .append(resolutionLimit)
+            .append("p\nDynamic surface resolution=")
+            .append(dynamicResolution == null ? "off" : "on, minimum " + dynamicMinimum + "%")
+            .append(" (presentation surface only; offscreen game buffers may not scale)")
+            .append("\n60 FPS display-link boost=")
+            .append(boostDisplayLink)
             .append("\nPerformance HUD=")
             .append(performanceHudEnabled)
             .append("\nMax clocks request=")

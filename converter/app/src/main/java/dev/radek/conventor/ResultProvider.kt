@@ -25,6 +25,9 @@ class ResultProvider : ContentProvider() {
         if (requestedName == ArtifactNames.placeholderApkFileName(report)) {
             return PlaceholderArtifactContract.validate(report, entryDirectory, requestedName)
         }
+        if (requestedName == ArtifactNames.anyioseApkFileName(report)) {
+            return AnyiOSEmuArtifactContract.validate(report, entryDirectory, requestedName)
+        }
         if (requestedName == ArtifactNames.gameApkFileName(report)) {
             return GameRuntimeArtifactContract.validate(report, entryDirectory, requestedName)
         }

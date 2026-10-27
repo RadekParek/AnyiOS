@@ -47,11 +47,11 @@ jobs:
         id: anyiose-boost-cache
         uses: actions/cache@v4
         with:
-          path: third_party/hyperhle/vendor/boost
+          path: third_party/anyiose-engine/vendor/boost
           key: ${{ runner.os }}-boost-v2-${{ hashFiles('third_party/anyiose-runtime-boost-version.txt', 'scripts/prepare-anyiose-runtime-boost.sh') }}
       - name: Verify or prepare pinned AnyiOSEMU Boost headers
         env:
-          BOOST_ROOT: ${{ github.workspace }}/third_party/hyperhle/vendor/boost
+          BOOST_ROOT: ${{ github.workspace }}/third_party/anyiose-engine/vendor/boost
         run: |
           scripts/prepare-anyiose-runtime-boost.sh
           test -f "$BOOST_ROOT/boost/config.hpp"
@@ -72,7 +72,7 @@ jobs:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
-          key: ${{ runner.os }}-cargo-dependencies-v1-${{ hashFiles('third_party/hyperhle/Cargo.lock') }}
+          key: ${{ runner.os }}-cargo-dependencies-v1-${{ hashFiles('third_party/anyiose-engine/Cargo.lock') }}
           restore-keys: |
             ${{ runner.os }}-cargo-dependencies-v1-
       - name: Cache AnyiOSEMU Rust Android build
@@ -80,8 +80,8 @@ jobs:
         with:
           # Keep target artifacts isolated by the exact native-build inputs. In
           # particular, do not restore an older CMakeCache across ABI/patch changes.
-          path: third_party/hyperhle/target
-          key: ${{ runner.os }}-android-ndk-27.2.12479018-anyiose-rust-v3-${{ hashFiles('app/build.gradle', 'third_party/anyiose-runtime-revision.txt', 'third_party/anyiose-runtime-patches/AnyiOSEMU.patch', 'third_party/anyiose-runtime-patches/SDL-Android-NDK-27.patch', 'third_party/hyperhle/Cargo.lock', 'third_party/hyperhle/**/Cargo.toml') }}
+          path: third_party/anyiose-engine/target
+          key: ${{ runner.os }}-android-ndk-27.2.12479018-anyiose-rust-v3-${{ hashFiles('app/build.gradle', 'third_party/anyiose-runtime-revision.txt', 'third_party/anyiose-runtime-patches/AnyiOSEMU.patch', 'third_party/anyiose-runtime-patches/SDL-Android-NDK-27.patch', 'third_party/anyiose-engine/Cargo.lock', 'third_party/anyiose-engine/**/Cargo.toml') }}
       # Development keys only, never release signing material. Cache eviction can
       # change this certificate; durable distribution requires configured signing secrets.
       - name: Reuse development signing identity when cached
@@ -230,7 +230,7 @@ jobs:
         env:
           VARIANT: ${{ inputs.variant }}
         run: |
-          BUILD_ROOT="third_party/hyperhle/target/aarch64-linux-android/$VARIANT/build"
+          BUILD_ROOT="third_party/anyiose-engine/target/aarch64-linux-android/$VARIANT/build"
           CMAKE_CACHE=$(find "$BUILD_ROOT" -path '*/touchHLE_dynarmic_wrapper-*/out/build/CMakeCache.txt' -print -quit)
           if [ -z "$CMAKE_CACHE" ] || ! grep -Eq '^ARCHITECTURE:[^=]*=arm64$' "$CMAKE_CACHE"; then
             echo 'Dynarmic Android CMake cache is missing the expected arm64 architecture.' >&2
@@ -306,11 +306,14 @@ jobs:
           unzip -l "$ARTIFACT" | grep 'assets/vendor/SDL/LICENSE.txt'
           unzip -l "$ARTIFACT" | grep 'assets/vendor/dynarmic/LICENSE.txt'
           unzip -l "$ARTIFACT" | grep 'assets/vendor/openal-soft/COPYING'
-          unzip -l "$ARTIFACT" | grep 'assets/touchHLE_dylibs/COPYING.libstdcxx'
-          unzip -l "$ARTIFACT" | grep 'assets/touchHLE_fonts/LICENSE.noto'
+          unzip -l "$ARTIFACT" | grep 'assets/AnyiOSEMU_dylibs/COPYING.libstdcxx'
+          unzip -l "$ARTIFACT" | grep 'assets/AnyiOSEMU_fonts/LICENSE.noto'
           unzip -l "$ARTIFACT" | grep 'lib/arm64-v8a/libcompat_runtime_v1.so'
           unzip -l "$ARTIFACT" | grep 'lib/arm64-v8a/libradek.so'
           unzip -l "$ARTIFACT" | grep 'assets/gameruntime-template/classes.dex'
+          unzip -l "$ARTIFACT" | grep 'assets/anyiose-template/classes.dex'
+          unzip -l "$ARTIFACT" | grep 'assets/anyiose-template/AndroidManifest.xml'
+          unzip -l "$ARTIFACT" | grep 'assets/AnyiOSEMU_default_options.txt'
       - uses: actions/upload-artifact@v4
         with:
           name: ${{ inputs.artifact }}

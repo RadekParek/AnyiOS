@@ -89,7 +89,8 @@ jobs:
           cp .local/cpu-tests/guest_runner .local/pc-artifact/AnyiOS-linux-x86_64-guest-runner
           cp -r third_party/dynarmic/notices .local/pc-artifact/third-party-notices
           cp third_party/dynarmic/LICENSE.txt .local/pc-artifact/third-party-notices/dynarmic.txt
-          cp THIRD_PARTY_NOTICES.md .local/pc-artifact/
+          cp third_party/dynarmic/DEPENDENCIES.md .local/pc-artifact/CPU-DEPENDENCIES.md
+          cp third_party/pvrtc/LICENSE.md .local/pc-artifact/third-party-notices/pvrtc.txt
           cp third_party/dynarmic/revision.txt .local/pc-artifact/CPU-REVISION.txt
           printf 'source=%s\nLinux x86-64 CPU/HLE test build. Not a desktop game emulator.\n' \
             "$GITHUB_SHA" > .local/pc-artifact/BUILD-INFO.txt
@@ -175,7 +176,8 @@ jobs:
           cp .local/cpu-tests/pvrtc_test.exe .local/pc-artifact/AnyiOS-windows-x86_64-pvrtc-test.exe
           cp -r third_party/dynarmic/notices .local/pc-artifact/third-party-notices
           cp third_party/dynarmic/LICENSE.txt .local/pc-artifact/third-party-notices/dynarmic.txt
-          cp THIRD_PARTY_NOTICES.md .local/pc-artifact/
+          cp third_party/dynarmic/DEPENDENCIES.md .local/pc-artifact/CPU-DEPENDENCIES.md
+          cp third_party/pvrtc/LICENSE.md .local/pc-artifact/third-party-notices/pvrtc.txt
           cp third_party/dynarmic/revision.txt .local/pc-artifact/CPU-REVISION.txt
           printf 'source=%s\nWindows x86-64 CPU/HLE host build. No Windows ANGLE driver is bundled; not visual-rendering proof.\n' \
             "$GITHUB_SHA" > .local/pc-artifact/BUILD-INFO.txt
