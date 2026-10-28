@@ -24,12 +24,14 @@ struct Provider {
     bool verified;
 };
 
-inline constexpr std::array<Provider, 124> kDarwinOnlyProviders{{
+inline constexpr std::array<Provider, 126> kDarwinOnlyProviders{{
     {"_AudioSessionInitialize", "audio-session.initialize", true},
     {"_AudioSessionSetActive", "audio-session.set-active", true},
     {"_NSHomeDirectory", "foundation.home-directory", true},
     {"_NSSearchPathForDirectoriesInDomains", "foundation.search-paths", true},
     {"_NSTemporaryDirectory", "foundation.temporary-directory", true},
+    {"_OBJC_CLASS_$_ASIdentifierManager", "objc.class.ASIdentifierManager", false},
+    {"_OBJC_CLASS_$_NSUUID", "objc.class.NSUUID", false},
     {"_OBJC_CLASS_$_CAEAGLLayer", "objc.class.CAEAGLLayer", true},
     {"_OBJC_CLASS_$_EAGLContext", "objc.class.EAGLContext", true},
     {"_OBJC_CLASS_$_NSAutoreleasePool", "objc.class.NSAutoreleasePool", true},

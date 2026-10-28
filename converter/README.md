@@ -20,8 +20,11 @@ path. Texture-backed targets are not automatically enlarged. Rebuild/reinstall a
 standalone APK after changing its snapshotted settings. Existing `classic43`
 preferences retain their 3:2 meaning.
 
-Converter details and exports prioritize unresolved issues; verified entries and
-completed progress are hidden. Full `report.json` and logs remain available, and previous analyses are retained. An empty issue list is not evidence of linking or gameplay.
+Converter details and exports separate completed/packaged work, available but
+unlinked providers, and outstanding issues. The complete `report.json` and logs
+remain accessible under **More details**, and previous analyses are retained.
+Export availability and host-reported ELF checks are not independently observed
+game linkage or evidence of gameplay.
 ZIP imports still reject unsafe paths, links, invalid checksums, ZIP64 and bombs;
 the archive-wide allowance for expansion above 250:1 is 256 MiB, with a maximum
 non-ZIP64 member size of 4,294,967,294 bytes. Truly larger or more compressible
@@ -66,8 +69,9 @@ records failures and ELF verification; relink exits successfully only
 when an ARM64 `translated-game-runtime-input.zip` was prepared for import. ARMv7
 can be verified as a standalone ELF, but its handoff is not accepted by the
 current ARM64-only Android importer. Copy the host-generated ZIP into Converter
-and select **Import Native portable-C handoff ZIP**. The existing device-side checks
-are still applied before packaging. This workflow relinks *generated C*, not
+and select **More details → Import translated runtime handoff**. Before packaging,
+the device checks hashes, report consistency and the ELF header; symbol/dependency
+inspection is host-reported, not independently repeated on the device. This workflow relinks *generated C*, not
 arbitrary Mach-O or proprietary frameworks, and does not provide an EGL/GLES
 renderer or establish gameplay.
 

@@ -23,7 +23,10 @@ attach an Android EGL/GLES renderer.
 
 Guest OpenGL ES 1.1 calls are **forwarded to the platform's own EGL/GLES driver**
 (`libEGL.so`/`libGLESv1_CM.so`/`libGLESv2.so` opened at runtime); nothing is
-rasterized in-process. `renderbufferStorage:fromDrawable:` creates an EGL window
+rasterized in-process. The Native bridge does not implement ES 2 shaders: an
+`EAGLContext` requesting ES 2/3 is rejected, and an ES 2 EGL configuration is
+not used as a substitute for ES 1. Semi-Emulated AnyiOSEMU has its separate ES 2
+to native GLES 2 path. `renderbufferStorage:fromDrawable:` creates an EGL window
 surface on the launcher's Android surface (or an offscreen pbuffer when no surface
 was supplied), `presentRenderbuffer:` is `eglSwapBuffers`, and every guest pointer
 argument is translated through the mapped guest regions with a range check. A
@@ -78,9 +81,10 @@ ARM64-only. CMake does not convert arbitrary iOS frameworks into Android code.
 
 On-device, the game-runtime detail screen can import that ZIP. During the APK
 build the selected ARM executable hash is matched to the handoff, its manifest
-and file hashes are checked, the ARM64 ELF and dependency policy are checked
-again, translated-function/export and JNI-entry evidence is required, and the
-nested memory-image hash is verified. Only then are
+and file hashes and ARM64 ELF header are checked, host-reported dependency,
+export and JNI-entry evidence is checked for consistency, and the nested
+memory-image hash is verified. Android does **not** independently parse ELF
+symbols or dependencies: those properties remain host-reported. Only then are
 `lib/arm64-v8a/libtranslated_game.so` and
 `assets/translated-game-payload.zip` added to the signed game-runtime APK. The
 launcher loads that library, extracts and rechecks `rt_mem.bin`, then invokes

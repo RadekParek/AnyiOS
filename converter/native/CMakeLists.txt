@@ -196,6 +196,23 @@ if(RADEK_BUILD_COMPAT_RUNTIME)
         target_link_libraries(compat-runtime-lifecycle-tests PRIVATE compat_runtime_core)
         add_test(NAME compat-runtime-lifecycle COMMAND compat-runtime-lifecycle-tests)
 
+        # A fake dynamically loaded driver checks the ARM32 float calling
+        # convention without claiming an actual EGL surface or rendered frame.
+        if(UNIX AND NOT APPLE)
+            add_library(compat-runtime-gles-mock SHARED tests/compat_runtime_gles_mock.cpp)
+            set_target_properties(compat-runtime-gles-mock PROPERTIES
+                OUTPUT_NAME GLESv1_CM VERSION 1 SOVERSION 1
+                LIBRARY_OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/gles-mock")
+            add_executable(compat-runtime-gles-abi-tests tests/compat_runtime_gles_abi.cpp)
+            target_include_directories(compat-runtime-gles-abi-tests PRIVATE include)
+            target_compile_options(compat-runtime-gles-abi-tests PRIVATE -Wall -Wextra -Werror)
+            target_link_libraries(compat-runtime-gles-abi-tests PRIVATE compat_runtime_core ${CMAKE_DL_LIBS})
+            add_dependencies(compat-runtime-gles-abi-tests compat-runtime-gles-mock)
+            add_test(NAME compat-runtime-gles-abi COMMAND compat-runtime-gles-abi-tests)
+            set_tests_properties(compat-runtime-gles-abi PROPERTIES
+                ENVIRONMENT "LD_LIBRARY_PATH=${CMAKE_CURRENT_BINARY_DIR}/gles-mock:$ENV{LD_LIBRARY_PATH}")
+        endif()
+
         add_executable(compat-runtime-darwin-compat-tests tests/darwin_compat.cpp)
         target_include_directories(compat-runtime-darwin-compat-tests PRIVATE include)
         target_compile_options(compat-runtime-darwin-compat-tests PRIVATE -Wall -Wextra -Werror)

@@ -57,6 +57,49 @@ class MachOTests(unittest.TestCase):
     def test_armv6(self):
         self.assertEqual(self.parse(macho(cpu=12, subtype=6))["slices"][0]["architecture"], "armv6")
 
+    def test_armv6_empty_tables_with_stale_offsets(self):
+        # Offsets paired with a zero size/count are never dereferenced. Some
+        # legacy strip/link products retain stale values instead of zeroing them.
+        unused = 0xFFFFFFF0
+        dysym = struct.pack("<20I", 0xB, 80, *([0] * 12), unused, 0, unused, 0, unused, 0)
+        dyld = struct.pack("<12I", 0x80000022, 48, *([unused, 0] * 5))
+        signature = struct.pack("<IIII", 0x1D, 16, unused, 0)
+        empty_segment = struct.pack(
+            "<II16sIIIIIIII", 1, 56, b"__EMPTY", 0x20000, 0x1000, unused, 0, 3, 3, 0, 0
+        )
+        data = bytearray(macho(cpu=12, subtype=6, extras=[dysym, dyld, signature, empty_segment]))
+        # The __text section has zero relocations; its relocation offset is unused.
+        struct.pack_into("<I", data, 28 + 56 + 48, unused)
+        for is_fat, wrapped in ((False, bytes(data)), (True, fat([bytes(data), macho(cpu=12, subtype=9)]))):
+            with self.subTest(fat=is_fat):
+                result = self.parse(wrapped)
+                self.assertEqual(result["slices"][0]["architecture"], "armv6")
+                self.assertEqual(result["slices"][0]["symbolCount"], 1)
+                self.assertEqual(result["slices"][0]["fixupStreams"], [])
+
+    def test_empty_symbol_table_with_stale_offsets(self):
+        data = bytearray(macho(cpu=12, subtype=6))
+        symtab = 28 + 124 + 24
+        struct.pack_into("<IIII", data, symtab + 8, 0xFFFFFFF0, 0, 0xFFFFFFF0, 0)
+        result = self.parse(bytes(data))["slices"][0]
+        self.assertEqual(result["symbolCount"], 0)
+        self.assertEqual(result["imports"], [])
+
+    def test_nonempty_out_of_slice_table_is_rejected_with_context(self):
+        unused = 0xFFFFFFF0
+        cmd = struct.pack("<12I", 0x80000022, 48, 0, 0, unused, 1, 0, 0, 0, 0, 0, 0)
+        for data in (macho(cpu=12, subtype=6, extras=[cmd]), fat([macho(cpu=12, subtype=6, extras=[cmd])])):
+            with self.subTest(fat=data[:4] == b"\xca\xfe\xba\xbe"):
+                with self.assertRaises(InputError) as error:
+                    self.parse(data)
+                message = str(error.exception)
+                self.assertIn("Mach-O range outside slice", message)
+                self.assertIn("LC_DYLD_INFO bind", message)
+                self.assertIn("offset 4294967280", message)
+                self.assertIn("length 1", message)
+                self.assertIn("slice size", message)
+                self.assertIn("slice file offset", message)
+
     def test_encrypted(self):
         self.assertTrue(self.parse(macho(encrypted=True))["slices"][0]["encrypted"])
 

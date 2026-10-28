@@ -725,36 +725,19 @@ class Library(private val context: Context) {
             val verifiedNdkCandidatePercent = apiMapping.optInt("runtimeVerifiedCandidateCoveragePercent", 0)
             val verifiedNdkImportPercent = apiMapping.optInt("runtimeVerifiedImportCoveragePercent", 0)
             val unimplementedCompatStubCount = apiMapping.optInt("compatStubHandlerCount", 0)
-            // The packaged game-runtime APK declares libioscompat.so as a
-            // DT_NEEDED dependency, and the boot runner resolves the device-
-            // verified exports through dlopen/dlsym at guest start. That is the
-            // real link path; its count comes from the device-verified number
-            // instead of being hardcoded to zero. Auto-registered stubs are
-            // excluded upstream, so the count can never be inflated.
+            // Device dlsym establishes availability in the analyzer process, not
+            // that this IPA's import slot was bound or any callsite rewritten.
             report.put("apiImplementationGeneration", JSONObject()
-                .put("status", when {
-                    runtimeVerifiedReplacements > 0 && runtimeVerifiedReplacements == availableApiReplacements -> "COMPAT_EXPORTS_LINKED_AT_BOOT"
-                    runtimeVerifiedReplacements > 0 -> "COMPAT_EXPORTS_PARTIALLY_LINKED_AT_BOOT"
-                    availableApiReplacements > 0 -> "COMPAT_EXPORTS_AVAILABLE_NOT_LINKED"
-                    else -> "NO_API_REPLACEMENT_LINKED"
-                })
+                .put("status", if (availableApiReplacements > 0) "COMPAT_EXPORTS_AVAILABLE_NOT_LINKED" else "NO_API_REPLACEMENT_LINKED")
                 .put("attempted", false)
                 .put("generatedApiReplacements", 0)
                 .put("implementedRuntimeReplacements", availableApiReplacements)
-                .put("linkedApiReplacements", runtimeVerifiedReplacements)
+                .put("deviceVerifiedExports", runtimeVerifiedReplacements)
+                .put("linkedApiReplacements", 0)
                 .put("codeGenerated", false)
                 .put("linkedIntoGame", false)
                 .put("completeGameConversion", false)
-                .put("message", when {
-                    runtimeVerifiedReplacements > 0 && runtimeVerifiedReplacements == availableApiReplacements ->
-                        "$runtimeVerifiedReplacements imported symbol(s) have concrete libioscompat.so implementation exports, device-verified and resolved at guest boot through the DT_NEEDED dependency; no IPA callsite was rewritten."
-                    runtimeVerifiedReplacements > 0 ->
-                        "$runtimeVerifiedReplacements of $availableApiReplacements available libioscompat.so implementation export(s) were device-verified and are resolved at guest boot; no IPA callsite was rewritten."
-                    availableApiReplacements > 0 ->
-                        "$availableApiReplacements imported symbol(s) have concrete libioscompat.so implementation exports available; none was device-verified on this run and none was linked into a game."
-                    else ->
-                        "The analyzer contains compatibility implementations, but this IPA has no matching libioscompat.so implementation export; no game API replacement was linked."
-                }))
+                .put("message", "$runtimeVerifiedReplacements of $availableApiReplacements available compatibility exports were found on this device; no game import slot or callsite was verified as linked."))
             if (deviceProven) {
                 report.put("portProgress", JSONObject()
                     .put("percent", 0)
@@ -802,9 +785,7 @@ class Library(private val context: Context) {
                     "$compilerRuntimeCandidateCount candidate(s), $compilerRuntimeGuestProviderCount with " +
                     "guest-adapter catalog entries. Strict same-name NDK subset: $ndkNameCandidateCount/$importSymbolCount. " +
                     "$deviceNdkVerificationSummary " +
-                    (if (runtimeVerifiedReplacements == availableApiReplacements && availableApiReplacements > 0)
-                        "$availableApiReplacements libioscompat.so implementation export(s) are available and resolved at guest boot through the packaged DT_NEEDED dependency; "
-                    else "$availableApiReplacements libioscompat.so implementation export(s) are available but not linked; ") +
+                    "$availableApiReplacements libioscompat.so implementation export(s) are available; $runtimeVerifiedReplacements were found on this device, but game linkage has not been observed; " +
                     "$unimplementedCompatStubCount compat handlers are stubs. Guest catalog entries are not per-image " +
                     "slot-fixup results: import-slot binds appear in runtimeLinking after game launch. No static IPA " +
                     "callsite was rewritten, and mapping is triage, not linked game code."
@@ -825,7 +806,7 @@ class Library(private val context: Context) {
                     "This bundle needs work that is not implemented: $evidence.$apiBlocker The analysis itself completed."
                 }
                 deviceProven -> "The executable is fully covered by the proven closed-integer subset. Force convert builds a real signed APK whose statically recompiled entry routine runs through JNI; general games remain unsupported."
-                else -> "Analysis completed; this executable is not in the statically-proven single-routine subset, so no complete static game conversion is generated. Force convert offers a Native diagnostic boot attempt or a standalone Semi-Emulated AnyiOSEMU APK. ARM32 compatibility and gameplay remain device-dependent; a preview shell is also available."
+                else -> "Analysis completed; this executable is not in the statically-proven single-routine subset, so no complete static game conversion is generated. Force convert offers a Native diagnostic boot attempt or a standalone Semi-Emulated AnyiOSEMU APK. ARM32 compatibility and gameplay remain device-dependent."
             }
             report.put("blockers", JSONArray().put(reason)).put("hostCommand", "python3 -m radek analyze input.ipa --authorized --output workspace/analysis")
             val terminalState = if (encrypted || incompatible || !hasCandidate) ConversionState.BLOCKED else ConversionState.PARTIAL

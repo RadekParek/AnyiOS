@@ -7,7 +7,7 @@ package dev.radek.conventor
  * particular IPA image's import slot was fixed up or that the API is complete.
  */
 internal object CompatImportProviders {
-    const val EXPECTED_GUEST_RUNTIME_ADAPTER_COUNT = 124
+    const val EXPECTED_GUEST_RUNTIME_ADAPTER_COUNT = 126
     // Legacy identifier retained for report/schema compatibility.
     const val EXPECTED_DARWIN_ONLY_IMPORT_COUNT = EXPECTED_GUEST_RUNTIME_ADAPTER_COUNT
 
@@ -17,6 +17,8 @@ internal object CompatImportProviders {
         "_NSHomeDirectory" to "foundation.home-directory",
         "_NSSearchPathForDirectoriesInDomains" to "foundation.search-paths",
         "_NSTemporaryDirectory" to "foundation.temporary-directory",
+        "_OBJC_CLASS_\$_ASIdentifierManager" to "objc.class.ASIdentifierManager",
+        "_OBJC_CLASS_\$_NSUUID" to "objc.class.NSUUID",
         "_OBJC_CLASS_\$_CAEAGLLayer" to "objc.class.CAEAGLLayer",
         "_OBJC_CLASS_\$_EAGLContext" to "objc.class.EAGLContext",
         "_OBJC_CLASS_\$_NSAutoreleasePool" to "objc.class.NSAutoreleasePool",

@@ -485,6 +485,44 @@ void testGuestMemoryAndHeap() {
     CHECK(memory.callbacks().regions().size() == 2);
 }
 
+// Exercise the callback lookup cache through exactly the same public operations
+// Dynarmic uses, including permissions, remaps and object copying/moving.
+void testGuestMemoryLookupCache() {
+    GuestAddressSpace memory;
+    const auto rw = MemoryPermission::Read | MemoryPermission::Write;
+    memory.mapAt(0x1000, 4096, rw, "first");
+    memory.mapAt(0x2000, 4096, rw, "second");
+    std::uint32_t value = 0x12345678;
+    CHECK(memory.write(0x1004, &value, sizeof(value)));
+    std::uint32_t actual = 0;
+    CHECK(memory.read(0x1004, &actual, sizeof(actual)) && actual == value);
+    CHECK(memory.read(0x1004, &actual, sizeof(actual)) && actual == value);
+    memory.setPermissions(0x1000, MemoryPermission::None);
+    CHECK(!memory.read(0x1004, &actual, sizeof(actual)));
+    memory.setPermissions(0x1000, rw);
+    CHECK(memory.read(0x1004, &actual, sizeof(actual)) && actual == value);
+    CHECK(memory.write(0x1ffe, &value, sizeof(value)));
+    CHECK(memory.read(0x1ffe, &actual, sizeof(actual)) && actual == value);
+    CHECK(memory.read(0x1004, &actual, sizeof(actual)));
+    memory.unmap(0x1000); // the most recently cached node was erased
+    CHECK(!memory.read(0x1004, &actual, sizeof(actual)));
+    memory.mapAt(0x1000, 4096, rw, "replacement");
+    CHECK(memory.read(0x1004, &actual, sizeof(actual)) && actual == 0);
+    CHECK(memory.write(0x1004, &value, sizeof(value)));
+    GuestAddressSpace copy(memory);
+    memory.unmap(0x1000);
+    CHECK(copy.read(0x1004, &actual, sizeof(actual)) && actual == value);
+    GuestAddressSpace assigned;
+    assigned = copy;
+    copy.unmap(0x1000);
+    CHECK(assigned.read(0x1004, &actual, sizeof(actual)) && actual == value);
+    GuestAddressSpace moved(std::move(assigned));
+    CHECK(moved.read(0x1004, &actual, sizeof(actual)) && actual == value);
+    GuestAddressSpace moveAssigned;
+    moveAssigned = std::move(moved);
+    CHECK(moveAssigned.read(0x1004, &actual, sizeof(actual)) && actual == value);
+}
+
 void testDirtyPagesAcrossWritePaths() {
     GuestAddressSpace memory;
     const auto rw = MemoryPermission::Read | MemoryPermission::Write;
@@ -1921,6 +1959,45 @@ void testMachOLoadAndDyldReports() {
     CHECK(unreadableRebase.rebasesApplied == 0);
 }
 
+void testLegacyEmptyFileRangesAreNotRead() {
+    MachOptions options;
+    options.cpuSubtype = 6;
+    options.includeDataSegment = true;
+    options.includeUnboundSymbol = true;
+    auto image = makeMachO(options);
+    const auto read32 = [&image](std::size_t at) {
+        return static_cast<std::uint32_t>(image.at(at)) |
+               (static_cast<std::uint32_t>(image.at(at + 1)) << 8) |
+               (static_cast<std::uint32_t>(image.at(at + 2)) << 16) |
+               (static_cast<std::uint32_t>(image.at(at + 3)) << 24);
+    };
+    std::size_t cursor = 28;
+    for (std::uint32_t i = 0; i < read32(16); ++i) {
+        const auto command = read32(cursor);
+        if (command == 1 && image.at(cursor + 8) == '_' && image.at(cursor + 10) == 'D') {
+            putU32(image, cursor + 32, 0xfffffff0u); // stale fileoff
+            putU32(image, cursor + 36, 0);            // no file bytes
+        }
+        if (command == 2) {
+            putU32(image, cursor + 8, 0xfffffff0u);
+            putU32(image, cursor + 12, 0);
+            putU32(image, cursor + 16, 0xfffffff0u);
+            putU32(image, cursor + 20, 0);
+        }
+        cursor += read32(cursor + 4);
+    }
+    GuestAddressSpace memory(16U * 1024U * 1024U);
+    const auto loaded = MachOLoader().load(image, memory, ShimRegistry{});
+    CHECK(loaded.mapped);
+    CHECK(loaded.error.empty());
+    // The same stale location must still be rejected when it has bytes.
+    putU32(image, 28 + 56 + 36, 1);
+    GuestAddressSpace rejectedMemory(16U * 1024U * 1024U);
+    const auto rejected = MachOLoader().load(image, rejectedMemory, ShimRegistry{});
+    CHECK(!rejected.mapped);
+    CHECK(!rejected.error.empty());
+}
+
 void testNlistFatAndThreadState() {
     MachOptions mainBeforeSegmentsOptions;
     mainBeforeSegmentsOptions.mainBeforeSegments = true;
@@ -2278,6 +2355,7 @@ void testCpuBackendBoundary() {
 
 int main() {
     testGuestMemoryAndHeap();
+    testGuestMemoryLookupCache();
     testDirtyPagesAcrossWritePaths();
     testShimRegistry();
     testGuestPthreadCreateTransfersAndJoins();
@@ -2289,6 +2367,7 @@ int main() {
     testObjectiveCMutationExceptionBoundaryIsReported();
     testImageObjectiveCMetadataDispatchesGuestMethods();
     testMachOLoadAndDyldReports();
+    testLegacyEmptyFileRangesAreNotRead();
     testNlistFatAndThreadState();
     testLegacyIndirectSymbolPointerBindsCallout();
     testLegacyExternalRelocationBindsGuestData();

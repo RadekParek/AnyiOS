@@ -100,12 +100,17 @@ class ProviderTests(unittest.TestCase):
         for install_name in (
             "/System/Library/Frameworks/StoreKit.framework/StoreKit",
             "/System/Library/Frameworks/GameKit.framework/GameKit",
-            "/System/Library/Frameworks/AdSupport.framework/AdSupport",
             "/System/Library/Frameworks/CoreLocation.framework/CoreLocation",
             "/usr/lib/libDoesNotExist.dylib",
         ):
             with self.subTest(install_name=install_name):
                 self.assertEqual(providers.STATUS_BLOCKED, providers.classify(install_name)["status"])
+
+    def test_adsupport_is_a_bounded_privacy_stub_not_a_real_ad_service(self):
+        item = providers.classify("/System/Library/Frameworks/AdSupport.framework/AdSupport")
+        self.assertEqual(providers.STATUS_COMPATIBILITY, item["status"])
+        self.assertIn("zero-IDFA", item["provider"])
+        self.assertIn("binding and execution remain unverified", item["reason"])
 
     def test_longest_suffix_wins(self):
         provider = providers.for_install_name("/System/Library/Frameworks/UIKit.framework/UIKit")
@@ -180,8 +185,8 @@ class ProviderTests(unittest.TestCase):
 
     def test_guest_runtime_adapter_catalog_is_explicit_and_matches_kotlin(self):
         """Non-same-name imports have catalogued guest adapters, not fake NDK hits."""
-        self.assertEqual(CONCRETE_DARWIN_COMPAT_IMPORT_COUNT, 124)
-        self.assertEqual(len(CONCRETE_DARWIN_COMPAT_PROVIDERS), 124)
+        self.assertEqual(CONCRETE_DARWIN_COMPAT_IMPORT_COUNT, 126)
+        self.assertEqual(len(CONCRETE_DARWIN_COMPAT_PROVIDERS), 126)
         kotlin = (ROOT / "app/src/main/java/dev/radek/conventor/CompatImportProviders.kt").read_text(
             encoding="utf-8"
         )

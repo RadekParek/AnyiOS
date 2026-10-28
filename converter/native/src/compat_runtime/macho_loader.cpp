@@ -846,8 +846,9 @@ void applyIndirectSymbolPointers(const Reader &reader, const ImageState &image,
                                 TrapContext *trapContext = nullptr) {
     if (!image.dynamicSymbols.present)
         return;
-    reader.range(image.dynamicSymbols.indirectSymbolOffset,
-                 static_cast<std::uint64_t>(image.dynamicSymbols.indirectSymbolCount) * 4);
+    if (image.dynamicSymbols.indirectSymbolCount != 0)
+        reader.range(image.dynamicSymbols.indirectSymbolOffset,
+                     static_cast<std::uint64_t>(image.dynamicSymbols.indirectSymbolCount) * 4);
 
     // Lazy symbol pointers appear first in the real iOS 2-6 link products and
     // are the function targets consumed by their ARM symbol stubs. Process them
@@ -1053,9 +1054,11 @@ void appendUnboundNlistImports(const Reader &reader, const ImageState &image,
                                TrapContext *trapContext = nullptr) {
     if (!image.symbols.present)
         return;
-    reader.range(image.symbols.symbolOffset,
-                 static_cast<std::uint64_t>(image.symbols.symbolCount) * 12);
-    reader.range(image.symbols.stringOffset, image.symbols.stringSize);
+    if (image.symbols.symbolCount != 0)
+        reader.range(image.symbols.symbolOffset,
+                     static_cast<std::uint64_t>(image.symbols.symbolCount) * 12);
+    if (image.symbols.stringSize != 0)
+        reader.range(image.symbols.stringOffset, image.symbols.stringSize);
     for (std::uint32_t index = 0; index < image.symbols.symbolCount; ++index) {
         const auto symbol = readNlistEntry(reader, image, index);
         if (!symbol.undefinedExternal() || symbol.name.empty() ||
@@ -1118,7 +1121,10 @@ void parseLoadCommands(const Reader &reader, ImageState &image,
                 throw std::runtime_error("Mach-O section table exceeds its segment command");
             if (segment.fileSize > segment.vmSize)
                 throw std::runtime_error("Mach-O segment file size exceeds its virtual size");
-            reader.range(segment.fileOffset, segment.fileSize);
+            // A zero-sized file-backed segment has no bytes to access; its
+            // offset may be left stale by old linkers/strippers.
+            if (segment.fileSize != 0)
+                reader.range(segment.fileOffset, segment.fileSize);
             if (static_cast<std::uint64_t>(segment.vmAddress) + segment.vmSize >
                 (std::uint64_t{1} << 32))
                 throw std::runtime_error("Mach-O segment exceeds the 32-bit address space");

@@ -1,5 +1,6 @@
 package dev.radek.conventor
 
+import org.json.JSONArray
 import org.json.JSONObject
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -49,6 +50,21 @@ class TranslatedAndroidLinkTest {
         assertEquals(97.715034, port.getDouble("percent"), 1e-6)
         assertTrue(port.getBoolean("androidLinkVerified"))
         assertEquals(2837, port.getInt("recompiledFunctions"))
+    }
+
+    @Test
+    fun hostSymbolsAreBoundedAndNeverClaimDeviceInspection() {
+        val staged = staged(linked = 40L, executable = 100L, functions = 150)
+        val symbols = JSONArray()
+        repeat(150) { symbols.put("function_$it") }
+        staged.report.put("translatedFunctionSymbols", symbols)
+        val report = JSONObject()
+        TranslatedAndroidLink.record(report, staged)
+        val link = report.getJSONObject("androidLink")
+        assertEquals("HOST_REPORTED_NOT_DEVICE_INSPECTED", link.getString("symbolAndDependencyInspection"))
+        assertEquals(100, link.getJSONArray("hostReportedFunctionSymbols").length())
+        assertTrue(link.getBoolean("hostReportedFunctionSymbolsTruncated"))
+        assertTrue(link.getString("basis").contains("not independently inspected"))
     }
 
     @Test

@@ -81,11 +81,9 @@ constexpr EGLint EGL_PBUFFER_BIT = 0x0001;
 constexpr EGLint EGL_WINDOW_BIT = 0x0004;
 constexpr EGLint EGL_RENDERABLE_TYPE = 0x3040;
 constexpr EGLint EGL_OPENGL_ES_BIT = 0x0001;
-constexpr EGLint EGL_OPENGL_ES2_BIT = 0x0004;
 constexpr EGLint EGL_DEPTH_SIZE = 0x3025;
 constexpr EGLint EGL_WIDTH = 0x3057;
 constexpr EGLint EGL_HEIGHT = 0x3056;
-constexpr EGLint EGL_CONTEXT_CLIENT_VERSION = 0x3098;
 
 // The callout window used by the forwarding bindings (free range between the
 // libsystem window ending at 0xf004ffff and the loader's reserved region).
@@ -127,7 +125,10 @@ void recordDrawable(bool ready, bool window, std::uint32_t width, std::uint32_t 
     gProgress.drawableHeight.store(ready ? height : 0, std::memory_order_relaxed);
 }
 
-/** ARM AAPCS argument view: r0-r3, then [sp], plus the VFP argument bank. */
+/** iOS ARM32 base AAPCS arguments: r0-r3, then [sp]. Floating-point
+ * values are passed as integer bit patterns even when guest code uses VFP.
+ * https://developer.apple.com/library/archive/documentation/Xcode/Conceptual/iPhoneOSABIReference/Articles/ARMv6FunctionCallingConventions.html
+ */
 struct Args {
     CpuRegisterState &registers;
     GuestAddressSpace &memory;
@@ -146,9 +147,7 @@ struct Args {
     GLint i32(int index) const { return static_cast<GLint>(u32(index)); }
     GLenum enumValue(int index) const { return static_cast<GLenum>(u32(index)); }
     GLfloat f(int index) const {
-        const auto slot = registers.d[static_cast<std::size_t>(index / 2)];
-        const std::uint32_t bits = (index % 2 == 0) ? static_cast<std::uint32_t>(slot)
-                                                    : static_cast<std::uint32_t>(slot >> 32);
+        const std::uint32_t bits = u32(index);
         GLfloat value = 0.0f;
         std::memcpy(&value, &bits, sizeof(value));
         return value;
@@ -514,18 +513,13 @@ struct Forwarder::Impl {
                 return false;
             return true;
         };
-        EGLint contextAttributeValue = 1;
+        // This Native bridge forwards fixed-function ES 1 calls. An ES 2
+        // context is not a translation layer and cannot execute that pipeline.
         if (!choose(EGL_OPENGL_ES_BIT)) {
-            if (!choose(EGL_OPENGL_ES2_BIT)) {
-                why = "no EGL config supports an OpenGL ES surface on this device" + eglErrorSuffix();
-                return false;
-            }
-            contextAttributeValue = 2;
+            why = "no EGL config supports the Native runtime's OpenGL ES 1 context" + eglErrorSuffix();
+            return false;
         }
-        const EGLint contextAttributes[] = {EGL_CONTEXT_CLIENT_VERSION,
-                                            contextAttributeValue, EGL_NONE};
-        egl.context = eglCreateContext(egl.display, egl.config, nullptr,
-                                       contextAttributeValue == 1 ? nullptr : contextAttributes);
+        egl.context = eglCreateContext(egl.display, egl.config, nullptr, nullptr);
         if (!egl.context) {
             why = "eglCreateContext failed for an OpenGL ES context" + eglErrorSuffix();
             return false;

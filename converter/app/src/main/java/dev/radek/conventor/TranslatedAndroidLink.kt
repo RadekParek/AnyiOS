@@ -1,5 +1,6 @@
 package dev.radek.conventor
 
+import org.json.JSONArray
 import org.json.JSONObject
 
 /**
@@ -39,10 +40,15 @@ internal object TranslatedAndroidLink {
         }
         val percent = Math.round(100.0 * linkedBytes / executableBytes * 1_000_000.0) / 1_000_000.0
         val artifact = metadata.optString("libraryApkPath")
-        val basis = "$functions translated function(s) are packaged as $artifact inside the game-runtime APK " +
-            "($linkedBytes/$executableBytes unique source __text bytes). The verified ELF exports, " +
-            "dependency allowlist, and JNI entry were revalidated on device; the translated runner has no " +
-            "EGL/GLES renderer, so pixels, gameplay, and playability are not verified."
+        val basis = "The Native APK packages $artifact, with $functions translated function(s) " +
+            "reported by the host ($linkedBytes/$executableBytes unique source __text bytes). " +
+            "The device checked the ARM64 ELF header, hashes and agreement of the supplied reports; " +
+            "ELF exports, dependencies and JNI entry are host-reported, not independently inspected " +
+            "on device. The translated runner has no EGL/GLES renderer; gameplay is unverified."
+        val hostSymbols = JSONArray()
+        translated.report.optJSONArray("translatedFunctionSymbols")?.let { symbols ->
+            for (index in 0 until minOf(symbols.length(), 100)) hostSymbols.put(symbols.optString(index))
+        }
         report.put(
             "androidLink",
             JSONObject()
@@ -57,6 +63,9 @@ internal object TranslatedAndroidLink {
                 .put("exportsVerified", metadata.optBoolean("exportsVerified", false))
                 .put("translationEntryPointVerified", metadata.optBoolean("translationEntryPointVerified", false))
                 .put("allVerificationsPassed", metadata.optBoolean("allVerificationsPassed", false))
+                .put("symbolAndDependencyInspection", "HOST_REPORTED_NOT_DEVICE_INSPECTED")
+                .put("hostReportedFunctionSymbols", hostSymbols)
+                .put("hostReportedFunctionSymbolsTruncated", functions > hostSymbols.length())
                 .put("translatedFunctionCount", functions)
                 .put("linkedTranslatedFunctionCount", functions)
                 .put("androidLinkedTextBytes", linkedBytes)
