@@ -24,16 +24,25 @@ struct Provider {
     bool verified;
 };
 
-inline constexpr std::array<Provider, 126> kDarwinOnlyProviders{{
+inline constexpr std::array<Provider, 135> kDarwinOnlyProviders{{
     {"_AudioSessionInitialize", "audio-session.initialize", true},
     {"_AudioSessionSetActive", "audio-session.set-active", true},
+    {"_CFRunLoopGetCurrent", "corefoundation.run-loop-get-current", false},
+    {"_CFRunLoopGetMain", "corefoundation.run-loop-get-main", false},
+    {"_CFRunLoopRun", "corefoundation.run-loop-run", false},
+    {"_CFRunLoopRunInMode", "corefoundation.run-loop-run-in-mode", false},
+    {"_CFRunLoopStop", "corefoundation.run-loop-stop", false},
     {"_NSHomeDirectory", "foundation.home-directory", true},
     {"_NSSearchPathForDirectoriesInDomains", "foundation.search-paths", true},
     {"_NSTemporaryDirectory", "foundation.temporary-directory", true},
     {"_OBJC_CLASS_$_ASIdentifierManager", "objc.class.ASIdentifierManager", false},
     {"_OBJC_CLASS_$_NSUUID", "objc.class.NSUUID", false},
-    {"_OBJC_CLASS_$_CAEAGLLayer", "objc.class.CAEAGLLayer", true},
-    {"_OBJC_CLASS_$_EAGLContext", "objc.class.EAGLContext", true},
+    {"_OBJC_CLASS_$_CADisplayLink", "objc.class.CADisplayLink", false},
+    {"_OBJC_CLASS_$_CAEAGLLayer", "objc.class.CAEAGLLayer", false},
+    {"_OBJC_CLASS_$_CALayer", "objc.class.CALayer", false},
+    {"_OBJC_CLASS_$_EAGLContext", "objc.class.EAGLContext", false},
+    {"_OBJC_CLASS_$_NSRunLoop", "objc.class.NSRunLoop", false},
+    {"_OBJC_CLASS_$_NSTimer", "objc.class.NSTimer", false},
     {"_OBJC_CLASS_$_NSAutoreleasePool", "objc.class.NSAutoreleasePool", true},
     {"_OBJC_CLASS_$_NSBundle", "objc.class.NSBundle", true},
     {"_OBJC_CLASS_$_NSDictionary", "objc.class.NSDictionary", true},

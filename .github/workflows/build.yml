@@ -124,12 +124,14 @@ jobs:
         env:
           ANYIOS_REQUIRE_REAL_NDK_CMAKE: '1'
         run: |
-          python3 -m venv "$RUNNER_TEMP/anyios-ndk-tests"
-          "$RUNNER_TEMP/anyios-ndk-tests/bin/pip" install 'capstone==5.0.7'
-          export PATH="$ANDROID_HOME/cmake/3.22.1/bin:$PATH"
-          export ANDROID_NDK_HOME="$ANDROID_HOME/ndk/27.2.12479018"
-          cd converter
-          "$RUNNER_TEMP/anyios-ndk-tests/bin/python" -m unittest tests.test_cmake_link -v
+          set -o pipefail
+          {
+            python3 -m venv "$RUNNER_TEMP/anyios-ndk-tests"
+            "$RUNNER_TEMP/anyios-ndk-tests/bin/pip" install 'capstone==5.0.7'
+            export PATH="$ANDROID_HOME/cmake/3.22.1/bin:$PATH"
+            export ANDROID_NDK_HOME="$ANDROID_HOME/ndk/27.2.12479018"
+            (cd converter && "$RUNNER_TEMP/anyios-ndk-tests/bin/python" -m unittest tests.test_cmake_link -v)
+          } 2>&1 | tee .local/logs/ndk-relink.log
       - name: Prepare Cargo SDL source for Android NDK 27
         run: |
           set -o pipefail
@@ -273,7 +275,7 @@ jobs:
           elif [ "$VARIANT" = debug ]; then
             gradle --no-daemon --build-cache --parallel :app:lintDebug :app:testDebugUnitTest :converter:lintDebug :converter:testDebugUnitTest :gameruntime-template:testDebugUnitTest :anyiose-template:testDebugUnitTest :app:assembleDebug 2>&1 | tee .local/logs/android-build.log
           else
-            gradle --no-daemon --build-cache --parallel :app:lintRelease :app:testReleaseUnitTest :converter:lintRelease :converter:testReleaseUnitTest :anyiose-template:testReleaseUnitTest :app:assembleRelease 2>&1 | tee .local/logs/android-build.log
+            gradle --no-daemon --build-cache --parallel :app:lintRelease :app:testReleaseUnitTest :converter:lintRelease :converter:testReleaseUnitTest :gameruntime-template:testDebugUnitTest :anyiose-template:testReleaseUnitTest :app:assembleRelease 2>&1 | tee .local/logs/android-build.log
           fi
       - name: Verify Android Dynarmic target architecture
         env:
@@ -408,7 +410,8 @@ jobs:
                        if line.startswith(keys)]
               message = (str(path) + ': ' + '\n'.join(lines)).replace('%', '%25').replace('\r', '%0D').replace('\n', '%0A')
               print('::warning::' + message)
-          for root in ('app/build/test-results', 'converter/app/build/test-results'):
+          for root in ('app/build/test-results', 'converter/app/build/test-results',
+                       'converter/gameruntime-template/build/test-results'):
               for path in Path(root).rglob('TEST-*.xml'):
                   for case in ET.parse(path).getroot().iter('testcase'):
                       for failure in case.findall('failure') + case.findall('error'):
@@ -439,6 +442,8 @@ jobs:
             app/build/test-results/
             converter/app/build/reports/
             converter/app/build/test-results/
+            converter/gameruntime-template/build/reports/
+            converter/gameruntime-template/build/test-results/
             .local/angle-build/angle/out/PodNative/args.gn
       - name: Remove temporary signing material
         if: always()

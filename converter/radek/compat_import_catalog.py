@@ -27,6 +27,17 @@ CONCRETE_DARWIN_COMPAT_PROVIDERS: dict[str, str] = {
     "_NSTemporaryDirectory": "foundation.temporary-directory",
     "_UIApplicationMain": "uikit.application-main",
 
+    # These run-loop adapters and classes implement only a bounded subset.
+    "_CFRunLoopGetCurrent": "corefoundation.run-loop-get-current",
+    "_CFRunLoopGetMain": "corefoundation.run-loop-get-main",
+    "_CFRunLoopRun": "corefoundation.run-loop-run",
+    "_CFRunLoopRunInMode": "corefoundation.run-loop-run-in-mode",
+    "_CFRunLoopStop": "corefoundation.run-loop-stop",
+    "_OBJC_CLASS_$_CADisplayLink": "objc.class.CADisplayLink",
+    "_OBJC_CLASS_$_CALayer": "objc.class.CALayer",
+    "_OBJC_CLASS_$_NSRunLoop": "objc.class.NSRunLoop",
+    "_OBJC_CLASS_$_NSTimer": "objc.class.NSTimer",
+
     # Objective-C class/metaclass data and dispatch/runtime data.
     "_OBJC_CLASS_$_ASIdentifierManager": "objc.class.ASIdentifierManager",
     "_OBJC_CLASS_$_NSUUID": "objc.class.NSUUID",
@@ -160,9 +171,9 @@ CONCRETE_DARWIN_COMPAT_PROVIDERS: dict[str, str] = {
 
 CONCRETE_DARWIN_COMPAT_IMPORT_COUNT = len(CONCRETE_DARWIN_COMPAT_PROVIDERS)
 
-if CONCRETE_DARWIN_COMPAT_IMPORT_COUNT != 126:  # pragma: no cover - authoring guard
+if CONCRETE_DARWIN_COMPAT_IMPORT_COUNT != 135:  # pragma: no cover - authoring guard
     raise AssertionError(
-        "the non-NDK Darwin provider inventory must contain exactly 126 imports, "
+        "the non-NDK Darwin provider inventory must contain exactly 135 imports, "
         f"got {CONCRETE_DARWIN_COMPAT_IMPORT_COUNT}"
     )
 
@@ -251,9 +262,9 @@ VERIFIED_SEMANTICS_PROVIDERS: frozenset[str] = frozenset({
     # UIApplicationMain startup forwarding, the __DefaultRuneLocale guest page,
     # CoreFoundation constant-string class data, C++ SjLj personality plus
     # _Unwind_SjLj register/resume/unregister contexts, and EAGL constants as
-    # real NSString objects backed by the EGL window-surface render path) and
+    # real NSString objects) and
     # each behavior is pinned by the native compat-runtime test suite.
-    "objc.class.CAEAGLLayer", "objc.class.EAGLContext", "objc.class.NSAutoreleasePool",
+    "objc.class.NSAutoreleasePool",
     "objc.class.NSBundle", "objc.class.NSDictionary", "objc.class.NSNumber",
     "objc.class.NSObject", "objc.class.NSString", "objc.class.NSThread", "objc.class.NSURL",
     "objc.class.UIAccelerometer", "objc.class.UIApplication", "objc.class.UIScreen",

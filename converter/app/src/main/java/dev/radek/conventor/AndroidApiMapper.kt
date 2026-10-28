@@ -319,7 +319,7 @@ internal object AndroidApiMapper {
         "NSJSONSerialization" to "org.json or kotlinx.serialization",
         "AVAudioPlayer" to "android.media.MediaPlayer or SoundPool",
         "AVAudioSession" to "android.media.AudioManager + AudioAttributes",
-        "CADisplayLink" to "C callback bridge driven by Android Choreographer (not the Objective-C CADisplayLink ABI)",
+        "CADisplayLink" to "Partial Native guest CADisplayLink adapter and separate C callback bridge driven by Android Choreographer; full ABI semantics are not verified",
         "CAAnimation" to "android.animation.Animator",
         "SKScene" to "custom SurfaceView/Canvas renderer (game-loop rewrite required)",
     )
@@ -1458,6 +1458,10 @@ internal object AndroidApiMapper {
                 .put("guestRuntimeProvider", concreteDarwinProvider ?: JSONObject.NULL)
                 .put("guestRuntimeProviderLibrary", if (concreteProvider) "libcompat_runtime_v1.so" else JSONObject.NULL)
                 .put("guestRuntimeProviderCatalogued", concreteProvider)
+                // The separately built portable-C shim is distinct from the
+                // Native guest adapter and does not prove an IPA callsite link.
+                .put("portableCReplacement", replacementTarget ?: JSONObject.NULL)
+                .put("portableCReplacementVerifiedOnDevice", replacementVerified)
             var stubOnlyEvidence = false
             when {
                 // Bionic already ships these symbols with the identical C ABI, so

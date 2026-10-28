@@ -100,6 +100,7 @@ Java_dev_radek_compat_runtime_RuntimeBridge_runAuthorizedMainBinary(JNIEnv *env,
             });
         compilerRuntime.registerBindings(shims);
         cxxAbi.registerBindings(shims);
+        objcShims.setGlesForwarder(&glesForwarder);
         glesForwarder.registerBindings(shims);
         darwinShims.registerBindings(shims);
         ndkShims.registerBindings(shims);

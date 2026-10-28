@@ -7,19 +7,28 @@ package dev.radek.conventor
  * particular IPA image's import slot was fixed up or that the API is complete.
  */
 internal object CompatImportProviders {
-    const val EXPECTED_GUEST_RUNTIME_ADAPTER_COUNT = 126
+    const val EXPECTED_GUEST_RUNTIME_ADAPTER_COUNT = 135
     // Legacy identifier retained for report/schema compatibility.
     const val EXPECTED_DARWIN_ONLY_IMPORT_COUNT = EXPECTED_GUEST_RUNTIME_ADAPTER_COUNT
 
     val bySymbol: Map<String, String> = mapOf(
         "_AudioSessionInitialize" to "audio-session.initialize",
         "_AudioSessionSetActive" to "audio-session.set-active",
+        "_CFRunLoopGetCurrent" to "corefoundation.run-loop-get-current",
+        "_CFRunLoopGetMain" to "corefoundation.run-loop-get-main",
+        "_CFRunLoopRun" to "corefoundation.run-loop-run",
+        "_CFRunLoopRunInMode" to "corefoundation.run-loop-run-in-mode",
+        "_CFRunLoopStop" to "corefoundation.run-loop-stop",
         "_NSHomeDirectory" to "foundation.home-directory",
         "_NSSearchPathForDirectoriesInDomains" to "foundation.search-paths",
         "_NSTemporaryDirectory" to "foundation.temporary-directory",
         "_OBJC_CLASS_\$_ASIdentifierManager" to "objc.class.ASIdentifierManager",
         "_OBJC_CLASS_\$_NSUUID" to "objc.class.NSUUID",
+        "_OBJC_CLASS_\$_CADisplayLink" to "objc.class.CADisplayLink",
         "_OBJC_CLASS_\$_CAEAGLLayer" to "objc.class.CAEAGLLayer",
+        "_OBJC_CLASS_\$_CALayer" to "objc.class.CALayer",
+        "_OBJC_CLASS_\$_NSRunLoop" to "objc.class.NSRunLoop",
+        "_OBJC_CLASS_\$_NSTimer" to "objc.class.NSTimer",
         "_OBJC_CLASS_\$_EAGLContext" to "objc.class.EAGLContext",
         "_OBJC_CLASS_\$_NSAutoreleasePool" to "objc.class.NSAutoreleasePool",
         "_OBJC_CLASS_\$_NSBundle" to "objc.class.NSBundle",
@@ -176,8 +185,6 @@ internal object CompatImportProviders {
         "foundation.home-directory",
         "foundation.search-paths",
         "foundation.temporary-directory",
-        "objc.class.CAEAGLLayer",
-        "objc.class.EAGLContext",
         "objc.class.NSAutoreleasePool",
         "objc.class.NSBundle",
         "objc.class.NSDictionary",

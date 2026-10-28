@@ -12,6 +12,7 @@ namespace radek::compat_runtime::gles {
 /** What the runtime found when it probed the host for a GL/EGL driver. */
 struct DriverReport {
     bool glesLoaded = false;   // libGLESv1_CM (the ES 1.1 import surface)
+    bool gles2Loaded = false;  // libGLESv2 (the ES 2.0 programmable pipeline)
     bool eglLoaded = false;    // libEGL (drawable surfaces and contexts)
     std::string detail;        // library names, or why the probe failed
 };
@@ -75,6 +76,11 @@ class Forwarder {
     /** Registers the GLES symbols the runtime implements by forwarding. */
     void registerBindings(ShimRegistry &registry);
 
+    /** Make a guest ES1/ES2 context current before it issues GL commands. */
+    bool makeCurrent(GuestAddress context, unsigned api, std::uint32_t width, std::uint32_t height);
+    bool clearCurrent();
+    bool supportsApi(unsigned api) const;
+
     /** `-[EAGLContext renderbufferStorage:fromDrawable:]`: EGL surface + context. */
     bool attachDrawable(GuestAddressSpace &memory, std::uint32_t width, std::uint32_t height);
     /** `-[EAGLContext presentRenderbuffer:]`: `eglSwapBuffers`. */
@@ -103,6 +109,10 @@ class Forwarder {
 
 /** The forwarding GL context that belongs to one guest address space. */
 Forwarder &forwarderFor(GuestAddressSpace &memory);
+
+/** Publish the forwarder shared by the guest imports and lifecycle adapter. */
+void activateForwarder(Forwarder *forwarder);
+void deactivateForwarder(Forwarder *forwarder);
 
 /** Native window used by contexts created afterwards (Android JNI glue). */
 void setDefaultNativeWindow(void *window);

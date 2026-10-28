@@ -43,8 +43,9 @@ class AndroidApiMapperTest {
         assertEquals("libc.so", malloc.getString("targetLibrary"))
         assertFalse(malloc.getBoolean("linkedOrRewritten"))
         assertEquals("UNMAPPED", objc.getString("classification"))
-        assertEquals("SEMANTIC_REWRITE_CANDIDATE", view.getString("classification"))
-        assertTrue(view.getString("targetApi").contains("Choreographer"))
+        assertEquals("GUEST_RUNTIME_ADAPTER_CATALOGUED", view.getString("classification"))
+        assertEquals("objc.class.CADisplayLink", view.getString("targetSymbol"))
+        assertTrue(view.getString("reason").contains("full API semantics are not implied"))
         assertFalse(view.getBoolean("codeGenerated"))
         assertTrue(mapping.getString("measure").contains("triage, not implementation coverage"))
     }
@@ -242,8 +243,11 @@ class AndroidApiMapperTest {
         assertEquals(3, mapping.getInt("implementedApiReplacementCount"))
         for (index in 0 until items.length()) {
             val item = items.getJSONObject(index)
-            assertEquals("IMPLEMENTED_API_REPLACEMENT_AVAILABLE", item.getString("classification"))
-            assertEquals("libioscompat.so", item.getString("targetLibrary"))
+            assertEquals("GUEST_RUNTIME_ADAPTER_CATALOGUED", item.getString("classification"))
+            assertTrue(item.getString("targetLibrary").contains("libcompat_runtime_v1.so"))
+            assertTrue(item.getString("portableCReplacement").startsWith("radek_compat_CFRunLoop"))
+            assertFalse(item.getBoolean("portableCReplacementVerifiedOnDevice"))
+            assertTrue(item.getJSONObject("evidence").getBoolean("hostTestedImplementation"))
             assertFalse(item.getBoolean("linkedOrRewritten"))
             assertFalse(item.getBoolean("codeGenerated"))
         }
@@ -304,7 +308,10 @@ class AndroidApiMapperTest {
         for (framework in listOf("Foundation", "UIKit", "CoreGraphics", "OpenAL", "AudioToolbox")) {
             val mapping = Providers.classify("/System/Library/Frameworks/$framework.framework/$framework")
             assertEquals(Providers.STATUS_CANDIDATE, mapping.getString("status"))
-            assertTrue(mapping.getString("reason").contains("No ") || mapping.getString("reason").contains("not adapted"))
+            if (framework == "Foundation" || framework == "UIKit")
+                assertTrue(mapping.getString("reason").contains("bounded"))
+            else
+                assertTrue(mapping.getString("reason").contains("No ") || mapping.getString("reason").contains("not adapted"))
         }
         assertTrue(Providers.forSymbol("___divti3")!!.contains("not linked"))
     }
@@ -337,7 +344,7 @@ class AndroidApiMapperTest {
         assertEquals("none", noEvidence.getJSONArray("evidenceKinds").getString(0))
     }
 
-    @Test fun displayLinkSemanticHintStatesTheObjectiveCAbiIsNotImplemented() {
+    @Test fun displayLinkProviderRemainsPartialAndUnlinked() {
         val symbol = "_OBJC_CLASS_" + '$' + "_CADisplayLink"
         val imports = JSONArray().put(JSONObject().put("name", symbol))
         val slice = JSONObject().put("imports", imports)
@@ -346,8 +353,10 @@ class AndroidApiMapperTest {
 
         val item = AndroidApiMapper.analyze(nodes).getJSONArray("symbols").getJSONObject(0)
 
-        assertEquals("SEMANTIC_REWRITE_CANDIDATE", item.getString("classification"))
-        assertTrue(item.getString("targetApi").contains("not the Objective-C CADisplayLink ABI"))
+        assertEquals("GUEST_RUNTIME_ADAPTER_CATALOGUED", item.getString("classification"))
+        assertEquals("objc.class.CADisplayLink", item.getString("targetSymbol"))
+        assertTrue(item.getString("reason").contains("full API semantics are not implied"))
+        assertFalse(item.getBoolean("linkedOrRewritten"))
         assertFalse(item.getBoolean("codeGenerated"))
     }
 
@@ -371,7 +380,7 @@ class AndroidApiMapperTest {
         assertEquals(25, mapping.getInt("sameNameNdkProviderCoveragePercent"))
         assertEquals(3, mapping.getInt("guestRuntimeProviderCount"))
         assertEquals(3, mapping.getInt("guestRuntimeAdapterCataloguedCount"))
-        assertEquals(126, mapping.getInt("guestRuntimeAdapterCatalogInventoryCount"))
+        assertEquals(135, mapping.getInt("guestRuntimeAdapterCatalogInventoryCount"))
         assertEquals("libcompat_runtime_v1.so", mapping.getString("guestRuntimeProviderLibrary"))
         assertEquals("CATALOG_ONLY_NOT_RUNTIME_LINKED", mapping.getString("guestRuntimeProviderCatalogStatus"))
         assertEquals(2, mapping.getInt("compilerRuntimeCandidateCount"))
@@ -400,7 +409,7 @@ class AndroidApiMapperTest {
 
     @Test fun reviewedAndroidMappingCoverageCountsEveryMappingKindButNeverImplementation() {
         // One direct same-name export, one compiled compatibility implementation,
-        // one reviewed semantic target and one explicit unimplemented stub handler.
+        // one partial guest adapter and one explicit unimplemented stub handler.
         val imports = JSONArray()
             .put(JSONObject().put("name", "_malloc"))
             .put(JSONObject().put("name", "_mach_absolute_time"))
@@ -433,7 +442,8 @@ class AndroidApiMapperTest {
         assertEquals(1, breakdown.getInt("sameNameNdkOrSystemExport"))
         assertEquals(0, breakdown.getInt("compilerRuntimeToolchain"))
         assertEquals(1, breakdown.getInt("concreteCompatImplementation"))
-        assertEquals(1, breakdown.getInt("reviewedSemanticApiTarget"))
+        assertEquals(0, breakdown.getInt("reviewedSemanticApiTarget"))
+        assertEquals(1, breakdown.getInt("guestRuntimeAdapterCatalogued"))
         assertEquals(3, breakdown.getInt("kindCountsSum"))
         assertEquals(1, breakdown.getInt("explicitStubHandlerOnly"))
         assertEquals(0, breakdown.getInt("unmapped"))

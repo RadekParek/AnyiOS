@@ -21,22 +21,49 @@ The following EGL/GLES forwarding describes the default compatibility-runtime
 path only. The optional translated portable-C runner described below does not
 attach an Android EGL/GLES renderer.
 
-Guest OpenGL ES 1.1 calls are **forwarded to the platform's own EGL/GLES driver**
-(`libEGL.so`/`libGLESv1_CM.so`/`libGLESv2.so` opened at runtime); nothing is
-rasterized in-process. The Native bridge does not implement ES 2 shaders: an
-`EAGLContext` requesting ES 2/3 is rejected, and an ES 2 EGL configuration is
-not used as a substitute for ES 1. Semi-Emulated AnyiOSEMU has its separate ES 2
-to native GLES 2 path. `renderbufferStorage:fromDrawable:` creates an EGL window
-surface on the launcher's Android surface (or an offscreen pbuffer when no surface
-was supplied), `presentRenderbuffer:` is `eglSwapBuffers`, and every guest pointer
-argument is translated through the mapped guest regions with a range check. A
-surface that arrives after the first offscreen attach makes the GL layer recreate
-its window surface, so late surfaces still receive frames. The report's `gles`
-block states which driver was loaded, whether the drawable was handed to the
-platform, `guestCallsObserved` (imports entering the compat layer),
-`forwardedCalls` (calls actually handed to the driver), `refusedCalls`,
-`framesPresented`, and every refusal as a named diagnostic: a rendered frame is
-guest output, not gameplay evidence.
+Guest OpenGL ES 1.x and a **partial ES 2.0 call surface** are forwarded to the
+platform EGL/GLES driver (`libEGL.so`, `libGLESv1_CM.so` and `libGLESv2.so`),
+not rasterized in-process. The ES 2 library is loaded on an ES 2 context request,
+not for ES 1-only games. Native `EAGLContext` can select ES 1 or ES 2; ES 3,
+sharegroups and multiple guest contexts are refused. ES 2 covers selected
+shader/program, uniform, attribute, texture and framebuffer operations, not the
+complete API or extension set. A drawable-backed color FBO is mapped to the EGL
+default framebuffer; full iOS drawable, depth/stencil attachment and content-scale
+semantics are not implemented. Drawable color attachment replacement/deletion
+tracks the bound FBO and reused renderbuffer names; replacing EAGL storage with
+ordinary `glRenderbufferStorage` is refused rather than guessed. Unknown-size
+queries and unsafe guest memory ranges are refused with diagnostics; GL error
+emulation is incomplete.
+
+`renderbufferStorage:fromDrawable:` creates an EGL window surface for the
+launcher or a headless pbuffer; `presentRenderbuffer:` calls `eglSwapBuffers`.
+Window references remain held across UI/guest-thread surface replacement and
+failed or detached surfaces are not swapped. EGL context state is preserved when
+a compatible replacement succeeds. Checked guest ranges include shader strings,
+vertex arrays, pixel transfers and writable outputs. A guest with VBO-only arrays
+avoids a CPU scan of client indices; GPU-only indices combined with client arrays
+are refused because their maximum cannot be safely determined. Native GLES has
+not been validated against physical Android GPU pixels or a playable game.
+
+The report's `gles` block states which drivers were loaded, drawable status,
+`guestCallsObserved`, `forwardedCalls`, `refusedCalls`, `framesPresented` and
+named refusals. A successful platform swap does not prove visible content.
+Semi-Emulated AnyiOSEMU has its own separate EGL/GLES implementation.
+
+### Partial guest display timing and input
+
+The Native guest supports a bounded `CADisplayLink` factory, scheduling,
+remove/invalidate, pause, frame interval, preferred FPS and timestamp/duration
+selectors, plus partial `NSRunLoop`/`NSTimer` and `CALayer` behavior. Android
+`Choreographer` signals frames to the guest run loop; callbacks and bounded queued
+touch events are delivered on the guest thread, not the Android UI thread.
+Android-attached timers use monotonic time and pause with the activity, while
+headless diagnostics retain deterministic virtual time. Refresh-rate lookup is
+amortized while frames are requested. Run-loop modes, finite run-in-mode timeout
+semantics, full Core Animation and UIKit/input fidelity are not implemented.
+Shutdown wakes a waiting run loop, but it cannot interrupt guest CPU code spinning
+outside the run loop. Surface, frame timing and touch behavior still need device
+testing. The separate bounded-conversion C frame service is not this guest ABI.
 
 ### Angry Birds shader/rendering audit
 
@@ -126,7 +153,7 @@ retains the original authorized executable and bundle in the APK.
    instruction/time budget. It continues while implemented adapters and the
    guest's own render loop are active, and stops only when it calls (or touches
    data of) a documented runtime boundary. Implemented adapters run for real
-   instead of trapping: the native OpenGL ES 1.1 forwarding (below), libSystem
+   instead of trapping: the partial native OpenGL ES 1/2 forwarding (above), libSystem
    memory/string/malloc and the file/stdio/math/time shims served by the virtual
    file system, the ARM EABI compiler-runtime helpers, the bounded Objective-C
    runtime, the AudioToolbox session state calls, and the bounded
@@ -278,9 +305,10 @@ and digest against the report.
 Android has no same-name system export for the Apple-spelled Darwin imports
 that motivate this layer (for example `__tolower`, `___error`, `__stdoutp`,
 `__DefaultRuneLocale`, `kEAGLColorFormatRGB565`, `_gxx_personality_sj0`, and
-OpenAL's `_alc*`/`_al*`). The 75-entry provider inventory also includes ARM32
-compiler-runtime/unwind names and two Foundation path functions; 73 of its names
-match the Angry Birds fixture. These entries stay outside the strict same-name
+OpenAL's `_alc*`/`_al*`). The 135-entry provider inventory also includes ARM32
+compiler-runtime/unwind names and selected partial framework adapters. An earlier
+75-entry inventory had 73 names matching the Angry Birds fixture; counts from
+that audit are not a current recomputation. These entries stay outside the strict same-name
 Android catalog and identify guest-runtime adapters/data providers instead; they
 are not static NDK exports or proof of complete semantics. The source/provider
 inventory is shared by Python, Kotlin, and C++; the 181 observed same-name NDK
@@ -330,9 +358,10 @@ Android-linked game library or APK. The Darwin data/ctype/OpenAL subset lives in
 
 The Darwin adapter is counted (`boundSymbols`, `ctypeCalls`, `openalCalls`,
 `streamCells`, `personalityBoundaries`) and pinned by
-`native/tests/darwin_compat.cpp` (34 bindings). The complete 75-entry provider
+`native/tests/darwin_compat.cpp` (34 bindings). The complete 135-entry provider
 inventory is separately pinned by `native/tests/compat_runtime_cxxabi.cpp` and the
-provider-parity tests; 73 inventory names are observed in the Angry Birds fixture.
+provider-parity tests; partial display-link/run-loop/layer and EAGL entries are
+catalogued but not credited as verified framework semantics.
 The host probe and on-device JNI register the adapters
 next to the other shims and report both `darwinCompat` and `importProviders`
 blocks.
@@ -345,11 +374,10 @@ relocation) was refused as unresolved.
 
 ### Same-name NDK subset after this layer
 
-The translation layer changes what *runs*, not what *same-name* means: the
-strict subset stays **181/254 = 71.26%**. The other **73/254** are non-same-name
-`compat-runtime-v1` guest-adapter catalog entries (Darwin data/framework/OpenAL
-adapters plus ARM32 compiler-runtime and unwind boundaries), not direct NDK
-exports. The combined **254/254** reviewed-provider figure is catalog coverage,
+In an earlier fixture audit, the same-name subset was **181/254 = 71.26%**
+and **73/254** were non-same-name `compat-runtime-v1` guest-adapter catalog
+entries. The expanded inventory can change the category counts; adapter entries
+are not direct NDK exports. The prior **254/254** reviewed-provider figure was catalog coverage,
 not proof that every image's slots were fixed up or every API's semantics are
 implemented. The runtime report's `runtimeLinking` block records actual per-image
 bind/relocation results; those are guest-address slot fixups, not static Android

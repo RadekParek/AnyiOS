@@ -131,6 +131,17 @@ final class GameLibrary {
             return new File(directory, "sandbox/AnyiOSEMU");
         }
     }
+    static final class LastSession {
+        final Game game;
+        final LatestGameLog.Blocker blocker;
+        final boolean readError;
+        LastSession(Game game, LatestGameLog.Blocker blocker, boolean readError) {
+            this.game = game;
+            this.blocker = blocker;
+            this.readError = readError;
+        }
+    }
+
     private final Context context;
     private final File root;
     private final ExecutorService worker = Executors.newSingleThreadExecutor();
@@ -265,12 +276,61 @@ final class GameLibrary {
             try {
                 text =
                     LatestGameLog.preview(game.anyioseDataDirectory(), LatestGameLog.PREVIEW_BYTES);
-            } catch (IOException e) {
+            } catch (IOException | SecurityException e) {
                 text = "Could not read the game log: " + e.getMessage();
             }
             String result = text;
             main.post(() -> callback.accept(result));
         });
+    }
+
+    /** Read the most recent emulator session off the UI thread, including after process death. */
+    void loadLastSession(java.util.function.Consumer<LastSession> callback) {
+        worker.execute(() -> {
+            String id = context.getSharedPreferences("anyiose_runtime", Context.MODE_PRIVATE)
+                            .getString("last_game_id", "");
+            List<Game> entries = games();
+            Game selected = null;
+            for (Game game : entries)
+                if (game.id.equals(id)) {
+                    selected = game;
+                    break;
+                }
+            // Upgrade path for existing installations whose last game predates
+            // the persistent ID. Never infer an error from the timestamp alone.
+            if (selected == null) {
+                long newest = 0;
+                for (Game game : entries) {
+                    try {
+                        long modified = LatestGameLog.lastLogTime(game.anyioseDataDirectory());
+                        if (modified > newest) {
+                            newest = modified;
+                            selected = game;
+                        }
+                    } catch (
+                        IOException | SecurityException ignored) { /* Optional local evidence. */
+                    }
+                }
+            }
+            LastSession session = selected == null ? null : readGameBlocker(selected);
+            main.post(() -> callback.accept(session));
+        });
+    }
+
+    void loadGameBlocker(Game game, java.util.function.Consumer<LastSession> callback) {
+        worker.execute(() -> {
+            LastSession session = readGameBlocker(game);
+            main.post(() -> callback.accept(session));
+        });
+    }
+
+    private LastSession readGameBlocker(Game game) {
+        try {
+            return new LastSession(
+                game, LatestGameLog.lastBlocker(game.anyioseDataDirectory()), false);
+        } catch (IOException | SecurityException e) {
+            return new LastSession(game, null, true);
+        }
     }
 
     void dismissNotice() {
@@ -1110,6 +1170,11 @@ final class GameLibrary {
                 ensurePrivateDirectory(sandbox.root, sandbox.anyiose);
                 checkCancelled();
                 LatestGameLog.prepare(sandbox.anyiose);
+                if (!context.getSharedPreferences("anyiose_runtime", Context.MODE_PRIVATE)
+                        .edit()
+                        .putString("last_game_id", game.id)
+                        .commit())
+                    Diagnostics.record("ANYIOSEMU_SESSION", "Could not persist the last game ID");
             } catch (CancellationException e) {
                 runtimeSource = null;
                 error = false;

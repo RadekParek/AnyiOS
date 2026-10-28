@@ -41,6 +41,8 @@ struct BootLifecycleHooks {
         prepareMainThreadEntry;
     std::function<void(GuestAddressSpace &, std::uint32_t frames)> setMainThreadServiceLimit;
     std::function<void(GuestAddressSpace &)> finishMainThreadEntry;
+    // Clear host-facing guest pointers before the runner destroys its address space.
+    std::function<void(GuestAddressSpace &)> finishRuntime;
     std::function<void(GuestAddressSpace &, radek::Json &report)> describe;
 };
 

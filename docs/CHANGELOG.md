@@ -1,5 +1,57 @@
 # Changelog
 
+## 2026-10-28 — Native GLES2, frame-clock bridge and last-blocker view
+
+### Added / wired
+- Native guest `EAGLContext` can now request an ES 2 context. Its shared EGL/GLES
+  forwarder includes a bounded subset of shader/program, uniform, attribute,
+  texture and framebuffer calls as well as the existing ES 1 bindings. It uses
+  the Android system driver; this is not full OpenGL ES 2 or ES 3 support.
+- Added partial guest `CADisplayLink`, `NSRunLoop`, `NSTimer` and `CALayer`
+  behavior. Android `Choreographer` signals frames to the guest run loop without
+  executing guest code on the UI thread; Android-attached timers use monotonic
+  time and suspend while the activity is paused. Headless tests retain virtual
+  time. Run-loop modes, finite run-in-mode timeouts and full Core Animation remain
+  incomplete. A shutdown wakes a waiting run loop, but cannot stop guest code
+  spinning outside that loop.
+- The Emulator's Library and game details show the last explicit recorded
+  blocker for the most recent game, including after process death. A bounded,
+  path-redacted summary can survive the next launch; the UI identifies an older
+  summary and only the latest full game log is retained. No crash is inferred
+  from a missing exit marker. Summaries are per game, capped and kept private;
+  unsafe log/sidecar links are rejected.
+
+### Fixed / changed
+- Shared EAGL and GL state now survives surface detachment/replacement without
+  presenting to an old window; Android window references and publication are
+  synchronized. The boot worker waits for a currently valid surface, and guest
+  viewport and bounded touch signals reach the active guest run loop. A failed
+  or unsupported surface still reports diagnostics rather than claiming pixels.
+- Corrected GLES1 normal-pointer ABI, captured VBO bindings and mixed client
+  arrays; bounded index/pixel/query outputs and deleted-buffer state. ES 1/2
+  drawable FBO detach/deletion now tracks bound attachments and reused object
+  names; unsupported drawable-storage replacement is refused. GLES2 info logs
+  preserve unwritten output bytes. VBO-only indexed draws avoid an unnecessary
+  CPU index scan. The ES 2 driver is loaded only when requested, and refresh-rate
+  lookup is amortized while frames are requested; no end-to-end device speed or
+  FPS improvement is claimed.
+- The three synchronized Native-provider catalogs now contain 135 entries.
+  New display-link/run-loop/layer entries and partial EAGL providers are explicitly
+  **unverified**, not counted as complete framework semantics or a linked game.
+  Existing portable-C replacement evidence stays separate from the guest adapter.
+
+### Validation / limits
+- Host CTest exercises recorded GLES1/GLES2/EGL calls, surface replacement,
+  display-link ownership, frame signaling and paused/resumed monotonic timers.
+  CI now also runs the GLES/EGL and frame-clock recording-mock tests and the
+  embedded game-template Robolectric tests on release builds. Java helper and
+  Kotlin mapper tests use local stub harnesses; CI runs the actual Android
+  build/tests. No real device, GPU output, gameplay or game-speed result
+  was verified. The GLES2 subset does not implement sharegroups, multiple guest
+  contexts, all extensions or complete drawable/depth/stencil semantics. The
+  portable-C translated runner still has no EGL/GLES connection. The specific
+  Ninjago `Mach-O range outside slice` report remains unavailable and unproven.
+
 ## 2026-10-28 — Legacy Mach-O ranges, clearer reports and rendering safeguards
 
 ### Fixed / changed

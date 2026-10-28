@@ -60,11 +60,24 @@ public final class MainActivity extends Activity {
     private long renderedRevision;
     private boolean renderedBusy;
     private String renderedNotice = "", renderedTab = "";
+    private GameLibrary.LastSession lastSession;
+    private long lastSessionRequest;
     private final Runnable libraryChanged = () -> {
         if (isFinishing() || isDestroyed())
             return;
         if (prototype != null)
             return;
+        if (lastSession != null && renderedRevision != library.revision) {
+            boolean stillPresent = false;
+            for (GameLibrary.Game game : library.games())
+                if (game.id.equals(lastSession.game.id)) {
+                    stillPresent = true;
+                    break;
+                }
+            if (!stillPresent)
+                lastSession = null;
+            refreshLastSession();
+        }
         if (renderedRevision == library.revision && renderedBusy == SharedCatalog.isBusy()
             && renderedNotice.equals(library.notice) && progressLabel != null)
             progressLabel.setText(library.progress);
@@ -364,6 +377,49 @@ public final class MainActivity extends Activity {
             SharedTheme.reveal(content);
         renderedTab = tab;
     }
+    private void refreshLastSession() {
+        final long request = ++lastSessionRequest;
+        library.loadLastSession(session -> {
+            if (request != lastSessionRequest || isFinishing() || isDestroyed())
+                return;
+            lastSession = session;
+            if (prototype == null && tab.equals("Library"))
+                home();
+        });
+    }
+
+    private String lastBlockerText(GameLibrary.LastSession session) {
+        if (session.readError)
+            return "The saved game log could not be read.";
+        if (session.blocker == null)
+            return "No blocker was recorded. A normal exit, forced stop, or interrupted log may leave no error.";
+        String when =
+            session.blocker.previousSession ? "From an earlier launch" : "From the latest game log";
+        if (session.blocker.recordedAt > 0)
+            when += " · "
+                + java.text.DateFormat
+                      .getDateTimeInstance(java.text.DateFormat.MEDIUM, java.text.DateFormat.SHORT)
+                      .format(new java.util.Date(session.blocker.recordedAt));
+        if (session.blocker.previousSession)
+            when += "\nOnly this earlier summary was kept; the full log is from the latest launch.";
+        return when + "\n" + session.blocker.message;
+    }
+
+    private void lastSessionCard(LinearLayout parent) {
+        if (lastSession == null)
+            return;
+        GameLibrary.LastSession session = lastSession;
+        LinearLayout card = card(parent);
+        card.addView(text("Last recorded blocker", 16, ink, true));
+        gap(card, 6);
+        card.addView(text(session.game.title, 13, muted, true));
+        gap(card, 8);
+        TextView summary = text(lastBlockerText(session), 13, muted, false);
+        summary.setTextIsSelectable(true);
+        card.addView(summary);
+        button(card, "Show latest game log", false, () -> showLatestLog(session.game));
+    }
+
     private void libraryPage(LinearLayout parent) {
         List<GameLibrary.Game> games = library.games();
         boolean largeText = getResources().getConfiguration().fontScale > 1.35f;
@@ -390,6 +446,7 @@ public final class MainActivity extends Activity {
                     + (games.size() == 1 ? " game" : " games") + " · stored on this device",
             14, muted, false));
         operationState(parent);
+        lastSessionCard(parent);
         if (games.isEmpty()) {
             LinearLayout empty = card(parent);
             empty.setPadding(dp(24), dp(34), dp(24), dp(28));
@@ -639,6 +696,13 @@ public final class MainActivity extends Activity {
         LinearLayout.LayoutParams launchLp = new LinearLayout.LayoutParams(-1, -2);
         launchLp.topMargin = dp(18);
         content.addView(launch, launchLp);
+        TextView blocker = text("Checking the last recorded blocker…", 13, muted, false);
+        gap(content, 10);
+        content.addView(blocker);
+        library.loadGameBlocker(game, session -> {
+            if (sheet.isShowing() && !isFinishing() && !isDestroyed())
+                blocker.setText("Last recorded blocker\n" + lastBlockerText(session));
+        });
         button(content, "Show latest log", false, () -> showLatestLog(game));
         button(content, "View import report", false, () -> showReport(game));
         button(content, "Export report", false, () -> exportReport(game));
@@ -1350,6 +1414,7 @@ public final class MainActivity extends Activity {
             launch();
         } else
             libraryChanged.run();
+        refreshLastSession();
     }
     @Override
     protected void onSaveInstanceState(Bundle out) {
@@ -1387,6 +1452,7 @@ public final class MainActivity extends Activity {
                         + "Runtime log: sandbox/AnyiOSEMU/AnyiOSEMU_log.txt. "
                         + "Visual output and gameplay remain unverified.";
                 library.recordAnyiOSEmuReport(gameId, report);
+                refreshLastSession();
             }
             return;
         }

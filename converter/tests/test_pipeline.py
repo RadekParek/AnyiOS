@@ -160,7 +160,8 @@ class PipelineTests(unittest.TestCase):
         self.assertEqual(edge["status"], "candidate")
         self.assertEqual(edge["standaloneEntryRequirement"], "not-required-by-standalone-entry")
         self.assertIn("does not implement the linked framework", edge["standaloneEntryReason"])
-        self.assertIn("not adapted", edge["reason"])
+        self.assertIn("not complete UIKit", edge["reason"])
+        self.assertIn("game linkage and behavior remain unverified", edge["reason"])
         self.assertEqual(result["staticRecompilationAssessment"]["backend"], "preserved-arm64")
 
     def test_reachable_framework_call_remains_blocked(self):

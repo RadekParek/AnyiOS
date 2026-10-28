@@ -13,6 +13,8 @@
 #include <utility>
 #include <vector>
 
+namespace radek::compat_runtime::gles { class Forwarder; }
+
 namespace radek::compat_runtime::objc {
 
 /**
@@ -101,6 +103,23 @@ class ShimAdapter {
         double accelerometerInterval = 0.0;
         GuestAddress accelerometerDelegate = 0;
         GuestAddress currentContext = 0;
+        std::map<GuestAddress, unsigned> contextApis;
+        GuestAddress runLoopObject = 0;
+        struct DisplayLink {
+            GuestAddress target = 0;
+            Selector selector = 0;
+            bool scheduled = false;
+            bool paused = false;
+            bool invalidated = false;
+            int frameInterval = 1;
+            int preferredFramesPerSecond = 0;
+            std::uint64_t seenFrame = 0;
+            std::uint64_t elapsedFrames = 0;
+            std::int64_t lastDeliveredNanos = 0;
+            std::int64_t timestampNanos = 0;
+            std::int64_t durationNanos = 0;
+        };
+        std::map<GuestAddress, DisplayLink> displayLinks;
         GuestAddress layerClass = 0;
         // Main-thread service: the guest game thread asks the runtime to run a
         // selector on the main thread; the adapter relays it into guest code and
@@ -148,9 +167,8 @@ class ShimAdapter {
         bool runLoopRunning = false;
         bool runLoopEntered = false;
         bool runLoopStopped = false;
-        // Virtual run-loop clock. Each serviced source advances it to that
-        // source's fire time, so a repeating 1/60 s timer advances time like a
-        // real display link would instead of firing instantly forever.
+        // Monotonic host time while the Android clock is attached; otherwise a
+        // deterministic virtual clock for headless tests. Modes remain partial.
         double runLoopClockSeconds = 0.0;
         std::uint32_t runLoopIterations = 0;
         // Zero means unlimited, which is what the device game path needs: a
@@ -200,6 +218,7 @@ class ShimAdapter {
         std::string typeEncoding;
     };
 
+    gles::Forwarder *glesForwarder_ = nullptr; // non-owning; outlives this adapter
     Runtime runtime_;
     Class *rootClass_ = nullptr;
     Class *autoreleasePoolClass_ = nullptr;
@@ -220,6 +239,11 @@ class ShimAdapter {
     bool registered_ = false;
 
     GuestState &guestState(GuestAddressSpace &memory);
+    void activateGuest(GuestAddressSpace &memory);
+    void deactivateGuest(GuestAddressSpace &memory);
+    void drainHostEvents(GuestAddressSpace &memory);
+    void updateDisplayDemand(GuestAddressSpace &memory);
+    void destroyDisplayLink(GuestAddressSpace &memory, GuestAddress address);
     GuestAddress ensureClassAddress(GuestAddressSpace &memory, const Class *klass);
     GuestAddress ensureObjectAddress(GuestAddressSpace &memory, Object *object);
     std::string readGuestString(const GuestAddressSpace &memory, GuestAddress address) const;
@@ -392,6 +416,9 @@ class ShimAdapter {
     ShimAdapter(const ShimAdapter &) = delete;
     ShimAdapter &operator=(const ShimAdapter &) = delete;
 
+    /** Use the same graphics state for guest GL calls and EAGL lifecycle messages. */
+    void setGlesForwarder(gles::Forwarder *forwarder);
+
     /** Add only the named Objective-C symbols with an explicit native adapter. */
     void registerBindings(ShimRegistry &registry);
 
@@ -457,5 +484,12 @@ void configureActiveGuestViewport(std::uint32_t width, std::uint32_t height);
  * into the run loop rather than called in directly.
  */
 bool postTouchToActiveGuest(float x, float y, const char *phase);
+
+/** Host frame clock: callbacks only signal the guest run loop, never enter the CPU. */
+void prepareDisplayClock(bool running);
+void setDisplayClockRunning(bool running);
+void stopActiveGuestRunLoop();
+bool displayClockNeeded();
+bool postDisplayFrame(std::int64_t frameTimeNanos, std::int64_t frameIntervalNanos);
 
 } // namespace radek::compat_runtime::objc

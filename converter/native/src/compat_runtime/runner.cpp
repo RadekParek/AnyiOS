@@ -326,6 +326,11 @@ radek::Json BootAttemptRunner::run(const std::vector<std::uint8_t> &mainBinary,
     }
 
     GuestAddressSpace addressSpace(memoryLimit_);
+    struct RuntimeCleanup {
+        const BootLifecycleHooks &hooks;
+        GuestAddressSpace &memory;
+        ~RuntimeCleanup() { if (hooks.finishRuntime) hooks.finishRuntime(memory); }
+    } cleanup{lifecycle_, addressSpace};
     MachOLoader loader;
     const auto load = loader.loadWithTraps(mainBinary, addressSpace, shims_, traps_);
     const auto loaderJson = load.toJson();

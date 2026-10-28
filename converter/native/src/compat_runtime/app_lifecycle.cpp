@@ -29,6 +29,8 @@
 
 #include <array>
 #include <chrono>
+#include <condition_variable>
+#include <deque>
 #include <cmath>
 #include <cstdint>
 #include <cstring>
@@ -57,8 +59,32 @@ constexpr std::uint32_t kFrameRunLoopSource = 3;
 // guest through its own run loop, so input must be posted into that loop
 // rather than called in directly.
 std::mutex gActiveGuestMutex;
+std::condition_variable gHostEventReady;
 ShimAdapter *gActiveAdapter = nullptr;
 GuestAddressSpace *gActiveMemory = nullptr;
+struct HostTouch { std::string phase; float x; float y; };
+std::deque<HostTouch> gHostTouches;
+std::uint32_t gHostViewportWidth = 0;
+std::uint32_t gHostViewportHeight = 0;
+bool gHostClockKnown = false;
+bool gHostClockRunning = false;
+bool gHostShutdownRequested = false;
+std::size_t gDisplayDemand = 0;
+std::uint64_t gHostFrameSequence = 0;
+std::int64_t gHostFrameNanos = 0;
+std::int64_t gHostFrameIntervalNanos = 0;
+
+double monotonicSeconds() {
+    return std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count();
+}
+
+// The host clock is opt-in; diagnostics without an Android bridge retain their
+// deterministic virtual time rather than depending on wall-clock scheduling.
+double activeHostRunLoopSeconds(ShimAdapter *adapter, GuestAddressSpace *memory) {
+    std::lock_guard<std::mutex> lock(gActiveGuestMutex);
+    return gActiveAdapter == adapter && gActiveMemory == memory && gHostClockKnown
+               ? monotonicSeconds() : -1.0;
+}
 
 // Name of the framework classes the startup chain can serve. Anything else must
 // come from the image's own Objective-C metadata.
@@ -97,6 +123,131 @@ double readDoublePair(std::uint32_t low, std::uint32_t high) {
 }
 
 } // namespace
+
+ShimAdapter::~ShimAdapter() {
+    std::lock_guard<std::mutex> lock(gActiveGuestMutex);
+    if (gActiveAdapter == this) {
+        gActiveAdapter = nullptr;
+        gActiveMemory = nullptr;
+        gHostTouches.clear();
+        gDisplayDemand = 0;
+        gHostEventReady.notify_all();
+    }
+}
+
+void ShimAdapter::activateGuest(GuestAddressSpace &memory) {
+    std::uint32_t width = 0, height = 0;
+    {
+        std::lock_guard<std::mutex> lock(gActiveGuestMutex);
+        if (gActiveAdapter != this || gActiveMemory != &memory) {
+            gHostTouches.clear();
+            gDisplayDemand = 0;
+            gHostFrameNanos = 0;
+            gHostFrameIntervalNanos = 0;
+        }
+        gActiveAdapter = this;
+        gActiveMemory = &memory;
+        width = gHostViewportWidth;
+        height = gHostViewportHeight;
+    }
+    if (width && height) {
+        auto &lifecycle = guestState(memory).lifecycle;
+        lifecycle.viewportWidth = width;
+        lifecycle.viewportHeight = height;
+        lifecycle.viewportConfigured = true;
+    }
+}
+
+void ShimAdapter::deactivateGuest(GuestAddressSpace &memory) {
+    std::lock_guard<std::mutex> lock(gActiveGuestMutex);
+    if (gActiveAdapter == this && gActiveMemory == &memory) {
+        gActiveAdapter = nullptr;
+        gActiveMemory = nullptr;
+        gHostTouches.clear();
+        gDisplayDemand = 0;
+        gHostEventReady.notify_all();
+    }
+}
+
+void ShimAdapter::drainHostEvents(GuestAddressSpace &memory) {
+    std::deque<HostTouch> touches;
+    {
+        std::lock_guard<std::mutex> lock(gActiveGuestMutex);
+        if (gActiveAdapter == this && gActiveMemory == &memory) touches.swap(gHostTouches);
+    }
+    for (const auto &event : touches) postTouch(memory, event.phase, event.x, event.y);
+}
+
+void ShimAdapter::updateDisplayDemand(GuestAddressSpace &memory) {
+    const auto &links = guestState(memory).lifecycle.displayLinks;
+    std::size_t count = 0;
+    for (const auto &entry : links)
+        if (entry.second.scheduled && !entry.second.paused && !entry.second.invalidated) ++count;
+    std::lock_guard<std::mutex> lock(gActiveGuestMutex);
+    if (gActiveAdapter == this && gActiveMemory == &memory) {
+        gDisplayDemand = count;
+        gHostEventReady.notify_all();
+    }
+}
+
+void ShimAdapter::destroyDisplayLink(GuestAddressSpace &memory, GuestAddress address) {
+    auto &links = guestState(memory).lifecycle.displayLinks;
+    const auto found = links.find(address);
+    if (found == links.end()) return;
+    const auto target = found->second.target;
+    links.erase(found);
+    updateDisplayDemand(memory);
+    if (target && target != address) {
+        if (auto *object = objectForGuest(memory, target)) releaseObject(memory, object);
+    }
+}
+
+void prepareDisplayClock(bool running) {
+    std::lock_guard<std::mutex> lock(gActiveGuestMutex);
+    gHostShutdownRequested = false;
+    gHostClockKnown = true;
+    gHostClockRunning = running;
+    gHostFrameNanos = 0;
+    gHostEventReady.notify_all();
+}
+
+void setDisplayClockRunning(bool running) {
+    std::lock_guard<std::mutex> lock(gActiveGuestMutex);
+    gHostClockKnown = true;
+    gHostClockRunning = running;
+    if (running) gHostFrameNanos = 0;
+    gHostEventReady.notify_all();
+}
+
+void stopActiveGuestRunLoop() {
+    std::lock_guard<std::mutex> lock(gActiveGuestMutex);
+    gHostShutdownRequested = true;
+    gHostEventReady.notify_all();
+}
+
+bool displayClockNeeded() {
+    std::lock_guard<std::mutex> lock(gActiveGuestMutex);
+    return gActiveAdapter && gActiveMemory && gDisplayDemand != 0;
+}
+
+bool postDisplayFrame(std::int64_t frameTimeNanos, std::int64_t frameIntervalNanos) {
+    std::lock_guard<std::mutex> lock(gActiveGuestMutex);
+    const bool needed = gActiveAdapter && gActiveMemory && gDisplayDemand != 0;
+    if (!needed || !gHostClockRunning || frameTimeNanos <= 0 ||
+        (gHostFrameNanos != 0 && frameTimeNanos <= gHostFrameNanos)) return needed;
+    gHostFrameNanos = frameTimeNanos;
+    gHostFrameIntervalNanos = frameIntervalNanos > 0 && frameIntervalNanos <= 1'000'000'000
+                                  ? frameIntervalNanos : 16'666'667;
+    ++gHostFrameSequence;
+    gHostEventReady.notify_all();
+    return true;
+}
+
+void ShimAdapter::setGlesForwarder(gles::Forwarder *forwarder) {
+    glesForwarder_ = forwarder;
+    if (forwarder)
+        gles::activateForwarder(forwarder);
+}
 
 void ShimAdapter::recordLifecycleEvent(LifecycleState &state, const std::string &event) {
     constexpr std::size_t kMaximumLifecycleEvents = 64;
@@ -147,8 +298,10 @@ GuestAddress ShimAdapter::lifecycleFrameworkObject(GuestAddressSpace &memory,
 void ShimAdapter::setMainThreadServiceLimit(GuestAddressSpace &memory, std::uint32_t frames) {
     // Zero is intentionally unlimited. Keep this hook for host diagnostics and
     // older probes, but the Android runner always supplies zero.
+    activateGuest(memory);
     auto &state = guestState(memory);
     state.lifecycle.mainThreadFramesLimit = frames;
+    updateDisplayDemand(memory);
 }
 
 bool ShimAdapter::prepareQueuedMainThreadEntry(GuestAddressSpace &memory,
@@ -403,11 +556,7 @@ bool ShimAdapter::applicationMain(CpuRegisterState &registers, GuestAddressSpace
     try {
         auto &state = guestState(memory);
         auto &lifecycle = state.lifecycle;
-        {
-            std::lock_guard<std::mutex> lock(gActiveGuestMutex);
-            gActiveAdapter = this;
-            gActiveMemory = &memory;
-        }
+        activateGuest(memory);
         lifecycle.applicationMainEntered = true;
         recordLifecycleEvent(lifecycle, "UIApplicationMain entered");
         const auto delegateName = readConstantString(memory, registers.r[3]);
@@ -488,26 +637,24 @@ bool ShimAdapter::applicationMain(CpuRegisterState &registers, GuestAddressSpace
 
 void ShimAdapter::configureViewport(GuestAddressSpace &memory, std::uint32_t width,
                                     std::uint32_t height) {
-    if (width == 0 || height == 0)
-        return;
-    // Remember the running guest so host input and surface changes can reach
-    // it: the boot runs on one thread and re-enters the guest through its run
-    // loop, so there is no re-entrant entry point into guest code.
-    {
-        std::lock_guard<std::mutex> lock(gActiveGuestMutex);
-        gActiveAdapter = this;
-        gActiveMemory = &memory;
-    }
+    if (width == 0 || height == 0) return;
     auto &lifecycle = guestState(memory).lifecycle;
     lifecycle.viewportWidth = width;
     lifecycle.viewportHeight = height;
     lifecycle.viewportConfigured = true;
-    recordLifecycleEvent(lifecycle, "host viewport configured: " + std::to_string(width) + "x" +
-                                        std::to_string(height));
 }
 
 void ShimAdapter::effectiveViewport(const GuestAddressSpace &memory, std::uint32_t &width,
                                     std::uint32_t &height) const {
+    {
+        std::lock_guard<std::mutex> lock(gActiveGuestMutex);
+        if (gActiveAdapter == this && gActiveMemory == &memory &&
+            gHostViewportWidth && gHostViewportHeight) {
+            width = gHostViewportWidth;
+            height = gHostViewportHeight;
+            return;
+        }
+    }
     const auto found = guestStates_.find(&memory);
     if (found == guestStates_.end() || !found->second)
         return;
@@ -535,6 +682,9 @@ GuestAddress ShimAdapter::scheduleTimer(GuestAddressSpace &memory, double interv
                                         GuestAddress target, Selector selector,
                                         GuestAddress argument, bool repeats) {
     auto &lifecycle = guestState(memory).lifecycle;
+    if (!std::isfinite(intervalSeconds)) throw std::runtime_error("NSTimer interval is not finite");
+    const auto hostTime = activeHostRunLoopSeconds(this, &memory);
+    if (hostTime >= 0) lifecycle.runLoopClockSeconds = std::max(lifecycle.runLoopClockSeconds, hostTime);
     auto *timerClass = classes_.find("NSTimer") != classes_.end() ? classes_.at("NSTimer")
                                                                   : rootClass_;
     auto *timer = runtime_.allocate(timerClass);
@@ -567,6 +717,9 @@ void ShimAdapter::scheduleDelayedSelector(GuestAddressSpace &memory, GuestAddres
                                           Selector selector, GuestAddress argument,
                                           double delaySeconds) {
     auto &lifecycle = guestState(memory).lifecycle;
+    if (!std::isfinite(delaySeconds)) throw std::runtime_error("selector delay is not finite");
+    const auto hostTime = activeHostRunLoopSeconds(this, &memory);
+    if (hostTime >= 0) lifecycle.runLoopClockSeconds = std::max(lifecycle.runLoopClockSeconds, hostTime);
     LifecycleState::RunLoopSource source;
     source.kind = LifecycleState::RunLoopSource::Kind::DelayedSelector;
     source.target = target;
@@ -610,107 +763,209 @@ bool ShimAdapter::serviceRunLoop(CpuRegisterState &registers, GuestAddressSpace 
                                  GuestAddress &guestTarget, std::string &reason) {
     guestTarget = 0;
     auto &lifecycle = guestState(memory).lifecycle;
-    if (!lifecycle.runLoopRunning || lifecycle.runLoopStopped)
-        return true;
-    if (lifecycle.runLoopIterationLimit != 0 &&
-        lifecycle.runLoopIterations >= lifecycle.runLoopIterationLimit) {
-        lifecycle.runLoopRunning = false;
-        recordLifecycleEvent(lifecycle, "CFRunLoop exited: iteration limit reached");
-        return true;
-    }
-
-    // Pick the next source: queued input first so a game stays responsive,
-    // otherwise whichever timer/selector fires soonest.
-    std::size_t chosen = lifecycle.runLoopSources.size();
-    for (std::size_t index = 0; index < lifecycle.runLoopSources.size(); ++index) {
-        if (lifecycle.runLoopSources[index].kind ==
-            LifecycleState::RunLoopSource::Kind::Touch) {
-            chosen = index;
-            break;
+    for (;;) {
+        drainHostEvents(memory);
+        {
+            std::lock_guard<std::mutex> lock(gActiveGuestMutex);
+            if (gActiveAdapter == this && gActiveMemory == &memory && gHostShutdownRequested)
+                lifecycle.runLoopStopped = true;
         }
-    }
-    if (chosen == lifecycle.runLoopSources.size()) {
-        bool have = false;
-        double earliest = 0.0;
+        if (!lifecycle.runLoopRunning || lifecycle.runLoopStopped) return true;
+        {
+            std::unique_lock<std::mutex> lock(gActiveGuestMutex);
+            const bool active = gActiveAdapter == this && gActiveMemory == &memory;
+            if (active && gHostClockKnown && !gHostClockRunning) {
+                // The activity is backgrounded: suspend guest timers too, not
+                // merely vsync callbacks. Shutdown always wakes this wait.
+                gHostEventReady.wait(lock, [&] {
+                    return gActiveAdapter != this || gActiveMemory != &memory ||
+                           gHostShutdownRequested || gHostClockRunning;
+                });
+                continue;
+            }
+            if (active && gHostClockKnown)
+                lifecycle.runLoopClockSeconds = std::max(lifecycle.runLoopClockSeconds, monotonicSeconds());
+        }
+        if (lifecycle.runLoopIterationLimit != 0 &&
+            lifecycle.runLoopIterations >= lifecycle.runLoopIterationLimit) {
+            lifecycle.runLoopRunning = false;
+            recordLifecycleEvent(lifecycle, "CFRunLoop exited: iteration limit reached");
+            return true;
+        }
+
+        // Queued input stays ahead of animation and virtual timers.
+        std::size_t chosen = lifecycle.runLoopSources.size();
         for (std::size_t index = 0; index < lifecycle.runLoopSources.size(); ++index) {
-            const auto &source = lifecycle.runLoopSources[index];
-            if (!have || source.nextFireSeconds < earliest) {
-                earliest = source.nextFireSeconds;
+            if (lifecycle.runLoopSources[index].kind == LifecycleState::RunLoopSource::Kind::Touch) {
                 chosen = index;
-                have = true;
+                break;
             }
         }
-        if (!have)
-            return true;
-    }
 
-    const auto source = lifecycle.runLoopSources[chosen];
-    if (source.kind == LifecycleState::RunLoopSource::Kind::Touch) {
-        lifecycle.runLoopSources.erase(lifecycle.runLoopSources.begin() +
-                                       static_cast<std::ptrdiff_t>(chosen));
-    } else if (source.repeats) {
-        // Advance the virtual clock to the fire time and re-arm, so a repeating
-        // 1/60 s timer advances time the way a display link would instead of
-        // firing instantly forever.
-        lifecycle.runLoopClockSeconds =
-            std::max(lifecycle.runLoopClockSeconds, source.nextFireSeconds);
-        lifecycle.runLoopSources[chosen].nextFireSeconds =
-            lifecycle.runLoopClockSeconds + source.intervalSeconds;
-    } else {
-        lifecycle.runLoopSources.erase(lifecycle.runLoopSources.begin() +
-                                       static_cast<std::ptrdiff_t>(chosen));
-    }
-    ++lifecycle.runLoopIterations;
-
-    if (source.kind == LifecycleState::RunLoopSource::Kind::Touch) {
-        const auto phaseSelector = runtime_.selector(source.touchPhase + ":withEvent:");
-        {
-            std::lock_guard<std::mutex> lock(mutex_);
-            selectorNames_[phaseSelector] = source.touchPhase + ":withEvent:";
-            selectorIds_[source.touchPhase + ":withEvent:"] = phaseSelector;
+        bool hasScheduledLink = false, hasActiveLink = false;
+        for (const auto &entry : lifecycle.displayLinks) {
+            const auto &link = entry.second;
+            hasScheduledLink |= link.scheduled && !link.invalidated;
+            hasActiveLink |= link.scheduled && !link.invalidated && !link.paused;
         }
-        const auto receiver = touchTargetFor(memory, source.touchX, source.touchY);
-        if (receiver == 0)
-            return true;
-        // Materialize a UITouch carrying the host coordinates so the guest can
-        // read them back through `locationInView:`.
-        auto *touch = runtime_.allocate(classes_.at("UITouch"));
-        if (touch->ivars.size() < 2)
-            touch->ivars.resize(2, 0);
-        touch->ivars[0] = floatBitsOf(source.touchX);
-        touch->ivars[1] = floatBitsOf(source.touchY);
-        const auto touchAddress = ensureObjectAddress(memory, touch);
-        recordLifecycleEvent(lifecycle, source.touchPhase + " delivered at " +
-                                            std::to_string(source.touchX) + "," +
-                                            std::to_string(source.touchY));
-        GuestAddress target = 0;
-        if (!beginNestedGuestCall(registers, memory, receiver, phaseSelector,
-                                  kFrameRunLoopSource, touchAddress, target, reason))
-            return false;
-        guestTarget = target;
-        return true;
-    }
+        bool clockKnown = false, clockRunning = false;
+        std::uint64_t frameSequence = 0;
+        std::int64_t frameNanos = 0, intervalNanos = 0;
+        {
+            std::lock_guard<std::mutex> lock(gActiveGuestMutex);
+            const bool active = gActiveAdapter == this && gActiveMemory == &memory;
+            clockKnown = active && gHostClockKnown;
+            clockRunning = clockKnown && gHostClockRunning;
+            if (!clockKnown && hasActiveLink && chosen == lifecycle.runLoopSources.size()) {
+                // Deterministic headless fallback for host diagnostics only; the
+                // Android launcher explicitly provides its Choreographer clock.
+                gHostFrameIntervalNanos = 16'666'667;
+                if (gHostFrameNanos <= 0 || gHostFrameNanos > INT64_MAX - gHostFrameIntervalNanos)
+                    gHostFrameNanos = 1'000'000'000;
+                else
+                    gHostFrameNanos += gHostFrameIntervalNanos;
+                ++gHostFrameSequence;
+            }
+            frameSequence = gHostFrameSequence;
+            frameNanos = gHostFrameNanos;
+            intervalNanos = gHostFrameIntervalNanos;
+        }
 
-    {
+        if (chosen == lifecycle.runLoopSources.size() && (!clockKnown || clockRunning)) {
+            for (auto &entry : lifecycle.displayLinks) {
+                auto &link = entry.second;
+                if (!link.scheduled || link.invalidated || link.paused || frameNanos <= 0 ||
+                    frameSequence <= link.seenFrame) continue;
+                const auto elapsed = frameSequence - link.seenFrame;
+                link.seenFrame = frameSequence;
+                const auto interval = static_cast<std::uint64_t>(link.frameInterval);
+                link.elapsedFrames = std::min<std::uint64_t>(interval, link.elapsedFrames + std::min(elapsed, interval));
+                if (link.elapsedFrames < interval) continue;
+                link.elapsedFrames = 0;
+                if (link.preferredFramesPerSecond > 0 && link.lastDeliveredNanos > 0) {
+                    // Vsync intervals are integer nanoseconds and can jitter.
+                    // Allow a small fraction of one host interval so an exact
+                    // 60-to-30 Hz division is not delayed by a nanosecond.
+                    const auto tolerance = std::max<std::int64_t>(1, intervalNanos > 0 ? intervalNanos / 8 : 1);
+                    if (frameNanos - link.lastDeliveredNanos + tolerance <
+                        1'000'000'000LL / link.preferredFramesPerSecond) continue;
+                }
+                const bool first = link.lastDeliveredNanos == 0;
+                link.timestampNanos = frameNanos;
+                link.durationNanos = intervalNanos > 0 ? intervalNanos : 16'666'667;
+                link.lastDeliveredNanos = frameNanos;
+                ++lifecycle.runLoopIterations;
+                if (first) recordLifecycleEvent(lifecycle, "CADisplayLink delivered on guest run loop");
+                registers.r[14] = lifecycle.runLoopCallerReturn;
+                GuestAddress target = 0;
+                if (!beginNestedGuestCall(registers, memory, link.target, link.selector,
+                                          kFrameRunLoopSource, entry.first, target, reason)) {
+                    if (reason.empty()) reason = "CADisplayLink target has no guest callback implementation";
+                    return false;
+                }
+                guestTarget = target;
+                return true;
+            }
+        }
+
+        if (chosen == lifecycle.runLoopSources.size()) {
+            bool haveTimer = false;
+            double earliest = 0.0;
+            for (std::size_t index = 0; index < lifecycle.runLoopSources.size(); ++index) {
+                const auto &source = lifecycle.runLoopSources[index];
+                if (!haveTimer || source.nextFireSeconds < earliest) {
+                    earliest = source.nextFireSeconds;
+                    chosen = index;
+                    haveTimer = true;
+                }
+            }
+            if (!haveTimer) {
+                if (!hasScheduledLink) return true;
+                if (!clockKnown) {
+                    if (hasActiveLink) continue; // advance deterministic host-test clock
+                    return true; // no source can wake an unsignalled headless loop
+                }
+                // A live (even paused) display link keeps the guest loop alive.
+                // The UI thread only publishes signals; CPU and guest memory stay
+                // on this guest thread. No spinning while waiting for a vsync.
+                std::unique_lock<std::mutex> lock(gActiveGuestMutex);
+                gHostEventReady.wait(lock, [&] {
+                    return gActiveAdapter != this || gActiveMemory != &memory ||
+                           !gHostTouches.empty() || gHostShutdownRequested ||
+                           gHostFrameSequence != frameSequence || gHostClockRunning != clockRunning;
+                });
+                if (gActiveAdapter != this || gActiveMemory != &memory) return true;
+                continue;
+            }
+            if (clockKnown && earliest > lifecycle.runLoopClockSeconds) {
+                // Wait until the next timer, while remaining interruptible by
+                // input, frames, backgrounding, and shutdown. Cap each wait so
+                // extreme guest intervals cannot overflow chrono conversions.
+                const auto remaining = std::min(earliest - lifecycle.runLoopClockSeconds, 60.0);
+                std::unique_lock<std::mutex> lock(gActiveGuestMutex);
+                gHostEventReady.wait_for(lock, std::chrono::duration<double>(remaining), [&] {
+                    return gActiveAdapter != this || gActiveMemory != &memory ||
+                           !gHostTouches.empty() || gHostShutdownRequested || !gHostClockRunning ||
+                           gHostFrameSequence != frameSequence;
+                });
+                if (gActiveAdapter != this || gActiveMemory != &memory) return true;
+                continue;
+            }
+        }
+
+        const auto source = lifecycle.runLoopSources[chosen];
+        if (source.kind != LifecycleState::RunLoopSource::Kind::Touch)
+            lifecycle.runLoopClockSeconds = std::max(lifecycle.runLoopClockSeconds, source.nextFireSeconds);
+        if (source.kind == LifecycleState::RunLoopSource::Kind::Touch) {
+            lifecycle.runLoopSources.erase(lifecycle.runLoopSources.begin() +
+                                           static_cast<std::ptrdiff_t>(chosen));
+        } else if (source.repeats) {
+            lifecycle.runLoopClockSeconds = std::max(lifecycle.runLoopClockSeconds, source.nextFireSeconds);
+            lifecycle.runLoopSources[chosen].nextFireSeconds = lifecycle.runLoopClockSeconds + source.intervalSeconds;
+        } else {
+            lifecycle.runLoopSources.erase(lifecycle.runLoopSources.begin() +
+                                           static_cast<std::ptrdiff_t>(chosen));
+        }
+        ++lifecycle.runLoopIterations;
+        if (source.kind == LifecycleState::RunLoopSource::Kind::Touch) {
+            const auto phaseSelector = runtime_.selector(source.touchPhase + ":withEvent:");
+            {
+                std::lock_guard<std::mutex> lock(mutex_);
+                selectorNames_[phaseSelector] = source.touchPhase + ":withEvent:";
+                selectorIds_[source.touchPhase + ":withEvent:"] = phaseSelector;
+            }
+            const auto receiver = touchTargetFor(memory, source.touchX, source.touchY);
+            if (receiver == 0) continue;
+            auto *touch = runtime_.allocate(classes_.at("UITouch"));
+            if (touch->ivars.size() < 2) touch->ivars.resize(2, 0);
+            touch->ivars[0] = floatBitsOf(source.touchX);
+            touch->ivars[1] = floatBitsOf(source.touchY);
+            const auto touchAddress = ensureObjectAddress(memory, touch);
+            recordLifecycleEvent(lifecycle, source.touchPhase + " delivered at " +
+                                                std::to_string(source.touchX) + "," +
+                                                std::to_string(source.touchY));
+            registers.r[14] = lifecycle.runLoopCallerReturn;
+            GuestAddress target = 0;
+            if (!beginNestedGuestCall(registers, memory, receiver, phaseSelector,
+                                      kFrameRunLoopSource, touchAddress, target, reason)) return false;
+            guestTarget = target;
+            return true;
+        }
+
         std::string name = "selector#" + std::to_string(source.selector);
         {
             std::lock_guard<std::mutex> lock(mutex_);
             const auto known = selectorNames_.find(source.selector);
-            if (known != selectorNames_.end())
-                name = known->second;
+            if (known != selectorNames_.end()) name = known->second;
         }
         recordLifecycleEvent(lifecycle, "run-loop source delivered: " + name);
+        registers.r[14] = lifecycle.runLoopCallerReturn;
+        GuestAddress target = 0;
+        if (!beginNestedGuestCall(registers, memory, source.target, source.selector,
+                                  kFrameRunLoopSource, source.argument, target, reason)) return false;
+        guestTarget = target;
+        return true;
     }
-    // Keep the run loop's own caller as the frame's return address. On a
-    // continuation `r14` holds the continuation callout itself, so using it
-    // would nest every source one level deeper instead of staying in the loop.
-    registers.r[14] = lifecycle.runLoopCallerReturn;
-    GuestAddress target = 0;
-    if (!beginNestedGuestCall(registers, memory, source.target, source.selector,
-                              kFrameRunLoopSource, source.argument, target, reason))
-        return false;
-    guestTarget = target;
-    return true;
 }
 
 bool ShimAdapter::guestImplements(const Object *receiver, Selector selector) const {
@@ -797,31 +1052,33 @@ bool ShimAdapter::runLoopRun(CpuRegisterState &registers, GuestAddressSpace &mem
 }
 
 void configureActiveGuestViewport(std::uint32_t width, std::uint32_t height) {
-    // Snapshot the active guest under the lock, then call without holding it:
-    // configureViewport takes the same (non-recursive) mutex internally.
-    ShimAdapter *adapter = nullptr;
-    GuestAddressSpace *memory = nullptr;
-    {
-        std::lock_guard<std::mutex> lock(gActiveGuestMutex);
-        adapter = gActiveAdapter;
-        memory = gActiveMemory;
-    }
-    if (adapter == nullptr || memory == nullptr || width == 0 || height == 0)
-        return;
-    adapter->configureViewport(*memory, width, height);
+    if (!width || !height) return;
+    std::lock_guard<std::mutex> lock(gActiveGuestMutex);
+    gHostViewportWidth = width;
+    gHostViewportHeight = height;
+    gHostEventReady.notify_all();
 }
 
 bool postTouchToActiveGuest(float x, float y, const char *phase) {
-    ShimAdapter *adapter = nullptr;
-    GuestAddressSpace *memory = nullptr;
-    {
-        std::lock_guard<std::mutex> lock(gActiveGuestMutex);
-        adapter = gActiveAdapter;
-        memory = gActiveMemory;
+    if (!phase || !std::isfinite(x) || !std::isfinite(y)) return false;
+    std::lock_guard<std::mutex> lock(gActiveGuestMutex);
+    if (!gActiveAdapter || !gActiveMemory) return false;
+    const std::string name(phase);
+    if (name != "touchesBegan" && name != "touchesMoved" && name != "touchesEnded") return false;
+    // Keep the latest move, but never discard an ordered press/release to make
+    // room for an unbounded stream of pointer moves.
+    if (name == "touchesMoved" && !gHostTouches.empty() && gHostTouches.back().phase == name) {
+        gHostTouches.back() = HostTouch{name, x, y};
+    } else {
+        if (gHostTouches.size() >= 256) {
+            const auto move = std::find_if(gHostTouches.begin(), gHostTouches.end(),
+                [](const HostTouch &event) { return event.phase == "touchesMoved"; });
+            if (move == gHostTouches.end()) return false;
+            gHostTouches.erase(move);
+        }
+        gHostTouches.push_back(HostTouch{name, x, y});
     }
-    if (adapter == nullptr || memory == nullptr || phase == nullptr)
-        return false;
-    adapter->postTouch(*memory, phase, x, y);
+    gHostEventReady.notify_all();
     return true;
 }
 
@@ -998,7 +1255,7 @@ bool ShimAdapter::lifecycleViewMessage(CpuRegisterState &registers, GuestAddress
                 *rawReturn = value;
             return true;
         };
-        const auto isLayer = receiverIsKindOf(receiverObject, "CAEAGLLayer");
+        const auto isLayer = receiverIsKindOf(receiverObject, "CALayer");
         if (!isLayer && !receiverIsKindOf(receiverObject, "UIView") &&
             !receiverIsKindOf(receiverObject, "UIWindow"))
             return false;
@@ -1581,6 +1838,25 @@ bool ShimAdapter::lifecycleSelector(CpuRegisterState &registers, GuestAddressSpa
         // ---- class messages: +[Owner selector] ----------------------------
         if (classMessage) {
             const auto &className = receiverClass->name;
+            if (className == "NSRunLoop" &&
+                (selectorName == "currentRunLoop" || selectorName == "mainRunLoop"))
+                return finish(lifecycleFrameworkObject(memory, "NSRunLoop", lifecycle.runLoopObject));
+            if (className == "CADisplayLink" && selectorName == "displayLinkWithTarget:selector:") {
+                auto *target = objectForGuest(memory, registers.r[2]);
+                if (!target || registers.r[3] == 0 || lifecycle.displayLinks.size() >= 4096)
+                    return finish(0);
+                const auto callback = selectorForGuest(memory, registers.r[3]);
+                auto *link = runtime_.allocate(classes_.at("CADisplayLink"));
+                const auto address = ensureObjectAddress(memory, link);
+                LifecycleState::DisplayLink state;
+                state.target = registers.r[2];
+                state.selector = callback;
+                lifecycle.displayLinks.emplace(address, state);
+                retain(target);
+                autoreleaseGuestObject(link); // factory method follows Objective-C ownership rules
+                recordLifecycleEvent(lifecycle, "+[CADisplayLink displayLinkWithTarget:selector:]");
+                return finish(address);
+            }
             if (selectorName == "sharedApplication" && className == kApplicationClass) {
                 const auto application =
                     lifecycleFrameworkObject(memory, kApplicationClass, lifecycle.application);
@@ -1619,10 +1895,22 @@ bool ShimAdapter::lifecycleSelector(CpuRegisterState &registers, GuestAddressSpa
                 if (selectorName == "currentContext")
                     return finish(lifecycle.currentContext);
                 if (selectorName == "setCurrentContext:") {
-                    // `+[EAGLContext setCurrentContext:]` returns BOOL, YES on
-                    // success. Apple's own GL view templates test it, so a NO
-                    // makes `initWithFrame:` return nil and the view never exists.
-                    lifecycle.currentContext = registers.r[2];
+                    auto &gl = glesForwarder_ ? *glesForwarder_ : gles::forwarderFor(memory);
+                    const auto requested = registers.r[2];
+                    if (requested == 0) {
+                        if (!gl.clearCurrent()) return finish(0);
+                        lifecycle.currentContext = 0;
+                        return finish(1);
+                    }
+                    const auto found = lifecycle.contextApis.find(requested);
+                    if (found == lifecycle.contextApis.end()) return finish(0);
+                    std::uint32_t width = kVirtualScreenWidth, height = kVirtualScreenHeight;
+                    effectiveViewport(memory, width, height);
+                    if (!gl.makeCurrent(requested, found->second, width, height)) {
+                        recordLifecycleEvent(lifecycle, "+[EAGLContext setCurrentContext:] failed");
+                        return finish(0);
+                    }
+                    lifecycle.currentContext = requested;
                     return finish(1);
                 }
             }
@@ -1642,6 +1930,69 @@ bool ShimAdapter::lifecycleSelector(CpuRegisterState &registers, GuestAddressSpa
 
         if (!receiverObject)
             return false;
+
+        if (receiverIsKindOf(receiverObject, "CADisplayLink")) {
+            const auto entry = lifecycle.displayLinks.find(receiverAddress);
+            if (entry == lifecycle.displayLinks.end()) return false;
+            auto &link = entry->second;
+            auto currentFrame = [] { std::lock_guard<std::mutex> lock(gActiveGuestMutex); return gHostFrameSequence; };
+            if (selectorName == "addToRunLoop:forMode:") {
+                const auto runLoop = registers.r[2];
+                if (!link.invalidated && !link.scheduled &&
+                    (runLoop == lifecycle.runLoopObject || runLoop == 1) && runLoop != 0) {
+                    retain(receiverObject); // the run loop owns a scheduled link
+                    link.scheduled = true;
+                    link.seenFrame = currentFrame();
+                    link.elapsedFrames = 0;
+                    updateDisplayDemand(memory);
+                }
+                return finish(0);
+            }
+            if (selectorName == "removeFromRunLoop:forMode:" || selectorName == "invalidate") {
+                const bool wasScheduled = link.scheduled;
+                if (selectorName == "invalidate") {
+                    link.invalidated = true;
+                    const auto targetAddress = link.target;
+                    link.target = 0;
+                    if (auto *target = objectForGuest(memory, targetAddress)) releaseObject(memory, target);
+                }
+                link.scheduled = false;
+                updateDisplayDemand(memory);
+                if (wasScheduled) releaseObject(memory, receiverObject);
+                return finish(0);
+            }
+            if (selectorName == "setPaused:") {
+                link.paused = registers.r[2] != 0;
+                link.seenFrame = currentFrame();
+                link.elapsedFrames = 0;
+                updateDisplayDemand(memory);
+                return finish(0);
+            }
+            if (selectorName == "isPaused" || selectorName == "paused") return finish(link.paused ? 1 : 0);
+            if (selectorName == "setFrameInterval:") {
+                const auto value = static_cast<std::int32_t>(registers.r[2]);
+                if (value > 0 && value <= 1000) { link.frameInterval = value; link.elapsedFrames = 0; }
+                return finish(0);
+            }
+            if (selectorName == "frameInterval") return finish(link.frameInterval);
+            if (selectorName == "setPreferredFramesPerSecond:") {
+                const auto value = static_cast<std::int32_t>(registers.r[2]);
+                if (value >= 0 && value <= 1000) link.preferredFramesPerSecond = value;
+                return finish(0);
+            }
+            if (selectorName == "preferredFramesPerSecond") return finish(link.preferredFramesPerSecond);
+            if (selectorName == "timestamp" || selectorName == "duration" || selectorName == "targetTimestamp") {
+                double seconds = static_cast<double>(selectorName == "duration" ? link.durationNanos
+                                                                                 : link.timestampNanos) / 1'000'000'000.0;
+                if (selectorName == "targetTimestamp") seconds += static_cast<double>(link.durationNanos) / 1'000'000'000.0;
+                const auto bits = doubleBitsOf(seconds);
+                registers.r[0] = static_cast<std::uint32_t>(bits);
+                registers.r[1] = static_cast<std::uint32_t>(bits >> 32);
+                if (rawReturn) *rawReturn = static_cast<Value>(bits);
+                return true;
+            }
+            return false;
+        }
 
         // AdSupport deliberately has no access to an Android advertising ID.
         // Apple specifies an all-zero IDFA when tracking is not authorized:
@@ -1813,21 +2164,28 @@ bool ShimAdapter::lifecycleSelector(CpuRegisterState &registers, GuestAddressSpa
         }
         // ---- EAGLContext ---------------------------------------------------
         if (receiverIsKindOf(receiverObject, "EAGLContext")) {
-            if (selectorName == "initWithAPI:") {
-                // The Native guest bridge implements ES 1 only. Never report
-                // an ES 2/3 context while actually creating an ES 1 context.
-                // Semi-Emulated AnyiOSEMU has a separate ES 2/3 backend.
-                if (registers.r[2] != 1) {
+            if (selectorName == "initWithAPI:" || selectorName == "initWithAPI:sharegroup:") {
+                const auto api = registers.r[2];
+                auto &gl = glesForwarder_ ? *glesForwarder_ : gles::forwarderFor(memory);
+                // Context sharing and ES3 are not implemented. An ES2 request
+                // is accepted only with an actual GLES2 library, never ES1.
+                if ((api != 1 && api != 2) || (api == 2 && !gl.supportsApi(2)) ||
+                    (selectorName == "initWithAPI:sharegroup:" && registers.r[3] != 0)) {
                     recordLifecycleEvent(lifecycle,
-                        "-[EAGLContext initWithAPI:] -> requested API is not supported by Native");
+                        "-[EAGLContext initWithAPI:] -> requested API/sharegroup is not supported");
                     return finish(0);
                 }
-                lifecycle.currentContext = receiverAddress;
-                recordLifecycleEvent(lifecycle, "-[EAGLContext initWithAPI:]");
+                lifecycle.contextApis[receiverAddress] = api;
+                recordLifecycleEvent(lifecycle, "-[EAGLContext initWithAPI:] ES" + std::to_string(api));
                 return finish(receiverAddress);
             }
+            if (selectorName == "API") {
+                const auto found = lifecycle.contextApis.find(receiverAddress);
+                return finish(found == lifecycle.contextApis.end() ? 0 : found->second);
+            }
             if (selectorName == "presentRenderbuffer:") {
-                const bool presented = gles::forwarderFor(memory).presentDrawable();
+                if (lifecycle.currentContext != receiverAddress || registers.r[2] != 0x8D41) return finish(0);
+                const bool presented = (glesForwarder_ ? *glesForwarder_ : gles::forwarderFor(memory)).presentDrawable();
                 recordLifecycleEvent(lifecycle,
                                      presented
                                          ? "-[EAGLContext presentRenderbuffer:] -> frame presented"
@@ -1837,6 +2195,7 @@ bool ShimAdapter::lifecycleSelector(CpuRegisterState &registers, GuestAddressSpa
                 return finish(presented ? 1 : 0);
             }
             if (selectorName == "renderbufferStorage:fromDrawable:") {
+                if (lifecycle.currentContext != receiverAddress || registers.r[2] != 0x8D41) return finish(0);
                 // ARM AAPCS argument slots for `objc_msgSend(self, _cmd, ...)`:
                 //   r0 = self, r1 = _cmd, r2 = arg0, r3 = arg1.
                 // `renderbufferStorage:fromDrawable:` has two arguments, so
@@ -1892,7 +2251,7 @@ bool ShimAdapter::lifecycleSelector(CpuRegisterState &registers, GuestAddressSpa
                     gles::publishNote(note);
                     return finish(0);
                 }
-                const bool attached = gles::forwarderFor(memory).attachDrawable(memory, width, height);
+                const bool attached = (glesForwarder_ ? *glesForwarder_ : gles::forwarderFor(memory)).attachDrawable(memory, width, height);
                 if (!attached) {
                     const std::string note =
                         "-[EAGLContext renderbufferStorage:fromDrawable:] -> "
@@ -1910,7 +2269,19 @@ bool ShimAdapter::lifecycleSelector(CpuRegisterState &registers, GuestAddressSpa
                 return finish(1);
             }
             if (selectorName == "setCurrentContext:") {
-                lifecycle.currentContext = registers.r[2];
+                auto &gl = glesForwarder_ ? *glesForwarder_ : gles::forwarderFor(memory);
+                const auto requested = registers.r[2];
+                if (requested == 0) {
+                    if (!gl.clearCurrent()) return finish(0);
+                    lifecycle.currentContext = 0;
+                    return finish(1);
+                }
+                const auto found = lifecycle.contextApis.find(requested);
+                if (found == lifecycle.contextApis.end()) return finish(0);
+                std::uint32_t width = kVirtualScreenWidth, height = kVirtualScreenHeight;
+                effectiveViewport(memory, width, height);
+                if (!gl.makeCurrent(requested, found->second, width, height)) return finish(0);
+                lifecycle.currentContext = requested;
                 return finish(1);
             }
             if (selectorName == "isMultiThreaded")
@@ -1949,6 +2320,7 @@ BootLifecycleHooks ShimAdapter::lifecycleHooks() {
     hooks.setMainThreadServiceLimit = [this](GuestAddressSpace &memory, std::uint32_t frames) {
         setMainThreadServiceLimit(memory, frames);
     };
+    hooks.finishRuntime = [this](GuestAddressSpace &memory) { deactivateGuest(memory); };
     hooks.finishMainThreadEntry = [this](GuestAddressSpace &memory) {
         guestState(memory).lifecycle.mainThreadEntryRunning = false;
     };

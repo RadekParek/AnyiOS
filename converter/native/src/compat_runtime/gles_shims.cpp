@@ -22,9 +22,12 @@
 #include "compat_runtime/gles_shims.hpp"
 
 #include <algorithm>
+#include <array>
 #include <atomic>
+#include <chrono>
 #include <cstdio>
 #include <cstring>
+#include <limits>
 #include <map>
 #include <mutex>
 #include <set>
@@ -32,6 +35,9 @@
 #include <string>
 
 #include <dlfcn.h>
+#ifdef __ANDROID__
+#include <android/native_window.h>
+#endif
 
 namespace radek::compat_runtime::gles {
 namespace {
@@ -47,6 +53,7 @@ using GLbitfield = unsigned int;
 constexpr GLenum GL_ARRAY_BUFFER = 0x8892;
 constexpr GLenum GL_ELEMENT_ARRAY_BUFFER = 0x8893;
 constexpr GLenum GL_FRAMEBUFFER_OES = 0x8D40;
+constexpr GLenum GL_RENDERBUFFER_OES = 0x8D41;
 constexpr GLenum GL_RENDERBUFFER_WIDTH_OES = 0x8D42;
 constexpr GLenum GL_RENDERBUFFER_HEIGHT_OES = 0x8D43;
 constexpr GLenum GL_COLOR_ATTACHMENT0_OES = 0x8CE0;
@@ -81,6 +88,8 @@ constexpr EGLint EGL_PBUFFER_BIT = 0x0001;
 constexpr EGLint EGL_WINDOW_BIT = 0x0004;
 constexpr EGLint EGL_RENDERABLE_TYPE = 0x3040;
 constexpr EGLint EGL_OPENGL_ES_BIT = 0x0001;
+constexpr EGLint EGL_OPENGL_ES2_BIT = 0x0004;
+constexpr EGLint EGL_CONTEXT_CLIENT_VERSION = 0x3098;
 constexpr EGLint EGL_DEPTH_SIZE = 0x3025;
 constexpr EGLint EGL_WIDTH = 0x3057;
 constexpr EGLint EGL_HEIGHT = 0x3056;
@@ -114,7 +123,7 @@ void publishNoteLocked(const std::string &note) {
 }
 
 void recordDriver(const DriverReport &report) {
-    gProgress.driverGlesLoaded.store(report.glesLoaded, std::memory_order_relaxed);
+    gProgress.driverGlesLoaded.store(report.glesLoaded || report.gles2Loaded, std::memory_order_relaxed);
     gProgress.driverEglLoaded.store(report.eglLoaded, std::memory_order_relaxed);
 }
 
@@ -138,9 +147,10 @@ struct Args {
         if (index < 4)
             return registers.r[static_cast<std::size_t>(index)];
         std::uint32_t value = 0;
-        if (registers.r[13] == 0 ||
-            !memory.read(registers.r[13] + static_cast<GuestAddress>(4 * (index - 4)), &value,
-                         sizeof(value)))
+        const auto address = static_cast<std::uint64_t>(registers.r[13]) +
+                             4u * static_cast<unsigned>(index - 4);
+        if (registers.r[13] == 0 || address > std::numeric_limits<GuestAddress>::max() ||
+            !memory.read(static_cast<GuestAddress>(address), &value, sizeof(value)))
             throw std::runtime_error("streaming argument is unreadable");
         return value;
     }
@@ -171,56 +181,104 @@ std::size_t elementSize(GLenum type) {
     }
 }
 
-/** Loads the platform GL/EGL libraries once per process. */
+/** Loads the platform GL/EGL libraries for this forwarder. */
 struct Driver {
-    void *gles = nullptr;
+    void *gles1 = nullptr;
+    void *gles2 = nullptr;
     void *egl = nullptr;
     bool glesLoaded = false;
+    bool gles2Loaded = false;
+    bool gles2Probed = false;
     bool eglLoaded = false;
+    unsigned api = 1;
     std::string detail;
-    std::map<std::string, void *> symbols;
+    std::map<std::string, void *> symbols[2];
 
     Driver() {
-        for (const char *name : {"libGLESv1_CM.so.1", "libGLESv1_CM.so", "libGLESv2.so.2"}) {
-            gles = ::dlopen(name, RTLD_NOW | RTLD_LOCAL);
-            if (gles) {
+        for (const char *name : {"libGLESv1_CM.so.1", "libGLESv1_CM.so"}) {
+            gles1 = ::dlopen(name, RTLD_NOW | RTLD_LOCAL);
+            if (gles1) {
                 glesLoaded = true;
-                detail += std::string(detail.empty() ? "" : ", ") + "GLES=" + name;
+                detail += std::string(detail.empty() ? "" : ", ") + "GLES1=" + name;
                 break;
             }
         }
-        if (!gles) {
-            const char *error = ::dlerror();
-            detail = std::string("GLES=unavailable") + (error ? std::string(" (") + error + ")" : "");
-        }
+        if (!gles1)
+            detail = "GLES1=unavailable";
         for (const char *name : {"libEGL.so.1", "libEGL.so", "libEGL_angle.so"}) {
             egl = ::dlopen(name, RTLD_NOW | RTLD_LOCAL);
             if (egl) {
                 eglLoaded = true;
-                detail += std::string(detail.empty() ? "" : ", ") + "EGL=" + name;
+                detail += ", EGL=" + std::string(name);
                 break;
             }
         }
         if (!egl)
-            detail += std::string(detail.empty() ? "" : ", ") + "EGL=unavailable";
+            detail += ", EGL=unavailable";
+    }
+
+    bool loadGles2() {
+        if (gles2Probed) return gles2Loaded;
+        gles2Probed = true;
+        // ES1-only games do not need to load the programmable driver at all.
+        for (const char *name : {"libGLESv2.so.2", "libGLESv2.so"}) {
+            gles2 = ::dlopen(name, RTLD_NOW | RTLD_LOCAL);
+            if (gles2) {
+                gles2Loaded = true;
+                detail += ", GLES2=" + std::string(name);
+                break;
+            }
+        }
+        if (!gles2) detail += ", GLES2=unavailable";
+        return gles2Loaded;
+    }
+
+    ~Driver() {
+        if (gles2) ::dlclose(gles2);
+        if (gles1) ::dlclose(gles1);
+        if (egl) ::dlclose(egl);
     }
 
     void *find(const char *name) {
-        const auto cached = symbols.find(name);
-        if (cached != symbols.end())
+        auto &cache = symbols[api == 2 ? 1 : 0];
+        const auto cached = cache.find(name);
+        if (cached != cache.end())
             return cached->second;
         void *address = nullptr;
+        void *gles = api == 2 ? gles2 : gles1;
         if (gles)
             address = ::dlsym(gles, name);
         if (!address && egl)
             address = ::dlsym(egl, name);
-        symbols.emplace(name, address);
+        cache.emplace(name, address);
         return address;
     }
 
     template <typename Fn> Fn function(const char *name) {
         return reinterpret_cast<Fn>(find(name));
     }
+};
+
+// ANativeWindow_fromSurface returns a borrowed-to-this-call reference. Hold
+// independent references for the currently published window and the EGL
+// surface built from it, including while UI and guest threads race replacement.
+struct NativeWindowRef {
+    explicit NativeWindowRef(void *value) : pointer(value) {
+#ifdef __ANDROID__
+        if (pointer) ANativeWindow_acquire(static_cast<ANativeWindow *>(pointer));
+#endif
+    }
+    ~NativeWindowRef() {
+#ifdef __ANDROID__
+        if (pointer) ANativeWindow_release(static_cast<ANativeWindow *>(pointer));
+#endif
+    }
+    void *pointer = nullptr;
+};
+struct WindowSnapshot {
+    std::shared_ptr<NativeWindowRef> reference;
+    std::uint64_t generation = 0;
+    void *pointer() const { return reference ? reference->pointer : nullptr; }
 };
 
 struct EglState {
@@ -230,7 +288,7 @@ struct EglState {
     EGLSurface surface = nullptr;
     bool windowSurface = false;
     bool current = false;
-    void *boundWindow = nullptr;  // Android window behind `surface`, if any
+    WindowSnapshot boundWindow; // keeps the window alive until EGL destroys its surface
     int width = 0;
     int height = 0;
 
@@ -288,16 +346,35 @@ struct Forwarder::Impl {
     Driver driver;
     DriverReport report;
     EglState egl;
-    // Written from the JNI thread (surface changes), read on the guest thread.
-    std::atomic<void *> nativeWindow{nullptr};
-    void *failedWindowBind = nullptr;  // window whose bind already failed; not retried per frame
+    // The UI thread publishes a retained reference; EGL runs on the guest thread.
+    std::mutex windowMutex;
+    WindowSnapshot nativeWindow;
+    std::uint64_t failedWindowGeneration = 0;
+    std::chrono::steady_clock::time_point nextWindowRetry{};
 
-    std::set<int> drawableRenderbuffers;  // EAGL-backed renderbuffer names
-    std::set<int> drawableFramebuffers;   // guest FBOs whose color attachment is EAGL
+    WindowSnapshot windowSnapshot() {
+        std::lock_guard<std::mutex> lock(windowMutex);
+        return nativeWindow;
+    }
+    void setWindow(void *window) {
+        std::lock_guard<std::mutex> lock(windowMutex);
+        if (nativeWindow.pointer() == window) return;
+        nativeWindow.reference = window ? std::make_shared<NativeWindowRef>(window) : nullptr;
+        ++nativeWindow.generation;
+    }
+
+    std::map<std::pair<unsigned, GLenum>, GuestAddress> guestDriverStrings;
+    // Deleted renderbuffer names may be reused while an unbound FBO still
+    // retains the old object. Distinguish those objects with generation IDs.
+    std::map<int, std::uint64_t> drawableRenderbuffers; // guest name -> generation
+    std::map<int, std::uint64_t> drawableFramebuffers; // guest FBO -> drawable generation
+    std::uint64_t nextDrawableGeneration = 0;
     int boundRenderbuffer = 0;
     int boundFramebuffer = 0;
     int boundArrayBuffer = 0;
     int boundElementArrayBuffer = 0;
+    GLint unpackAlignment = 4;
+    GLint packAlignment = 4;
 
     struct ArrayState {
         bool enabled = false;
@@ -305,11 +382,22 @@ struct Forwarder::Impl {
         GLenum type = 0;
         GLsizei stride = 0;
         GuestAddress pointer = 0;
+        GLuint buffer = 0; // ARRAY_BUFFER binding captured by the pointer call
     };
     ArrayState vertexArray;
     ArrayState colorArray;
     ArrayState texCoordArray;
     ArrayState normalArray;
+    struct VertexAttrib {
+        bool enabled = false;
+        GLint size = 4;
+        GLenum type = GL_FLOAT;
+        unsigned char normalized = 0;
+        GLsizei stride = 0;
+        GuestAddress pointer = 0;
+        GLuint buffer = 0; // binding captured when glVertexAttribPointer ran
+    };
+    std::map<GLuint, VertexAttrib> vertexAttribs;
 
     std::uint64_t guestCalls = 0;
     std::uint64_t forwarded = 0;
@@ -318,11 +406,14 @@ struct Forwarder::Impl {
     std::vector<std::string> diagnostics;
     std::uint32_t drawableWidth = 0;
     std::uint32_t drawableHeight = 0;
+    GuestAddress contextOwner = 0;
+    bool drawableAttached = false;
 
     GuestAddress nextCallout = kCalloutBase;
 
     Impl() {
         report.glesLoaded = driver.glesLoaded;
+        report.gles2Loaded = driver.gles2Loaded;
         report.eglLoaded = driver.eglLoaded;
         report.detail = driver.detail;
         recordDriver(report);
@@ -373,6 +464,137 @@ struct Forwarder::Impl {
         return host;
     }
 
+    /** Writable guest memory is also marked dirty for the guest CPU backend. */
+    void *hostOutput(GuestAddressSpace &memory, GuestAddress address, std::size_t bytes,
+                     const char *call) {
+        if (bytes == 0) return nullptr;
+        void *host = memory.guestToHost(address, bytes, MemoryPermission::Write);
+        if (!host)
+            refuse(call, "the guest output range " + describe(address, bytes) +
+                             " is not writable");
+        return host;
+    }
+
+    // Use the guest output directly on the common aligned path. A malformed
+    // unaligned output gets aligned staging so a host driver never receives an
+    // unaligned GLuint pointer. Zero/negative counts still reach GL for its
+    // ordinary error semantics without touching guest memory.
+    void generateNames(Args &args, const char *name) {
+        const GLsizei count = args.i32(0);
+        if (count <= 0) { call<void (*)(GLsizei, GLuint *)>(name, count, nullptr); return; }
+        const auto bytes64 = static_cast<std::uint64_t>(count) * sizeof(GLuint);
+        if (bytes64 > 64u * 1024u * 1024u) { refuse(name, "object count exceeds the safety limit"); return; }
+        const auto bytes = static_cast<std::size_t>(bytes64);
+        void *output = hostOutput(args.memory, args.pointer(1), bytes, name);
+        if (!output) return;
+        if (reinterpret_cast<std::uintptr_t>(output) % alignof(GLuint) == 0) {
+            call<void (*)(GLsizei, GLuint *)>(name, count, static_cast<GLuint *>(output));
+            return;
+        }
+        std::array<GLuint, 16> small{};
+        std::vector<GLuint> large;
+        if (count > static_cast<GLsizei>(small.size())) large.resize(static_cast<std::size_t>(count));
+        GLuint *names = large.empty() ? small.data() : large.data();
+        (void)args.memory.read(args.pointer(1), names, bytes);
+        if (call<void (*)(GLsizei, GLuint *)>(name, count, names)) std::memcpy(output, names, bytes);
+    }
+
+    // Delete lists may be unaligned in the guest. Keep the common small list
+    // on the stack and update our mirrors only after the driver was called.
+    template <typename AfterDelete>
+    void deleteNames(Args &args, const char *name, AfterDelete afterDelete) {
+        const GLsizei count = args.i32(0);
+        if (count <= 0) { call<void (*)(GLsizei, const GLuint *)>(name, count, nullptr); return; }
+        const auto bytes64 = static_cast<std::uint64_t>(count) * sizeof(GLuint);
+        if (bytes64 > 64u * 1024u * 1024u) { refuse(name, "object count exceeds the safety limit"); return; }
+        std::array<GLuint, 16> small{};
+        std::vector<GLuint> large;
+        if (count > static_cast<GLsizei>(small.size())) large.resize(static_cast<std::size_t>(count));
+        GLuint *names = large.empty() ? small.data() : large.data();
+        if (!args.memory.read(args.pointer(1), names, static_cast<std::size_t>(bytes64))) {
+            refuse(name, "object list is unreadable"); return;
+        }
+        if (!call<void (*)(GLsizei, const GLuint *)>(name, count, names)) return;
+        for (GLsizei i = 0; i < count; ++i) if (names[i] != 0) afterDelete(names[i]);
+    }
+
+    void detachCurrentDrawableFramebuffer() {
+        if (boundFramebuffer != 0 && drawableFramebuffers.erase(boundFramebuffer))
+            call<void (*)(GLenum, GLuint)>(driver.api == 2 ? "glBindFramebuffer" : "glBindFramebufferOES",
+                                           GL_FRAMEBUFFER_OES, static_cast<GLuint>(boundFramebuffer));
+    }
+
+    void deletedRenderbuffer(GLuint name) {
+        const auto object = drawableRenderbuffers.find(static_cast<int>(name));
+        // GL detaches only from the currently bound framebuffer. Non-bound
+        // FBOs retain the deleted object, even if its integer name is reused.
+        // https://docs.gl/es2/glDeleteRenderbuffers
+        const auto current = drawableFramebuffers.find(boundFramebuffer);
+        if (object != drawableRenderbuffers.end() && current != drawableFramebuffers.end() &&
+            current->second == object->second) detachCurrentDrawableFramebuffer();
+        if (object != drawableRenderbuffers.end()) drawableRenderbuffers.erase(object);
+        if (static_cast<GLuint>(boundRenderbuffer) == name) boundRenderbuffer = 0;
+    }
+
+    void deletedFramebuffer(GLuint name) {
+        drawableFramebuffers.erase(static_cast<int>(name));
+        if (static_cast<GLuint>(boundFramebuffer) == name) boundFramebuffer = 0;
+    }
+
+    void queryRenderbuffer(Args &args, const char *name) {
+        if (!args.memory.contains(args.pointer(2), sizeof(GLint), MemoryPermission::Write)) {
+            refuse(name, "query output is not writable"); return;
+        }
+        GLint result = 0;
+        (void)args.memory.read(args.pointer(2), &result, sizeof(result));
+        const auto target = args.enumValue(0), pname = args.enumValue(1);
+        if (target == GL_RENDERBUFFER_OES && drawableRenderbuffers.count(boundRenderbuffer) &&
+            (pname == GL_RENDERBUFFER_WIDTH_OES || pname == GL_RENDERBUFFER_HEIGHT_OES)) {
+            result = static_cast<GLint>(pname == GL_RENDERBUFFER_WIDTH_OES ? drawableWidth : drawableHeight);
+        } else if (!call<void (*)(GLenum, GLenum, GLint *)>(name, target, pname, &result)) {
+            return;
+        }
+        (void)args.memory.write(args.pointer(2), &result, sizeof(result));
+    }
+
+    static bool validFramebufferTexture(GLenum target, GLuint texture, GLint level) {
+        // For texture 0 the attachment is detached and the texture target and
+        // level are ignored. ES2 otherwise accepts GL_TEXTURE_2D or cube faces.
+        // https://docs.gl/es2/glFramebufferTexture2D
+        return texture == 0 || (level == 0 && (target == 0x0DE1 || (target >= 0x8515 && target <= 0x851A)));
+    }
+
+    /** Bounded NUL-terminated guest string. One mapped region is scanned at a
+     * time, without dereferencing an unchecked host pointer. */
+    bool guestString(GuestAddressSpace &memory, GuestAddress address, std::string &text,
+                     const char *call) {
+        constexpr std::size_t maxBytes = 16u * 1024u * 1024u;
+        if (address == 0) { refuse(call, "a string pointer is null"); return false; }
+        const auto regions = memory.regions();
+        std::uint64_t cursor = address;
+        text.clear();
+        while (text.size() < maxBytes && cursor <= std::numeric_limits<GuestAddress>::max()) {
+            const GuestRegionView *region = nullptr;
+            for (const auto &candidate : regions) {
+                const auto end = static_cast<std::uint64_t>(candidate.base) + candidate.size;
+                if (cursor >= candidate.base && cursor < end) { region = &candidate; break; }
+            }
+            if (!region || !hasPermission(region->permissions, MemoryPermission::Read)) break;
+            const auto available = static_cast<std::size_t>(
+                static_cast<std::uint64_t>(region->base) + region->size - cursor);
+            const auto amount = std::min(available, maxBytes - text.size());
+            const auto *host = static_cast<const char *>(memory.guestToHost(
+                static_cast<GuestAddress>(cursor), amount, MemoryPermission::Read));
+            if (!host) break;
+            const auto *end = static_cast<const char *>(std::memchr(host, 0, amount));
+            if (end) { text.append(host, static_cast<std::size_t>(end - host)); return true; }
+            text.append(host, amount);
+            cursor += amount;
+        }
+        refuse(call, "unterminated or oversized guest string");
+        return false;
+    }
+
     static std::string describe(GuestAddress address, std::size_t bytes) {
         constexpr char digits[] = "0123456789abcdef";
         std::string text = "0x";
@@ -381,80 +603,340 @@ struct Forwarder::Impl {
         return text + " + " + std::to_string(bytes) + " byte(s)";
     }
 
-    static std::size_t arrayBytes(const ArrayState &array, GLint first, GLsizei count) {
-        if (count <= 0)
-            return 0;
-        const std::size_t element = elementSize(array.type) * static_cast<std::size_t>(
-                                                              std::max<GLint>(array.size, 1));
-        const std::size_t stride =
-            array.stride > 0 ? static_cast<std::size_t>(array.stride) : element;
-        return static_cast<std::size_t>(first + count - 1) * stride + element;
-    }
-
-    /**
-     * Re-issues one client array with a host pointer valid for `needed` bytes.
-     * Buffer-backed arrays pass their offset through untouched: the driver reads
-     * the buffer object, not guest memory.
-     */
-    bool applyArray(const char *setter, GuestAddressSpace &memory, const ArrayState &array,
-                    std::size_t needed, void *fn) {
-        if (!array.enabled)
-            return true;
-        if (boundArrayBuffer != 0) {
-            using SetterFn = void (*)(GLint, GLenum, GLsizei, const void *);
-            auto *setterFn = reinterpret_cast<SetterFn>(fn);
-            if (!setterFn)
-                return false;
-            setterFn(array.size, array.type, array.stride,
-                     reinterpret_cast<const void *>(static_cast<std::uintptr_t>(array.pointer)));
-            ++forwarded;
-            gProgress.forwardedCalls.fetch_add(1, std::memory_order_relaxed);
-            return true;
-        }
-        auto *host = static_cast<const void *>(
-            hostAddress(memory, array.pointer, needed, setter));
-        if (!host)
+    // ES pixel transfers have row padding determined by PACK/UNPACK_ALIGNMENT.
+    // https://registry.khronos.org/OpenGL-Refpages/es2.0/glPixelStorei.xml
+    static bool pixelBytes(GLsizei width, GLsizei height, GLenum format, GLenum type,
+                           GLint alignment, std::size_t &bytes) {
+        if (width < 0 || height < 0 || (alignment != 1 && alignment != 2 && alignment != 4 && alignment != 8))
             return false;
-        using SetterFn = void (*)(GLint, GLenum, GLsizei, const void *);
-        auto *setterFn = reinterpret_cast<SetterFn>(fn);
-        if (!setterFn) {
-            refuse(setter);
-            return false;
+        unsigned components = 0;
+        switch (format) {
+        case 0x1906: case 0x1909: case 0x1902: components = 1; break; // alpha, luminance, depth
+        case 0x190A: components = 2; break;                           // luminance-alpha
+        case 0x1907: components = 3; break;                           // RGB
+        case 0x1908: case 0x80E1: components = 4; break;             // RGBA, BGRA
+        default: return false;
         }
-        setterFn(array.size, array.type, array.stride, host);
-        ++forwarded;
-        gProgress.forwardedCalls.fetch_add(1, std::memory_order_relaxed);
+        unsigned pixel = 0;
+        switch (type) {
+        case GL_UNSIGNED_BYTE: pixel = components; break;
+        case GL_UNSIGNED_SHORT: pixel = components * 2; break;
+        case GL_FLOAT: pixel = components * 4; break;
+        case 0x8D61: case 0x140B: pixel = components * 2; break; // half float OES/core
+        case 0x8033: case 0x8034: case 0x8363: pixel = 2; break; // packed 16-bit
+        case 0x1405: pixel = components * 4; break;              // unsigned int components
+        case 0x84FA: pixel = 4; break;                             // packed depth-stencil
+        default: return false;
+        }
+        if (width == 0 || height == 0) { bytes = 0; return true; }
+        const auto row = static_cast<std::uint64_t>(width) * pixel;
+        const auto stride = (row + static_cast<unsigned>(alignment) - 1u) &
+                            ~static_cast<std::uint64_t>(alignment - 1);
+        const auto rowsBeforeLast = static_cast<std::uint64_t>(height - 1);
+        if (rowsBeforeLast != 0 && stride > (std::numeric_limits<std::uint64_t>::max() - row) / rowsBeforeLast)
+            return false;
+        const auto total = stride * rowsBeforeLast + row;
+        if (total > 0xffffffffULL || total > std::numeric_limits<std::size_t>::max()) return false;
+        bytes = static_cast<std::size_t>(total);
         return true;
     }
 
-    /** Re-issues every enabled client array for a draw of `count` vertices. */
+    // Core ES 1.1 and ES 2.0 glGet output arities. Unknown extension pnames
+    // are refused rather than letting a driver write an unbounded array.
+    // https://registry.khronos.org/OpenGL-Refpages/es1.1/xhtml/glGet.xml
+    // https://registry.khronos.org/OpenGL-Refpages/es2.0/xhtml/glGet.xml
+    static int integerQueryCount(GLenum pname) {
+        switch (pname) {
+        case 0x0B10: // GL_POINT_SMOOTH
+        case 0x0B11: // GL_POINT_SIZE
+        case 0x0B20: // GL_LINE_SMOOTH
+        case 0x0B21: // GL_LINE_WIDTH
+        case 0x0B44: // GL_CULL_FACE
+        case 0x0B45: // GL_CULL_FACE_MODE
+        case 0x0B46: // GL_FRONT_FACE
+        case 0x0B50: // GL_LIGHTING
+        case 0x0B52: // GL_LIGHT_MODEL_TWO_SIDE
+        case 0x0B54: // GL_SHADE_MODEL
+        case 0x0B57: // GL_COLOR_MATERIAL
+        case 0x0B60: // GL_FOG
+        case 0x0B62: // GL_FOG_DENSITY
+        case 0x0B63: // GL_FOG_START
+        case 0x0B64: // GL_FOG_END
+        case 0x0B65: // GL_FOG_MODE
+        case 0x0B71: // GL_DEPTH_TEST
+        case 0x0B72: // GL_DEPTH_WRITEMASK
+        case 0x0B73: // GL_DEPTH_CLEAR_VALUE
+        case 0x0B74: // GL_DEPTH_FUNC
+        case 0x0B90: // GL_STENCIL_TEST
+        case 0x0B91: // GL_STENCIL_CLEAR_VALUE
+        case 0x0B92: // GL_STENCIL_FUNC
+        case 0x0B93: // GL_STENCIL_VALUE_MASK
+        case 0x0B94: // GL_STENCIL_FAIL
+        case 0x0B95: // GL_STENCIL_PASS_DEPTH_FAIL
+        case 0x0B96: // GL_STENCIL_PASS_DEPTH_PASS
+        case 0x0B97: // GL_STENCIL_REF
+        case 0x0B98: // GL_STENCIL_WRITEMASK
+        case 0x0BA0: // GL_MATRIX_MODE
+        case 0x0BA1: // GL_NORMALIZE
+        case 0x0BA3: // GL_MODELVIEW_STACK_DEPTH
+        case 0x0BA4: // GL_PROJECTION_STACK_DEPTH
+        case 0x0BA5: // GL_TEXTURE_STACK_DEPTH
+        case 0x0BC0: // GL_ALPHA_TEST
+        case 0x0BC1: // GL_ALPHA_TEST_FUNC
+        case 0x0BC2: // GL_ALPHA_TEST_REF
+        case 0x0BD0: // GL_DITHER
+        case 0x0BE0: // GL_BLEND_DST
+        case 0x0BE1: // GL_BLEND_SRC
+        case 0x0BE2: // GL_BLEND
+        case 0x0BF0: // GL_LOGIC_OP_MODE
+        case 0x0BF2: // GL_COLOR_LOGIC_OP
+        case 0x0C11: // GL_SCISSOR_TEST
+        case 0x0C50: // GL_PERSPECTIVE_CORRECTION_HINT
+        case 0x0C51: // GL_POINT_SMOOTH_HINT
+        case 0x0C52: // GL_LINE_SMOOTH_HINT
+        case 0x0C54: // GL_FOG_HINT
+        case 0x0CF5: // GL_UNPACK_ALIGNMENT
+        case 0x0D05: // GL_PACK_ALIGNMENT
+        case 0x0D31: // GL_MAX_LIGHTS
+        case 0x0D32: // GL_MAX_CLIP_PLANES
+        case 0x0D33: // GL_MAX_TEXTURE_SIZE
+        case 0x0D36: // GL_MAX_MODELVIEW_STACK_DEPTH
+        case 0x0D38: // GL_MAX_PROJECTION_STACK_DEPTH
+        case 0x0D39: // GL_MAX_TEXTURE_STACK_DEPTH
+        case 0x0D50: // GL_SUBPIXEL_BITS
+        case 0x0D52: // GL_RED_BITS
+        case 0x0D53: // GL_GREEN_BITS
+        case 0x0D54: // GL_BLUE_BITS
+        case 0x0D55: // GL_ALPHA_BITS
+        case 0x0D56: // GL_DEPTH_BITS
+        case 0x0D57: // GL_STENCIL_BITS
+        case 0x0DE1: // GL_TEXTURE_2D
+        case 0x2A00: // GL_POLYGON_OFFSET_UNITS
+        case 0x3000: // GL_CLIP_PLANE0
+        case 0x3001: // GL_CLIP_PLANE1
+        case 0x3002: // GL_CLIP_PLANE2
+        case 0x3003: // GL_CLIP_PLANE3
+        case 0x3004: // GL_CLIP_PLANE4
+        case 0x3005: // GL_CLIP_PLANE5
+        case 0x4000: // GL_LIGHT0
+        case 0x4001: // GL_LIGHT1
+        case 0x4002: // GL_LIGHT2
+        case 0x4003: // GL_LIGHT3
+        case 0x4004: // GL_LIGHT4
+        case 0x4005: // GL_LIGHT5
+        case 0x4006: // GL_LIGHT6
+        case 0x4007: // GL_LIGHT7
+        case 0x8009: // GL_BLEND_EQUATION_RGB
+        case 0x8037: // GL_POLYGON_OFFSET_FILL
+        case 0x8038: // GL_POLYGON_OFFSET_FACTOR
+        case 0x803A: // GL_RESCALE_NORMAL
+        case 0x8069: // GL_TEXTURE_BINDING_2D
+        case 0x8074: // GL_VERTEX_ARRAY
+        case 0x8075: // GL_NORMAL_ARRAY
+        case 0x8076: // GL_COLOR_ARRAY
+        case 0x8078: // GL_TEXTURE_COORD_ARRAY
+        case 0x807A: // GL_VERTEX_ARRAY_SIZE
+        case 0x807B: // GL_VERTEX_ARRAY_TYPE
+        case 0x807C: // GL_VERTEX_ARRAY_STRIDE
+        case 0x807E: // GL_NORMAL_ARRAY_TYPE
+        case 0x807F: // GL_NORMAL_ARRAY_STRIDE
+        case 0x8081: // GL_COLOR_ARRAY_SIZE
+        case 0x8082: // GL_COLOR_ARRAY_TYPE
+        case 0x8083: // GL_COLOR_ARRAY_STRIDE
+        case 0x8088: // GL_TEXTURE_COORD_ARRAY_SIZE
+        case 0x8089: // GL_TEXTURE_COORD_ARRAY_TYPE
+        case 0x808A: // GL_TEXTURE_COORD_ARRAY_STRIDE
+        case 0x809D: // GL_MULTISAMPLE
+        case 0x809E: // GL_SAMPLE_ALPHA_TO_COVERAGE
+        case 0x809F: // GL_SAMPLE_ALPHA_TO_ONE
+        case 0x80A0: // GL_SAMPLE_COVERAGE
+        case 0x80A8: // GL_SAMPLE_BUFFERS
+        case 0x80A9: // GL_SAMPLES
+        case 0x80AA: // GL_SAMPLE_COVERAGE_VALUE
+        case 0x80AB: // GL_SAMPLE_COVERAGE_INVERT
+        case 0x80C8: // GL_BLEND_DST_RGB
+        case 0x80C9: // GL_BLEND_SRC_RGB
+        case 0x80CA: // GL_BLEND_DST_ALPHA
+        case 0x80CB: // GL_BLEND_SRC_ALPHA
+        case 0x8126: // GL_POINT_SIZE_MIN
+        case 0x8127: // GL_POINT_SIZE_MAX
+        case 0x8128: // GL_POINT_FADE_THRESHOLD_SIZE
+        case 0x8192: // GL_GENERATE_MIPMAP_HINT
+        case 0x84E0: // GL_ACTIVE_TEXTURE
+        case 0x84E1: // GL_CLIENT_ACTIVE_TEXTURE
+        case 0x84E2: // GL_MAX_TEXTURE_UNITS
+        case 0x84E8: // GL_MAX_RENDERBUFFER_SIZE
+        case 0x8514: // GL_TEXTURE_BINDING_CUBE_MAP
+        case 0x851C: // GL_MAX_CUBE_MAP_TEXTURE_SIZE
+        case 0x86A2: // GL_NUM_COMPRESSED_TEXTURE_FORMATS
+        case 0x8800: // GL_STENCIL_BACK_FUNC
+        case 0x8801: // GL_STENCIL_BACK_FAIL
+        case 0x8802: // GL_STENCIL_BACK_PASS_DEPTH_FAIL
+        case 0x8803: // GL_STENCIL_BACK_PASS_DEPTH_PASS
+        case 0x883D: // GL_BLEND_EQUATION_ALPHA
+        case 0x8861: // GL_POINT_SPRITE_OES
+        case 0x8869: // GL_MAX_VERTEX_ATTRIBS
+        case 0x8872: // GL_MAX_TEXTURE_IMAGE_UNITS
+        case 0x8894: // GL_ARRAY_BUFFER_BINDING
+        case 0x8895: // GL_ELEMENT_ARRAY_BUFFER_BINDING
+        case 0x8896: // GL_VERTEX_ARRAY_BUFFER_BINDING
+        case 0x8897: // GL_NORMAL_ARRAY_BUFFER_BINDING
+        case 0x8898: // GL_COLOR_ARRAY_BUFFER_BINDING
+        case 0x889A: // GL_TEXTURE_COORD_ARRAY_BUFFER_BINDING
+        case 0x898A: // GL_POINT_SIZE_ARRAY_TYPE_OES
+        case 0x898B: // GL_POINT_SIZE_ARRAY_STRIDE_OES
+        case 0x8B4C: // GL_MAX_VERTEX_TEXTURE_IMAGE_UNITS
+        case 0x8B4D: // GL_MAX_COMBINED_TEXTURE_IMAGE_UNITS
+        case 0x8B8D: // GL_CURRENT_PROGRAM
+        case 0x8B9A: // GL_IMPLEMENTATION_COLOR_READ_TYPE
+        case 0x8B9B: // GL_IMPLEMENTATION_COLOR_READ_FORMAT
+        case 0x8B9C: // GL_POINT_SIZE_ARRAY_OES
+        case 0x8B9F: // GL_POINT_SIZE_ARRAY_BUFFER_BINDING_OES
+        case 0x8CA3: // GL_STENCIL_BACK_REF
+        case 0x8CA4: // GL_STENCIL_BACK_VALUE_MASK
+        case 0x8CA5: // GL_STENCIL_BACK_WRITEMASK
+        case 0x8CA6: // GL_FRAMEBUFFER_BINDING
+        case 0x8CA7: // GL_RENDERBUFFER_BINDING
+        case 0x8DF9: // GL_NUM_SHADER_BINARY_FORMATS
+        case 0x8DFA: // GL_SHADER_COMPILER
+        case 0x8DFB: // GL_MAX_VERTEX_UNIFORM_VECTORS
+        case 0x8DFC: // GL_MAX_VARYING_VECTORS
+        case 0x8DFD: // GL_MAX_FRAGMENT_UNIFORM_VECTORS
+            return 1;
+        case 0x0B12: // GL_SMOOTH_POINT_SIZE_RANGE
+        case 0x0B22: // GL_SMOOTH_LINE_WIDTH_RANGE
+        case 0x0B70: // GL_DEPTH_RANGE
+        case 0x0D3A: // GL_MAX_VIEWPORT_DIMS
+        case 0x846D: // GL_ALIASED_POINT_SIZE_RANGE
+        case 0x846E: // GL_ALIASED_LINE_WIDTH_RANGE
+            return 2;
+        case 0x0B02: // GL_CURRENT_NORMAL
+        case 0x8129: // GL_POINT_DISTANCE_ATTENUATION
+            return 3;
+        case 0x0B00: // GL_CURRENT_COLOR
+        case 0x0B03: // GL_CURRENT_TEXTURE_COORDS
+        case 0x0B53: // GL_LIGHT_MODEL_AMBIENT
+        case 0x0B66: // GL_FOG_COLOR
+        case 0x0BA2: // GL_VIEWPORT
+        case 0x0C10: // GL_SCISSOR_BOX
+        case 0x0C22: // GL_COLOR_CLEAR_VALUE
+        case 0x0C23: // GL_COLOR_WRITEMASK
+        case 0x8005: // GL_BLEND_COLOR
+            return 4;
+        case 0x0BA6: // GL_MODELVIEW_MATRIX
+        case 0x0BA7: // GL_PROJECTION_MATRIX
+        case 0x0BA8: // GL_TEXTURE_MATRIX
+            return 16;
+        default: return -1;
+        }
+    }
+
+    // Fixed-function arrays capture GL_ARRAY_BUFFER when their pointer is set,
+    // and glNormalPointer has a different signature from the other setters.
     bool applyDrawArrays(GuestAddressSpace &memory, GLint first, GLsizei count) {
-        if (count <= 0)
-            return true;
-        for (const auto *entry :
-             {&vertexArray, &colorArray, &texCoordArray, &normalArray}) {
-            if (entry->type != 0 && elementSize(entry->type) == 0) {
-                refuse("glDrawArrays", "a client array uses an unsupported element type");
+        if (count <= 0) return true;
+        if (first < 0) { refuse("glDrawArrays", "negative first vertex"); return false; }
+        const auto last = static_cast<std::uint64_t>(first) + static_cast<std::uint64_t>(count) - 1;
+        if (last > 0xffffffffULL) { refuse("glDrawArrays", "vertex range overflows"); return false; }
+        GLuint current = static_cast<GLuint>(boundArrayBuffer);
+        const auto restore = [&] {
+            return current == static_cast<GLuint>(boundArrayBuffer) ||
+                   call<void (*)(GLenum, GLuint)>("glBindBuffer", GL_ARRAY_BUFFER,
+                                                 static_cast<GLuint>(boundArrayBuffer));
+        };
+        const auto apply = [&](const char *name, const ArrayState &array, bool normal) {
+            if (!array.enabled) return true;
+            const auto component = elementSize(array.type);
+            if (component == 0 || array.size < 1 || array.size > 4 || array.stride < 0) {
+                refuse(name, "invalid client-array format");
+                return false;
+            }
+            const auto element = static_cast<std::uint64_t>(component) * static_cast<unsigned>(array.size);
+            const auto stride = array.stride ? static_cast<std::uint64_t>(array.stride) : element;
+            const auto bytes = last * stride + element;
+            if (bytes > 0xffffffffULL || bytes > std::numeric_limits<std::size_t>::max()) {
+                refuse(name, "client-array range overflows guest memory");
+                return false;
+            }
+            const void *pointer = reinterpret_cast<const void *>(static_cast<std::uintptr_t>(array.pointer));
+            if (array.buffer == 0) {
+                pointer = hostAddress(memory, array.pointer, static_cast<std::size_t>(bytes), name);
+                if (!pointer) return false;
+            }
+            if (current != array.buffer) {
+                if (!call<void (*)(GLenum, GLuint)>("glBindBuffer", GL_ARRAY_BUFFER, array.buffer)) return false;
+                current = array.buffer;
+            }
+            if (normal)
+                return call<void (*)(GLenum, GLsizei, const void *)>(name, array.type, array.stride, pointer);
+            return call<void (*)(GLint, GLenum, GLsizei, const void *)>(name, array.size, array.type,
+                                                                         array.stride, pointer);
+        };
+        const bool ok = apply("glVertexPointer", vertexArray, false) &&
+                        apply("glColorPointer", colorArray, false) &&
+                        apply("glTexCoordPointer", texCoordArray, false) &&
+                        apply("glNormalPointer", normalArray, true);
+        const bool restored = restore();
+        return ok && restored;
+    }
+
+    bool hasClientArrays() const {
+        for (const auto *array : {&vertexArray, &colorArray, &texCoordArray, &normalArray})
+            if (array->enabled && array->buffer == 0) return true;
+        return false;
+    }
+
+    bool applyVertexAttribs(GuestAddressSpace &memory, std::uint32_t maxIndex) {
+        // Re-issue client-memory attributes immediately before a draw. GL
+        // captures ARRAY_BUFFER at glVertexAttribPointer time, not draw time.
+        bool rebound = false;
+        for (const auto &entry : vertexAttribs) {
+            const auto &a = entry.second;
+            if (!a.enabled || a.buffer != 0) continue;
+            const auto element = elementSize(a.type) * static_cast<std::size_t>(a.size);
+            if (a.size < 1 || a.size > 4 || a.stride < 0 || element == 0) {
+                refuse("glDraw", "invalid client vertex attribute");
+                if (rebound) call<void (*)(GLenum, GLuint)>("glBindBuffer", GL_ARRAY_BUFFER,
+                                                            static_cast<GLuint>(boundArrayBuffer));
+                return false;
+            }
+            const auto stride = a.stride ? static_cast<std::uint64_t>(a.stride) : element;
+            const auto bytes64 = static_cast<std::uint64_t>(maxIndex) * stride + element;
+            if (bytes64 > std::numeric_limits<std::size_t>::max() || bytes64 > 0xffffffffULL) {
+                refuse("glDraw", "client vertex attribute range overflows guest memory");
+                if (rebound) call<void (*)(GLenum, GLuint)>("glBindBuffer", GL_ARRAY_BUFFER,
+                                                            static_cast<GLuint>(boundArrayBuffer));
+                return false;
+            }
+            const void *host = hostAddress(memory, a.pointer, static_cast<std::size_t>(bytes64),
+                                           "glVertexAttribPointer");
+            if (!host) {
+                if (rebound) call<void (*)(GLenum, GLuint)>("glBindBuffer", GL_ARRAY_BUFFER,
+                                                            static_cast<GLuint>(boundArrayBuffer));
+                return false;
+            }
+            if (!rebound) {
+                if (!call<void (*)(GLenum, GLuint)>("glBindBuffer", GL_ARRAY_BUFFER, 0)) return false;
+                rebound = true;
+            }
+            if (!call<void (*)(GLuint, GLint, GLenum, unsigned char, GLsizei, const void *)>(
+                    "glVertexAttribPointer", entry.first, a.size, a.type, a.normalized, a.stride,
+                    host)) {
+                call<void (*)(GLenum, GLuint)>("glBindBuffer", GL_ARRAY_BUFFER,
+                                               static_cast<GLuint>(boundArrayBuffer));
                 return false;
             }
         }
-        const std::size_t vertexBytes = arrayBytes(vertexArray, first, count);
-        const std::size_t colorBytes = arrayBytes(colorArray, first, count);
-        const std::size_t texCoordBytes = arrayBytes(texCoordArray, first, count);
-        const std::size_t normalBytes = arrayBytes(normalArray, first, count);
-        if (!applyArray("glVertexPointer", memory, vertexArray, vertexBytes,
-                        driver.find("glVertexPointer")))
-            return false;
-        if (!applyArray("glColorPointer", memory, colorArray, colorBytes,
-                        driver.find("glColorPointer")))
-            return false;
-        if (!applyArray("glTexCoordPointer", memory, texCoordArray, texCoordBytes,
-                        driver.find("glTexCoordPointer")))
-            return false;
-        if (!applyArray("glNormalPointer", memory, normalArray, normalBytes,
-                        driver.find("glNormalPointer")))
-            return false;
+        if (rebound)
+            return call<void (*)(GLenum, GLuint)>("glBindBuffer", GL_ARRAY_BUFFER,
+                                                   static_cast<GLuint>(boundArrayBuffer));
         return true;
+    }
+
+    bool hasClientAttribs() const {
+        for (const auto &entry : vertexAttribs)
+            if (entry.second.enabled && entry.second.buffer == 0) return true;
+        return false;
     }
 
     // ------------------------------------------------------------------
@@ -501,10 +983,11 @@ struct Forwarder::Impl {
             why = "eglInitialize failed" + eglErrorSuffix();
             return false;
         }
-        const bool wantWindow = nativeWindow.load() != nullptr;
-        auto choose = [&](EGLint renderable) {
+        const auto window = windowSnapshot();
+        const bool wantWindow = window.pointer() != nullptr;
+        auto choose = [&](EGLint renderable, EGLint surfaceType) {
             const EGLint attributes[] = {
-                EGL_SURFACE_TYPE, wantWindow ? EGL_WINDOW_BIT : EGL_PBUFFER_BIT,
+                EGL_SURFACE_TYPE, surfaceType,
                 EGL_RENDERABLE_TYPE, renderable, EGL_DEPTH_SIZE, 16, EGL_NONE};
             EGLint configCount = 0;
             if (eglChooseConfig(egl.display, attributes, &egl.config, 1, &configCount) !=
@@ -513,13 +996,20 @@ struct Forwarder::Impl {
                 return false;
             return true;
         };
-        // This Native bridge forwards fixed-function ES 1 calls. An ES 2
-        // context is not a translation layer and cannot execute that pipeline.
-        if (!choose(EGL_OPENGL_ES_BIT)) {
-            why = "no EGL config supports the Native runtime's OpenGL ES 1 context" + eglErrorSuffix();
+        const EGLint renderable = driver.api == 2 ? EGL_OPENGL_ES2_BIT : EGL_OPENGL_ES_BIT;
+        // Prefer a config that can later move an offscreen context to the
+        // Android window without destroying its shaders, buffers and textures.
+        const EGLint preferredSurface = wantWindow ? EGL_WINDOW_BIT : (EGL_WINDOW_BIT | EGL_PBUFFER_BIT);
+        if (!choose(renderable, preferredSurface) &&
+            (wantWindow || !choose(renderable, EGL_PBUFFER_BIT))) {
+            why = "no EGL config supports the requested OpenGL ES " +
+                  std::to_string(driver.api) + " context" + eglErrorSuffix();
             return false;
         }
-        egl.context = eglCreateContext(egl.display, egl.config, nullptr, nullptr);
+        // EGL defaults to ES1; ES2 must request its own programmable context.
+        const EGLint contextAttributes[] = {EGL_CONTEXT_CLIENT_VERSION,
+                                             static_cast<EGLint>(driver.api), EGL_NONE};
+        egl.context = eglCreateContext(egl.display, egl.config, nullptr, contextAttributes);
         if (!egl.context) {
             why = "eglCreateContext failed for an OpenGL ES context" + eglErrorSuffix();
             return false;
@@ -534,10 +1024,9 @@ struct Forwarder::Impl {
             }
             egl.surface = eglCreateWindowSurface(
                 egl.display, egl.config,
-                reinterpret_cast<EGLNativeWindowType>(nativeWindow.load()),
-                nullptr);
+                reinterpret_cast<EGLNativeWindowType>(window.pointer()), nullptr);
             egl.windowSurface = egl.surface != nullptr;
-            egl.boundWindow = egl.windowSurface ? nativeWindow.load() : nullptr;
+            egl.boundWindow = egl.windowSurface ? window : WindowSnapshot{};
             if (!egl.surface) {
                 why = "eglCreateWindowSurface failed for the Android surface" + eglErrorSuffix();
                 return false;
@@ -555,7 +1044,7 @@ struct Forwarder::Impl {
             egl.surface =
                 eglCreatePbufferSurface(egl.display, egl.config, attributes);
             egl.windowSurface = false;
-            egl.boundWindow = nullptr;
+            egl.boundWindow = WindowSnapshot{};
             if (!egl.surface) {
                 why = "eglCreatePbufferSurface failed" + eglErrorSuffix();
                 return false;
@@ -575,14 +1064,13 @@ struct Forwarder::Impl {
     /// Moves the drawable onto the Android window surface without losing it: the new
     /// window surface is created and made current first, and the old surface is
     /// destroyed only after that succeeds, so a failed bind keeps the offscreen drawable.
-    bool rebindWindowSurface(std::string &why) {
-        void *window = nativeWindow.load();
-        if (window == nullptr) {
+    bool rebindWindowSurface(const WindowSnapshot &window, std::string &why) {
+        if (window.pointer() == nullptr) {
             why = "no Android window surface is available";
             return false;
         }
-        if (!egl.display || !egl.context || !egl.current) {
-            why = "no current EGL context to rebind";
+        if (!egl.display || !egl.context) {
+            why = "no EGL context to rebind";
             return false;
         }
         auto eglCreateWindowSurface =
@@ -596,7 +1084,7 @@ struct Forwarder::Impl {
             return false;
         }
         EGLSurface surface = eglCreateWindowSurface(
-            egl.display, egl.config, reinterpret_cast<EGLNativeWindowType>(window), nullptr);
+            egl.display, egl.config, reinterpret_cast<EGLNativeWindowType>(window.pointer()), nullptr);
         if (!surface) {
             why = "eglCreateWindowSurface failed for the Android surface";
             return false;
@@ -622,30 +1110,49 @@ struct Forwarder::Impl {
             note("EAGL drawable has a zero-sized frame; the drawable stays unattached");
             return false;
         }
-        drawableRenderbuffers.insert(boundRenderbuffer);
-        drawableWidth = width;
-        drawableHeight = height;
+        if (boundRenderbuffer == 0) {
+            note("EAGL drawable needs a bound renderbuffer");
+            return false;
+        }
+        const auto markAttached = [&] {
+            if (!drawableRenderbuffers.count(boundRenderbuffer))
+                drawableRenderbuffers.emplace(boundRenderbuffer, ++nextDrawableGeneration);
+            drawableAttached = true;
+            drawableWidth = width;
+            drawableHeight = height;
+        };
         if (egl.current) {
             egl.width = static_cast<int>(width);
             egl.height = static_cast<int>(height);
             // The Android surface may arrive after the first (offscreen) attach:
             // recreate the drawable so the frames reach the screen instead of a
             // pbuffer nobody can see.
-            if (nativeWindow.load() != nullptr &&
-                (!egl.windowSurface || egl.boundWindow != nativeWindow.load())) {
-                destroyEgl();
-                std::string why;
-                if (createEglSurface(static_cast<int>(width), static_cast<int>(height), why)) {
-                    recordDrawable(true, egl.windowSurface, width, height);
-                    note("EAGL drawable re-attached to an EGL window surface (frames go to the "
-                         "Android surface)");
-                    return true;
-                }
+            const auto window = windowSnapshot();
+            if (egl.windowSurface && !window.pointer()) {
                 recordDrawable(false, false, 0, 0);
-                note("EGL window surface setup failed: " + why + "; GL calls are refused");
+                note("Android window was detached; preserving the context without presenting");
                 return false;
             }
-            recordDrawable(egl.current && egl.surface != nullptr, egl.windowSurface, width, height);
+            if (window.pointer() && (!egl.windowSurface || egl.boundWindow.generation != window.generation)) {
+                std::string why;
+                if (rebindWindowSurface(window, why)) {
+                    failedWindowGeneration = 0;
+                    markAttached();
+                    recordDrawable(true, true, width, height);
+                    note("EAGL drawable re-attached to the Android window surface");
+                    return true;
+                }
+                note("EGL window surface setup failed: " + why + "; context preserved");
+                recordDrawable(false, false, 0, 0);
+                return false;
+            }
+            if (!egl.surface) {
+                recordDrawable(false, false, 0, 0);
+                note("EAGL drawable has no current EGL surface");
+                return false;
+            }
+            markAttached();
+            recordDrawable(true, egl.windowSurface, width, height);
             return true;
         }
         if (!driver.eglLoaded) {
@@ -660,6 +1167,7 @@ struct Forwarder::Impl {
             note("EGL surface setup failed: " + why + "; GL calls are refused");
             return false;
         }
+        markAttached();
         recordDrawable(true, egl.windowSurface, width, height);
         note(egl.windowSurface
                  ? "EAGL drawable attached to an EGL window surface (frames go to the "
@@ -670,23 +1178,34 @@ struct Forwarder::Impl {
     }
 
     bool presentDrawable() {
-        // The Android surface can arrive after the guest's drawable was attached to an
-        // offscreen pbuffer. Bind it here so frames reach the screen, not the pbuffer.
-        void *window = nativeWindow.load();
-        if (egl.current && window != nullptr && window != failedWindowBind &&
-            (!egl.windowSurface || egl.boundWindow != window)) {
-            std::string why;
-            if (rebindWindowSurface(why)) {
-                recordDrawable(true, true, static_cast<std::uint32_t>(egl.width),
-                               static_cast<std::uint32_t>(egl.height));
-                note("EAGL drawable bound to the Android window surface before presenting");
-            } else {
-                failedWindowBind = window;
-                note("could not bind the Android window surface (" + why +
-                     "); frames stay on the offscreen surface");
-            }
+        if (boundRenderbuffer == 0 || !drawableRenderbuffers.count(boundRenderbuffer)) {
+            refuse("eglSwapBuffers", "the bound renderbuffer has no EAGL drawable storage");
+            return false;
         }
-        if (!egl.current || !egl.surface) {
+        const auto window = windowSnapshot();
+        if (egl.windowSurface && !window.pointer()) {
+            recordDrawable(false, false, 0, 0);
+            refuse("eglSwapBuffers", "the Android window was detached");
+            return false;
+        }
+        if (egl.current && window.pointer() &&
+            (!egl.windowSurface || egl.boundWindow.generation != window.generation)) {
+            const auto now = std::chrono::steady_clock::now();
+            if (failedWindowGeneration == window.generation && now < nextWindowRetry) return false;
+            std::string why;
+            if (!rebindWindowSurface(window, why)) {
+                failedWindowGeneration = window.generation;
+                nextWindowRetry = now + std::chrono::milliseconds(250);
+                recordDrawable(false, false, 0, 0);
+                refuse("eglSwapBuffers", "could not bind the new Android window: " + why);
+                return false;
+            }
+            failedWindowGeneration = 0;
+            recordDrawable(true, true, static_cast<std::uint32_t>(egl.width),
+                           static_cast<std::uint32_t>(egl.height));
+            note("EAGL drawable bound to the Android window surface before presenting");
+        }
+        if (!drawableAttached || !egl.current || !egl.surface) {
             refuse("eglSwapBuffers", "the EAGL drawable has no current EGL surface");
             return false;
         }
@@ -724,6 +1243,7 @@ struct Forwarder::Impl {
         if (eglTerminate && egl.display)
             eglTerminate(egl.display);
         egl = EglState{};
+        drawableAttached = false;
     }
 };
 
@@ -818,7 +1338,13 @@ void Forwarder::registerBindings(ShimRegistry &registry) {
         return true;
     });
     bind("_glPixelStorei", "gles-forward-pixel-store", [&impl](Args &args) {
-        impl.call<void (*)(GLenum, GLint)>("glPixelStorei", args.enumValue(0), args.i32(1));
+        const auto name = args.enumValue(0);
+        const auto value = args.i32(1);
+        if (impl.call<void (*)(GLenum, GLint)>("glPixelStorei", name, value) &&
+            (value == 1 || value == 2 || value == 4 || value == 8)) {
+            if (name == 0x0CF5) impl.unpackAlignment = value;
+            if (name == 0x0D05) impl.packAlignment = value;
+        }
         return true;
     });
     bind("_glTexEnvi", "gles-forward-tex-env", [&impl](Args &args) {
@@ -944,14 +1470,14 @@ void Forwarder::registerBindings(ShimRegistry &registry) {
     // ---- client arrays --------------------------------------------------------
     auto bindPointer = [&](const std::string &symbol, const char *adapter,
                            Impl::ArrayState Impl::*member) {
-        bind(symbol, adapter, [&impl, member](Args &args) {
+        const bool normal = symbol == "_glNormalPointer";
+        bind(symbol, adapter, [&impl, member, normal](Args &args) {
             auto &array = impl.*member;
-            array.size = args.i32(0);
-            array.type = args.enumValue(1);
-            array.stride = args.i32(2);
-            array.pointer = args.pointer(3);
-            // Forward the call as well: the pointer is re-issued with a host address at
-            // draw time, but the driver keeps its own copy of the state meanwhile.
+            array.size = normal ? 3 : args.i32(0);
+            array.type = args.enumValue(normal ? 0 : 1);
+            array.stride = args.i32(normal ? 1 : 2);
+            array.pointer = args.pointer(normal ? 2 : 3);
+            array.buffer = static_cast<GLuint>(impl.boundArrayBuffer);
             return true;
         });
     };
@@ -988,8 +1514,17 @@ void Forwarder::registerBindings(ShimRegistry &registry) {
         const auto mode = args.enumValue(0);
         const GLint first = args.i32(1);
         const GLsizei count = args.i32(2);
-        if (!impl.applyDrawArrays(args.memory, first, count))
+        if (impl.driver.api == 2 && count > 0) {
+            if (first < 0 || static_cast<std::uint64_t>(first) + static_cast<unsigned>(count) - 1 > 0xffffffffULL) {
+                impl.refuse("glDrawArrays", "invalid vertex range");
+                return true;
+            }
+            if (!impl.applyVertexAttribs(args.memory, static_cast<std::uint32_t>(first) +
+                                                        static_cast<std::uint32_t>(count) - 1))
+                return true;
+        } else if (impl.driver.api != 2 && !impl.applyDrawArrays(args.memory, first, count)) {
             return true;
+        }
         impl.call<void (*)(GLenum, GLint, GLsizei)>("glDrawArrays", mode, first, count);
         return true;
     });
@@ -998,20 +1533,54 @@ void Forwarder::registerBindings(ShimRegistry &registry) {
         const GLsizei count = args.i32(1);
         const auto type = args.enumValue(2);
         const auto indices = args.pointer(3);
-        if (!impl.applyDrawArrays(args.memory, 0, 1))
+        if (count < 0 || (type != GL_UNSIGNED_BYTE && type != GL_UNSIGNED_SHORT)) {
+            impl.refuse("glDrawElements", "invalid count or index type");
             return true;
+        }
+        if (count == 0) {
+            impl.call<void (*)(GLenum, GLsizei, GLenum, const void *)>("glDrawElements", mode,
+                                                                       count, type, nullptr);
+            return true;
+        }
         if (impl.boundElementArrayBuffer != 0) {
+            if (impl.driver.api == 2 && impl.hasClientAttribs()) {
+                impl.refuse("glDrawElements", "cannot bound client attributes with GPU-only indices");
+                return true;
+            }
+            if (impl.driver.api != 2 && impl.hasClientArrays()) {
+                impl.refuse("glDrawElements", "cannot bound client arrays with GPU-only indices");
+                return true;
+            }
+            if (impl.driver.api != 2 && !impl.applyDrawArrays(args.memory, 0, 1)) return true;
             impl.call<void (*)(GLenum, GLsizei, GLenum, const void *)>(
                 "glDrawElements", mode, count, type,
                 reinterpret_cast<const void *>(static_cast<std::uintptr_t>(indices)));
             return true;
         }
-        const std::size_t elementBytes = (type == GL_UNSIGNED_BYTE) ? 1u : 2u;
-        auto *host = static_cast<const void *>(impl.hostAddress(
-            args.memory, indices, static_cast<std::size_t>(std::max(count, 0)) * elementBytes,
-            "glDrawElements"));
-        if (!host)
+        const std::size_t elementBytes = type == GL_UNSIGNED_BYTE ? 1u : 2u;
+        const auto byteCount = static_cast<std::uint64_t>(count) * elementBytes;
+        if (byteCount > 0xffffffffULL) { impl.refuse("glDrawElements", "index range overflows"); return true; }
+        const auto *host = static_cast<const unsigned char *>(impl.hostAddress(
+            args.memory, indices, static_cast<std::size_t>(byteCount), "glDrawElements"));
+        if (!host) return true;
+        const bool needsMaximum = impl.driver.api == 2 ? impl.hasClientAttribs() : impl.hasClientArrays();
+        std::uint32_t maximum = 0;
+        if (needsMaximum) {
+            // Only client-memory arrays need a CPU scan to bound the guest
+            // read. When all enabled arrays are VBO-backed, the driver handles
+            // their index range; avoid walking the guest indices on every draw.
+            for (GLsizei i = 0; i < count; ++i) {
+                std::uint16_t index = host[static_cast<std::size_t>(i) * elementBytes];
+                if (elementBytes == 2)
+                    std::memcpy(&index, host + static_cast<std::size_t>(i) * 2u, 2);
+                maximum = std::max(maximum, static_cast<std::uint32_t>(index));
+            }
+        }
+        if (impl.driver.api == 2) {
+            if (needsMaximum && !impl.applyVertexAttribs(args.memory, maximum)) return true;
+        } else if (!impl.applyDrawArrays(args.memory, 0, static_cast<GLsizei>(maximum + 1))) {
             return true;
+        }
         impl.call<void (*)(GLenum, GLsizei, GLenum, const void *)>("glDrawElements", mode, count,
                                                                    type, host);
         return true;
@@ -1019,24 +1588,20 @@ void Forwarder::registerBindings(ShimRegistry &registry) {
 
     // ---- buffer objects -------------------------------------------------------
     bind("_glGenBuffers", "gles-forward-gen-buffers", [&impl](Args &args) {
-        const GLsizei count = args.i32(0);
-        auto *host = static_cast<void *>(impl.hostAddress(
-            args.memory, args.pointer(1), static_cast<std::size_t>(std::max(count, 0)) * 4u,
-            "glGenBuffers"));
-        if (!host)
-            return true;
-        impl.call<void (*)(GLsizei, GLuint *)>("glGenBuffers", count, static_cast<GLuint *>(host));
+        impl.generateNames(args, "glGenBuffers");
         return true;
     });
     bind("_glDeleteBuffers", "gles-forward-delete-buffers", [&impl](Args &args) {
-        const GLsizei count = args.i32(0);
-        auto *host = static_cast<void *>(impl.hostAddress(
-            args.memory, args.pointer(1), static_cast<std::size_t>(std::max(count, 0)) * 4u,
-            "glDeleteBuffers"));
-        if (!host)
-            return true;
-        impl.call<void (*)(GLsizei, const GLuint *)>("glDeleteBuffers", count,
-                                                     static_cast<const GLuint *>(host));
+        impl.deleteNames(args, "glDeleteBuffers", [&impl](GLuint name) {
+            // A deleted VBO no longer backs either a current or a captured array.
+            // https://docs.gl/es2/glDeleteBuffers
+            if (static_cast<GLuint>(impl.boundArrayBuffer) == name) impl.boundArrayBuffer = 0;
+            if (static_cast<GLuint>(impl.boundElementArrayBuffer) == name) impl.boundElementArrayBuffer = 0;
+            for (auto *array : {&impl.vertexArray, &impl.colorArray, &impl.texCoordArray, &impl.normalArray})
+                if (array->buffer == name) array->buffer = 0;
+            for (auto &attribute : impl.vertexAttribs)
+                if (attribute.second.buffer == name) attribute.second.buffer = 0;
+        });
         return true;
     });
     bind("_glBindBuffer", "gles-forward-bind-buffer", [&impl](Args &args) {
@@ -1080,24 +1645,11 @@ void Forwarder::registerBindings(ShimRegistry &registry) {
 
     // ---- textures -------------------------------------------------------------
     bind("_glGenTextures", "gles-forward-gen-textures", [&impl](Args &args) {
-        const GLsizei count = args.i32(0);
-        auto *host = static_cast<void *>(impl.hostAddress(
-            args.memory, args.pointer(1), static_cast<std::size_t>(std::max(count, 0)) * 4u,
-            "glGenTextures"));
-        if (!host)
-            return true;
-        impl.call<void (*)(GLsizei, GLuint *)>("glGenTextures", count, static_cast<GLuint *>(host));
+        impl.generateNames(args, "glGenTextures");
         return true;
     });
     bind("_glDeleteTextures", "gles-forward-delete-textures", [&impl](Args &args) {
-        const GLsizei count = args.i32(0);
-        auto *host = static_cast<void *>(impl.hostAddress(
-            args.memory, args.pointer(1), static_cast<std::size_t>(std::max(count, 0)) * 4u,
-            "glDeleteTextures"));
-        if (!host)
-            return true;
-        impl.call<void (*)(GLsizei, const GLuint *)>("glDeleteTextures", count,
-                                                     static_cast<const GLuint *>(host));
+        impl.deleteNames(args, "glDeleteTextures", [](GLuint) {});
         return true;
     });
     bind("_glBindTexture", "gles-forward-bind-texture", [&impl](Args &args) {
@@ -1122,11 +1674,15 @@ void Forwarder::registerBindings(ShimRegistry &registry) {
         const auto address = args.pointer(pointerIndex);
         const void *host = nullptr;
         if (address != 0) {
-            const std::size_t bytes = static_cast<std::size_t>(std::max(width, 0)) *
-                                      static_cast<std::size_t>(std::max(height, 0)) * 4u;
-            host = impl.hostAddress(args.memory, address, std::max<std::size_t>(bytes, 1), name);
-            if (!host)
+            std::size_t bytes = 0;
+            if (!impl.pixelBytes(width, height, format, type, impl.unpackAlignment, bytes)) {
+                impl.refuse(name, "unsupported or overflowing pixel format/range");
                 return;
+            }
+            if (bytes != 0) {
+                host = impl.hostAddress(args.memory, address, bytes, name);
+                if (!host) return;
+            }
         }
         impl.call<void (*)(GLenum, GLint, GLint, GLsizei, GLsizei, GLint, GLenum, GLenum,
                            const void *)>(name, target, level, internalFormat, width, height,
@@ -1147,13 +1703,14 @@ void Forwarder::registerBindings(ShimRegistry &registry) {
         const auto type = args.enumValue(7);
         const auto address = args.pointer(8);
         const void *host = nullptr;
-        if (address != 0) {
-            const std::size_t bytes = static_cast<std::size_t>(std::max(width, 0)) *
-                                      static_cast<std::size_t>(std::max(height, 0)) * 4u;
-            host = impl.hostAddress(args.memory, address, std::max<std::size_t>(bytes, 1),
-                                    "glTexSubImage2D");
-            if (!host)
-                return true;
+        std::size_t bytes = 0;
+        if (!impl.pixelBytes(width, height, format, type, impl.unpackAlignment, bytes)) {
+            impl.refuse("glTexSubImage2D", "unsupported or overflowing pixel format/range");
+            return true;
+        }
+        if (bytes != 0) {
+            host = impl.hostAddress(args.memory, address, bytes, "glTexSubImage2D");
+            if (!host) return true;
         }
         impl.call<void (*)(GLenum, GLint, GLint, GLint, GLsizei, GLsizei, GLenum, GLenum,
                            const void *)>("glTexSubImage2D", target, level, xoffset, yoffset,
@@ -1182,42 +1739,44 @@ void Forwarder::registerBindings(ShimRegistry &registry) {
         return true;
     });
 
+    bind("_glReadPixels", "gles-forward-read-pixels", [&impl](Args &args) {
+        const GLsizei width = args.i32(2), height = args.i32(3);
+        const auto format = args.enumValue(4), type = args.enumValue(5);
+        std::size_t bytes = 0;
+        if (!impl.pixelBytes(width, height, format, type, impl.packAlignment, bytes)) {
+            impl.refuse("glReadPixels", "unsupported or overflowing pixel format/range");
+            return true;
+        }
+        void *host = nullptr;
+        if (bytes != 0) {
+            host = impl.hostOutput(args.memory, args.pointer(6), bytes, "glReadPixels");
+            if (!host) return true;
+        }
+        impl.call<void (*)(GLint, GLint, GLsizei, GLsizei, GLenum, GLenum, void *)>(
+            "glReadPixels", args.i32(0), args.i32(1), width, height, format, type, host);
+        return true;
+    });
+
     // ---- OES framebuffer / renderbuffer objects --------------------------------
     bind("_glGenRenderbuffersOES", "gles-forward-gen-renderbuffers", [&impl](Args &args) {
-        const GLsizei count = args.i32(0);
-        auto *host = static_cast<void *>(impl.hostAddress(
-            args.memory, args.pointer(1), static_cast<std::size_t>(std::max(count, 0)) * 4u,
-            "glGenRenderbuffersOES"));
-        if (!host)
-            return true;
-        impl.call<void (*)(GLsizei, GLuint *)>("glGenRenderbuffersOES", count,
-                                               static_cast<GLuint *>(host));
+        impl.generateNames(args, "glGenRenderbuffersOES");
         return true;
     });
     bind("_glDeleteRenderbuffersOES", "gles-forward-delete-renderbuffers", [&impl](Args &args) {
-        const GLsizei count = args.i32(0);
-        auto *host = static_cast<void *>(impl.hostAddress(
-            args.memory, args.pointer(1), static_cast<std::size_t>(std::max(count, 0)) * 4u,
-            "glDeleteRenderbuffersOES"));
-        if (!host)
-            return true;
-        const auto *names = static_cast<const GLuint *>(host);
-        for (GLsizei i = 0; i < count; ++i)
-            impl.drawableRenderbuffers.erase(static_cast<int>(names[i]));
-        impl.call<void (*)(GLsizei, const GLuint *)>("glDeleteRenderbuffersOES", count, names);
+        impl.deleteNames(args, "glDeleteRenderbuffersOES", [&impl](GLuint name) { impl.deletedRenderbuffer(name); });
         return true;
     });
     bind("_glBindRenderbufferOES", "gles-forward-bind-renderbuffer", [&impl](Args &args) {
-        impl.boundRenderbuffer = args.i32(1);
-        impl.call<void (*)(GLenum, GLuint)>("glBindRenderbufferOES", args.enumValue(0),
-                                            static_cast<GLuint>(args.u32(1)));
+        if (impl.call<void (*)(GLenum, GLuint)>("glBindRenderbufferOES", args.enumValue(0), args.u32(1)) &&
+            args.enumValue(0) == GL_RENDERBUFFER_OES)
+            impl.boundRenderbuffer = args.i32(1);
         return true;
     });
     bind("_glRenderbufferStorageOES", "gles-forward-renderbuffer-storage", [&impl](Args &args) {
-        if (impl.drawableRenderbuffers.count(impl.boundRenderbuffer) != 0) {
-            // The EAGL drawable's storage is the EGL surface, not a driver renderbuffer.
-            impl.drawableWidth = static_cast<std::uint32_t>(std::max(args.i32(2), 0));
-            impl.drawableHeight = static_cast<std::uint32_t>(std::max(args.i32(3), 0));
+        if (args.enumValue(0) == GL_RENDERBUFFER_OES && impl.drawableRenderbuffers.count(impl.boundRenderbuffer)) {
+            // Replacing drawable storage with an ordinary renderbuffer would
+            // require remapping every attachment; don't pretend it succeeded.
+            impl.refuse("glRenderbufferStorageOES", "replacing EAGL drawable storage is unsupported");
             return true;
         }
         impl.call<void (*)(GLenum, GLenum, GLsizei, GLsizei)>(
@@ -1225,95 +1784,54 @@ void Forwarder::registerBindings(ShimRegistry &registry) {
             args.i32(3));
         return true;
     });
-    bind("_glGetRenderbufferParameterivOES", "gles-forward-get-renderbuffer-parameter",
-         [&impl](Args &args) {
-             if (impl.drawableRenderbuffers.count(impl.boundRenderbuffer) != 0) {
-                 const auto pname = args.enumValue(1);
-                 GLint value = 0;
-                 if (pname == GL_RENDERBUFFER_WIDTH_OES)
-                     value = static_cast<GLint>(impl.drawableWidth);
-                 else if (pname == GL_RENDERBUFFER_HEIGHT_OES)
-                     value = static_cast<GLint>(impl.drawableHeight);
-                 auto *host = static_cast<void *>(
-                     impl.hostAddress(args.memory, args.pointer(2), sizeof(GLint),
-                                      "glGetRenderbufferParameterivOES"));
-                 if (host)
-                     std::memcpy(host, &value, sizeof(value));
-                 return true;
-             }
-             auto *host = static_cast<void *>(impl.hostAddress(
-                 args.memory, args.pointer(2), sizeof(GLint), "glGetRenderbufferParameterivOES"));
-             if (!host)
-                 return true;
-             impl.call<void (*)(GLenum, GLenum, GLint *)>(
-                 "glGetRenderbufferParameterivOES", args.enumValue(0), args.enumValue(1),
-                 static_cast<GLint *>(host));
-             return true;
-         });
+    bind("_glGetRenderbufferParameterivOES", "gles-forward-get-renderbuffer-parameter", [&impl](Args &args) {
+        impl.queryRenderbuffer(args, "glGetRenderbufferParameterivOES");
+        return true;
+    });
     bind("_glGenFramebuffersOES", "gles-forward-gen-framebuffers", [&impl](Args &args) {
-        const GLsizei count = args.i32(0);
-        auto *host = static_cast<void *>(impl.hostAddress(
-            args.memory, args.pointer(1), static_cast<std::size_t>(std::max(count, 0)) * 4u,
-            "glGenFramebuffersOES"));
-        if (!host)
-            return true;
-        impl.call<void (*)(GLsizei, GLuint *)>("glGenFramebuffersOES", count,
-                                               static_cast<GLuint *>(host));
+        impl.generateNames(args, "glGenFramebuffersOES");
         return true;
     });
     bind("_glDeleteFramebuffersOES", "gles-forward-delete-framebuffers", [&impl](Args &args) {
-        const GLsizei count = args.i32(0);
-        auto *host = static_cast<void *>(impl.hostAddress(
-            args.memory, args.pointer(1), static_cast<std::size_t>(std::max(count, 0)) * 4u,
-            "glDeleteFramebuffersOES"));
-        if (!host)
-            return true;
-        const auto *names = static_cast<const GLuint *>(host);
-        for (GLsizei i = 0; i < count; ++i)
-            impl.drawableFramebuffers.erase(static_cast<int>(names[i]));
-        impl.call<void (*)(GLsizei, const GLuint *)>("glDeleteFramebuffersOES", count, names);
+        impl.deleteNames(args, "glDeleteFramebuffersOES", [&impl](GLuint name) { impl.deletedFramebuffer(name); });
         return true;
     });
     bind("_glBindFramebufferOES", "gles-forward-bind-framebuffer", [&impl](Args &args) {
         const auto target = args.enumValue(0);
         const int name = args.i32(1);
-        impl.boundFramebuffer = name;
-        // A framebuffer whose color attachment is the EAGL drawable is the default
-        // framebuffer of the EGL surface, i.e. GL framebuffer 0.
-        const auto hostName = (name != 0 && impl.drawableFramebuffers.count(name) != 0)
-                                  ? 0u
-                                  : static_cast<GLuint>(name);
-        impl.call<void (*)(GLenum, GLuint)>("glBindFramebufferOES", target, hostName);
+        const auto hostName = target == GL_FRAMEBUFFER_OES && name != 0 && impl.drawableFramebuffers.count(name)
+                                  ? 0u : args.u32(1);
+        if (impl.call<void (*)(GLenum, GLuint)>("glBindFramebufferOES", target, hostName) && target == GL_FRAMEBUFFER_OES)
+            impl.boundFramebuffer = name;
         return true;
     });
-    bind("_glFramebufferRenderbufferOES", "gles-forward-framebuffer-renderbuffer",
-         [&impl](Args &args) {
-             const auto attachment = args.enumValue(1);
-             const int renderbuffer = args.i32(3);
-             if (attachment == GL_COLOR_ATTACHMENT0_OES &&
-                 impl.drawableRenderbuffers.count(renderbuffer) != 0) {
-                 if (impl.boundFramebuffer != 0)
-                     impl.drawableFramebuffers.insert(impl.boundFramebuffer);
-                 // Re-bind so the driver sees the default framebuffer for this object.
-                 if (impl.boundFramebuffer == 0)
-                     impl.call<void (*)(GLenum, GLuint)>("glBindFramebufferOES",
-                                                         GL_FRAMEBUFFER_OES, 0);
-                 return true;
-             }
-             impl.call<void (*)(GLenum, GLenum, GLenum, GLuint)>(
-                 "glFramebufferRenderbufferOES", args.enumValue(0), attachment, args.enumValue(2),
-                 static_cast<GLuint>(args.u32(3)));
-             return true;
-         });
+    bind("_glFramebufferRenderbufferOES", "gles-forward-framebuffer-renderbuffer", [&impl](Args &args) {
+        const auto target = args.enumValue(0), attachment = args.enumValue(1), rbTarget = args.enumValue(2);
+        const int renderbuffer = args.i32(3);
+        const bool validTarget = target == GL_FRAMEBUFFER_OES && (renderbuffer == 0 || rbTarget == GL_RENDERBUFFER_OES) && impl.boundFramebuffer != 0;
+        if (validTarget && attachment == GL_COLOR_ATTACHMENT0_OES && renderbuffer != 0 &&
+            impl.drawableRenderbuffers.count(renderbuffer)) {
+            impl.drawableFramebuffers[impl.boundFramebuffer] = impl.drawableRenderbuffers.at(renderbuffer);
+            impl.call<void (*)(GLenum, GLuint)>("glBindFramebufferOES", GL_FRAMEBUFFER_OES, 0);
+            return true;
+        }
+        if (validTarget && attachment == GL_COLOR_ATTACHMENT0_OES) impl.detachCurrentDrawableFramebuffer();
+        impl.call<void (*)(GLenum, GLenum, GLenum, GLuint)>("glFramebufferRenderbufferOES",
+                                                           target, attachment, rbTarget, args.u32(3));
+        return true;
+    });
     bind("_glFramebufferTexture2DOES", "gles-forward-framebuffer-texture", [&impl](Args &args) {
-        impl.call<void (*)(GLenum, GLenum, GLenum, GLuint, GLint)>(
-            "glFramebufferTexture2DOES", args.enumValue(0), args.enumValue(1), args.enumValue(2),
-            static_cast<GLuint>(args.u32(3)), args.i32(4));
+        const auto target = args.enumValue(0), attachment = args.enumValue(1), texTarget = args.enumValue(2);
+        const auto texture = args.u32(3); const auto level = args.i32(4);
+        if (target == GL_FRAMEBUFFER_OES && attachment == GL_COLOR_ATTACHMENT0_OES && impl.boundFramebuffer != 0 &&
+            Impl::validFramebufferTexture(texTarget, texture, level)) impl.detachCurrentDrawableFramebuffer();
+        impl.call<void (*)(GLenum, GLenum, GLenum, GLuint, GLint)>("glFramebufferTexture2DOES",
+                                                                  target, attachment, texTarget, texture, level);
         return true;
     });
     bind("_glCheckFramebufferStatusOES", "gles-forward-check-framebuffer-status",
          [&impl](Args &args) {
-             if (impl.boundFramebuffer != 0 &&
+             if (args.enumValue(0) == GL_FRAMEBUFFER_OES && impl.boundFramebuffer != 0 &&
                  impl.drawableFramebuffers.count(impl.boundFramebuffer) != 0) {
                  args.registers.r[0] = GL_FRAMEBUFFER_COMPLETE_OES;
                  return true;
@@ -1321,7 +1839,7 @@ void Forwarder::registerBindings(ShimRegistry &registry) {
              auto *fn = impl.symbol<GLenum (*)(GLenum)>("glCheckFramebufferStatusOES");
              if (!fn) {
                  impl.refuse("glCheckFramebufferStatusOES");
-                 args.registers.r[0] = GL_FRAMEBUFFER_COMPLETE_OES;
+                 args.registers.r[0] = 0; // no framebuffer status is available
                  return true;
              }
              args.registers.r[0] = fn(args.enumValue(0));
@@ -1331,14 +1849,38 @@ void Forwarder::registerBindings(ShimRegistry &registry) {
 
     // ---- queries ---------------------------------------------------------------
     bind("_glGetIntegerv", "gles-forward-get-integer", [&impl](Args &args) {
-        // The guest may ask for up to 16 values (GL_VIEWPORT etc.); the driver writes
-        // straight into guest memory, so the range must be mapped.
-        auto *host = static_cast<void *>(
-            impl.hostAddress(args.memory, args.pointer(1), 16 * sizeof(GLint), "glGetIntegerv"));
-        if (!host)
+        const auto pname = args.enumValue(0);
+        int count = impl.integerQueryCount(pname);
+        if (pname == 0x86A3 || pname == 0x8DF8) { // compressed textures / shader binaries
+            GLint length = -1;
+            const GLenum countPname = pname == 0x86A3 ? 0x86A2 : 0x8DF9;
+            if (!impl.call<void (*)(GLenum, GLint *)>("glGetIntegerv", countPname, &length)) return true;
+            if (length < 0 || length > 16384) {
+                impl.refuse("glGetIntegerv", "invalid variable-length query count");
+                return true;
+            }
+            count = length;
+        }
+        if (count < 0) {
+            impl.refuse("glGetIntegerv", "unsupported extension query size");
             return true;
-        impl.call<void (*)(GLenum, GLint *)>("glGetIntegerv", args.enumValue(0),
-                                             static_cast<GLint *>(host));
+        }
+        const auto bytes = static_cast<std::size_t>(count) * sizeof(GLint);
+        if (bytes != 0 && !args.memory.contains(args.pointer(1), bytes, MemoryPermission::Write)) {
+            impl.refuse("glGetIntegerv", "query output is not writable");
+            return true;
+        }
+        std::array<GLint, 16> small{};
+        std::vector<GLint> large;
+        if (count > static_cast<int>(small.size())) large.resize(static_cast<std::size_t>(count));
+        GLint *values = large.empty() ? small.data() : large.data();
+        if (bytes) (void)args.memory.read(args.pointer(1), values, bytes);
+        // Drawable FBOs use the EGL default framebuffer internally, but the
+        // guest must see the object name it bound.
+        if (pname == 0x8CA6) values[0] = impl.boundFramebuffer;       // FRAMEBUFFER_BINDING
+        else if (pname == 0x8CA7) values[0] = impl.boundRenderbuffer; // RENDERBUFFER_BINDING
+        else if (!impl.call<void (*)(GLenum, GLint *)>("glGetIntegerv", pname, values)) return true;
+        if (bytes) (void)args.memory.write(args.pointer(1), values, bytes);
         return true;
     });
     bind("_glGetString", "gles-forward-get-string", [&impl](Args &args) {
@@ -1346,6 +1888,13 @@ void Forwarder::registerBindings(ShimRegistry &registry) {
         if (!fn) {
             impl.refuse("glGetString");
             args.registers.r[0] = 0;
+            return true;
+        }
+        const auto key = std::make_pair(impl.driver.api, args.enumValue(0));
+        const auto existing = impl.guestDriverStrings.find(key);
+        if (existing != impl.guestDriverStrings.end() &&
+            args.memory.contains(existing->second, 1, MemoryPermission::Read)) {
+            args.registers.r[0] = existing->second;
             return true;
         }
         const auto *text = fn(args.enumValue(0));
@@ -1363,9 +1912,12 @@ void Forwarder::registerBindings(ShimRegistry &registry) {
             args.registers.r[0] = 0;
             return true;
         }
+        impl.guestDriverStrings[key] = address;
         args.registers.r[0] = address;
         return true;
     });
+
+#include "gles2_bindings.inc"
 }
 
 // ---------------------------------------------------------------------------
@@ -1373,11 +1925,75 @@ void Forwarder::registerBindings(ShimRegistry &registry) {
 // ---------------------------------------------------------------------------
 Forwarder::Forwarder() : impl_(new Impl()) {}
 Forwarder::~Forwarder() {
+    // Clear the non-owning active pointer before the object becomes invalid.
+    deactivateForwarder(this);
     if (impl_)
         impl_->destroyEgl();
 }
 
-void Forwarder::setNativeWindow(void *window) { impl_->nativeWindow = window; }
+bool Forwarder::supportsApi(unsigned api) const {
+    if (api == 1) return impl_->driver.glesLoaded;
+    if (api != 2) return false;
+    const bool loaded = impl_->driver.loadGles2();
+    impl_->report.gles2Loaded = loaded;
+    impl_->report.detail = impl_->driver.detail;
+    recordDriver(impl_->report);
+    return loaded;
+}
+
+bool Forwarder::makeCurrent(GuestAddress context, unsigned api, std::uint32_t width,
+                            std::uint32_t height) {
+    if (context == 0 || !supportsApi(api) || !impl_->driver.eglLoaded)
+        return false;
+    // Independent or shared multiple guest contexts are not yet implemented.
+    // Refuse a second object rather than silently aliasing its GL state.
+    if (impl_->contextOwner != 0 && impl_->contextOwner != context) {
+        impl_->note("multiple EAGL contexts are not supported by the Native bridge");
+        return false;
+    }
+    if (impl_->contextOwner == context && impl_->driver.api != api)
+        return false;
+    impl_->driver.api = api;
+    if (impl_->egl.context && impl_->egl.surface) {
+        const auto window = impl_->windowSnapshot();
+        if (impl_->egl.windowSurface &&
+            (!window.pointer() || impl_->egl.boundWindow.generation != window.generation)) {
+            std::string why;
+            if (!window.pointer() || !impl_->rebindWindowSurface(window, why)) {
+                impl_->note("EAGL context cannot use the detached or replaced Android window" +
+                            (why.empty() ? std::string() : ": " + why));
+                return false;
+            }
+            return true;
+        }
+        auto make = impl_->symbol<EGLBoolean (*)(EGLDisplay, EGLSurface, EGLSurface, EGLContext)>("eglMakeCurrent");
+        if (!make || make(impl_->egl.display, impl_->egl.surface, impl_->egl.surface,
+                          impl_->egl.context) != EGL_TRUE_VALUE)
+            return false;
+        impl_->egl.current = true;
+        return true;
+    }
+    std::string why;
+    if (!impl_->createEglSurface(static_cast<int>(std::max(width, 1u)),
+                                 static_cast<int>(std::max(height, 1u)), why)) {
+        impl_->note("EAGL context creation failed: " + why);
+        impl_->destroyEgl();
+        return false;
+    }
+    impl_->contextOwner = context;
+    return true;
+}
+
+bool Forwarder::clearCurrent() {
+    if (!impl_->egl.context || !impl_->egl.display) return true;
+    auto make = impl_->symbol<EGLBoolean (*)(EGLDisplay, EGLSurface, EGLSurface, EGLContext)>("eglMakeCurrent");
+    if (!make || make(impl_->egl.display, nullptr, nullptr, nullptr) != EGL_TRUE_VALUE)
+        return false;
+    impl_->egl.current = false;
+    return true;
+}
+
+void Forwarder::setNativeWindow(void *window) { impl_->setWindow(window); }
 
 bool Forwarder::attachDrawable(GuestAddressSpace &memory, std::uint32_t width,
                               std::uint32_t height) {
@@ -1388,7 +2004,7 @@ bool Forwarder::presentDrawable() { return impl_->presentDrawable(); }
 
 const DriverReport &Forwarder::driver() const { return impl_->report; }
 
-bool Forwarder::drawableReady() const { return impl_->egl.current && impl_->egl.surface; }
+bool Forwarder::drawableReady() const { return impl_->drawableAttached && impl_->egl.current && impl_->egl.surface; }
 bool Forwarder::presentingToWindow() const { return impl_->egl.windowSurface; }
 std::uint32_t Forwarder::drawableWidth() const { return impl_->drawableWidth; }
 std::uint32_t Forwarder::drawableHeight() const { return impl_->drawableHeight; }
@@ -1402,7 +2018,7 @@ namespace {
 std::mutex gRegistryMutex;
 std::map<GuestAddressSpace *, std::unique_ptr<Forwarder>> gForwarders;
 Forwarder *gLastForwarder = nullptr;
-void *gDefaultNativeWindow = nullptr;
+std::shared_ptr<NativeWindowRef> gDefaultNativeWindow;
 } // namespace
 
 Forwarder &forwarderFor(GuestAddressSpace &memory) {
@@ -1410,7 +2026,7 @@ Forwarder &forwarderFor(GuestAddressSpace &memory) {
     auto found = gForwarders.find(&memory);
     if (found == gForwarders.end()) {
         auto forwarder = std::make_unique<Forwarder>();
-        forwarder->setNativeWindow(gDefaultNativeWindow);
+        forwarder->setNativeWindow(gDefaultNativeWindow ? gDefaultNativeWindow->pointer : nullptr);
         gLastForwarder = forwarder.get();
         found = gForwarders.emplace(&memory, std::move(forwarder)).first;
     }
@@ -1418,9 +2034,24 @@ Forwarder &forwarderFor(GuestAddressSpace &memory) {
     return *found->second;
 }
 
+void activateForwarder(Forwarder *forwarder) {
+    std::lock_guard<std::mutex> lock(gRegistryMutex);
+    gLastForwarder = forwarder;
+    if (forwarder)
+        forwarder->setNativeWindow(gDefaultNativeWindow ? gDefaultNativeWindow->pointer : nullptr);
+}
+
+void deactivateForwarder(Forwarder *forwarder) {
+    std::lock_guard<std::mutex> lock(gRegistryMutex);
+    if (gLastForwarder == forwarder)
+        gLastForwarder = nullptr;
+}
+
 void setDefaultNativeWindow(void *window) {
     std::lock_guard<std::mutex> lock(gRegistryMutex);
-    gDefaultNativeWindow = window;
+    if ((!gDefaultNativeWindow && window) ||
+        (gDefaultNativeWindow && gDefaultNativeWindow->pointer != window))
+        gDefaultNativeWindow = window ? std::make_shared<NativeWindowRef>(window) : nullptr;
     if (gLastForwarder)
         gLastForwarder->setNativeWindow(window);
 }
