@@ -483,7 +483,7 @@ int main() {
         put(code, 0, 0xe3a00007);  // mov r0, #7
         put(code, 4, 0xef000000);  // svc #0
         isa.map({0x1000, 4096, uint8_t(Read | Execute), "isa probe"}, code.data(), code.size());
-        for (IsaArch arch : {IsaArch::ArmV6, IsaArch::ArmV7}) {
+        for (IsaArch arch : {IsaArch::ArmV5, IsaArch::ArmV6, IsaArch::ArmV7}) {
             CpuState state;
             state.registers[15] = 0x1000;
             Cpu cpu(isa, arch);
@@ -491,7 +491,27 @@ int main() {
             const auto stop = cpu.run(4);
             assert(stop.reason == StopReason::SupervisorCall && cpu.state().registers[0] == 7);
         }
-        std::cout << "ARMv6 and ARMv7 selectors both execute guest code passed\n";
+        std::cout << "ARMv5, ARMv6 and ARMv7 selectors execute guest code passed\n";
+    }
+    // ARM's architected no-Jazelle mode: BXJ branches like BX, including
+    // interworking to Thumb. Dynarmic deliberately does not execute Java bytecode.
+    // https://developer.arm.com/documentation/ddi0406/b/System-Level-Architecture/The-System-Level-Programmers--Model/Execution-environment-support/Jazelle-direct-bytecode-execution
+    {
+        Memory isa;
+        std::vector<uint8_t> instructions(4096, 0);
+        put(instructions, 0, 0xe12fff20);      // bxj r0
+        put(instructions, 0x100, 0xdf092007);  // Thumb movs r0,#7; svc #9
+        isa.map({0x1000, 4096, uint8_t(Read | Execute), "ARMv5TEJ BXJ fallback"},
+                instructions.data(), instructions.size());
+        for (IsaArch arch : {IsaArch::ArmV5, IsaArch::ArmV6, IsaArch::ArmV7}) {
+            Cpu cpu(isa, arch);
+            CpuState state = initial();
+            state.registers[0] = 0x1101;  // Thumb target
+            cpu.setState(state);
+            const auto stop = cpu.run(8);
+            assert(stop.reason == StopReason::SupervisorCall && stop.service == 9);
+            assert(cpu.state().registers[0] == 7 && (cpu.state().cpsr & 0x20));
+        }
     }
     // The engine's fast paths, asserted rather than assumed: guest atomics, the thread-id
     // register iOS code reads through CP15, hint instructions, and a code cache that

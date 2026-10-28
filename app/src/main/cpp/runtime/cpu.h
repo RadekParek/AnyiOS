@@ -10,7 +10,7 @@ namespace podnative::runtime {
 // Instruction-set generation the guest was built for. iOS ARMv6 titles (iPod touch 2,
 // iPhone 3G/3GS era) must not see ARMv7-only encodings, and ARMv7 titles must not be
 // silently downgraded.
-enum class IsaArch { ArmV6, ArmV7 };
+enum class IsaArch { ArmV5, ArmV6, ArmV7 };
 struct CpuState {
     std::array<uint32_t, 16> registers{};
     std::array<uint32_t, 64> extensionRegisters{};

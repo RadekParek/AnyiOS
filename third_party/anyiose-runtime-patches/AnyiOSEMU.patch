@@ -1259,11 +1259,246 @@ index e8a2cad582c6ffe71df9fa71ab1d94e9acae176f..672d4d19319a4ad681350a581a756719
              kind, code, rec.exception_address
          ));
          if code == EXCEPTION_ACCESS_VIOLATION {
+diff --git a/src/dyld.rs b/src/dyld.rs
+index 4bd153de8794d4a985c1059d5e7da31f439d0a6f..832e91943f6750dbcba747228a3a926299654ff2 100644
+--- a/src/dyld.rs
++++ b/src/dyld.rs
+@@ -443,6 +443,7 @@ pub struct Dyld {
+     thread_exit_routine: Option<GuestFunction>,
+     constants_to_link_later: Vec<(MutPtr<ConstVoidPtr>, &'static HostConstant)>,
+     non_lazy_host_functions: HashMap<&'static str, GuestFunction>,
++    scoped_host_functions: HashMap<(usize, &'static str), GuestFunction>,
+     /// Cache of Swift runtime function trampolines (see `swift_runtime`).
+     swift_fn_cache: HashMap<String, GuestFunction>,
+     /// Interned `&'static str` copies of Swift symbol names.
+@@ -495,6 +496,7 @@ impl Dyld {
+             thread_exit_routine: None,
+             constants_to_link_later: Vec::new(),
+             non_lazy_host_functions: HashMap::new(),
++            scoped_host_functions: HashMap::new(),
+             swift_fn_cache: HashMap::new(),
+             swift_fn_names: HashMap::new(),
+             swift_data_slots: HashMap::new(),
+@@ -1534,11 +1536,7 @@ impl Dyld {
+                 let p: MutPtr<u32> = mem.alloc(4).cast();
+                 mem.write(p, crate::libc::dispatch_source::source_type_tag(symbol));
+                 mem.write(ptr_ptr, p.cast().cast_const());
+-                log_dbg!(
+-                    "libdispatch identity tag {} -> {:#x}",
+-                    symbol,
+-                    p.to_bits()
+-                );
++                log_dbg!("libdispatch identity tag {} -> {:#x}", symbol, p.to_bits());
+                 continue;
+             }
+ 
+@@ -1606,7 +1604,11 @@ impl Dyld {
+                     }
+                 };
+                 mem.write(ptr_ptr, target.cast());
+-                log_dbg!("Linked Swift runtime symbol {} at {:#x}", symbol, target.to_bits());
++                log_dbg!(
++                    "Linked Swift runtime symbol {} at {:#x}",
++                    symbol,
++                    target.to_bits()
++                );
+                 continue;
+             }
+ 
+@@ -1880,14 +1882,8 @@ impl Dyld {
+                     addr,
+                     &mut self.cxxabi_typeinfo_vtable_kinds,
+                 );
+-                let (stub_function_ptr, la_symbol_ptr) = link_by_restoring_stub(
+-                    mem,
+-                    cpu,
+-                    addr,
+-                    svc_pc,
+-                    info.entry_size,
+-                    pic_offset,
+-                );
++                let (stub_function_ptr, la_symbol_ptr) =
++                    link_by_restoring_stub(mem, cpu, addr, svc_pc, info.entry_size, pic_offset);
+                 log!(
+                     "Linked guest C++ ABI symbol {} from a bundled dylib at {:?}/{:?}",
+                     symbol,
+@@ -2072,6 +2068,47 @@ impl Dyld {
+         Ok(function_ptr)
+     }
+ 
++    /// Preserve the existing C++ ABI interception only after dlsym has found a
++    /// visible symbol in its requested scope. This cannot expose a private image.
++    pub(crate) fn dlsym_abi_intercept(
++        &mut self,
++        mem: &mut Mem,
++        cpu: &mut Cpu,
++        symbol: &str,
++    ) -> Option<GuestFunction> {
++        let function = self.cxxabi_intercept(mem, symbol)?;
++        cpu.invalidate_cache_range(function.addr_without_thumb_bit(), 8);
++        Some(function)
++    }
++
++    /// A scoped lookup does not fall back to a private guest C++ symbol.
++    pub(crate) fn create_scoped_host_proc_address(
++        &mut self,
++        mem: &mut Mem,
++        cpu: &mut Cpu,
++        library: usize,
++        symbol: &str,
++    ) -> Result<GuestFunction, ()> {
++        let function = self.create_scoped_host_proc_address_no_inval(mem, library, symbol)?;
++        cpu.invalidate_cache_range(function.addr_without_thumb_bit(), 8);
++        Ok(function)
++    }
++    fn create_scoped_host_proc_address_no_inval(
++        &mut self,
++        mem: &mut Mem,
++        library: usize,
++        symbol: &str,
++    ) -> Result<GuestFunction, ()> {
++        let dylib = DYLIB_LIST.get(library).ok_or(())?;
++        let &(name, host_function) = search_lists(dylib.function_exports, symbol).ok_or(())?;
++        if let Some(&cached) = self.scoped_host_functions.get(&(library, name)) {
++            return Ok(cached);
++        }
++        let function = self.create_guest_function(mem, name, host_function);
++        self.scoped_host_functions.insert((library, name), function);
++        Ok(function)
++    }
++
+     /// Internal [Self::create_proc_address] that doesn't invalidate the cache.
+     /// For use before a [Cpu] is available.
+     pub(crate) fn create_proc_address_no_inval(
+@@ -2209,7 +2246,11 @@ fn cxxabi_throw_intercept(
+             log!(
+                 "Suppressed guest C++ exception (no unwinder): type={} what={} at \
+                  exception={:?}; unwound to app frame {:#010x}.",
+-                if type_name.is_empty() { "?" } else { &type_name[..] },
++                if type_name.is_empty() {
++                    "?"
++                } else {
++                    &type_name[..]
++                },
+                 if what.is_empty() { "?" } else { &what[..] },
+                 exception,
+                 continuation.addr_with_thumb_bit()
+@@ -2218,7 +2259,11 @@ fn cxxabi_throw_intercept(
+             log!(
+                 "Suppressed guest C++ exception (no unwinder): type={} what={} at \
+                  exception={:?}; no safe frame, returning after the throw point.",
+-                if type_name.is_empty() { "?" } else { &type_name[..] },
++                if type_name.is_empty() {
++                    "?"
++                } else {
++                    &type_name[..]
++                },
+                 if what.is_empty() { "?" } else { &what[..] },
+                 exception
+             );
+@@ -2301,7 +2346,9 @@ fn fallback_for_unmapped_lazy_link(
+     reason: &str,
+ ) -> Option<HostFunction> {
+     let lr = cpu.regs()[Cpu::LR];
+-    log_once!("Warning: lazy-link SVC could not be matched to a symbol stub; returning 0 to the caller.");
++    log_once!(
++        "Warning: lazy-link SVC could not be matched to a symbol stub; returning 0 to the caller."
++    );
+     log_dbg!(
+         "Unmapped lazy-link SVC at {:#x} ({}); returning to LR {:#x}.",
+         svc_pc,
+@@ -2527,6 +2574,7 @@ mod lazy_link_recovery_tests {
+             entry_point_is_lc_main: false,
+             last_segment_end: 0x2000,
+             text_base: 0x1000,
++            vmaddr_slide: 0,
+         }
+     }
+ 
+@@ -2544,3 +2592,34 @@ mod lazy_link_recovery_tests {
+         assert_eq!(local_code_symbol(&private_code, "__other"), None);
+     }
+ }
++
++#[cfg(test)]
++mod scoped_dlsym_tests {
++    use super::*;
++    #[test]
++    fn scoped_host_functions_are_cached_and_do_not_leak_other_symbols() {
++        let libc = DYLIB_LIST
++            .iter()
++            .position(|d| d.path == "/usr/lib/libSystem.B.dylib")
++            .unwrap();
++        let sqlite = DYLIB_LIST
++            .iter()
++            .position(|d| d.path == "/usr/lib/libsqlite3.dylib")
++            .unwrap();
++        let (mut dyld, mut mem) = (Dyld::new(), Mem::new());
++        let f = dyld
++            .create_scoped_host_proc_address_no_inval(&mut mem, libc, "_malloc")
++            .unwrap();
++        assert_eq!(
++            f,
++            dyld.create_scoped_host_proc_address_no_inval(&mut mem, libc, "_malloc")
++                .unwrap()
++        );
++        assert!(dyld
++            .create_scoped_host_proc_address_no_inval(&mut mem, sqlite, "_malloc")
++            .is_err());
++        assert!(dyld
++            .create_scoped_host_proc_address_no_inval(&mut mem, libc, "_dyld_stub_binder")
++            .is_err());
++    }
++}
 diff --git a/src/environment.rs b/src/environment.rs
-index 0d50bc9c2dbabcb3c605800919ca8140dd84f8e0..5373b4e650340e1ec8c24ae55f349bcf61562e77 100644
+index 0d50bc9c2dbabcb3c605800919ca8140dd84f8e0..de4357bd19b2d75d144b477f887a7d14056874fa 100644
 --- a/src/environment.rs
 +++ b/src/environment.rs
-@@ -1366,19 +1366,19 @@ impl Environment {
+@@ -342,7 +342,7 @@ struct BinaryDependencyNode {
+     dependencies: Vec<String>,
+ }
+ 
+-fn canonicalize_dylib_path(path: &str) -> String {
++pub(crate) fn canonicalize_dylib_path(path: &str) -> String {
+     let (directory, name) = path.rsplit_once('/').unwrap_or(("", path));
+     let canonical_name = match name {
+         "libstdc++.6.dylib" => "libstdc++.6.0.9.dylib",
+@@ -515,7 +515,9 @@ impl Environment {
+         let portrait_supported = bundle
+             .supported_interface_orientations()
+             .contains(&"UIInterfaceOrientationPortrait");
+-        if options.initial_orientation == window::DeviceOrientation::Portrait && !portrait_supported
++        if !options.force_initial_orientation
++            && options.initial_orientation == window::DeviceOrientation::Portrait
++            && !portrait_supported
+         {
+             if let Some(&non_portrait_orientation) = bundle
+                 .supported_interface_orientations()
+@@ -794,7 +796,11 @@ impl Environment {
+                 let implemented_in_host = crate::dyld::DYLIB_LIST
+                     .iter()
+                     .any(|d| d.path == dylib || d.aliases.contains(&dylib));
+-                let is_swift = dylib.rsplit('/').next().unwrap_or(dylib).starts_with("libswift");
++                let is_swift = dylib
++                    .rsplit('/')
++                    .next()
++                    .unwrap_or(dylib)
++                    .starts_with("libswift");
+                 if !implemented_in_host && !is_swift {
+                     log!(
+                         "Warning: app binary depends on unimplemented or missing dylib \"{}\"",
+@@ -994,9 +1000,7 @@ impl Environment {
+                         }
+ 
+                         if env.guest_termination_requested.is_some() {
+-                            echo!(
+-                                "Guest requested controlled termination; returning to the host."
+-                            );
++                            echo!("Guest requested controlled termination; returning to the host.");
+                         } else if !exited_via_pthread {
+                             panic!("Main function exited unexpectedly!");
+                         }
+@@ -1366,20 +1370,20 @@ impl Environment {
          }
      }
  
@@ -1272,23 +1507,39 @@ index 0d50bc9c2dbabcb3c605800919ca8140dd84f8e0..5373b4e650340e1ec8c24ae55f349bcf
 +    /// Get a shared reference to the window. Panics if AnyiOSEMU is running
 +    /// in headless mode.
      pub fn window(&self) -> &window::Window {
-         self.window.as_ref().expect(
+-        self.window.as_ref().expect(
 -            "Tried to do something that needs a window, but touchHLE is running in headless mode!",
-+            "Tried to do something that needs a window, but AnyiOSEMU is running headless!",
-         )
+-        )
++        self.window
++            .as_ref()
++            .expect("Tried to do something that needs a window, but AnyiOSEMU is running headless!")
      }
  
 -    /// Get a mutable reference to the window. Panics if touchHLE is running
 +    /// Get a mutable reference to the window. Panics if AnyiOSEMU is running
      /// in headless mode.
      pub fn window_mut(&mut self) -> &mut window::Window {
-         self.window.as_mut().expect(
+-        self.window.as_mut().expect(
 -            "Tried to do something that needs a window, but touchHLE is running in headless mode!",
-+            "Tried to do something that needs a window, but AnyiOSEMU is running headless!",
-         )
+-        )
++        self.window
++            .as_mut()
++            .expect("Tried to do something that needs a window, but AnyiOSEMU is running headless!")
      }
  
-@@ -1599,7 +1599,7 @@ impl Environment {
+     pub fn stack_for_longjmp(&self, mut lr: u32, fp: u32) -> Vec<u32> {
+@@ -1554,7 +1558,9 @@ impl Environment {
+                 break;
+             }
+ 
+-            lr = self.mem.read(mem::ConstPtr::<u32>::from_bits(saved_lr_addr));
++            lr = self
++                .mem
++                .read(mem::ConstPtr::<u32>::from_bits(saved_lr_addr));
+             let previous_fp: u32 = self.mem.read(mem::ConstPtr::<u32>::from_bits(fp));
+             if lr == return_to_host_routine_addr {
+                 echo_no_panic!("{:2}. [host function]", i);
+@@ -1599,7 +1605,7 @@ impl Environment {
          let thread_routine =
              Coroutine::with_stack(thread_stack, move |yielder, mut env: Environment| {
                  log_dbg!(
@@ -1297,7 +1548,108 @@ index 0d50bc9c2dbabcb3c605800919ca8140dd84f8e0..5373b4e650340e1ec8c24ae55f349bcf
                      start_routine.addr_with_thumb_bit()
                  );
                  let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-@@ -4244,7 +4244,7 @@ impl Environment {
+@@ -1917,7 +1923,11 @@ impl Environment {
+             }
+ 
+             #[cfg(not(any(target_os = "android", target_os = "ios")))]
+-            if self.window.as_ref().is_some_and(|window| window.close_requested()) {
++            if self
++                .window
++                .as_ref()
++                .is_some_and(|window| window.close_requested())
++            {
+                 self.threads[self.current_thread].host_context = Some(curr_host_context);
+                 return Some(GuestTermination::ReturnToPicker);
+             }
+@@ -1957,16 +1967,14 @@ impl Environment {
+                 let imminent_wakeup = self.threads.iter().any(|thread| {
+                     let deadline = match thread.blocked_by {
+                         ThreadBlock::Sleeping(due) => Some(due),
+-                        ThreadBlock::GuestSleeping(due) => Some(self.guest_clock.host_deadline(due)),
++                        ThreadBlock::GuestSleeping(due) => {
++                            Some(self.guest_clock.host_deadline(due))
++                        }
+                         _ => None,
+                     };
+                     deadline.is_some_and(|due| due < Instant::now() + Duration::from_millis(10))
+                 });
+-                self.remaining_ticks = Some(if imminent_wakeup {
+-                    100_000
+-                } else {
+-                    1_000_000
+-                });
++                self.remaining_ticks = Some(if imminent_wakeup { 100_000 } else { 1_000_000 });
+             }
+             // Game trainer (Cheat Engine-style memory search/patch + on-screen
+             // UI). Disabled by default; skip it unless `--trainer` is enabled.
+@@ -2293,10 +2301,7 @@ impl Environment {
+     }
+ 
+     /// Mark a synthetic frame installed for a host-to-guest call.
+-    pub(crate) fn push_host_to_guest_stack_frame(
+-        &mut self,
+-        frame_pointer: u32,
+-    ) -> (ThreadId, u32) {
++    pub(crate) fn push_host_to_guest_stack_frame(&mut self, frame_pointer: u32) -> (ThreadId, u32) {
+         let frame = (self.current_thread, frame_pointer);
+         self.host_to_guest_stack_frames.push(frame);
+         frame
+@@ -2614,9 +2619,7 @@ impl Environment {
+                 }
+                 let info = section.dyld_indirect_symbol_info.as_ref()?;
+                 let index = (addr - section.addr) / info.entry_size;
+-                info.indirect_undef_symbols
+-                    .get(index as usize)?
+-                    .as_deref()
++                info.indirect_undef_symbols.get(index as usize)?.as_deref()
+             })
+         })
+     }
+@@ -2890,9 +2893,7 @@ impl Environment {
+                 // exact `fault_pc` instead.
+                 let pc = legacy_pc;
+                 let lr = self.cpu.regs()[cpu::Cpu::LR];
+-                if is_undefined_instruction
+-                    && crate::env_flag_cached!("TOUCHHLE_TRACE_UDF_REGS")
+-                {
++                if is_undefined_instruction && crate::env_flag_cached!("TOUCHHLE_TRACE_UDF_REGS") {
+                     static TRACE_COUNT: std::sync::atomic::AtomicUsize =
+                         std::sync::atomic::AtomicUsize::new(0);
+                     if pc >= 0x700000
+@@ -3137,10 +3138,7 @@ impl Environment {
+                 // flood the log.
+                 const MAX_UNDECODABLE_SITE_DIAGNOSTICS: usize = 8;
+                 if let GuestTrapKind::UndecodableInstruction { encoding } = trap_kind {
+-                    let site_count = self
+-                        .cpu_skipped_instruction_sites
+-                        .entry(pc)
+-                        .or_insert(0);
++                    let site_count = self.cpu_skipped_instruction_sites.entry(pc).or_insert(0);
+                     *site_count = site_count.saturating_add(1);
+                     let site_count = *site_count;
+                     let distinct_sites = self.cpu_skipped_instruction_sites.len();
+@@ -3233,7 +3231,8 @@ impl Environment {
+                 // stable LR) are unaffected.
+                 const LR_BYPASS_LIMIT: u32 = 4096;
+                 let lr_count = if self.cpu_error_bypass_last_lr == Some(lr) {
+-                    self.cpu_error_bypass_lr_count = self.cpu_error_bypass_lr_count.saturating_add(1);
++                    self.cpu_error_bypass_lr_count =
++                        self.cpu_error_bypass_lr_count.saturating_add(1);
+                     self.cpu_error_bypass_lr_count
+                 } else {
+                     self.cpu_error_bypass_last_lr = Some(lr);
+@@ -3384,7 +3383,9 @@ impl Environment {
+                     };
+                     let recovery_description = match recovery {
+                         GuestTrapRecovery::ReturnToLr => {
+-                            format!("Faking function return to LR ({lr:#x}) to bypass the guest trap.")
++                            format!(
++                                "Faking function return to LR ({lr:#x}) to bypass the guest trap."
++                            )
+                         }
+                         GuestTrapRecovery::UnwindFrame { frame, reason } => format!(
+                             "Unwinding the frame record at r7={:#x} (saved r7={:#x}, \
+@@ -4244,7 +4245,7 @@ impl Environment {
          unsafe impl Send for WindowWrapper<'_> {}
  
          const NO_WINDOW_MSG: &str =
@@ -1306,6 +1658,138 @@ index 0d50bc9c2dbabcb3c605800919ca8140dd84f8e0..5373b4e650340e1ec8c24ae55f349bcf
               headless mode (no window). This function is only for code paths that \
               need a real window (e.g. OpenGL ES, text input, dialogs); headless-safe \
               callers must check env.window.is_none() first and skip the window-only \
+@@ -4424,11 +4425,7 @@ mod guest_trap_call_site_tests {
+         impl Fn(u32) -> Option<u16> + '_,
+         impl Fn(u32) -> Option<u32> + '_,
+     ) {
+-        let read_u16 = move |addr: u32| {
+-            code.iter()
+-                .find(|(a, _)| *a == addr)
+-                .map(|(_, v)| *v)
+-        };
++        let read_u16 = move |addr: u32| code.iter().find(|(a, _)| *a == addr).map(|(_, v)| *v);
+         let read_u32 = move |addr: u32| {
+             let lo = code.iter().find(|(a, _)| *a == addr).map(|(_, v)| *v)?;
+             let hi = code
+@@ -4445,17 +4442,26 @@ mod guest_trap_call_site_tests {
+         // 0x8000: f000 f802  bl 0x8008
+         let code = [(0x8000, 0xf000), (0x8002, 0xf802)];
+         let (r16, r32) = readers(&code);
+-        assert_eq!(decode_direct_call_before(0x8005, r16, r32), Some((0x8000, 0x8008)));
++        assert_eq!(
++            decode_direct_call_before(0x8005, r16, r32),
++            Some((0x8000, 0x8008))
++        );
+ 
+         // 0x8000: f7ff ff00  bl 0x7e04
+         let code = [(0x8000, 0xf7ff), (0x8002, 0xff00)];
+         let (r16, r32) = readers(&code);
+-        assert_eq!(decode_direct_call_before(0x8005, r16, r32), Some((0x8000, 0x7e04)));
++        assert_eq!(
++            decode_direct_call_before(0x8005, r16, r32),
++            Some((0x8000, 0x7e04))
++        );
+ 
+         // 0x1000: f7ff fffe  bl . (offset -4)
+         let code = [(0x1000, 0xf7ff), (0x1002, 0xfffe)];
+         let (r16, r32) = readers(&code);
+-        assert_eq!(decode_direct_call_before(0x1005, r16, r32), Some((0x1000, 0x1000)));
++        assert_eq!(
++            decode_direct_call_before(0x1005, r16, r32),
++            Some((0x1000, 0x1000))
++        );
+     }
+ 
+     #[test]
+@@ -4463,7 +4469,10 @@ mod guest_trap_call_site_tests {
+         // 0x8002: f000 e800  blx 0x8004 (Align(PC, 4) + 0)
+         let code = [(0x8002, 0xf000), (0x8004, 0xe800)];
+         let (r16, r32) = readers(&code);
+-        assert_eq!(decode_direct_call_before(0x8007, r16, r32), Some((0x8002, 0x8004)));
++        assert_eq!(
++            decode_direct_call_before(0x8007, r16, r32),
++            Some((0x8002, 0x8004))
++        );
+     }
+ 
+     #[test]
+@@ -4490,17 +4499,26 @@ mod guest_trap_call_site_tests {
+         // 0x1000: eb000000  bl 0x1008
+         let code = [(0x1000, 0x0000), (0x1002, 0xeb00)];
+         let (r16, r32) = readers(&code);
+-        assert_eq!(decode_direct_call_before(0x1004, r16, r32), Some((0x1000, 0x1008)));
++        assert_eq!(
++            decode_direct_call_before(0x1004, r16, r32),
++            Some((0x1000, 0x1008))
++        );
+ 
+         // 0x1000: ebfffffe  bl . (offset -8)
+         let code = [(0x1000, 0xfffe), (0x1002, 0xebff)];
+         let (r16, r32) = readers(&code);
+-        assert_eq!(decode_direct_call_before(0x1004, r16, r32), Some((0x1000, 0x1000)));
++        assert_eq!(
++            decode_direct_call_before(0x1004, r16, r32),
++            Some((0x1000, 0x1000))
++        );
+ 
+         // 0x1000: fb000000  blx 0x100a (H=1), must not be mistaken for BL
+         let code = [(0x1000, 0x0000), (0x1002, 0xfb00)];
+         let (r16, r32) = readers(&code);
+-        assert_eq!(decode_direct_call_before(0x1004, r16, r32), Some((0x1000, 0x100a)));
++        assert_eq!(
++            decode_direct_call_before(0x1004, r16, r32),
++            Some((0x1000, 0x100a))
++        );
+ 
+         // 0x1000: e12fff33  blx r3
+         let code = [(0x1000, 0xff33), (0x1002, 0xe12f)];
+@@ -4513,17 +4531,29 @@ mod guest_trap_call_site_tests {
+         // Asphalt 8 shape: `bl` at 0x1e3c2 (LR=0x1e3c7), trap at 0x1e432 in
+         // the same function. A call to anything outside (0x1e3c2, 0x1e432]
+         // can't have produced a return address for the trapping function.
+-        assert!(!direct_call_is_consistent_with_fault(0x1e3c2, 0x1e000, 0x1e432));
+-        assert!(!direct_call_is_consistent_with_fault(0x1e3c2, 0x1e3c2, 0x1e432));
+-        assert!(!direct_call_is_consistent_with_fault(0x1e3c2, 0x2a000, 0x1e432));
++        assert!(!direct_call_is_consistent_with_fault(
++            0x1e3c2, 0x1e000, 0x1e432
++        ));
++        assert!(!direct_call_is_consistent_with_fault(
++            0x1e3c2, 0x1e3c2, 0x1e432
++        ));
++        assert!(!direct_call_is_consistent_with_fault(
++            0x1e3c2, 0x2a000, 0x1e432
++        ));
+         // A leaf callee located between the call site and the trap is a
+         // plausible owner of the trap, so LR may be genuine.
+-        assert!(direct_call_is_consistent_with_fault(0x1e3c2, 0x1e400, 0x1e432));
+-        assert!(direct_call_is_consistent_with_fault(0x1e3c2, 0x1e432, 0x1e432));
++        assert!(direct_call_is_consistent_with_fault(
++            0x1e3c2, 0x1e400, 0x1e432
++        ));
++        assert!(direct_call_is_consistent_with_fault(
++            0x1e3c2, 0x1e432, 0x1e432
++        ));
+         // Callee located before the caller: can't tell, so assume genuine.
+         assert!(direct_call_is_consistent_with_fault(0x2000, 0x1000, 0x1010));
+         // ...unless the call went past the trap.
+-        assert!(!direct_call_is_consistent_with_fault(0x2000, 0x3000, 0x1010));
++        assert!(!direct_call_is_consistent_with_fault(
++            0x2000, 0x3000, 0x1010
++        ));
+     }
+ }
+ 
+@@ -4715,9 +4745,7 @@ mod dylib_sorting_tests {
+                 "/usr/lib/libstdc++.6.dylib" | "/usr/lib/libstdc++.6.0.9.dylib" => {
+                     Some(vec!["/usr/lib/libgcc_s.1.dylib".to_owned()])
+                 }
+-                "/usr/lib/libgcc_s.1.dylib" => {
+-                    Some(vec!["/usr/lib/libSystem.B.dylib".to_owned()])
+-                }
++                "/usr/lib/libgcc_s.1.dylib" => Some(vec!["/usr/lib/libSystem.B.dylib".to_owned()]),
+                 _ => None,
+             };
+             Ok(dependencies.map(|dependencies| (path.to_owned(), dependencies)))
 diff --git a/src/environment/app_picker.rs b/src/environment/app_picker.rs
 index 52b6a64f0c561b7f2309fc84b9165eaecc4c0d4b..007cca811ee053a421aa6a2cc4c3a7b17e9e9cf8 100644
 --- a/src/environment/app_picker.rs
@@ -3511,6 +3995,28 @@ index 0dfbed8c67d50dd86e3fd15abb7ed1f92962df10..5f3f921d7fed6315be92bb6e98ecca98
      let bssid = get_static_str(env, "02:00:00:00:00:00");
      let ssid_key = get_static_str(env, "SSID");
      let bssid_key = get_static_str(env, "BSSID");
+diff --git a/src/frameworks/core_animation.rs b/src/frameworks/core_animation.rs
+index 850ff308ee503f60f545f9234c24cd5340e434ad..73e17af8723b543c1769b30ec9522d36b6511c9d 100644
+--- a/src/frameworks/core_animation.rs
++++ b/src/frameworks/core_animation.rs
+@@ -22,6 +22,7 @@ pub mod ca_transform3d; // <-- НАШ НОВЫЙ МОДУЛЬ ДЛЯ ТРАНС
+ 
+ mod animation;
+ mod composition;
++mod composition_pacing;
+ 
+ pub use composition::recomposite_if_necessary;
+ 
+@@ -73,7 +74,8 @@ pub struct State {
+ // seconds rather than nanoseconds. Both clocks remain continuous when the
+ // user changes game speed.
+ pub fn CACurrentMediaTime(env: &mut Environment) -> CFTimeInterval {
+-    env.guest_clock.now()
++    env.guest_clock
++        .now()
+         .duration_since(env.startup_time)
+         .as_secs_f64()
+ }
 diff --git a/src/frameworks/core_animation/ca_display_link.rs b/src/frameworks/core_animation/ca_display_link.rs
 index 6155c5f3eb4e9236342338f56e777255f1e85586..957b3b73c13515752dd9a450d2e1ec58b8d2f37a 100644
 --- a/src/frameworks/core_animation/ca_display_link.rs
@@ -3620,6 +4126,211 @@ index 6155c5f3eb4e9236342338f56e777255f1e85586..957b3b73c13515752dd9a450d2e1ec58
  }
  
  // Registers the display link with a run loop.
+diff --git a/src/frameworks/core_animation/composition.rs b/src/frameworks/core_animation/composition.rs
+index 194053f7a3da4a7dcb2033a00025cf5832076087..ae139878a13bda012bc8e37b11405c76c3b583c9 100644
+--- a/src/frameworks/core_animation/composition.rs
++++ b/src/frameworks/core_animation/composition.rs
+@@ -12,10 +12,10 @@
+ 
+ use super::ca_eagl_layer::find_fullscreen_eagl_layer;
+ use super::ca_layer::CALayerHostObject;
++use super::composition_pacing::composition_schedule;
+ use crate::frameworks::core_animation::animation;
+ use crate::frameworks::core_graphics::cg_color::CGColorHostObject;
+ use crate::frameworks::core_graphics::{cg_bitmap_context, cg_image, CGFloat, CGRect, CGSize};
+-use crate::frameworks::foundation::ns_time_interval_to_duration_or_zero;
+ use crate::gles::gles11_raw as gles11; // constants only
+ use crate::gles::gles11_raw::types::*;
+ use crate::gles::present::{present_frame, FpsCounter};
+@@ -122,6 +122,27 @@ pub fn recomposite_if_necessary(env: &mut Environment, force: bool) -> Option<In
+         }
+     }
+ 
++    let now = Instant::now();
++    let interval = Duration::from_secs_f64(1.0 / 60.0);
++    let (due, next) = composition_schedule(
++        env.framework_state
++            .core_animation
++            .composition
++            .recomposite_next,
++        now,
++        force,
++        interval,
++    );
++    if !due {
++        log_dbg!("Not recompositing yet, wait {:?}", next - now);
++        return Some(next);
++    }
++    let new_recomposite_next = Some(next);
++    env.framework_state
++        .core_animation
++        .composition
++        .recomposite_next = new_recomposite_next;
++    // Count actual compositions, not every early run-loop check.
+     if env.options.print_fps || cfg!(target_os = "ios") {
+         env.framework_state
+             .core_animation
+@@ -134,53 +155,6 @@ pub fn recomposite_if_necessary(env: &mut Environment, force: bool) -> Option<In
+             );
+     }
+ 
+-    let now = Instant::now();
+-    let interval = 1.0 / 60.0; // 60Hz
+-    let new_recomposite_next = if let Some(recomposite_next) = env
+-        .framework_state
+-        .core_animation
+-        .composition
+-        .recomposite_next
+-    {
+-        if !force && recomposite_next > now {
+-            log_dbg!("Not recompositing yet, wait {:?}", recomposite_next - now);
+-            return Some(recomposite_next);
+-        }
+-
+-        // See NSTimer implementation for a discussion of what this does.
+-        let overdue_by = now.duration_since(recomposite_next);
+-        log_dbg!("Recompositing, overdue by {:?}", overdue_by);
+-        // TODO: Use `.div_duration_f64()` once that is stabilized.
+-        let advance_by = (overdue_by.as_secs_f64() / interval).max(1.0).ceil();
+-        assert!(advance_by == (advance_by as u32) as f64);
+-        let advance_by = advance_by as u32;
+-        if advance_by > 1 {
+-            log_dbg!("Warning: compositor is lagging. It is overdue by {}s and has missed {} interval(s)!", overdue_by.as_secs_f64(), advance_by - 1);
+-        }
+-        let advance_by = ns_time_interval_to_duration_or_zero(interval)
+-            .checked_mul(advance_by)
+-            .unwrap_or(Duration::ZERO);
+-        Some(
+-            recomposite_next
+-                .checked_add(advance_by)
+-                .unwrap_or(recomposite_next),
+-        )
+-    } else {
+-        // Apple's NSTimer/CADisplayLink "missed deadline" handling is
+-        // tolerant of bogus intervals: if the guest hands us a negative
+-        // or NaN value (seen with games that compute frameInterval from
+-        // an uninitialised float), we treat it as "fire immediately"
+-        // instead of panicking inside `Duration::from_secs_f64`.
+-        Some(
+-            now.checked_add(ns_time_interval_to_duration_or_zero(interval))
+-                .unwrap_or(now),
+-        )
+-    };
+-    env.framework_state
+-        .core_animation
+-        .composition
+-        .recomposite_next = new_recomposite_next;
+-
+     let windows = env.framework_state.uikit.ui_view.ui_window.windows.clone();
+     let window_layers: Vec<id> = windows
+         .into_iter()
+@@ -385,11 +359,11 @@ pub fn recomposite_if_necessary(env: &mut Environment, force: bool) -> Option<In
+             .core_animation
+             .composition
+             .texture_framebuffer = Some((
+-                texture,
+-                cached_texture_framebuffer.unwrap().1,
+-                fb_width,
+-                fb_height,
+-            ));
++            texture,
++            cached_texture_framebuffer.unwrap().1,
++            fb_width,
++            fb_height,
++        ));
+     }
+ 
+     // Set up various other GL objects that will be reused on every frame.
+diff --git a/src/frameworks/core_animation/composition_pacing.rs b/src/frameworks/core_animation/composition_pacing.rs
+new file mode 100644
+index 0000000000000000000000000000000000000000..07a2025bea44d52e7af0d813e69645210ba10bce
+--- /dev/null
++++ b/src/frameworks/core_animation/composition_pacing.rs
+@@ -0,0 +1,84 @@
++/*
++ * This Source Code Form is subject to the terms of the Mozilla Public
++ * License, v. 2.0. If a copy of the MPL was not distributed with this
++ * file, You can obtain one at https://mozilla.org/MPL/2.0/.
++ */
++//! Deadline accounting for the Core Animation composition path.
++use std::time::{Duration, Instant};
++
++/// Keep a fixed-rate schedule even when a forced frame arrives early; skip
++/// missed deadlines rather than rendering a burst of catch-up frames.
++pub(super) fn composition_schedule(
++    next: Option<Instant>,
++    now: Instant,
++    force: bool,
++    interval: Duration,
++) -> (bool, Instant) {
++    let Some(next) = next else {
++        return (true, now.checked_add(interval).unwrap_or(now));
++    };
++    if next > now {
++        return (force, next);
++    }
++    let overdue = now.duration_since(next);
++    let intervals =
++        ((overdue.as_secs_f64() / interval.as_secs_f64()).floor() as u32).saturating_add(1);
++    let future = interval
++        .checked_mul(intervals)
++        .and_then(|delta| next.checked_add(delta))
++        .filter(|deadline| *deadline > now)
++        .unwrap_or_else(|| now.checked_add(interval).unwrap_or(now));
++    (true, future)
++}
++#[cfg(test)]
++mod pacing_tests {
++    use super::*;
++    #[test]
++    fn forced_early_frames_do_not_postpone_normal_deadlines() {
++        let start = Instant::now();
++        let interval = Duration::from_millis(16);
++        let mut next = None;
++        for frame in 0..1000u64 {
++            let now = start + Duration::from_millis(frame * 8);
++            let (draw, deadline) = composition_schedule(next, now, true, interval);
++            assert!(draw && deadline > now && deadline <= now + interval);
++            next = Some(deadline);
++        }
++        let now = start + Duration::from_millis(8000);
++        assert_eq!(
++            composition_schedule(next, now, false, interval),
++            (true, now + interval)
++        );
++    }
++    #[test]
++    fn early_and_late_frames_keep_phase_without_catchup_bursts() {
++        let start = Instant::now();
++        let interval = Duration::from_millis(16);
++        let next = start + interval;
++        assert_eq!(
++            composition_schedule(Some(next), start, false, interval),
++            (false, next)
++        );
++        assert_eq!(
++            composition_schedule(Some(next), start, true, interval),
++            (true, next)
++        );
++        assert_eq!(
++            composition_schedule(Some(next), next, false, interval),
++            (true, next + interval)
++        );
++        assert_eq!(
++            composition_schedule(Some(next), next + interval * 3, false, interval),
++            (true, next + interval * 4)
++        );
++        assert_eq!(
++            composition_schedule(
++                Some(next),
++                next + interval * 3 + Duration::from_millis(2),
++                false,
++                interval
++            ),
++            (true, next + interval * 4)
++        );
++    }
++}
 diff --git a/src/frameworks/core_foundation/cf_net_service.rs b/src/frameworks/core_foundation/cf_net_service.rs
 index 1533dfd65bbdf36784c3ab42ac0398285ee4fd24..82339926df909780b8a8616db517459d97f9bb67 100644
 --- a/src/frameworks/core_foundation/cf_net_service.rs
@@ -4303,6 +5014,105 @@ index 3253a5d59aa1a7cb48dffdb25057fd212a7f94c7..5d86b80213f619482ac3ed44482c82e7
 +    host.schedules.clear();
 +    assert!(!host.changed_for_timer(timer, 0));
 +}
+diff --git a/src/frameworks/uikit.rs b/src/frameworks/uikit.rs
+index 9f6b71116cdb0a99157e39ffb83363b33f9bae9e..9d29d7b1a09365d6edf3084534c215cd0e88c04f 100644
+--- a/src/frameworks/uikit.rs
++++ b/src/frameworks/uikit.rs
+@@ -21,9 +21,7 @@ fn UIAccessibilityIsGuidedAccessEnabled(_env: &mut Environment) -> bool {
+     false
+ }
+ 
+-const FUNCTIONS: FunctionExports = &[
+-    export_c_func!(UIAccessibilityIsGuidedAccessEnabled()),
+-];
++const FUNCTIONS: FunctionExports = &[export_c_func!(UIAccessibilityIsGuidedAccessEnabled())];
+ 
+ pub mod ns_paragraph_style;
+ pub mod ui_accelerometer;
+@@ -32,12 +30,12 @@ pub mod ui_activity;
+ pub mod ui_activity_indicator_view;
+ pub mod ui_alert_controller;
+ pub mod ui_application;
++pub mod ui_bezier_path;
+ pub mod ui_color;
+ pub mod ui_custom_object;
+ pub mod ui_device;
+ pub mod ui_document;
+ pub mod ui_event;
+-pub mod ui_bezier_path;
+ pub mod ui_font;
+ pub mod ui_geometry;
+ pub mod ui_gesture_recognizer;
+@@ -1024,6 +1022,7 @@ pub struct State {
+     ui_geometry: ui_geometry::State,
+     ui_graphics: ui_graphics::State,
+     ui_image: ui_image::State,
++    ui_nib: ui_nib::State,
+     ui_keyboard: ui_keyboard::State,
+     ui_launch_delegate: ui_launch_delegate::State,
+     ui_screen: ui_screen::State,
+@@ -1069,7 +1068,9 @@ pub(crate) fn handle_events_with_result(env: &mut Environment) -> (Option<Instan
+             Event::CloseWindow => {
+                 if !env.is_app_picker && cfg!(not(any(target_os = "android", target_os = "ios"))) {
+                     echo!("Game window closed; returning to the app picker.");
+-                    env.request_guest_termination(crate::environment::GuestTermination::ReturnToPicker);
++                    env.request_guest_termination(
++                        crate::environment::GuestTermination::ReturnToPicker,
++                    );
+                     break;
+                 } else {
+                     echo!("User closed the app picker window, exiting.");
+@@ -1135,7 +1136,9 @@ pub(crate) fn handle_events_with_result(env: &mut Environment) -> (Option<Instan
+                     if env.objc.class_is_subclass_of(class, ui_text_field_class) {
+                         match text_event {
+                             TextInputEvent::Text(text) => {
+-                                ui_view::ui_control::ui_text_field::handle_text(env, responder, text)
++                                ui_view::ui_control::ui_text_field::handle_text(
++                                    env, responder, text,
++                                )
+                             }
+                             TextInputEvent::Backspace => {
+                                 ui_view::ui_control::ui_text_field::handle_backspace(env, responder)
+@@ -1145,17 +1148,24 @@ pub(crate) fn handle_events_with_result(env: &mut Environment) -> (Option<Instan
+                             }
+                         }
+                     } else {
+-                        let ui_text_view_class = env.objc.get_known_class("UITextView", &mut env.mem);
++                        let ui_text_view_class =
++                            env.objc.get_known_class("UITextView", &mut env.mem);
+                         if env.objc.class_is_subclass_of(class, ui_text_view_class) {
+                             match text_event {
+                                 TextInputEvent::Text(text) => {
+-                                    ui_view::ui_scroll_view::ui_text_view::handle_text(env, responder, text)
++                                    ui_view::ui_scroll_view::ui_text_view::handle_text(
++                                        env, responder, text,
++                                    )
+                                 }
+                                 TextInputEvent::Backspace => {
+-                                    ui_view::ui_scroll_view::ui_text_view::handle_backspace(env, responder)
++                                    ui_view::ui_scroll_view::ui_text_view::handle_backspace(
++                                        env, responder,
++                                    )
+                                 }
+                                 TextInputEvent::Return => {
+-                                    ui_view::ui_scroll_view::ui_text_view::handle_return(env, responder)
++                                    ui_view::ui_scroll_view::ui_text_view::handle_return(
++                                        env, responder,
++                                    )
+                                 }
+                             }
+                         } else {
+@@ -1190,7 +1200,9 @@ pub(crate) fn handle_events_with_result(env: &mut Environment) -> (Option<Instan
+ mod accessibility_export_tests {
+     #[test]
+     fn guided_access_query_is_exported_as_a_function() {
+-        let exports: Vec<_> = super::DYLIB.function_exports.iter()
++        let exports: Vec<_> = super::DYLIB
++            .function_exports
++            .iter()
+             .flat_map(|table| table.iter())
+             .filter(|(name, _)| *name == "_UIAccessibilityIsGuidedAccessEnabled")
+             .collect();
 diff --git a/src/frameworks/uikit/ui_image_picker_controller.rs b/src/frameworks/uikit/ui_image_picker_controller.rs
 index 85a066f4bcb5d313af5637ac052485d27901e6df..98ad0be1ac687ea4feadfadbcc26493fa780c561 100644
 --- a/src/frameworks/uikit/ui_image_picker_controller.rs
@@ -4317,10 +5127,32 @@ index 85a066f4bcb5d313af5637ac052485d27901e6df..98ad0be1ac687ea4feadfadbcc26493f
      );
  }
 diff --git a/src/frameworks/uikit/ui_nib.rs b/src/frameworks/uikit/ui_nib.rs
-index 36c2a8b688da0e744e5f35bf48b169e9183215e1..e6504839bbf181780edb80572a5f5b1665e99808 100644
+index 36c2a8b688da0e744e5f35bf48b169e9183215e1..50fa9f62a2edc5e02079f63e7e0edccc27a3371c 100644
 --- a/src/frameworks/uikit/ui_nib.rs
 +++ b/src/frameworks/uikit/ui_nib.rs
-@@ -115,7 +115,7 @@ pub const CLASSES: ClassExports = objc_classes! {
+@@ -44,6 +44,21 @@ pub const CONSTANTS: ConstantExports = &[
+     ),
+ ];
+ 
++#[derive(Default)]
++pub(super) struct State {
++    skipped_outlets: usize,
++}
++impl State {
++    fn skipped_outlet_log(&mut self) -> usize {
++        self.skipped_outlets = self.skipped_outlets.saturating_add(1).min(5);
++        if self.skipped_outlets <= 4 {
++            self.skipped_outlets
++        } else {
++            0
++        }
++    }
++}
++
+ #[derive(Default)]
+ struct UINibHostObject {
+     /// `NSString*`
+@@ -115,7 +130,7 @@ pub const CLASSES: ClassExports = objc_classes! {
  
  - (id)instantiateWithOwner:(id)owner options:(id)options {
      if owner == nil {
@@ -4329,7 +5161,7 @@ index 36c2a8b688da0e744e5f35bf48b169e9183215e1..e6504839bbf181780edb80572a5f5b16
          }
  
      // Apple's UINib loading documentation: the only documented `options`
-@@ -242,7 +242,7 @@ pub const CLASSES: ClassExports = objc_classes! {
+@@ -242,7 +257,7 @@ pub const CLASSES: ClassExports = objc_classes! {
              }
          }
  
@@ -4338,15 +5170,58 @@ index 36c2a8b688da0e744e5f35bf48b169e9183215e1..e6504839bbf181780edb80572a5f5b16
          let ns_object_class = env.objc.get_known_class("NSObject", &mut env.mem);
          let dummy: id = msg![env; ns_object_class alloc];
          release(env, this);
-@@ -429,7 +429,7 @@ pub const CLASSES: ClassExports = objc_classes! {
+@@ -269,7 +284,7 @@ pub const CLASSES: ClassExports = objc_classes! {
+     let orig_nss: id = msg![env; coder decodeObjectForKey:orig_key];
+     let orig = to_rust_string(env, orig_nss);
+ 
+-    log!("[DEBUG NIB] UIClassSwapper loading class: {} (original: {})", name, orig);
++    log_dbg!("UIClassSwapper loading class: {} (original: {})", name, orig);
+ 
+     // Use try_get_known_class so the lookup returns None instead of
+     // panicking if the app references a custom class (e.g. FirstViewController
+@@ -381,7 +396,7 @@ pub const CLASSES: ClassExports = objc_classes! {
+             .objc
+             .lookup_selector(&selector)
+             .unwrap_or_else(|| env.objc.register_host_selector(selector.clone(), &mut env.mem));
+-        log!(
++        log_dbg!(
+             "UIRuntimeEventConnection: [{:?} addTarget:{:?} action:{} forControlEvents:{:#x}]",
+             source,
+             destination,
+@@ -428,8 +443,14 @@ pub const CLASSES: ClassExports = objc_classes! {
+         // Предотвращаем краш KVC (Key-Value Coding), если source — это просто
          // заглушка NSObject
          if source_class == ns_object_class {
-             let label_str = to_rust_string(env, label);
+-            let label_str = to_rust_string(env, label);
 -            log!("touchHLE NIB: Skipping outlet '{}' connection because source is an unhandled NSObject", label_str);
-+            log!("AnyiOSEMU NIB: Skipping outlet '{}' connection because source is an unhandled NSObject", label_str);
++            match env.framework_state.uikit.ui_nib.skipped_outlet_log() {
++                1..=3 => {
++                    let label_str = to_rust_string(env, label);
++                    log!("AnyiOSEMU NIB: Skipping outlet '{}' connection because source is an unhandled NSObject", label_str);
++                }
++                4 => log!("AnyiOSEMU NIB: additional skipped outlet messages suppressed for this session"),
++                _ => (),
++            }
              return;
          }
  
+@@ -606,3 +627,16 @@ fn load_nib_file(env: &mut Environment, ui_nib: id, path: GuestPathBuf) -> Resul
+ 
+     Ok(unarchiver)
+ }
++
++#[cfg(test)]
++mod logging_tests {
++    use super::State;
++    #[test]
++    fn skipped_outlet_examples_and_summary_are_bounded() {
++        let mut s = State::default();
++        assert_eq!(
++            (0..8).map(|_| s.skipped_outlet_log()).collect::<Vec<_>>(),
++            vec![1, 2, 3, 4, 0, 0, 0, 0]
++        );
++    }
++}
 diff --git a/src/frameworks/uikit/ui_screen.rs b/src/frameworks/uikit/ui_screen.rs
 index b7cea11a0902e86221aa616edb56fba4b9353f24..ae45c71a0068892e7abd54b64442c112095d6d16 100644
 --- a/src/frameworks/uikit/ui_screen.rs
@@ -4433,6 +5308,347 @@ index c3ab190935da2e0ca31cf8d36e68f2fc8f53e615..e1676290ce004b8dd88745c91789c1d4
      }
  }
  
+diff --git a/src/fs/bundle.rs b/src/fs/bundle.rs
+index 3f47b5f03a1cdcd487e364059c3f286979280f0d..08599ad8780a73c42ad01624c65ca89b1b6785ee 100644
+--- a/src/fs/bundle.rs
++++ b/src/fs/bundle.rs
+@@ -83,6 +83,29 @@ fn zip_entry_name(file: &zip::read::ZipFile) -> String {
+     }
+ }
+ 
++/// Normalize harmless archive spelling differences consistently with the
++/// Android importer; never let traversal components enter the guest tree.
++fn normalized_member_name(name: &str) -> Option<String> {
++    if name.contains('\0') {
++        return None;
++    }
++    let name = name.replace('\\', "/").replace(':', "_");
++    let mut parts = Vec::new();
++    for part in name.split('/') {
++        if part == ".." {
++            return None;
++        }
++        if !part.is_empty() && part != "." {
++            parts.push(part);
++        }
++    }
++    if parts.is_empty() {
++        None
++    } else {
++        Some(parts.join("/"))
++    }
++}
++
+ /// Represents an open app bundle, either a directory or a zip file.
+ pub enum BundleData {
+     HostDirectory(PathBuf),
+@@ -111,6 +134,9 @@ impl BundleData {
+                     continue;
+                 }
+             };
++            let Some(path) = normalized_member_name(&path) else {
++                continue;
++            };
+             if let Some(name) = path
+                 .strip_prefix("Payload/")
+                 .and_then(|path| path.split_once('/'))
+@@ -184,10 +210,12 @@ impl BundleData {
+                     // rest of the bundle is still loaded. If a skipped entry
+                     // is actually needed later, `IpaFileRef::open()` will
+                     // return an empty file and log a warning.
+-                    let (name, is_dir) = match archive_guard
+-                        .by_index(i)
+-                        .map(|file| (zip_entry_name(&file), file.is_dir()))
+-                    {
++                    let (name, is_dir) = match archive_guard.by_index(i).map(|file| {
++                        (
++                            zip_entry_name(&file),
++                            file.is_dir() || file.name().ends_with('\\'),
++                        )
++                    }) {
+                         Ok(name_and_dir) => name_and_dir,
+                         Err(e) => {
+                             log!(
+@@ -198,7 +226,14 @@ impl BundleData {
+                             continue;
+                         }
+                     };
+-                    if let Some(path) = name.strip_prefix(&bundle_path) {
++                    let Some(name) = normalized_member_name(&name) else {
++                        continue;
++                    };
++                    // Do not include siblings such as App.app.bak or the bundle directory itself.
++                    if let Some(path) = name
++                        .strip_prefix(&bundle_path)
++                        .filter(|p| p.starts_with('/') && p.len() > 1)
++                    {
+                         let path = GuestPath::new(path);
+                         if is_dir {
+                             builder.add_directory(path);
+@@ -234,8 +269,10 @@ impl BundleData {
+                 let plist_path = format!("{bundle_path}/Info.plist");
+                 let index = (0..zip.len())
+                     .find(|&i| {
+-                        zip.by_index_raw(i)
+-                            .is_ok_and(|file| zip_entry_name(&file) == plist_path)
++                        zip.by_index_raw(i).is_ok_and(|file| {
++                            normalized_member_name(&zip_entry_name(&file)).as_deref()
++                                == Some(&plist_path)
++                        })
+                     })
+                     .ok_or_else(|| {
+                         "Could not open Info.plist from the IPA archive: file not found".to_string()
+@@ -463,6 +500,48 @@ mod tests {
+     use crate::fs::FileLocation;
+     use std::io::{Read, Write};
+ 
++    #[test]
++    fn normalized_names_are_consistent_and_reject_traversal() {
++        assert_eq!(
++            normalized_member_name("./Payload//Game.app/./Info.plist").as_deref(),
++            Some("Payload/Game.app/Info.plist")
++        );
++        assert_eq!(
++            normalized_member_name("\\Payload\\Game.app\\Data\\foo").as_deref(),
++            Some("Payload/Game.app/Data/foo")
++        );
++        assert!(normalized_member_name("Payload/Game.app/../outside").is_none());
++        assert!(normalized_member_name("Payload/\0bad").is_none());
++    }
++
++    #[test]
++    fn ipa_with_normalized_names_and_a_similarly_named_sibling() {
++        let dir = std::env::temp_dir().join("anyiose_test_normalized_ipa");
++        std::fs::create_dir_all(&dir).unwrap();
++        let path = dir.join("TestApp.ipa");
++        let mut zip = zip::ZipWriter::new(std::fs::File::create(&path).unwrap());
++        let options = zip::write::FileOptions::default();
++        for (name, contents) in [
++            ("./Payload//TestApp.app/./Info.plist", "plist"),
++            ("Payload\\TestApp.app\\Game", "exec"),
++            ("Payload/TestApp.app.bak/not-a-child", "sibling"),
++            ("Payload/TestApp.app/../not-a-child", "traversal"),
++        ] {
++            zip.start_file(name, options).unwrap();
++            zip.write_all(contents.as_bytes()).unwrap();
++        }
++        zip.finish().unwrap();
++        let mut bundle = BundleData::open_any(&path).unwrap();
++        assert_eq!(bundle.bundle_name(), "TestApp");
++        assert_eq!(bundle.read_plist().unwrap(), b"plist");
++        let FsNode::Directory { children, .. } = bundle.into_fs_node() else {
++            panic!("expected directory")
++        };
++        assert!(children.contains_key("Info.plist"));
++        assert!(children.contains_key("Game"));
++        assert!(!children.contains_key("not-a-child"));
++    }
++
+     /// Regression test: IPAs with entries whose local file header is corrupt
+     /// used to cause a panic (`InvalidArchive("Invalid local file header")`)
+     /// when the bundle was loaded. Now such entries are skipped instead.
+diff --git a/src/gles/gles1_native.rs b/src/gles/gles1_native.rs
+index 199b834b7a34839b9fdf86f3e96be98fffd6e71b..e9defc5e59d4063d3bfbf50d414cf288657f9322 100644
+--- a/src/gles/gles1_native.rs
++++ b/src/gles/gles1_native.rs
+@@ -59,6 +59,9 @@ pub struct GLES1NativeContext {
+     /// system RAM at the end of a frame.
+     discard_ext: bool,
+     discard_ext_checked: bool,
++    // Synthetic GL error flags live on the context, not the per-call wrapper.
++    // https://docs.gl/es2/glGetError
++    pending_synthetic_error: std::cell::Cell<GLenum>,
+ }
+ 
+ /// Texture parameters that only exist in OpenGL ES 2.0+ (or are otherwise
+@@ -86,7 +89,8 @@ fn is_es2_only_texture_parameter(pname: GLenum) -> bool {
+         | 0x884C // GL_TEXTURE_COMPARE_MODE
+         | 0x884D // GL_TEXTURE_COMPARE_FUNC
+         | 0x912F // GL_TEXTURE_IMMUTABLE_FORMAT
+-        | 0x8E42..=0x8E45 // GL_TEXTURE_SWIZZLE_R..GL_TEXTURE_SWIZZLE_RGBA
++        | 0x8E42
++            ..=0x8E45 // GL_TEXTURE_SWIZZLE_R..GL_TEXTURE_SWIZZLE_RGBA
+         | 0x2804 // GL_TEXTURE_BORDER_COLOR
+         | 0x84FF // GL_TEXTURE_MAX_ANISOTROPY_EXT
+         | 0x85BC // GL_TEXTURE_STORAGE_HINT_APPLE
+@@ -100,11 +104,13 @@ fn is_es2_only_texture_parameter(pname: GLenum) -> bool {
+ /// `TOUCHHLE_FIX_TEXTURE_MIN_FILTER` environment variable override it.
+ fn fix_texture_min_filter_enabled() -> bool {
+     static POLICY: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+-    *POLICY.get_or_init(|| match std::env::var("TOUCHHLE_FIX_TEXTURE_MIN_FILTER").as_deref() {
+-        Ok("0") => false,
+-        Ok("1") => true,
+-        _ => cfg!(target_os = "android"),
+-    })
++    *POLICY.get_or_init(
++        || match std::env::var("TOUCHHLE_FIX_TEXTURE_MIN_FILTER").as_deref() {
++            Ok("0") => false,
++            Ok("1") => true,
++            _ => cfg!(target_os = "android"),
++        },
++    )
+ }
+ 
+ impl GLESContext for GLES1NativeContext {
+@@ -120,6 +126,7 @@ impl GLESContext for GLES1NativeContext {
+             pvrtc_native_checked: false,
+             discard_ext: false,
+             discard_ext_checked: false,
++            pending_synthetic_error: std::cell::Cell::new(gles11::NO_ERROR),
+         })
+     }
+ 
+@@ -130,7 +137,7 @@ impl GLESContext for GLES1NativeContext {
+         if self.gl_ctx.is_current() && self.is_loaded {
+             return Box::new(GLES1Native {
+                 _gl_lifetime: PhantomData,
+-                pending_synthetic_error: std::cell::Cell::new(gles11::NO_ERROR),
++                pending_synthetic_error: &self.pending_synthetic_error,
+                 pvrtc_native: self.pvrtc_native,
+                 discard_ext: self.discard_ext,
+             });
+@@ -143,8 +150,7 @@ impl GLESContext for GLES1NativeContext {
+         self.is_loaded = true;
+         if !self.pvrtc_native_checked {
+             self.pvrtc_native = unsafe { detect_pvrtc_support() };
+-            self.discard_ext =
+-                unsafe { host_extension_present("GL_EXT_discard_framebuffer") };
++            self.discard_ext = unsafe { host_extension_present("GL_EXT_discard_framebuffer") };
+             self.discard_ext_checked = true;
+             self.pvrtc_native_checked = true;
+             log!(
+@@ -164,7 +170,7 @@ impl GLESContext for GLES1NativeContext {
+         }
+         Box::new(GLES1Native {
+             _gl_lifetime: PhantomData,
+-            pending_synthetic_error: std::cell::Cell::new(gles11::NO_ERROR),
++            pending_synthetic_error: &self.pending_synthetic_error,
+             pvrtc_native: self.pvrtc_native,
+             discard_ext: self.discard_ext,
+         })
+@@ -178,7 +184,7 @@ impl GLESContext for GLES1NativeContext {
+         if self.gl_ctx.is_current() && self.is_loaded {
+             return Box::new(GLES1Native {
+                 _gl_lifetime: PhantomData,
+-                pending_synthetic_error: std::cell::Cell::new(gles11::NO_ERROR),
++                pending_synthetic_error: &self.pending_synthetic_error,
+                 pvrtc_native: self.pvrtc_native,
+                 discard_ext: self.discard_ext,
+             });
+@@ -195,7 +201,7 @@ impl GLESContext for GLES1NativeContext {
+         }
+         Box::new(GLES1Native {
+             _gl_lifetime: PhantomData,
+-            pending_synthetic_error: std::cell::Cell::new(gles11::NO_ERROR),
++            pending_synthetic_error: &self.pending_synthetic_error,
+             pvrtc_native: self.pvrtc_native,
+             discard_ext: self.discard_ext,
+         })
+@@ -249,7 +255,7 @@ pub struct GLES1Native<'gl_ctx> {
+     /// pending-error queue here; the ES 2.0 overrides below store
+     /// `GL_INVALID_OPERATION` into it, and our `GetError` returns it (then
+     /// clears it) before falling back to the underlying driver's error queue.
+-    pending_synthetic_error: std::cell::Cell<GLenum>,
++    pending_synthetic_error: &'gl_ctx std::cell::Cell<GLenum>,
+     /// Mirror of [`GLES1NativeContext::pvrtc_native`]; copied at make_current
+     /// time so the per-call `CompressedTexImage2D` path doesn't have to
+     /// re-query `GL_EXTENSIONS`.
+@@ -910,13 +916,10 @@ impl GLES for GLES1Native<'_> {
+         }
+     }
+ 
+-
+-
+     /// Degrade a mipmapped `TEXTURE_MIN_FILTER` on the currently-bound
+     /// texture to its base filtering mode, preserving the guest's
+     /// nearest/linear intent. See `TexImage2D` for why.
+ 
+-
+     unsafe fn TexSubImage2D(
+         &mut self,
+         target: GLenum,
+@@ -961,7 +964,14 @@ impl GLES for GLES1Native<'_> {
+             gles11::PixelStorei(gles11::UNPACK_ALIGNMENT, 1);
+         }
+         self.compressed_tex_image_2d_inner(
+-            target, level, internalformat, width, height, border, image_size, data,
++            target,
++            level,
++            internalformat,
++            width,
++            height,
++            border,
++            image_size,
++            data,
+         );
+         if old_alignment != 1 {
+             gles11::PixelStorei(gles11::UNPACK_ALIGNMENT, old_alignment);
+@@ -974,8 +984,6 @@ impl GLES for GLES1Native<'_> {
+         }
+     }
+ 
+-
+-
+     unsafe fn CompressedTexSubImage2D(
+         &mut self,
+         target: GLenum,
+@@ -1795,7 +1803,6 @@ impl GLES1Native<'_> {
+         image_size: GLsizei,
+         data: *const GLvoid,
+     ) {
+-
+         // POSIX-style guard: a NULL data pointer with image_size==0 is
+         // technically allowed by the spec for some texture-storage queries,
+         // but in practice no iPhone OS app does this — it'd just be a guest
+@@ -1978,7 +1985,6 @@ impl GLES1Native<'_> {
+     }
+ }
+ 
+-
+ impl<'gl_ctx> GLES1Native<'gl_ctx> {
+     /// Helper used by every `OpenGL ES 2.0` shader-pipeline override above
+     /// to flag a synthetic `GL_INVALID_OPERATION` and emit a one-shot
+@@ -2011,3 +2017,40 @@ impl<'gl_ctx> GLES1Native<'gl_ctx> {
+         }
+     }
+ }
++
++#[cfg(test)]
++mod error_state_tests {
++    use super::*;
++    use std::cell::Cell;
++    fn wrapper(pending: &Cell<GLenum>) -> GLES1Native<'_> {
++        GLES1Native {
++            _gl_lifetime: PhantomData,
++            pending_synthetic_error: pending,
++            pvrtc_native: false,
++            discard_ext: false,
++        }
++    }
++    #[test]
++    fn unsupported_call_error_survives_wrappers_and_is_per_context() {
++        let first = Cell::new(gles11::NO_ERROR);
++        let second = Cell::new(gles11::NO_ERROR);
++        unsafe {
++            assert_eq!(wrapper(&first).CreateShader(0), 0);
++        }
++        assert_eq!(first.get(), gles11::INVALID_OPERATION);
++        assert_eq!(second.get(), gles11::NO_ERROR);
++        assert_eq!(
++            unsafe { wrapper(&first).GetError() },
++            gles11::INVALID_OPERATION
++        );
++        assert_eq!(first.get(), gles11::NO_ERROR);
++        unsafe {
++            wrapper(&second).UseProgram(0);
++        }
++        assert_eq!(first.get(), gles11::NO_ERROR);
++        assert_eq!(
++            unsafe { wrapper(&second).GetError() },
++            gles11::INVALID_OPERATION
++        );
++    }
++}
 diff --git a/src/gles/gles1_on_gl2.rs b/src/gles/gles1_on_gl2.rs
 index 5b654c7f4970f6e7cdefa77d631b42d50b544012..e6606bfbfa556f26af7f70dcc1c08b0a5058bcf8 100644
 --- a/src/gles/gles1_on_gl2.rs
@@ -4460,10 +5676,15 @@ index 4b16094f77e34f32d705ed3345257bc489968a7b..faeb1d05518f14b9698ef46bd540b0d8
              // Update global text cache for on-screen overlay if enabled via
              // environment variable or the runtime flag.
 diff --git a/src/lib.rs b/src/lib.rs
-index ba739ba822a2511182fb10c144a074e7607ec707..c0c4811ee43e38656527cac70394ee9319297ac1 100644
+index ba739ba822a2511182fb10c144a074e7607ec707..a2e4502ad295501a2e134e230e63285b7e8acbad 100644
 --- a/src/lib.rs
 +++ b/src/lib.rs
-@@ -31,6 +31,8 @@ mod fastmap;
+@@ -26,11 +26,11 @@
+ 
+ #[macro_use]
+ mod log;
+-mod env_flags;
+-mod fastmap;
  mod abi;
  mod android_jni;
  mod android_media;
@@ -4472,6 +5693,30 @@ index ba739ba822a2511182fb10c144a074e7607ec707..c0c4811ee43e38656527cac70394ee93
  mod android_web_view;
  mod audio;
  mod bundle;
+@@ -38,12 +38,15 @@ mod cpu;
+ mod crash_handler;
+ mod debug;
+ mod dyld;
++mod env_flags;
+ mod environment;
++mod fastmap;
+ pub mod font;
+ mod frameworks;
+ mod fs;
+ mod gdb;
+ mod gles;
++mod guest_clock;
+ mod image;
+ mod libc;
+ mod mach_o;
+@@ -54,7 +57,6 @@ mod options;
+ mod paths;
+ mod perf_hints;
+ mod stack;
+-mod guest_clock;
+ mod trainer;
+ mod trainer_ui;
+ mod window;
 @@ -82,7 +84,7 @@ static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
  
  pub use touchHLE_version::*;
@@ -4492,7 +5737,7 @@ index ba739ba822a2511182fb10c144a074e7607ec707..c0c4811ee43e38656527cac70394ee93
  ) -> std::ffi::c_int {
      // Rust's default panic handler prints to stderr, but on Android that just
      // gets discarded, so we set a custom hook to make debugging easier.
-@@ -188,15 +190,58 @@ pub extern "C" fn SDL_main(
+@@ -188,15 +190,64 @@ pub extern "C" fn SDL_main(
              echo_no_panic!("Panic: {}", payload);
          }
      }));
@@ -4522,8 +5767,12 @@ index ba739ba822a2511182fb10c144a074e7607ec707..c0c4811ee43e38656527cac70394ee93
 +    let mut app_arguments = Vec::with_capacity(arguments.len());
 +    for argument in arguments {
 +        if let Some(path) = argument.strip_prefix("--anyiose-data-dir=") {
-+            if let Err(error) = paths::set_android_user_data_base_path(std::path::PathBuf::from(path)) {
-+                sdl2::log::log(&format!("AnyiOSEMU could not set its private data directory: {error}"));
++            if let Err(error) =
++                paths::set_android_user_data_base_path(std::path::PathBuf::from(path))
++            {
++                sdl2::log::log(&format!(
++                    "AnyiOSEMU could not set its private data directory: {error}"
++                ));
 +                return 1;
 +            }
 +        } else if argument == "--anyiose-silent-fatal" {
@@ -4538,7 +5787,9 @@ index ba739ba822a2511182fb10c144a074e7607ec707..c0c4811ee43e38656527cac70394ee93
 +        app_arguments.push(String::from("AnyiOSEMU"));
 +    }
 +    if let Err(error) = crate::log::reset_log_file() {
-+        sdl2::log::log(&format!("AnyiOSEMU could not initialize its per-game log: {error}"));
++        sdl2::log::log(&format!(
++            "AnyiOSEMU could not initialize its per-game log: {error}"
++        ));
 +        return 1;
 +    }
 +
@@ -4555,7 +5806,7 @@ index ba739ba822a2511182fb10c144a074e7607ec707..c0c4811ee43e38656527cac70394ee93
              1
          }
      }
-@@ -204,7 +249,7 @@ pub extern "C" fn SDL_main(
+@@ -204,7 +255,7 @@ pub extern "C" fn SDL_main(
  
  const USAGE: &str = "\
  Usage:
@@ -4564,7 +5815,20 @@ index ba739ba822a2511182fb10c144a074e7607ec707..c0c4811ee43e38656527cac70394ee93
  
  PATH should be a path to a .app bundle or .ipa file.
  
-@@ -281,7 +326,7 @@ fn run_session<T: Iterator<Item = String>>(
+@@ -253,7 +304,11 @@ fn run_session<T: Iterator<Item = String>>(
+         // openal-soft's wave backend only reads its output path from the
+         // config key `wave/file`; it does not honour an env override, so
+         // generate a minimal config file and point ALSOFT_CONF at it.
+-        std::fs::write(&conf, format!("[wave]\nfile = {}\n", path.to_string_lossy())).ok();
++        std::fs::write(
++            &conf,
++            format!("[wave]\nfile = {}\n", path.to_string_lossy()),
++        )
++        .ok();
+         // SAFETY: runs before any thread spawn or OpenAL call in this process.
+         unsafe {
+             std::env::set_var("ALSOFT_DRIVERS", "wave");
+@@ -281,7 +336,7 @@ fn run_session<T: Iterator<Item = String>>(
      }
  
      echo!(
@@ -4573,7 +5837,7 @@ index ba739ba822a2511182fb10c144a074e7607ec707..c0c4811ee43e38656527cac70394ee93
          branding(),
          if branding().is_empty() { "" } else { " " },
          VERSION,
-@@ -300,7 +345,7 @@ fn run_session<T: Iterator<Item = String>>(
+@@ -300,7 +355,7 @@ fn run_session<T: Iterator<Item = String>>(
  
      {
          let base_path = paths::user_data_base_path();
@@ -4582,7 +5846,100 @@ index ba739ba822a2511182fb10c144a074e7607ec707..c0c4811ee43e38656527cac70394ee93
          paths::prepopulate_user_data_dir();
          paths::remove_legacy_pvrtc_disk_cache();
      }
-@@ -533,7 +578,7 @@ fn run_session<T: Iterator<Item = String>>(
+@@ -309,6 +364,7 @@ fn run_session<T: Iterator<Item = String>>(
+ 
+     let mut bundle_path: Option<PathBuf> = None;
+     let mut just_info = false;
++    let mut quiet_game_info = false;
+     let mut option_args = Vec::new();
+     let mut options = options::Options::default();
+     let mut app_args = None::<Vec<String>>;
+@@ -323,6 +379,8 @@ fn run_session<T: Iterator<Item = String>>(
+             return Ok(None);
+         } else if arg == "--info" {
+             just_info = true;
++        } else if arg == "--anyiose-quiet-game-info" {
++            quiet_game_info = true;
+         // Parse an option and store a backup in option_args so that we can
+         // reapply them after file options are loaded. This ensures that
+         // command line options take precedence over file options.
+@@ -472,40 +530,43 @@ fn run_session<T: Iterator<Item = String>>(
+     let required_device_capabilities = bundle.required_device_capabilities();
+     let device_family = bundle.device_family_array();
+ 
+-    echo!("App bundle info:");
+-    echo!("- Display name: {}", bundle.display_name());
+-    echo!("- Version: {}", bundle.bundle_version());
+-    echo!("- Identifier: {}", app_id);
+-    if let Some(canonical_name) = bundle.canonical_bundle_name() {
+-        echo!("- Internal name (canonical): {}.app", canonical_name);
+-    } else {
+-        echo!("- Internal name (from FS): {}.app", bundle.bundle_name());
+-    }
+-    echo!(
+-        "- Minimum OS version: {}",
+-        minimum_os_version.as_deref().unwrap_or("(not specified)")
+-    );
+-    echo!(
+-        "- Required device capabilities: {}",
+-        if !required_device_capabilities.is_empty() {
+-            required_device_capabilities.join(", ")
++    // Standalone and --info retain metadata; the main app already shows it.
++    if !quiet_game_info || just_info {
++        echo!("App bundle info:");
++        echo!("- Display name: {}", bundle.display_name());
++        echo!("- Version: {}", bundle.bundle_version());
++        echo!("- Identifier: {}", app_id);
++        if let Some(canonical_name) = bundle.canonical_bundle_name() {
++            echo!("- Internal name (canonical): {}.app", canonical_name);
+         } else {
+-            "(not specified)".to_string()
++            echo!("- Internal name (from FS): {}.app", bundle.bundle_name());
+         }
+-    );
+-    echo!(
+-        "- Device family: {}",
+-        if !device_family.is_empty() {
+-            device_family
+-                .iter()
+-                .map(|x| x.to_string())
+-                .collect::<Vec<_>>()
+-                .join(", ")
+-        } else {
+-            "(not specified)".to_string()
+-        }
+-    );
+-    echo!();
++        echo!(
++            "- Minimum OS version: {}",
++            minimum_os_version.as_deref().unwrap_or("(not specified)")
++        );
++        echo!(
++            "- Required device capabilities: {}",
++            if !required_device_capabilities.is_empty() {
++                required_device_capabilities.join(", ")
++            } else {
++                "(not specified)".to_string()
++            }
++        );
++        echo!(
++            "- Device family: {}",
++            if !device_family.is_empty() {
++                device_family
++                    .iter()
++                    .map(|x| x.to_string())
++                    .collect::<Vec<_>>()
++                    .join(", ")
++            } else {
++                "(not specified)".to_string()
++            }
++        );
++        echo!();
++    }
+ 
+     if let Some(version) = minimum_os_version.as_deref() {
+         // Apple's `MinimumOSVersion` Info.plist key follows the standard
+@@ -533,7 +594,7 @@ fn run_session<T: Iterator<Item = String>>(
          // missing post-iOS-9 APIs becomes the rule rather than the exception.
          if major > 9 || (major == 9 && minor > 0) {
              echo!(
@@ -4591,7 +5948,7 @@ index ba739ba822a2511182fb10c144a074e7607ec707..c0c4811ee43e38656527cac70394ee93
                   for iOS 2.x–9.0; newer APIs may be missing.",
                  version
              );
-@@ -542,7 +587,7 @@ fn run_session<T: Iterator<Item = String>>(
+@@ -542,7 +603,7 @@ fn run_session<T: Iterator<Item = String>>(
  
      if required_device_capabilities.contains(&"opengles-3") {
          echo!(
@@ -4600,11 +5957,662 @@ index ba739ba822a2511182fb10c144a074e7607ec707..c0c4811ee43e38656527cac70394ee93
          );
      }
  
+diff --git a/src/libc/dlfcn.rs b/src/libc/dlfcn.rs
+index 371768ecc7d06aa3783d7601be500a100c652b25..bc2933bbdbdaeb5afe2ec2ded02d7c4c8f3889ad 100644
+--- a/src/libc/dlfcn.rs
++++ b/src/libc/dlfcn.rs
+@@ -3,36 +3,72 @@
+  * License, v. 2.0. If a copy of the MPL was not distributed with this
+  * file, You can obtain one at https://mozilla.org/MPL/2.0/.
+  */
+-
+-//! `dlfcn.h` (`dlopen()` and friends)
+-//! Реализация подсистемы динамического связывания POSIX для HLE-эмуляции.
+-//! Код спроектирован с учетом устойчивости к некорректному доступу к памяти со
+-//! стороны гостевого приложения.
+-
++//! Darwin dynamic linking for preloaded guest images and host shims.
+ use crate::dyld::{export_c_func, FunctionExports};
+ use crate::mach_o::MachO;
+ use crate::mem::{ConstPtr, ConstVoidPtr, GuestUSize, MutPtr, MutVoidPtr, Ptr, SafeRead};
+ use crate::Environment;
+ use std::collections::HashMap;
+ 
++#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
++enum Library {
++    Guest(usize),
++    Host(usize),
++}
++#[derive(Clone, Copy, Debug)]
++struct Handle {
++    library: Library,
++    first: bool,
++    references: usize,
++}
+ #[derive(Default)]
+ pub struct State {
+-    /// Guest copies of the strings `dladdr` hands out, keyed by their text.
+-    /// `Dl_info` only borrows them, so they must live for the whole process.
++    handles: HashMap<u32, Handle>,
++    handles_by_library: HashMap<(Library, bool), u32>,
++    errors: HashMap<crate::ThreadId, &'static str>,
+     strings: HashMap<String, ConstPtr<u8>>,
+ }
+-
+-/// Псевдо-дескриптор для доступа к глобальной области видимости символов (main
+-//executable).
+-/// В операционных системах семейства Darwin/iOS RTLD_DEFAULT традиционно равен
+-//(void*)-2.
++impl State {
++    fn open(&mut self, mem: &mut crate::mem::Mem, library: Library, first: bool) -> MutVoidPtr {
++        let address = *self
++            .handles_by_library
++            .entry((library, first))
++            .or_insert_with(|| mem.alloc(4).to_bits());
++        let handle = self.handles.entry(address).or_insert(Handle {
++            library,
++            first,
++            references: 0,
++        });
++        handle.references = handle.references.saturating_add(1);
++        Ptr::from_bits(address)
++    }
++    fn get(&self, ptr: MutVoidPtr) -> Option<Handle> {
++        self.handles
++            .get(&ptr.to_bits())
++            .copied()
++            .filter(|h| h.references > 0)
++    }
++    fn set_error(&mut self, thread: crate::ThreadId, message: &'static str) {
++        self.errors.insert(thread, message);
++    }
++    fn take_error(&mut self, thread: crate::ThreadId) -> Option<&'static str> {
++        self.errors.remove(&thread)
++    }
++    fn close(&mut self, ptr: MutVoidPtr) -> bool {
++        match self.handles.get_mut(&ptr.to_bits()) {
++            Some(handle) if handle.references > 0 => {
++                handle.references -= 1;
++                true
++            }
++            _ => false,
++        }
++    }
++}
+ const RTLD_DEFAULT: MutVoidPtr = Ptr::from_bits(-2 as _);
+ const RTLD_NEXT: MutVoidPtr = Ptr::from_bits(-1 as _);
+ const RTLD_SELF: MutVoidPtr = Ptr::from_bits(-3 as _);
+ const RTLD_MAIN_ONLY: MutVoidPtr = Ptr::from_bits(-5 as _);
+-
+-/// Checks whether the given handle is a special sentinel that should be
+-/// treated as a global symbol lookup scope.
++const RTLD_FIRST: i32 = 0x100;
+ fn is_global_scope_handle(handle: MutVoidPtr) -> bool {
+     handle.is_null()
+         || handle == RTLD_DEFAULT
+@@ -40,193 +76,236 @@ fn is_global_scope_handle(handle: MutVoidPtr) -> bool {
+         || handle == RTLD_SELF
+         || handle == RTLD_MAIN_ONLY
+ }
+-
+-/// Проверяет, является ли запрашиваемая библиотека известной эмулятору
+-//(присутствует в статическом списке DYLIB_LIST).
+-fn is_known_library(path: &str) -> bool {
+-    crate::dyld::DYLIB_LIST
++/// Match known paths/aliases or known bare filenames, never arbitrary substrings.
++fn host_library(path: &str) -> Option<usize> {
++    crate::dyld::DYLIB_LIST.iter().position(|dylib| {
++        std::iter::once(dylib.path)
++            .chain(dylib.aliases.iter().copied())
++            .any(|candidate| {
++                candidate == path
++                    || (!path.contains('/') && candidate.rsplit('/').next() == Some(path))
++            })
++            || (dylib.path == "/usr/lib/libsqlite3.dylib"
++                && matches!(
++                    path,
++                    "sqlite3" | "libsqlite3" | "sqlite3.dll" | "libsqlite3.so"
++                ))
++    })
++}
++/// The current loader admits bundled guest dylibs under /usr/lib only.
++fn guest_library(bins: &[MachO], path: &str) -> Option<usize> {
++    let name = if let Some(name) = path.strip_prefix("/usr/lib/") {
++        if name.contains('/') {
++            return None;
++        }
++        name
++    } else if !path.contains('/') {
++        path
++    } else {
++        return None;
++    };
++    let name = crate::environment::canonicalize_dylib_path(name);
++    bins.iter().enumerate().skip(1).find_map(|(index, bin)| {
++        (crate::environment::canonicalize_dylib_path(&bin.name) == name).then_some(index)
++    })
++}
++fn host_exports(index: usize, symbol: &str) -> bool {
++    crate::dyld::DYLIB_LIST[index]
++        .function_exports
+         .iter()
+-        .any(|dylib| dylib.path == path || dylib.aliases.contains(&path))
++        .copied()
++        .flatten()
++        .any(|(name, _)| *name == symbol)
+ }
+-
+-/// Реализация функции `dlopen` стандарта POSIX.
+-/// Загружает динамическую библиотеку в адресное пространство процесса (или
+-//симулирует этот процесс в HLE).
+-/// Возвращает дескриптор загруженной библиотеки или NULL в случае отсутствия
+-//файла или ошибки чтения.
+-fn dlopen(env: &mut Environment, path: ConstPtr<u8>, _mode: i32) -> MutVoidPtr {
+-    // В соответствии со стандартом POSIX, вызов dlopen(NULL) возвращает
+-    // дескриптор главной программы.
+-    // Эмулятор предоставляет доступ к глобальным символам через специальный
+-    // дескриптор RTLD_DEFAULT.
++/// Search already-loaded guest dependencies breadth-first, respecting exports.
++fn guest_dependency_order(bins: &[MachO], index: usize, first: bool) -> Vec<usize> {
++    if index >= bins.len() {
++        return Vec::new();
++    }
++    let mut order = vec![index];
++    if !first {
++        let mut cursor = 0;
++        while cursor < order.len() {
++            for dependency in &bins[order[cursor]].dynamic_libraries {
++                if let Some(next) = guest_library(bins, dependency) {
++                    if !order.contains(&next) {
++                        order.push(next);
++                    }
++                }
++            }
++            cursor += 1;
++        }
++    }
++    order
++}
++fn guest_symbol(
++    bins: &[MachO],
++    indices: impl IntoIterator<Item = usize>,
++    symbol: &str,
++) -> Option<u32> {
++    indices
++        .into_iter()
++        .find_map(|i| bins.get(i)?.external_symbols.get(symbol).copied())
++}
++fn special_scope(handle: MutVoidPtr, caller: Option<usize>, count: usize) -> (Vec<usize>, bool) {
++    if handle == RTLD_MAIN_ONLY {
++        return (if count > 0 { vec![0] } else { vec![] }, false);
++    }
++    if handle == RTLD_NEXT || handle == RTLD_SELF {
++        return match caller.filter(|&i| i < count) {
++            Some(i) => (
++                ((i + usize::from(handle == RTLD_NEXT))..count).collect(),
++                true,
++            ),
++            None => (vec![], false),
++        };
++    }
++    ((0..count).collect(), true)
++}
++fn set_error(env: &mut Environment, message: &'static str) {
++    env.libc_state.dlfcn.set_error(env.current_thread, message);
++}
++/// Reference-counted handles for preloaded images; arbitrary runtime loading is not implemented.
++/// https://developer.apple.com/library/archive/documentation/System/Conceptual/ManPages_iPhoneOS/man3/dlopen.3.html
++pub(crate) fn dlopen(env: &mut Environment, path: ConstPtr<u8>, mode: i32) -> MutVoidPtr {
+     if path.is_null() {
+         return RTLD_DEFAULT;
+     }
+-
+-    // БЕЗОПАСНОСТЬ: Осуществляем защищенное чтение строки пути из
+-    // неконтролируемой гостевой памяти.
+-    // Если указатель недействителен (Out-Of-Bounds) или строка не является
+-    // корректной UTF-8 последовательностью,
+-    // мы прерываем операцию загрузки и возвращаем NULL, не допуская паники
+-    // эмулятора (Denial of Service).
+-    let path_str = match env.mem.cstr_at_utf8(path) {
+-        Ok(s) => s,
+-        Err(e) => {
+-            log!(
+-                "Warning: dlopen() failed to safely read path string from guest memory: {:?}",
+-                e
+-            );
++    let path = match env.mem.cstr_at_utf8(path) {
++        Ok(path) => path,
++        Err(_) => {
++            set_error(env, "dlopen: invalid path");
+             return Ptr::null();
+         }
+     };
+-
+-    // --- EKLENECEK KOD BAŞLANGICI ---
+-    // Mono'nun sqlite3 arayışını çökmeden atlatması için global scope (RTLD_DEFAULT) döndürüyoruz.
+-    if path_str.contains("sqlite3") {
+-        return RTLD_DEFAULT;
+-    }
+-
+-    // Если библиотека не известна системе эмуляции (например,
+-    // кросс-платформенный фреймворк пытается
+-    // загрузить специфичный для другой платформы плагин), мы мягко отклоняем
+-    // запрос, возвращая NULL.
+-    // Данное поведение ожидается гостевым приложением для "мягкой деградации"
+-    // (graceful degradation).
+-    if !is_known_library(path_str) {
+-        log!(
+-            "Warning: dlopen() returning NULL for requested but unknown library: {}",
+-            path_str
+-        );
++    let library = guest_library(&env.bins, path)
++        .map(Library::Guest)
++        .or_else(|| host_library(path).map(Library::Host));
++    let Some(library) = library else {
++        log_dbg!("dlopen({path}): image not available in the preloaded runtime");
++        set_error(env, "dlopen: image not found");
+         return Ptr::null();
+-    }
+-
+-    // Временная архитектура: использование указателя на строку пути в памяти
+-    // гостя как непрозрачного дескриптора.
+-    // TODO: Разработать защищенную систему управления дескрипторами (Handle
+-    // Allocator Table) на стороне хоста,
+-    // чтобы предотвратить уязвимости Use-After-Free, когда приложение
+-    // освобождает строку пути после вызова dlopen.
+-    path.cast_mut().cast()
++    };
++    env.libc_state
++        .dlfcn
++        .open(&mut env.mem, library, (mode & RTLD_FIRST) != 0)
+ }
+-
+-/// Реализация функции `dlsym` стандарта POSIX.
+-/// Выполняет поиск адреса экспортированного символа (функции или переменной) в
+-//загруженном модуле.
+-fn dlsym(env: &mut Environment, handle: MutVoidPtr, symbol: ConstPtr<u8>) -> MutVoidPtr {
+-    // БЕЗОПАСНОСТЬ: Валидация переданного дескриптора.
+-    // Специальные дескрипторы (RTLD_DEFAULT, RTLD_NEXT, RTLD_SELF,
+-    // RTLD_MAIN_ONLY, а также NULL) означают глобальный поиск символа.
+-    if !is_global_scope_handle(handle) {
+-        let handle_path_ptr: ConstPtr<u8> = handle.cast().cast_const();
+-        let handle_str = match env.mem.cstr_at_utf8(handle_path_ptr) {
+-            Ok(s) => s,
+-            Err(_) => {
+-                log!("Warning: dlsym() returning NULL due to invalid or corrupted handle pointer (possible UAF)");
++/// Guest exports and host function shims in the selected scope. Host dependency
++/// ordering is approximate and host data symbols remain unsupported.
++/// https://developer.apple.com/library/archive/documentation/System/Conceptual/ManPages_iPhoneOS/man3/dlsym.3.html
++/// https://github.com/apple-oss-distributions/dyld/blob/main/include/dlfcn.h
++pub(crate) fn dlsym(env: &mut Environment, handle: MutVoidPtr, symbol: ConstPtr<u8>) -> MutVoidPtr {
++    let opened = if is_global_scope_handle(handle) {
++        None
++    } else {
++        match env.libc_state.dlfcn.get(handle) {
++            Some(handle) => Some(handle),
++            None => {
++                set_error(env, "dlsym: invalid handle");
+                 return Ptr::null();
+             }
+-        };
+-
+-        // Если дескриптор указывает на строку, не являющуюся известной
+-        // библиотекой, запрос отклоняется.
+-        if !is_known_library(handle_str) {
+-            log!(
+-                "Warning: dlsym() returning NULL due to an unknown library handle: {}",
+-                handle_str
+-            );
+-            return Ptr::null();
+         }
+-    }
+-
+-    // БЕЗОПАСНОСТЬ: Защита от передачи NULL в качестве имени искомого символа.
+-    if symbol.is_null() {
+-        log!("Warning: dlsym() called with a NULL symbol pointer");
++    };
++    let symbol = if symbol.is_null() {
++        None
++    } else {
++        env.mem.cstr_at_utf8(symbol).ok()
++    };
++    let Some(symbol) = symbol else {
++        set_error(env, "dlsym: invalid symbol name");
+         return Ptr::null();
+-    }
+-
+-    // БЕЗОПАСНОСТЬ: Чтение строкового имени символа из гостевой памяти.
+-    let symbol_str = match env.mem.cstr_at_utf8(symbol) {
+-        Ok(s) => s,
+-        Err(_) => {
+-            log!("Warning: dlsym() returning NULL due to invalid symbol string pointer in guest memory");
+-            return Ptr::null();
++    };
++    let symbol = format!("_{symbol}");
++    let caller = image_and_symbol_for_address(&env.bins, env.cpu.regs()[crate::cpu::Cpu::LR] & !1)
++        .map(|(i, _)| i);
++    let (indices, host_libraries): (Vec<usize>, Vec<usize>) = match opened {
++        Some(Handle {
++            library: Library::Guest(index),
++            first,
++            ..
++        }) => {
++            let order = guest_dependency_order(&env.bins, index, first);
++            let hosts = if first {
++                vec![]
++            } else {
++                order
++                    .iter()
++                    .flat_map(|&i| env.bins[i].dynamic_libraries.iter())
++                    .filter_map(|p| host_library(p))
++                    .collect()
++            };
++            (order, hosts)
++        }
++        Some(Handle {
++            library: Library::Host(index),
++            first,
++            ..
++        }) => {
++            // Host re-exports are incomplete. Preserve the previous host-only
++            // fallback for non-FIRST while preferring the selected library.
++            let mut hosts = vec![index];
++            if !first {
++                hosts.extend((0..crate::dyld::DYLIB_LIST.len()).filter(|&i| i != index));
++            }
++            (vec![], hosts)
++        }
++        None => {
++            let (images, allow_hosts) = special_scope(handle, caller, env.bins.len());
++            let hosts = if allow_hosts {
++                (0..crate::dyld::DYLIB_LIST.len()).collect()
++            } else {
++                vec![]
++            };
++            (images, hosts)
+         }
+     };
+-
+-    // В бинарном формате Mach-O (платформы Apple) C-символы компилируются с
+-    // префиксом подчеркивания.
+-    let symbol_formatted = format!("_{}", symbol_str);
+-
+-    // Попытка разрешить адрес через подсистему динамического загрузчика
+-    // эмулятора (dyld).
+-    // Функция create_proc_address безопасно вернет Err, если функция-заглушка
+-    // еще не реализована в эмуляторе.
+-    match env
+-        .dyld
+-        .create_proc_address(&mut env.mem, &mut env.cpu, &symbol_formatted)
++    if let Some(address) = guest_symbol(&env.bins, indices, &symbol) {
++        if let Some(intercept) = env
++            .dyld
++            .dlsym_abi_intercept(&mut env.mem, &mut env.cpu, &symbol)
++        {
++            return Ptr::from_bits(intercept.addr_with_thumb_bit());
++        }
++        return Ptr::from_bits(address);
++    }
++    if let Some(library) = host_libraries
++        .into_iter()
++        .find(|&i| host_exports(i, &symbol))
+     {
+-        Ok(addr) => Ptr::from_bits(addr.addr_with_thumb_bit()),
+-        Err(_) => {
+-            // POSIX `dlsym(3)`: returning NULL for an unknown symbol is the
+-            // documented success path for "this symbol does not exist".
+-            // In particular, Mono PInvoke handlers (`[DllImport("__Internal")]`
+-            // in C# code) probe dlsym to discover game-specific
+-            // entry points that live inside the guest binary and are
+-            // resolved separately by the Mono runtime. There's nothing
+-            // for the host to do for these symbols — emitting a Warning
+-            // every time turns a normal Mono cold start into hundreds
+-            // of log lines. Demoted to debug-only.
+-            log_dbg!(
+-                "dlsym({}): no host-side implementation, returning NULL",
+-                symbol_formatted
+-            );
+-            Ptr::null()
++        if let Some(intercept) = env
++            .dyld
++            .dlsym_abi_intercept(&mut env.mem, &mut env.cpu, &symbol)
++        {
++            return Ptr::from_bits(intercept.addr_with_thumb_bit());
++        }
++        if let Ok(address) =
++            env.dyld
++                .create_scoped_host_proc_address(&mut env.mem, &mut env.cpu, library, &symbol)
++        {
++            return Ptr::from_bits(address.addr_with_thumb_bit());
+         }
+     }
++    log_dbg!("dlsym({symbol}): symbol unavailable in the requested scope");
++    set_error(env, "dlsym: symbol not found");
++    Ptr::null()
+ }
+-
+-/// Реализация функции `dlclose` стандарта POSIX.
+-/// В HLE архитектуре выступает в роли заглушки, но строго соблюдает семантику
+-//возврата кодов ошибок.
+-fn dlclose(env: &mut Environment, handle: MutVoidPtr) -> i32 {
+-    if is_global_scope_handle(handle) {
+-        return 0; // Операция успешна
++pub(crate) fn dlclose(env: &mut Environment, handle: MutVoidPtr) -> i32 {
++    if handle == RTLD_DEFAULT {
++        return 0;
+     }
+-
+-    let handle_path_ptr: ConstPtr<u8> = handle.cast().cast_const();
+-
+-    // БЕЗОПАСНОСТЬ: Проверяем валидность переданного дескриптора перед
+-    // возвратом кода статуса.
+-    match env.mem.cstr_at_utf8(handle_path_ptr) {
+-        Ok(handle_str) => {
+-            if !is_known_library(handle_str) {
+-                log!(
+-                    "Warning: dlclose() called on unknown or already freed library handle: {}",
+-                    handle_str
+-                );
+-                return -1; // -1 стандартный код ошибки POSIX для dlclose
+-            }
+-            0 // Успех
+-        }
+-        Err(_) => {
+-            log!("Warning: dlclose() called with an invalid or corrupted memory pointer");
+-            -1 // Ошибка доступа к памяти
+-        }
++    if env.libc_state.dlfcn.close(handle) {
++        return 0;
+     }
++    set_error(env, "dlclose: invalid handle");
++    -1
+ }
+-
+-/// Реализация функции `dlerror` стандарта POSIX (man 3 dlerror на Darwin).
+-///
+-/// Apple: "If no errors have occurred since initialization or since
+-/// `dlerror()` was last called, `dlerror()` returns NULL." Because our
+-/// `dlopen` / `dlsym` / `dlclose` never publish a per-thread error message
+-/// (they log internally and return NULL/-1 to the guest), the correct
+-/// POSIX-conforming reply is always `NULL`. Without this entry point the
+-/// dynamic linker installed a generic return-0 stub, which a few guests
+-/// (notably the iPhone OS port of `libstdc++`'s exception handling) treat
+-/// as "no error" but others (Bionic-style helpers) tried to call
+-/// `strlen()` on. Returning a real `NULL` pointer is unambiguous.
+-fn dlerror(_env: &mut Environment) -> ConstPtr<u8> {
+-    Ptr::null()
++/// dlerror consumes only the calling guest thread's last error.
++/// https://developer.apple.com/library/archive/documentation/System/Conceptual/ManPages_iPhoneOS/man3/dlerror.3.html
++pub(crate) fn dlerror(env: &mut Environment) -> ConstPtr<u8> {
++    match env.libc_state.dlfcn.take_error(env.current_thread) {
++        Some(message) => guest_string(env, message),
++        None => Ptr::null(),
++    }
+ }
+ 
+ /// `Dl_info` from `dlfcn.h`.
+@@ -353,9 +432,51 @@ mod tests {
+             entry_point_is_lc_main: false,
+             last_segment_end: end,
+             text_base,
++            vmaddr_slide: 0,
+         }
+     }
+ 
++    #[test]
++    fn handles_errors_and_guest_scope_are_bounded() {
++        let mut mem = crate::mem::Mem::new();
++        let mut state = State::default();
++        let a = state.open(&mut mem, Library::Guest(1), false);
++        assert_eq!(a, state.open(&mut mem, Library::Guest(1), false));
++        assert_ne!(a, state.open(&mut mem, Library::Guest(1), true));
++        assert!(state.close(a));
++        assert!(state.get(a).is_some());
++        assert!(state.close(a));
++        assert!(state.get(a).is_none());
++        assert!(!state.close(a));
++        state.set_error(1, "one");
++        state.set_error(2, "two");
++        assert_eq!(state.take_error(1), Some("one"));
++        assert_eq!(state.take_error(1), None);
++        assert_eq!(state.take_error(2), Some("two"));
++        let mut bins = [
++            mock_binary("App", 0x1000, 0x5000, &[("_private", 0x2000)]),
++            mock_binary("libone.dylib", 0x9000, 0xd000, &[]),
++            mock_binary("libtwo.dylib", 0xe000, 0x12000, &[]),
++        ];
++        bins[1]
++            .dynamic_libraries
++            .push("/usr/lib/libtwo.dylib".into());
++        bins[2]
++            .dynamic_libraries
++            .push("/usr/lib/libone.dylib".into());
++        bins[2].external_symbols.insert("_public".into(), 0xe011);
++        assert_eq!(guest_dependency_order(&bins, 1, false), vec![1, 2]);
++        assert_eq!(guest_dependency_order(&bins, 1, true), vec![1]);
++        assert_eq!(guest_symbol(&bins, [0], "_private"), None);
++        assert_eq!(guest_symbol(&bins, [1, 2], "_public"), Some(0xe011));
++        assert_eq!(guest_library(&bins, "/unknown/libone.dylib"), None);
++        assert_eq!(host_library("/evil/not-sqlite3.dylib"), None);
++        assert_eq!(special_scope(RTLD_NEXT, Some(1), 3), (vec![2], true));
++        assert_eq!(special_scope(RTLD_MAIN_ONLY, Some(1), 3), (vec![0], false));
++        bins[1].name = "libz.1.dylib".into();
++        assert_eq!(guest_library(&bins, "/usr/lib/libz.dylib"), Some(1));
++    }
++
+     #[test]
+     fn dladdr_finds_image_and_nearest_lower_symbol() {
+         let bins = [
 diff --git a/src/libc/mach_o.rs b/src/libc/mach_o.rs
-index 53dd9860324923d8b1fd95efdb738179a5eee3f3..dff6dc0cf55d200c57dda40873c4a069d5637389 100644
+index 53dd9860324923d8b1fd95efdb738179a5eee3f3..ac2176c77166d1baf97dfa7e1e028edab934e656 100644
 --- a/src/libc/mach_o.rs
 +++ b/src/libc/mach_o.rs
-@@ -218,7 +218,7 @@ fn _dyld_register_func_for_add_image(env: &mut Environment, func: GuestFunction)
+@@ -8,7 +8,8 @@
+ use crate::abi::{CallFromHost, GuestFunction};
+ use crate::dyld::{export_c_func, FunctionExports};
+ use crate::libc::string::strcmp;
+-use crate::mem::{ConstPtr, GuestUSize, MutPtr, Ptr, SafeRead};
++use crate::mach_o::MachO;
++use crate::mem::{ConstPtr, GuestUSize, Mem, MutPtr, Ptr, SafeRead};
+ use crate::Environment;
+ use std::collections::HashMap;
+ 
+@@ -130,40 +131,38 @@ fn _dyld_get_image_header(env: &mut Environment, image_index: u32) -> u32 {
+     env.bins[idx].text_base
+ }
+ 
+-/// `const char* _dyld_get_image_name(uint32_t image_index)`
+-/// Returns a C-string pointer with the path of the image at `image_index`.
+-/// We allocate the string in guest memory the first time it's requested.
+-fn _dyld_get_image_name(env: &mut Environment, image_index: u32) -> ConstPtr<u8> {
+-    let idx = image_index as usize;
+-    if idx >= env.bins.len() {
+-        log!(
+-            "Warning: _dyld_get_image_name({}) out of range, returning NULL",
+-            image_index
+-        );
++/// Cache image name pointers for the lifetime of the process.
++fn image_name(state: &mut State, mem: &mut Mem, bins: &[MachO], index: u32) -> ConstPtr<u8> {
++    let Some(bin) = bins.get(index as usize) else {
+         return Ptr::null();
++    };
++    if let Some(&cached) = state.image_names.get(&index) {
++        return cached;
+     }
+-    let name = env.bins[idx].name.clone();
+-    let len = name.len() as u32 + 1;
+-    let ptr: MutPtr<u8> = env.mem.alloc(len).cast();
+-    let dst = env.mem.bytes_at_mut(ptr, len);
+-    dst[..name.len()].copy_from_slice(name.as_bytes());
+-    dst[name.len()] = 0;
+-    ptr.cast_const()
++    let ptr = mem.alloc_and_write_cstr(bin.name.as_bytes()).cast_const();
++    state.image_names.insert(index, ptr);
++    ptr
++}
++fn _dyld_get_image_name(env: &mut Environment, image_index: u32) -> ConstPtr<u8> {
++    image_name(
++        &mut env.libc_state.mach_o,
++        &mut env.mem,
++        &env.bins,
++        image_index,
++    )
++}
++/// Actual 32-bit slides; Apple specifies zero for an invalid image index.
++/// https://developer.apple.com/library/archive/documentation/System/Conceptual/ManPages_iPhoneOS/man3/dyld.3.html
++fn image_slide(bins: &[MachO], index: u32) -> u32 {
++    bins.get(index as usize).map_or(0, |bin| bin.vmaddr_slide)
+ }
+-
+-/// `intptr_t _dyld_get_image_vmaddr_slide(uint32_t image_index)`
+-/// Returns the virtual memory address slide for the image. Since touchHLE
+-/// loads binaries at their preferred addresses (slide=0 for the main app),
+-/// we return 0. Dylibs might have a slide but in practice iOS games don't
+-/// query this for anything critical.
+ fn _dyld_get_image_vmaddr_slide(env: &mut Environment, image_index: u32) -> u32 {
+-    let idx = image_index as usize;
+-    if idx >= env.bins.len() {
+-        return 0;
+-    }
+-    // For the main binary (index 0) the slide is always 0 in touchHLE.
+-    // For dylibs we don't track the slide separately, return 0.
+-    0
++    image_slide(&env.bins, image_index)
++}
++fn added_images(bins: &[MachO]) -> Vec<(u32, u32)> {
++    bins.iter()
++        .map(|bin| (bin.text_base, bin.vmaddr_slide))
++        .collect()
+ }
+ 
+ /// `void _dyld_register_func_for_add_image(void (*func)(const struct mach_header *mh, intptr_t vmaddr_slide))`
+@@ -180,9 +179,7 @@ fn _dyld_get_image_vmaddr_slide(env: &mut Environment, image_index: u32) -> u32
+ /// starts executing, and we do not support dynamic image load / unload
+ /// at runtime, so the documented contract collapses to: "invoke the
+ /// callback exactly once for every already-loaded image". We honour
+-/// that here. Each call passes the image's mach_header pointer and a
+-/// `vmaddr_slide` of 0 (touchHLE loads binaries at their preferred
+-/// addresses).
++/// that here, with each image's actual slide.
+ fn _dyld_register_func_for_add_image(env: &mut Environment, func: GuestFunction) {
+     if func.to_ptr().is_null() {
+         log!("Warning: _dyld_register_func_for_add_image(NULL) — ignored");
+@@ -195,12 +192,8 @@ fn _dyld_register_func_for_add_image(env: &mut Environment, func: GuestFunction)
+     );
+     // Snapshot the per-image data first because the callback runs guest
+     // code and `env.bins` may be borrowed during the call.
+-    let images: Vec<u32> = env.bins.iter().map(|b| b.text_base).collect();
+-    for mh in images {
+-        // vmaddr_slide = 0 for the main binary, and we don't track per-dylib
+-        // slides separately. This matches what `_dyld_get_image_vmaddr_slide`
+-        // already returns and keeps the two APIs consistent.
+-        let _: () = func.call_from_host(env, (mh, 0u32));
++    for (header, slide) in added_images(&env.bins) {
++        let _: () = func.call_from_host(env, (header, slide));
+     }
+ }
+ 
+@@ -218,7 +211,7 @@ fn _dyld_register_func_for_add_image(env: &mut Environment, func: GuestFunction)
  /// callback is intentionally never invoked.
  fn _dyld_register_func_for_remove_image(_env: &mut Environment, func: GuestFunction) {
      log_dbg!(
@@ -4613,6 +6621,53 @@ index 53dd9860324923d8b1fd95efdb738179a5eee3f3..dff6dc0cf55d200c57dda40873c4a069
          func
      );
  }
+@@ -672,6 +665,7 @@ const NX_ARCH_INFOS: &[NXArchInfoEntry] = &[
+ 
+ #[derive(Default)]
+ pub struct State {
++    image_names: HashMap<u32, ConstPtr<u8>>,
+     /// Cache of `(cputype, cpusubtype)` → guest pointer to an `NXArchInfoGuest`.
+     ///
+     /// Each entry is allocated lazily and lives for the duration of the
+@@ -864,3 +858,38 @@ pub const FUNCTIONS: FunctionExports = &[
+     export_c_func!(NXGetLocalArchInfo()),
+     export_c_func!(NXGetAllArchInfos()),
+ ];
++
++#[cfg(test)]
++mod dyld_image_tests {
++    use super::*;
++    fn image(name: &str, header: u32, slide: u32) -> MachO {
++        MachO {
++            name: name.into(),
++            dynamic_libraries: vec![],
++            sections: vec![],
++            exported_symbols: HashMap::new(),
++            external_symbols: HashMap::new(),
++            external_relocations: vec![],
++            entry_point_pc: None,
++            entry_point_is_lc_main: false,
++            last_segment_end: header + 0x1000,
++            text_base: header,
++            vmaddr_slide: slide,
++        }
++    }
++    #[test]
++    fn reports_slides_and_stable_names() {
++        let bins = [
++            image("app", 0x1000, 0),
++            image("lib.dylib", 0x20000, 0x12000),
++        ];
++        assert_eq!(image_slide(&bins, 1), 0x12000);
++        assert_eq!(image_slide(&bins, 3), 0);
++        assert_eq!(added_images(&bins), vec![(0x1000, 0), (0x20000, 0x12000)]);
++        let (mut state, mut mem) = (State::default(), Mem::new());
++        let first = image_name(&mut state, &mut mem, &bins, 1);
++        assert_eq!(mem.cstr_at_utf8(first).unwrap(), "lib.dylib");
++        assert_eq!(image_name(&mut state, &mut mem, &bins, 1), first);
++        assert!(image_name(&mut state, &mut mem, &bins, 3).is_null());
++    }
++}
 diff --git a/src/libc/mmap.rs b/src/libc/mmap.rs
 index b78c4f979ff01ccb6964d986faff7c3a4744409d..205e7860b67401965392b15140263818e8d1e5db 100644
 --- a/src/libc/mmap.rs
@@ -4965,10 +7020,48 @@ index 1b531e5b46c3037b2cb761ab6dd437620065faf9..bde81117d5eab72c7831c19419ee2000
  }
  
 diff --git a/src/mach_o.rs b/src/mach_o.rs
-index 03c8143b8027ac877e3e7498f17434ae4e2fbed4..4a05872403090b6fc023d6d9b3b9e1401febf4e8 100644
+index 03c8143b8027ac877e3e7498f17434ae4e2fbed4..40ccb9c97ce2779e415640e2e544df4e5719483d 100644
 --- a/src/mach_o.rs
 +++ b/src/mach_o.rs
-@@ -815,7 +815,7 @@ impl MachO {
+@@ -68,6 +68,8 @@ pub struct MachO {
+     /// Base address of the __TEXT segment (where the mach_header lives in
+     /// memory). Used by `_dyld_get_image_header`.
+     pub text_base: u32,
++    /// Applied slide as a 32-bit intptr_t bit pattern.
++    pub vmaddr_slide: u32,
+ }
+ 
+ #[derive(Debug)]
+@@ -248,11 +250,14 @@ fn arm_subtype_priority(subtype: cpu_subtype_t) -> Option<u8> {
+         return None;
+     }
+     match subtype {
+-        mach_object::CPU_SUBTYPE_ARM_V7 => Some(4),
+-        mach_object::CPU_SUBTYPE_ARM_V7S => Some(3),
+-        mach_object::CPU_SUBTYPE_ARM_V7F => Some(2),
+-        mach_object::CPU_SUBTYPE_ARM_V6 => Some(1),
+-        mach_object::CPU_SUBTYPE_ARM_ALL => Some(0),
++        mach_object::CPU_SUBTYPE_ARM_V7 => Some(5),
++        mach_object::CPU_SUBTYPE_ARM_V7S => Some(4),
++        mach_object::CPU_SUBTYPE_ARM_V7F => Some(3),
++        mach_object::CPU_SUBTYPE_ARM_V6 => Some(2),
++        mach_object::CPU_SUBTYPE_ARM_ALL => Some(1),
++        // ARMv5TEJ fallback: Dynarmic handles BXJ as BX without Jazelle.
++        // https://developer.arm.com/documentation/ddi0406/b/System-Level-Architecture/The-System-Level-Programmers--Model/Execution-environment-support/Jazelle-direct-bytecode-execution
++        mach_object::CPU_SUBTYPE_ARM_V5TEJ => Some(0),
+         // Excludes older ARM/XScale, watchOS ARMv7k, ARMv8 and unknown values.
+         _ => None,
+     }
+@@ -464,7 +469,7 @@ impl MachO {
+                 name,
+                 header.cpusubtype
+             );
+-            return Err("Unsupported ARM CPU subtype or capabilities (expected ARM_ALL, ARMv6, ARMv7, ARMv7f or ARMv7s)");
++            return Err("Unsupported ARM CPU subtype or capabilities (expected ARM_ALL, ARMv5TEJ, ARMv6, ARMv7, ARMv7f or ARMv7s)");
+         }
+ 
+         log!(
+@@ -815,7 +820,7 @@ impl MachO {
                  LoadCommand::EncryptionInfo { id, .. } => {
                      if id != 0 {
                          return Err(
@@ -4977,8 +7070,70 @@ index 03c8143b8027ac877e3e7498f17434ae4e2fbed4..4a05872403090b6fc023d6d9b3b9e140
                          );
                      }
                  }
+@@ -1095,6 +1100,7 @@ impl MachO {
+             entry_point_is_lc_main,
+             last_segment_end,
+             text_base: text_segment_base.unwrap_or(first_segment_base.unwrap_or(0)),
++            vmaddr_slide: slide,
+         })
+     }
+ 
+@@ -1193,12 +1199,11 @@ mod segment_validation_tests {
+ 
+     #[test]
+     fn arm_subtype_allowlist_and_capabilities() {
+-        for subtype in [0, 6, 9, 10, 11] {
++        for subtype in [0, 6, 7, 9, 10, 11] {
+             assert!(arm_subtype_priority(subtype).is_some());
+         }
+         for subtype in [
+             5u32,
+-            7,
+             8,
+             12,
+             13,
+@@ -1210,7 +1215,7 @@ mod segment_validation_tests {
+         ] {
+             assert!(arm_subtype_priority(subtype as cpu_subtype_t).is_none());
+         }
+-        let priorities: Vec<_> = [0, 6, 10, 11, 9]
++        let priorities: Vec<_> = [7, 0, 6, 10, 11, 9]
+             .into_iter()
+             .map(|s| arm_subtype_priority(s).unwrap())
+             .collect();
+@@ -1289,9 +1294,29 @@ mod segment_validation_tests {
+         assert!(MachO::load_from_bytes(&bytes, &mut mem, "unsupported-fat".into(), 0).is_err());
+     }
+ 
++    #[test]
++    fn image_keeps_applied_slide() {
++        let bytes = thin(9, 0x9000, 84);
++        let image =
++            MachO::load_from_bytes(&bytes, &mut Mem::new(), "slid".into(), 0x20000).unwrap();
++        assert_eq!(image.text_base, 0x29000);
++        assert_eq!(image.vmaddr_slide, 0x20000);
++    }
++
++    #[test]
++    fn fat_prefers_all_existing_subtypes_over_v5() {
++        for better in [0, 6, 9, 10, 11] {
++            let v5 = thin(7, 0x9000, 84);
++            let other = thin(better, 0x5000, 84);
++            let bytes = fat_pair(7, &v5, better, &other);
++            let image = MachO::load_from_bytes(&bytes, &mut Mem::new(), "fat".into(), 0).unwrap();
++            assert_eq!(image.text_base, 0x5000);
++        }
++    }
++
+     #[test]
+     fn thin_loader_accepts_supported_cpu_subtypes() {
+-        for subtype in [0, 6, 9, 10, 11] {
++        for subtype in [0, 6, 7, 9, 10, 11] {
+             let bytes = thin(subtype, 0x9000, 84);
+             let mut mem = Mem::new();
+             let image = MachO::load_from_bytes(&bytes, &mut mem, "supported".into(), 0).unwrap();
 diff --git a/src/mem.rs b/src/mem.rs
-index a8ecd8191975407e912e426d97753bd918bbaf5c..c07a93049de4a0f8545fe662e16e31bcdd309977 100644
+index a8ecd8191975407e912e426d97753bd918bbaf5c..0372a3738c4591e4a2da47691c168cc8575d2722 100644
 --- a/src/mem.rs
 +++ b/src/mem.rs
 @@ -595,7 +595,7 @@ impl Mem {
@@ -4990,7 +7145,7 @@ index a8ecd8191975407e912e426d97753bd918bbaf5c..c07a93049de4a0f8545fe662e16e31bc
                       after {} unique sites",
                      if is_write { "WRITE" } else { "READ" },
                      MAX_UNIQUE_LOGS
-@@ -608,7 +608,7 @@ impl Mem {
+@@ -608,24 +608,19 @@ impl Mem {
              // Huge size is almost always a corrupted/-1 length; capture a
              // backtrace to identify the offending host function.
              log!(
@@ -4999,8 +7154,21 @@ index a8ecd8191975407e912e426d97753bd918bbaf5c..c07a93049de4a0f8545fe662e16e31bc
                  std::backtrace::Backtrace::force_capture()
              );
          }
-@@ -625,7 +625,7 @@ impl Mem {
-             " — returning stub page"
+         let op_type = if is_write { "WRITE" } else { "READ" };
+-        // Provide helpful context: small offsets are typically field accesses
+-        // on a nil Objective-C object pointer (nil + ivar offset). This is
+-        // defined behavior in ObjC (returns 0/nil) and is NOT a crash — just
+-        // a sign that the app is accessing a nil object's fields.
+-        let context = if !is_write && at < 0x1000 {
+-            " (likely nil ObjC object field access — returning zero)"
+-        } else if is_write && at < 0x1000 {
+-            " (likely nil ObjC object field write — discarding)"
++        // Compatibility backing can contain writes; provenance is unknown.
++        let context = if at < 0x1000 {
++            " (low-address access; using compatibility backing, source unknown)"
+         } else {
+-            " — returning stub page"
++            " (out-of-range access; using compatibility backing)"
          };
          log!(
 -            "touchHLE::mem: NULL-PAGE {} at 0x{:08x} (size: 0x{:x}) from {}{} \
@@ -5008,7 +7176,20 @@ index a8ecd8191975407e912e426d97753bd918bbaf5c..c07a93049de4a0f8545fe662e16e31bc
               (unique sites logged: {}/{})",
              op_type,
              at,
-@@ -660,7 +660,7 @@ impl Mem {
+@@ -636,6 +631,12 @@ impl Mem {
+             MAX_UNIQUE_LOGS
+         );
+         if !is_write {
++            if at < 16 {
++                use std::sync::atomic::Ordering;
++                log!("AnyiOSEMU::mem: last guest-run snapshot PC={:#x} LR={:#x}; low address may be an invalid guest or emulator pointer",
++                    crate::environment::LAST_GUEST_PC.load(Ordering::Relaxed),
++                    crate::environment::LAST_GUEST_LR.load(Ordering::Relaxed));
++            }
+             return;
+         }
+         // For writes, the useful question is *who* dereferenced the nil
+@@ -660,7 +661,7 @@ impl Mem {
          let thread = crate::environment::LAST_HOST_CALL_THREAD.load(Ordering::Relaxed);
          let symbol = Self::last_host_call_symbol();
          log!(
@@ -5017,7 +7198,7 @@ index a8ecd8191975407e912e426d97753bd918bbaf5c..c07a93049de4a0f8545fe662e16e31bc
               {} called with:{}; code at PC: [{}]; code at LR: [{}]",
              guest_pc,
              guest_lr,
-@@ -671,7 +671,7 @@ impl Mem {
+@@ -671,7 +672,7 @@ impl Mem {
              Self::guest_code_dump(mem, guest_lr)
          );
          log!(
@@ -5026,6 +7207,50 @@ index a8ecd8191975407e912e426d97753bd918bbaf5c..c07a93049de4a0f8545fe662e16e31bc
              std::backtrace::Backtrace::force_capture()
          );
      }
+@@ -1300,7 +1301,10 @@ impl Mem {
+     /// POSIX paths and most guest C strings are byte strings, so callers that
+     /// must accept arbitrary bytes (e.g. `open(2)`, which the kernel never
+     /// validates as UTF-8) use this instead of [Self::cstr_at_utf8].
+-    pub fn cstr_at_utf8_lossy<const MUT: bool>(&self, ptr: Ptr<u8, MUT>) -> std::borrow::Cow<'_, str> {
++    pub fn cstr_at_utf8_lossy<const MUT: bool>(
++        &self,
++        ptr: Ptr<u8, MUT>,
++    ) -> std::borrow::Cow<'_, str> {
+         match self.cstr_at_utf8(ptr) {
+             Ok(s) => std::borrow::Cow::Borrowed(s),
+             Err(bytes) => String::from_utf8_lossy(bytes),
+@@ -1523,10 +1527,7 @@ mod mem_tests {
+             .copy_from_slice(&[b'/', b'a', 0xA5, b'b', 0xAA, 0]);
+ 
+         assert!(mem.cstr_at_utf8(p).is_err());
+-        assert_eq!(
+-            mem.cstr_at_utf8_lossy(p).as_ref(),
+-            "/a\u{FFFD}b\u{FFFD}"
+-        );
++        assert_eq!(mem.cstr_at_utf8_lossy(p).as_ref(), "/a\u{FFFD}b\u{FFFD}");
+         // '/', 'a', U+FFFD, 'b', U+FFFD: each bad byte becomes one
+         // replacement character, and the name stays stable across calls so
+         // repeated opens of one cache entry still hit the same file.
+diff --git a/src/objc.rs b/src/objc.rs
+index f2efacface1889f48721ef456255244fd7e37ed5..5b722059796790a2d5ca5f2840efb52a384b6c47 100644
+--- a/src/objc.rs
++++ b/src/objc.rs
+@@ -103,6 +103,7 @@ pub type NSZonePtr = crate::mem::MutVoidPtr;
+ pub struct ObjC {
+     /// Known selectors (interned method name strings).
+     selectors: FxHashMap<String, SEL>,
++    selector_warnings: selectors::WarningBudget,
+ 
+     /// Mapping of known (guest) object pointers to their host objects.
+     ///
+@@ -219,6 +220,7 @@ impl ObjC {
+     pub fn new() -> ObjC {
+         ObjC {
+             selectors: FxHashMap::default(),
++            selector_warnings: Default::default(),
+             objects: FxHashMap::default(),
+             classes: FxHashMap::default(),
+             sync_mutexes: FxHashMap::default(),
 diff --git a/src/objc/classes.rs b/src/objc/classes.rs
 index 483ec5cc9439c9293b15a97206d14e2824c8794b..263c8ef0cee99ca72558e8f6977058edcc68b655 100644
 --- a/src/objc/classes.rs
@@ -5039,11 +7264,305 @@ index 483ec5cc9439c9293b15a97206d14e2824c8794b..263c8ef0cee99ca72558e8f6977058ed
          version: {}, actions: {}, class: {:x}, object: {:?}, context: {:?}",
          version,
          actions,
+diff --git a/src/objc/messages.rs b/src/objc/messages.rs
+index 9254d26280ed82ac0995ca51ce2b48f99bcc76c6..6ab8443b7d9713ebf3196013b17390e0a76762a0 100644
+--- a/src/objc/messages.rs
++++ b/src/objc/messages.rs
+@@ -122,7 +122,6 @@ fn trace_cocos_menu(env: &mut Environment, menu: id, touch: id) {
+ }
+ use crate::frameworks::core_graphics::{CGPoint, CGRect, CGSize};
+ 
+-
+ /// Implements Apple's lazy `+initialize` contract:
+ /// > The runtime sends `initialize` to each class in a program just before the
+ /// > class, or any class that inherits from it, is sent its first message from
+@@ -239,7 +238,9 @@ fn objc_msgSend_inner(
+                 let name = env.objc.get_class_name(class).to_owned();
+                 log!(
+                     "TRACE_ENUM: countByEnumerating call #{} receiver={:?} class={}",
+-                    n, receiver, name
++                    n,
++                    receiver,
++                    name
+                 );
+             }
+         }
+@@ -255,32 +256,92 @@ fn objc_msgSend_inner(
+         {
+             let class_name = env.objc.get_class_name(class).to_string();
+             let names = env.objc.debug_all_class_ivars_as_strings(class);
+-            log!("CALLFUNC-OBJECT class={} object={:?} ivars={:?}", class_name, receiver, names);
++            log!(
++                "CALLFUNC-OBJECT class={} object={:?} ivars={:?}",
++                class_name,
++                receiver,
++                names
++            );
+             for name in names {
+-                let value = env.objc.object_lookup_ivar(&env.mem, receiver, &name)
++                let value = env
++                    .objc
++                    .object_lookup_ivar(&env.mem, receiver, &name)
+                     .map(|pointer| env.mem.read(pointer));
+-                log!("CALLFUNC-IVAR class={} object={:?} name={} value={:?}", class_name, receiver, name, value);
++                log!(
++                    "CALLFUNC-IVAR class={} object={:?} name={} value={:?}",
++                    class_name,
++                    receiver,
++                    name,
++                    value
++                );
+             }
+-            let callback_address = env.objc.object_lookup_ivar(&env.mem, receiver, &"_targetCallback".to_string())
++            let callback_address = env
++                .objc
++                .object_lookup_ivar(&env.mem, receiver, &"_targetCallback".to_string())
+                 .map(|pointer| env.mem.read(pointer))
+                 .unwrap_or(0);
+             if callback_address != 0 {
+                 let words: Vec<u32> = (0..6)
+-                    .map(|index| env.mem.read(crate::mem::ConstPtr::<u32>::from_bits(callback_address + index * 4)))
++                    .map(|index| {
++                        env.mem.read(crate::mem::ConstPtr::<u32>::from_bits(
++                            callback_address + index * 4,
++                        ))
++                    })
+                     .collect();
+                 let callback_object = id::from_bits(callback_address);
+                 let callback_isa = ObjC::read_isa(callback_object, &env.mem);
+-                log!("CALLFUNC-BLOCK address={:#x} isa={:?} class={} words={:x?}", callback_address, callback_isa, env.objc.get_class_name(callback_isa), words);
++                log!(
++                    "CALLFUNC-BLOCK address={:#x} isa={:?} class={} words={:x?}",
++                    callback_address,
++                    callback_isa,
++                    env.objc.get_class_name(callback_isa),
++                    words
++                );
+             }
+         }
+-        if sel_name.starts_with("addSubview") || sel_name.starts_with("insertSubview") || sel_name.starts_with("setFullscreen") || sel_name == "removeFromSuperview" || sel_name.starts_with("bringSubview") || sel_name.starts_with("sendSubview") {
++        if sel_name.starts_with("addSubview")
++            || sel_name.starts_with("insertSubview")
++            || sel_name.starts_with("setFullscreen")
++            || sel_name == "removeFromSuperview"
++            || sel_name.starts_with("bringSubview")
++            || sel_name.starts_with("sendSubview")
++        {
+             let r = env.cpu.regs();
+-            let arg_class = if sel_name.starts_with("setFullscreen") || r[2] == 0 || r[2] < 0x1000 { "-".to_string() } else { env.objc.get_class_name(ObjC::read_isa(crate::mem::Ptr::from_bits(r[2]), &env.mem)).to_string() };
+-            log!("VIEWOP {} {:?} {} arg={:#x}({}) r3={:#x} lr={:#x}", env.objc.get_class_name(class), receiver, sel_name, r[2], arg_class, r[3], r[14]);
++            let arg_class = if sel_name.starts_with("setFullscreen") || r[2] == 0 || r[2] < 0x1000 {
++                "-".to_string()
++            } else {
++                env.objc
++                    .get_class_name(ObjC::read_isa(crate::mem::Ptr::from_bits(r[2]), &env.mem))
++                    .to_string()
++            };
++            log!(
++                "VIEWOP {} {:?} {} arg={:#x}({}) r3={:#x} lr={:#x}",
++                env.objc.get_class_name(class),
++                receiver,
++                sel_name,
++                r[2],
++                arg_class,
++                r[3],
++                r[14]
++            );
+         }
+-        if matches!(sel_name, "setEnabled:" | "setHidden:" | "setTitle:forState:" | "setImage:forState:" | "setBackgroundImage:forState:") && env.objc.get_class_name(class) == "UIButton" {
++        if matches!(
++            sel_name,
++            "setEnabled:"
++                | "setHidden:"
++                | "setTitle:forState:"
++                | "setImage:forState:"
++                | "setBackgroundImage:forState:"
++        ) && env.objc.get_class_name(class) == "UIButton"
++        {
+             let r = env.cpu.regs();
+-            log!("BTN {:?} {} arg={:#x} lr={:#x}", receiver, sel_name, r[2], r[14]);
++            log!(
++                "BTN {:?} {} arg={:#x} lr={:#x}",
++                receiver,
++                sel_name,
++                r[2],
++                r[14]
++            );
+         }
+         if SEEN
+             .lock()
+@@ -407,18 +468,19 @@ fn objc_msgSend_inner(
+         let count = NIL_ISA_COUNT.fetch_add(1, Ordering::Relaxed);
+         if count < NIL_ISA_LOG_LIMIT {
+             log!(
+-                "Warning: receiver {:?} has nil isa! Ignoring message \"{}\". \
+-                 (This usually means the object was already freed — use-after-free \
+-                 in guest code.) [{}/{}]",
++                "Warning: receiver {:?} has nil isa for \"{}\"; compatibility fallback returns zero. \
++                 Cause unknown (invalid guest pointer or emulator bug); PC={:#x} LR={:#x} [{}/{}]",
+                 receiver,
+                 selector.as_str(&env.mem),
++                env.cpu.regs()[crate::cpu::Cpu::PC],
++                env.cpu.regs()[crate::cpu::Cpu::LR],
+                 count + 1,
+                 NIL_ISA_LOG_LIMIT,
+             );
+         } else if count == NIL_ISA_LOG_LIMIT {
+             log!(
+                 "Warning: suppressing further nil-isa warnings ({} already logged). \
+-                 The guest app has use-after-free bugs.",
++                 Cause remains unknown.",
+                 NIL_ISA_LOG_LIMIT,
+             );
+         }
+@@ -1069,7 +1131,10 @@ Type mismatch when sending message {} to {:?}!
+         } else {
+             let sel_name = selector.as_str(&env.mem).to_owned();
+             let class_name = env.objc.try_get_class_name(class).map(|s| s.to_owned());
+-            let orig_name = env.objc.try_get_class_name(orig_class).map(|s| s.to_owned());
++            let orig_name = env
++                .objc
++                .try_get_class_name(orig_class)
++                .map(|s| s.to_owned());
+             let type_name = host_object.type_name();
+             log!(
+                 "Item {class:?} ({:?}) in superclass chain of object {receiver:?}'s class {orig_class:?} ({:?}) has an unexpected host object type ({}). Selector: \"{}\". Behaving as if message was sent to nil.",
+@@ -2526,11 +2591,8 @@ pub(super) fn objc_enumerationMutation(env: &mut Environment, obj: id) {
+     let seen = guard.get_or_insert_with(Default::default);
+     if seen.insert(class) {
+         let name = env.objc.get_class_name(class).to_owned();
+-        let count: crate::frameworks::foundation::NSUInteger = if obj != nil {
+-            msg![env; obj count]
+-        } else {
+-            0
+-        };
++        let count: crate::frameworks::foundation::NSUInteger =
++            if obj != nil { msg![env; obj count] } else { 0 };
+         log!(
+             "objc_enumerationMutation: collection {:?} (class {}) mutated while \
+              being enumerated (count now {})",
+diff --git a/src/objc/selectors.rs b/src/objc/selectors.rs
+index 5c68a5965b5c3573b5d4191886bcf65c83978b85..9c47451385acdc15fc9f4cca36b570f4b2c8ae21 100644
+--- a/src/objc/selectors.rs
++++ b/src/objc/selectors.rs
+@@ -15,7 +15,6 @@
+ //! - Apple's [The Objective-C Programming Language](https://developer.apple.com/library/archive/documentation/Cocoa/Conceptual/ObjectiveC/Chapters/ocSelectors.html)
+ 
+ use std::collections::HashMap;
+-use std::sync::{Mutex, OnceLock};
+ 
+ use super::ObjC;
+ use crate::abi::{GuestArg, GuestRet};
+@@ -162,7 +161,7 @@ impl ObjC {
+         let sel_str = match mem.cstr_at_utf8(sel_cstr) {
+             Ok(s) => s,
+             Err(_) => {
+-                warn_non_utf8_selector_once(sel_cstr);
++                warn_non_utf8_selector_once(&mut self.selector_warnings, sel_cstr);
+                 return None;
+             }
+         };
+@@ -362,15 +361,18 @@ pub(super) fn sel_getUid(env: &mut Environment, name: ConstPtr<u8>) -> SEL {
+     sel_registerName(env, name)
+ }
+ 
+-/// `const char *sel_getName(SEL sel)` — returns the C string name of a
+-/// selector. In our runtime a [SEL] already wraps a pointer to its
+-/// null-terminated name string, so we simply return that pointer.
+-/// A null selector maps to the C string "<null selector>" in Apple's
+-/// implementation; we return a null pointer, which callers treat as an
+-/// empty/absent name.
+-/// Reference: <https://developer.apple.com/documentation/objectivec/sel_getname(_:)>
+-pub(super) fn sel_getName(_env: &mut Environment, sel: SEL) -> ConstPtr<u8> {
+-    sel.0
++/// Apple's runtime returns a stable "<null selector>" string for NULL.
++/// https://github.com/apple-oss-distributions/objc4/blob/main/runtime/objc-sel.mm
++fn selector_name(objc: &mut ObjC, mem: &mut Mem, sel: SEL) -> ConstPtr<u8> {
++    if sel.is_null() {
++        objc.register_host_selector("<null selector>".to_owned(), mem)
++            .0
++    } else {
++        sel.0
++    }
++}
++pub(super) fn sel_getName(env: &mut Environment, sel: SEL) -> ConstPtr<u8> {
++    selector_name(&mut env.objc, &mut env.mem, sel)
+ }
+ 
+ /// `BOOL sel_isEqual(SEL lhs, SEL rhs)` — returns whether two selectors
+@@ -389,17 +391,48 @@ pub(super) fn sel_isEqual(env: &mut Environment, lhs: SEL, rhs: SEL) -> bool {
+     lhs.as_str(&env.mem) == rhs.as_str(&env.mem)
+ }
+ 
+-fn warn_non_utf8_selector_once(sel_cstr: ConstPtr<u8>) {
+-    use std::collections::HashSet;
+-    static SEEN: OnceLock<Mutex<HashSet<u32>>> = OnceLock::new();
+-    let seen = SEEN.get_or_init(|| Mutex::new(HashSet::new()));
+-    let addr = sel_cstr.to_bits();
+-    let mut guard = seen.lock().unwrap();
+-    if guard.insert(addr) {
+-        log!(
+-            "Warning: skipping bin selector at {:?}: not valid UTF-8 \
+-             (further occurrences at this address will be silenced)",
++#[derive(Default)]
++pub(super) struct WarningBudget {
++    count: usize,
++}
++impl WarningBudget {
++    fn next(&mut self) -> usize {
++        self.count = self.count.saturating_add(1).min(5);
++        if self.count <= 4 {
++            self.count
++        } else {
++            0
++        }
++    }
++}
++fn warn_non_utf8_selector_once(budget: &mut WarningBudget, sel_cstr: ConstPtr<u8>) {
++    match budget.next() {
++        1..=3 => log!(
++            "Warning: skipping binary selector at {:?}: invalid UTF-8",
+             sel_cstr
++        ),
++        4 => {
++            log!("Warning: additional invalid binary selector messages suppressed for this session")
++        }
++        _ => (),
++    }
++}
++#[cfg(test)]
++mod selector_diagnostic_tests {
++    use super::*;
++    #[test]
++    fn warnings_are_session_bounded() {
++        let mut b = WarningBudget::default();
++        assert_eq!(
++            (0..8).map(|_| b.next()).collect::<Vec<_>>(),
++            vec![1, 2, 3, 4, 0, 0, 0, 0]
+         );
+     }
++    #[test]
++    fn null_selector_name_is_stable() {
++        let (mut objc, mut mem) = (ObjC::new(), Mem::new());
++        let name = selector_name(&mut objc, &mut mem, SEL::null());
++        assert_eq!(mem.cstr_at_utf8(name).unwrap(), "<null selector>");
++        assert_eq!(name, selector_name(&mut objc, &mut mem, SEL::null()));
++    }
+ }
 diff --git a/src/options.rs b/src/options.rs
-index f19834ba9b628cb422b8d0a0319650beb3223a3e..96ffaa27a57c884b5b2c44dd53e6552adb2f1ef1 100644
+index f19834ba9b628cb422b8d0a0319650beb3223a3e..44a16e7dc5f90ab62c5952c78a880bf0afd29bf4 100644
 --- a/src/options.rs
 +++ b/src/options.rs
-@@ -147,6 +147,8 @@ pub struct Options {
+@@ -106,6 +106,8 @@ pub struct Options {
+     /// is off by default; opt in with `--trainer`.
+     pub trainer_disabled: bool,
+     pub initial_orientation: DeviceOrientation,
++    /// Do not replace an explicitly requested portrait with the bundle's default.
++    pub force_initial_orientation: bool,
+     /// iOS version reported to guest applications. `None` uses the latest compatibility version.
+     pub ios_version: Option<(i32, i32, i32)>,
+     /// On iOS, present an OpenGL ES 2.0 renderbuffer directly even when its
+@@ -147,6 +149,8 @@ pub struct Options {
      pub headless: bool,
      pub print_fps: bool,
      pub fps_limit: Option<f64>,
@@ -5052,7 +7571,15 @@ index f19834ba9b628cb422b8d0a0319650beb3223a3e..96ffaa27a57c884b5b2c44dd53e6552a
      pub force_composition: bool,
      /// See [PresentMode]. Can also be set with the `TOUCHHLE_PRESENT_MODE`
      /// environment variable (the option takes precedence).
-@@ -327,6 +329,7 @@ impl Default for Options {
+@@ -304,6 +308,7 @@ impl Default for Options {
+             auto_device_family: false,
+             host_screen_size: None,
+             initial_orientation: DeviceOrientation::Portrait,
++            force_initial_orientation: false,
+             ios_version: None,
+             ios_es2_direct_present: false,
+             scale_hack: NonZeroU32::new(1).unwrap(),
+@@ -327,6 +332,7 @@ impl Default for Options {
              headless: false,
              print_fps: false,
              fps_limit: Some(60.0),
@@ -5060,7 +7587,7 @@ index f19834ba9b628cb422b8d0a0319650beb3223a3e..96ffaa27a57c884b5b2c44dd53e6552a
              force_composition: false,
              present_mode: std::env::var("TOUCHHLE_PRESENT_MODE")
                  .ok()
-@@ -372,7 +375,7 @@ impl Default for Options {
+@@ -372,7 +378,7 @@ impl Default for Options {
              // case). Default the fix-up to ON so games work out of the
              // box on Android — users can still disable it via
              // `--fix-texture-min-filter=false` in
@@ -5069,7 +7596,17 @@ index f19834ba9b628cb422b8d0a0319650beb3223a3e..96ffaa27a57c884b5b2c44dd53e6552a
              // depends on mipmap minification (rare among iOS 2.x/3.x
              // titles). On desktop hosts (where the user is likely
              // running Mesa / Apple PowerVR / NVIDIA / AMD, all
-@@ -610,6 +613,10 @@ impl Options {
+@@ -427,6 +433,9 @@ impl Options {
+             self.reverse_attrib_locations = true;
+         } else if arg == "--no-reverse-attrib-locations" {
+             self.reverse_attrib_locations = false;
++        } else if arg == "--anyiose-initial-portrait" {
++            self.initial_orientation = DeviceOrientation::Portrait;
++            self.force_initial_orientation = true;
+         } else if arg == "--landscape-left" {
+             self.initial_orientation = DeviceOrientation::LandscapeLeft;
+         } else if arg == "--landscape-right" {
+@@ -610,23 +619,25 @@ impl Options {
                      .ok_or_else(|| "Invalid value for --fps-limit=".to_string())?;
                  self.fps_limit = Some(limit);
              }
@@ -5080,7 +7617,45 @@ index f19834ba9b628cb422b8d0a0319650beb3223a3e..96ffaa27a57c884b5b2c44dd53e6552a
          } else if arg == "--force-composition" {
              self.force_composition = true;
          } else if arg == "--no-force-composition" {
-@@ -794,6 +801,16 @@ fn parse_dump_options(options: &str) -> Result<DumpingOptions, String> {
+             self.force_composition = false;
+         } else if let Some(value) = arg.strip_prefix("--present-mode=") {
+             self.present_mode = PresentMode::from_short_name(value).map_err(|_| {
+-                "Invalid value for --present-mode= (expected auto, direct or readback)"
+-                    .to_string()
++                "Invalid value for --present-mode= (expected auto, direct or readback)".to_string()
+             })?;
+         } else if arg == "--present-finish" {
+             self.present_finish = true;
+         } else if arg == "--no-present-finish" {
+             self.present_finish = false;
+         } else if let Some(value) = arg.strip_prefix("--vsync=") {
+-            self.vsync = VsyncMode::from_short_name(value).map_err(|_| {
+-                "Invalid value for --vsync= (expected auto, on or off)".to_string()
+-            })?;
++            self.vsync = VsyncMode::from_short_name(value)
++                .map_err(|_| "Invalid value for --vsync= (expected auto, on or off)".to_string())?;
+         } else if arg == "--vsync" {
+             self.vsync = VsyncMode::On;
+         } else if arg == "--no-vsync" {
+@@ -641,11 +652,13 @@ impl Options {
+             // layer reads this via the env var, so set it here.
+             std::env::set_var("TOUCHHLE_LANDSCAPE_UISCREEN_BOUNDS", "1");
+         } else if let Some(value) = arg.strip_prefix("--present-rotate=") {
+-            let deg: u32 = value
+-                .parse()
+-                .map_err(|_| "Invalid value for --present-rotate= (expected 0, 90, 180 or 270)".to_string())?;
++            let deg: u32 = value.parse().map_err(|_| {
++                "Invalid value for --present-rotate= (expected 0, 90, 180 or 270)".to_string()
++            })?;
+             if !matches!(deg, 0 | 90 | 180 | 270) {
+-                return Err("Invalid value for --present-rotate= (expected 0, 90, 180 or 270)".to_string());
++                return Err(
++                    "Invalid value for --present-rotate= (expected 0, 90, 180 or 270)".to_string(),
++                );
+             }
+             self.present_rotate = Some(deg);
+         } else if arg == "--rotation-fix" {
+@@ -794,6 +807,16 @@ fn parse_dump_options(options: &str) -> Result<DumpingOptions, String> {
  mod option_parsing_tests {
      use super::*;
  

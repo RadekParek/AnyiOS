@@ -1053,6 +1053,7 @@ class MainActivity : Activity() {
             dangerButton("Force convert · choose runtime") {
                 showForceConvertChoices(dir, gameOutputFile != null, anyioseFile != null, translatedInput.isFile)
             }
+            button("Convert settings · Semi-Emulated") { showConvertSettings(dir) }
             if (deviceConvertible && hostOutputFile == null)
                 button("Build proven single-routine APK") { startForceConvert(dir, true) }
             if (!deviceConvertible)
@@ -1061,12 +1062,58 @@ class MainActivity : Activity() {
         button("Delete shared entry") { confirmDelete(dir) }
     }
 
+    private fun showConvertSettings(dir: File) {
+        if (Jobs.busy) { Toast.makeText(this, "Wait for the current job to finish", Toast.LENGTH_SHORT).show(); return }
+        val saved = try { ConvertSettings.load(dir) } catch (error: Exception) {
+            Toast.makeText(this, "Cannot read convert settings: ${error.message}", Toast.LENGTH_LONG).show(); return
+        }
+        val content = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            val padding = (20 * resources.displayMetrics.density).toInt()
+            setPadding(padding, padding, padding, padding)
+        }
+        fun explanation(value: String) {
+            content.addView(TextView(this).apply { text = value; textSize = 14f })
+        }
+        fun toggle(label: String, checked: Boolean): CheckBox = CheckBox(this).apply {
+            text = label; isChecked = checked; content.addView(this)
+        }
+        explanation("These per-game choices are built into new Semi-Emulated APKs only. Rebuild and reinstall to apply changes. Native diagnostic and other APKs do not use them.")
+        val classic = toggle("Classic 4:3 · 1024 × 768 points · 2× scale hack", saved.classic43)
+        explanation("Landscape 1024 × 768, portrait 768 × 1024; the 2× render size can use more memory and GPU time.")
+        val offline = toggle("Force network access off", saved.offline)
+        explanation("The generated APK does not request Android's Internet permission; the emulator's guest network APIs are disabled too.")
+        val performance = toggle("Request maximum performance", saved.performance)
+        explanation("Best-effort Android sustained-performance, CPU affinity and performance hints. The system controls CPU/GPU clocks; this does not guarantee maximum clocks or higher FPS and may increase heat or battery use.")
+        explanation("Startup rotation (the game may later request another orientation)")
+        val orientationNames = listOf("Default / game decides", "Portrait", "Landscape")
+        val orientationValues = listOf("default", "portrait", "landscape")
+        val orientation = Spinner(this).apply {
+            adapter = ArrayAdapter(this@MainActivity, android.R.layout.simple_spinner_dropdown_item, orientationNames)
+            setSelection(orientationValues.indexOf(saved.orientation).coerceAtLeast(0))
+            content.addView(this)
+        }
+        val scroll = ScrollView(this).apply { addView(content) }
+        AlertDialog.Builder(this).setTitle("Convert settings").setView(scroll)
+            .setNegativeButton("Cancel", null)
+            .setPositiveButton("Save") { _, _ ->
+                try {
+                    ConvertSettings.save(dir, ConvertSettings(classic.isChecked, offline.isChecked,
+                        performance.isChecked, orientationValues[orientation.selectedItemPosition.coerceIn(0, 2)]))
+                    Toast.makeText(this, "Saved for the next Semi-Emulated build", Toast.LENGTH_LONG).show()
+                } catch (error: Exception) {
+                    Toast.makeText(this, "Could not save convert settings: ${error.message}", Toast.LENGTH_LONG).show()
+                }
+            }.show()
+    }
+
     private fun showForceConvertChoices(dir: File, nativeBuilt: Boolean, semiEmulatedBuilt: Boolean, translatedInputPresent: Boolean) {
         val message = "Native runtime builds the existing diagnostic guest-CPU boot-attempt APK. " +
             (if (translatedInputPresent) "The staged portable-C handoff will be revalidated. " else "") +
             "It does not have an Android EGL/GLES renderer.\n\n" +
             "Semi-Emulated builds a self-contained APK containing AnyiOSEMU and the IPA, launches only this game, " +
             "and uses the device's current resolution and fastest supported refresh mode. AnyiOS can be uninstalled afterwards. " +
+            "Per-game Convert settings apply only to new Semi-Emulated builds. " +
             "It requests high-refresh display-link callbacks; this can speed up game logic. " +
             "It needs an unencrypted ARM32 slice; rendering, FPS and gameplay depend on the game and device." +
             (if (nativeBuilt || semiEmulatedBuilt) "\n\nSelecting an existing runtime rebuilds that APK." else "")

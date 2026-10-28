@@ -99,9 +99,9 @@ final class GameLibrary {
             int separator = architectureName.indexOf(' ');
             String architectureFamily =
                 separator < 0 ? architectureName : architectureName.substring(0, separator);
-            return architectureFamily.equals("ARM32") || architectureFamily.equals("ARMV6")
-                || architectureFamily.equals("ARMV7") || architectureFamily.equals("ARMV7F")
-                || architectureFamily.equals("ARMV7S");
+            return architectureFamily.equals("ARM32") || architectureFamily.equals("ARMV5TEJ")
+                || architectureFamily.equals("ARMV6") || architectureFamily.equals("ARMV7")
+                || architectureFamily.equals("ARMV7F") || architectureFamily.equals("ARMV7S");
         }
         /** Only positive slice labels count; explanatory text can say "no ARM64". */
         String architectureChip() {

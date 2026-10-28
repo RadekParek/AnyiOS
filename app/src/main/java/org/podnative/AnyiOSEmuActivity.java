@@ -29,7 +29,6 @@ public final class AnyiOSEmuActivity extends org.anyiose.android.MainActivity {
     public static final String EXTRA_GAME_TITLE = "org.podnative.anyiose.GAME_TITLE";
     public static final String EXTRA_SOURCE_PATH = "org.podnative.anyiose.SOURCE_PATH";
     public static final String EXTRA_DATA_PATH = "org.podnative.anyiose.DATA_PATH";
-    public static final String EXTRA_SHOW_CONSOLE = "org.podnative.anyiose.SHOW_CONSOLE";
     public static final String EXTRA_GAME_REPORT = "org.podnative.anyiose.GAME_REPORT";
 
     /** The active DocumentsProvider exposes this game's isolated runtime data. */
@@ -116,8 +115,6 @@ public final class AnyiOSEmuActivity extends org.anyiose.android.MainActivity {
             .putString("last_data_path", userDataPath)
             .apply();
         setTitle("AnyiOSEMU · " + gameTitle);
-        if (intent != null && intent.getBooleanExtra(EXTRA_SHOW_CONSOLE, false))
-            showSessionBadge();
         if (performanceHudEnabled) {
             showPerformanceHud();
             if (performanceHud != null)
@@ -143,6 +140,9 @@ public final class AnyiOSEmuActivity extends org.anyiose.android.MainActivity {
         float fpsCap = DisplayFrameRate.resolveCap(this, fpsCapPreference);
         effectiveFpsCap = fpsCap;
         arguments.add("--fps-limit=" + DisplayFrameRate.formatOption(fpsCap));
+        // The library details screen already shows this metadata. Standalone
+        // packages do not pass this flag and retain the full diagnostic log.
+        arguments.add("--anyiose-quiet-game-info");
         arguments.add(boostDisplayLink ? "--boost-display-link" : "--no-boost-display-link");
         arguments.add(maxClocksEnabled ? "--perf-hints" : "--no-perf-hints");
         arguments.add(maxClocksEnabled ? "--affinity=big" : "--affinity=off");
@@ -153,41 +153,6 @@ public final class AnyiOSEmuActivity extends org.anyiose.android.MainActivity {
         if (verboseGlesEnabled)
             arguments.add("--verbose-gles");
         return arguments.toArray(new String[0]);
-    }
-
-    private void showSessionBadge() {
-        View content = findViewById(android.R.id.content);
-        if (!(content instanceof ViewGroup))
-            return;
-        ViewGroup outer = (ViewGroup) content;
-        if (outer.getChildCount() == 0 || !(outer.getChildAt(0) instanceof ViewGroup))
-            return;
-        ViewGroup surface = (ViewGroup) outer.getChildAt(0);
-        TextView badge = new TextView(this);
-        badge.setText("AnyiOSEMU  ·  " + gameTitle + "\nARM32 guest session — Back exits");
-        badge.setTextColor(Color.WHITE);
-        badge.setTextSize(12);
-        badge.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
-        int padding = Math.round(14 * getResources().getDisplayMetrics().density);
-        badge.setPadding(padding, padding, padding, padding);
-        badge.setBackgroundColor(0xCC10141D);
-        badge.setClickable(false);
-        badge.setFocusable(false);
-        RelativeLayout.LayoutParams params = new RelativeLayout.LayoutParams(
-            ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-        params.addRule(RelativeLayout.ALIGN_PARENT_TOP);
-        surface.addView(badge, params);
-        new Handler(Looper.getMainLooper()).postDelayed(() -> {
-            if (!isFinishing() && !isDestroyed())
-                badge.animate()
-                    .alpha(0f)
-                    .setDuration(250)
-                    .withEndAction(() -> {
-                        if (badge.getParent() instanceof ViewGroup)
-                            ((ViewGroup) badge.getParent()).removeView(badge);
-                    })
-                    .start();
-        }, 5000);
     }
 
     private int dp(int value) {
@@ -221,10 +186,7 @@ public final class AnyiOSEmuActivity extends org.anyiose.android.MainActivity {
             ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
         params.addRule(RelativeLayout.ALIGN_PARENT_TOP);
         params.addRule(RelativeLayout.ALIGN_PARENT_END);
-        params.topMargin =
-            getSharedPreferences("settings", MODE_PRIVATE).getBoolean("showConsole", false)
-            ? dp(66)
-            : dp(10);
+        params.topMargin = dp(10);
         params.rightMargin = dp(10);
         surface.addView(performanceHud, params);
     }

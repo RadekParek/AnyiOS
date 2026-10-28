@@ -26,6 +26,19 @@ class PlaceholderTemplateAssetTest {
         assertTrue(patchedManifest.isNotEmpty())
     }
 
+    @Test fun offlineStandaloneManifestRemovesOnlyInternetPermission() {
+        val manifest = RuntimeEnvironment.getApplication().assets.open("anyiose-template/AndroidManifest.xml").use { it.readBytes() }
+        val packageName = "dev.radek.anyiose.p0123456789abcdef01234567"
+        val normal = BinaryXmlManifest.customize(manifest, packageName, "Game", 29, 35)
+        val offline = BinaryXmlManifest.customize(manifest, packageName, "Game", 29, 35, removeInternetPermission = true)
+        val before = BinaryXmlManifest.declaredPermissionNames(normal)
+        val after = BinaryXmlManifest.declaredPermissionNames(offline)
+        assertTrue(before.contains("android.permission.INTERNET"))
+        assertFalse(after.contains("android.permission.INTERNET"))
+        assertEquals(before - "android.permission.INTERNET", after)
+        assertEquals(offline.size.toLong(), u32(offline, 4))
+    }
+
     @Test fun previewLauncherShowsItsStartStateWithoutConverterBranding() {
         val assets = RuntimeEnvironment.getApplication().assets
         val dexNames = assets.open("placeholder-template/template-dex-entries.txt").use { it.readBytes() }

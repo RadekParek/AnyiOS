@@ -68,6 +68,32 @@ class ImportTest {
             assertEquals(1, File(root, "out/$deep").readBytes().size)
         } finally { root.deleteRecursively() }
     }
+    @Test fun normalizesBenignMemberSyntaxWithoutErasingRealSpaces() {
+        assertEquals("Payload/Test.app/ Icon .png",
+            SafeZip.memberName("./Payload//Test.app/ Icon .png"))
+        assertEquals("Payload/Test.app/asset.bin",
+            SafeZip.memberName("/Payload/Test.app/./asset.bin"))
+        // Traversal is still rejected, even when a later component would
+        // appear to bring the path back under the destination.
+        listOf("../escape", "Payload/../../escape", "Payload/dir/../escape").forEach {
+            assertThrows(IllegalArgumentException::class.java) { SafeZip.memberName(it) }
+        }
+        val root = Files.createTempDirectory("radek-normalized").toFile()
+        try {
+            val archive = zip(root, listOf("./Payload//Test.app/ Icon .png" to byteArrayOf(7)))
+            SafeZip.extract(archive, File(root, "out"))
+            assertArrayEquals(byteArrayOf(7), File(root, "out/Payload/Test.app/ Icon .png").readBytes())
+        } finally { root.deleteRecursively() }
+    }
+    @Test fun rejectsEntriesThatCollideAfterNormalization() {
+        val root = Files.createTempDirectory("radek-collision").toFile()
+        try {
+            val archive = zip(root, listOf("./Payload/Test.app/data" to byteArrayOf(1),
+                "Payload//Test.app/data" to byteArrayOf(2)))
+            assertThrows(IllegalArgumentException::class.java) { SafeZip.extract(archive, File(root, "out")) }
+            assertFalse(File(root, "out").exists())
+        } finally { root.deleteRecursively() }
+    }
     private fun zip(root: File, entries: List<Pair<String, ByteArray>>): File {
         val file = File(root, "input.ipa")
         ZipOutputStream(file.outputStream()).use { z -> entries.forEach { (name, value) -> z.putNextEntry(ZipEntry(name)); z.write(value); z.closeEntry() } }

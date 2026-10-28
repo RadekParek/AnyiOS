@@ -14,13 +14,14 @@ std::string inspectMachO(const uint8_t* b, size_t n) {
         return "MACHO_FORMAT: only thin little-endian 32-bit Mach-O supported; unsupported fat, "
                "big-endian or non-Mach-O input";
     if (u32(4) != 12) return "MACHO_CPU: executable is not ARM32";
-    // CPU_SUBTYPE_MASK occupies the high byte; only the low 24 bits are the subtype.
-    const uint32_t subtype = u32(8) & 0xffffff;
-    // ARMv6 and ARMv7 are both accepted: the runtime selects instruction-set semantics
-    // from this subtype instead of running every image as ARMv7.
-    if (subtype != 6 && subtype != 9 && subtype != 11 && subtype != 0)
-        return "MACHO_CPU_SUBTYPE: unsupported ARM32 subtype " + std::to_string(subtype) +
-               "; ARMv6, ARMv7 and ARMv7s are supported";
+    const uint32_t rawSubtype = u32(8);
+    // Keep the inspector consistent with the FAT selector and AnyiOSEMU:
+    // capability bits are requirements, not bits we can silently discard.
+    const uint32_t subtype = rawSubtype & 0xffffff;
+    if ((rawSubtype & 0xff000000u) || (subtype != 0 && subtype != 6 && subtype != 7 &&
+                                       subtype != 9 && subtype != 10 && subtype != 11))
+        return "MACHO_CPU_SUBTYPE: unsupported ARM32 subtype or capability " +
+               std::to_string(rawSubtype);
     if (u32(12) != 2) return "MACHO_TYPE: expected MH_EXECUTE";
     uint32_t count = u32(16), total = u32(20);
     if (total > n - 28 || count > total / 8) return "MACHO_COMMANDS: invalid command bounds";
@@ -51,7 +52,9 @@ std::string inspectMachO(const uint8_t* b, size_t n) {
     std::ostringstream out;
     out << "INSPECTED_ARM32: " << count << " load commands; CPU subtype " << subtype << " ("
         << (subtype == 6    ? "ARMv6"
+            : subtype == 7  ? "ARMv5TEJ (ARM/Thumb; no Jazelle bytecode)"
             : subtype == 9  ? "ARMv7"
+            : subtype == 10 ? "ARMv7f"
             : subtype == 11 ? "ARMv7s"
                             : "generic ARM")
         << "). Header inspection only. Separate mapping/dyld diagnostics follow; guest "

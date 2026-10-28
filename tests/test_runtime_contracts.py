@@ -157,6 +157,17 @@ class RuntimeContractTests(unittest.TestCase):
         self.assertIn('settings.getBoolean("boostDisplayLink", true)', activity)
         self.assertIn("Some games may run faster", settings)
         self.assertIn("higher FPS is not guaranteed", settings)
+        # Even an old persisted showConsole=true or a stale launch extra cannot
+        # create a badge: neither preference nor overlay is consulted anymore.
+        self.assertNotIn("showConsole", activity)
+        self.assertNotIn("showSessionBadge", activity)
+        self.assertNotIn("EXTRA_SHOW_CONSOLE", activity)
+        self.assertNotIn("Session badge", settings)
+        self.assertNotIn('getBoolean("showConsole"', settings)
+        self.assertNotIn('putBoolean("showConsole"', settings)
+        self.assertIn('"--anyiose-quiet-game-info"', activity)
+        standalone = read(TEMPLATE / "java/org/podnative/StandaloneOptions.java")
+        self.assertNotIn('"--anyiose-quiet-game-info"', standalone)
 
     def test_game_details_use_declared_requirements_and_real_log(self):
         activity = read(ROOT / "app/src/main/java/org/podnative/MainActivity.java")

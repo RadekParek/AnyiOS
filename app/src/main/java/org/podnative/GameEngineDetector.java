@@ -16,12 +16,23 @@ final class GameEngineDetector {
     // https://www.leovst.com/terraria
     static final String OCTARINE_SOURCE = "Octarine/Sound/HSSSoundManager.cpp";
     private final Set<String> engines = new LinkedHashSet<>();
+    private final Set<String> reportedEngines = new LinkedHashSet<>();
 
     // Unity's iOS project contains UnityFramework and its compiled Data folder:
     // https://docs.unity3d.com/6000.2/Documentation/Manual/StructureOfXcodeProject.html
     // Godot documents the godot_path Info.plist key for iOS development builds:
     // https://docs.godotengine.org/en/stable/tutorials/export/exporting_for_ios.html
     void observeMetadata(Map<String, Object> info) {
+        // The user reports these two exact titles use a Big Blue Bubble engine.
+        // The developer's own history confirms the developer, not the engine:
+        // https://www.bigbluebubble.com/home/about/history/
+        // Keep this reported evidence separate from detected signatures, and
+        // never infer the engine from an ambiguous title or developer alone.
+        Object bundle = info.get("CFBundleIdentifier");
+        if (bundle instanceof String
+            && (((String) bundle).equalsIgnoreCase("com.lego.NinjagoSpinjitzuScavengerHunt")
+                || ((String) bundle).equalsIgnoreCase("com.lego.riseofthesnakes")))
+            reportedEngines.add("Big Blue Bubble engine");
         if (info.get("godot_path") instanceof String
             && !((String) info.get("godot_path")).trim().isEmpty())
             engines.add("Godot");
@@ -89,21 +100,36 @@ final class GameEngineDetector {
     }
 
     static String merge(String first, String second) {
-        Set<String> found = new java.util.TreeSet<>();
+        Set<String> detected = new java.util.TreeSet<>();
+        Set<String> reported = new java.util.TreeSet<>();
         for (String value : new String[] {first, second}) {
-            if (value.endsWith(" (detected)"))
-                for (String name : value.substring(0, value.length() - 11).split(", "))
-                    found.add(name);
+            if (value == null)
+                continue;
+            for (String group : value.split("; ")) {
+                if (group.endsWith(" (detected)"))
+                    java.util.Collections.addAll(
+                        detected, group.substring(0, group.length() - 11).split(", "));
+                else if (group.endsWith(" (reported)"))
+                    java.util.Collections.addAll(
+                        reported, group.substring(0, group.length() - 11).split(", "));
+            }
         }
-        return found.isEmpty() ? "Unknown" : String.join(", ", found) + " (detected)";
+        // A verified signature supersedes an otherwise identical reported label.
+        reported.removeAll(detected);
+        return format(detected, reported);
     }
 
     String result() {
-        if (engines.isEmpty())
-            return "Unknown";
-        java.util.List<String> sorted = new java.util.ArrayList<>(engines);
-        java.util.Collections.sort(sorted);
-        return String.join(", ", sorted) + " (detected)";
+        return format(new java.util.TreeSet<>(engines), new java.util.TreeSet<>(reportedEngines));
+    }
+
+    private static String format(Set<String> detected, Set<String> reported) {
+        java.util.List<String> groups = new java.util.ArrayList<>();
+        if (!detected.isEmpty())
+            groups.add(String.join(", ", detected) + " (detected)");
+        if (!reported.isEmpty())
+            groups.add(String.join(", ", reported) + " (reported)");
+        return groups.isEmpty() ? "Unknown" : String.join("; ", groups);
     }
 
     /** Streaming KMP keeps signatures intact across read-buffer boundaries. */

@@ -22,6 +22,7 @@ class AnyiOSEmuArtifactTest {
 
     @Test fun onlyAnalyzedUnencryptedArm32GamesArePackaged() {
         AnyiOSEmuApkBuilder.requireSupportedSource(analysis(slice("arm64"), slice("armv7")))
+        AnyiOSEmuApkBuilder.requireSupportedSource(analysis(slice("armv5tej")))
         assertThrows(IllegalArgumentException::class.java) { AnyiOSEmuApkBuilder.requireSupportedSource(analysis(slice("arm64"))) }
         assertThrows(IllegalArgumentException::class.java) { AnyiOSEmuApkBuilder.requireSupportedSource(analysis(slice("armv7", true))) }
         assertThrows(IllegalArgumentException::class.java) {

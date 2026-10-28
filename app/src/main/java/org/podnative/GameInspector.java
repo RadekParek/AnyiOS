@@ -352,6 +352,7 @@ final class GameInspector {
                 throw new IOException("Architecture table and ARM32 slice subtype disagree");
             result.architecture = (subtype & 0xffffff) == 9 ? "ARMv7"
                 : (subtype & 0xffffff) == 6                 ? "ARMv6"
+                : (subtype & 0xffffff) == 7                 ? "ARMv5TEJ"
                 : (subtype & 0xffffff) == 11                ? "ARMv7s"
                 : (subtype & 0xffffff) == 10                ? "ARMv7f"
                                                             : "ARM32";
