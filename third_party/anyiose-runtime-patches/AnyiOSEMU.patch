@@ -7232,22 +7232,24 @@ index a8ecd8191975407e912e426d97753bd918bbaf5c..0372a3738c4591e4a2da47691c168cc8
          // replacement character, and the name stays stable across calls so
          // repeated opens of one cache entry still hit the same file.
 diff --git a/src/objc.rs b/src/objc.rs
-index f2efacface1889f48721ef456255244fd7e37ed5..5b722059796790a2d5ca5f2840efb52a384b6c47 100644
+index f2efacface1889f48721ef456255244fd7e37ed5..ecb7ee6ca857c18ba4ca392196f9daab77c6dc79 100644
 --- a/src/objc.rs
 +++ b/src/objc.rs
-@@ -103,6 +103,7 @@ pub type NSZonePtr = crate::mem::MutVoidPtr;
+@@ -103,6 +103,8 @@ pub type NSZonePtr = crate::mem::MutVoidPtr;
  pub struct ObjC {
      /// Known selectors (interned method name strings).
      selectors: FxHashMap<String, SEL>,
 +    selector_warnings: selectors::WarningBudget,
++    selector_name_warnings: selectors::WarningBudget,
  
      /// Mapping of known (guest) object pointers to their host objects.
      ///
-@@ -219,6 +220,7 @@ impl ObjC {
+@@ -219,6 +221,8 @@ impl ObjC {
      pub fn new() -> ObjC {
          ObjC {
              selectors: FxHashMap::default(),
 +            selector_warnings: Default::default(),
++            selector_name_warnings: Default::default(),
              objects: FxHashMap::default(),
              classes: FxHashMap::default(),
              sync_mutexes: FxHashMap::default(),
@@ -7442,7 +7444,7 @@ index 9254d26280ed82ac0995ca51ce2b48f99bcc76c6..6ab8443b7d9713ebf3196013b17390e0
              "objc_enumerationMutation: collection {:?} (class {}) mutated while \
               being enumerated (count now {})",
 diff --git a/src/objc/selectors.rs b/src/objc/selectors.rs
-index 5c68a5965b5c3573b5d4191886bcf65c83978b85..9c47451385acdc15fc9f4cca36b570f4b2c8ae21 100644
+index 5c68a5965b5c3573b5d4191886bcf65c83978b85..64d5bb65a68ed221e8617ec902ad2e294aee7dd2 100644
 --- a/src/objc/selectors.rs
 +++ b/src/objc/selectors.rs
 @@ -15,7 +15,6 @@
@@ -7462,7 +7464,28 @@ index 5c68a5965b5c3573b5d4191886bcf65c83978b85..9c47451385acdc15fc9f4cca36b570f4
                  return None;
              }
          };
-@@ -362,15 +361,18 @@ pub(super) fn sel_getUid(env: &mut Environment, name: ConstPtr<u8>) -> SEL {
+@@ -330,18 +329,14 @@ pub(super) fn sel_registerName(env: &mut Environment, name: ConstPtr<u8>) -> SEL
+     // Guard against a null or invalid pointer being passed as the
+     // selector name; return a null SEL rather than panicking.
+     if name.is_null() {
+-        log!("Warning: sel_registerName called with null pointer");
++        warn_invalid_selector_name(&mut env.objc.selector_name_warnings, name, "null pointer");
+         return SEL(Ptr::null());
+     }
+ 
+     let name_str = match env.mem.cstr_at_utf8(name) {
+         Ok(s) => s,
+         Err(_) => {
+-            log!(
+-                "Warning: sel_registerName: name at {:?} is not \
+-                 valid UTF-8; returning null SEL",
+-                name
+-            );
++            warn_invalid_selector_name(&mut env.objc.selector_name_warnings, name, "invalid UTF-8");
+             return SEL(Ptr::null());
+         }
+     };
+@@ -362,15 +357,18 @@ pub(super) fn sel_getUid(env: &mut Environment, name: ConstPtr<u8>) -> SEL {
      sel_registerName(env, name)
  }
  
@@ -7490,7 +7513,7 @@ index 5c68a5965b5c3573b5d4191886bcf65c83978b85..9c47451385acdc15fc9f4cca36b570f4
  }
  
  /// `BOOL sel_isEqual(SEL lhs, SEL rhs)` — returns whether two selectors
-@@ -389,17 +391,48 @@ pub(super) fn sel_isEqual(env: &mut Environment, lhs: SEL, rhs: SEL) -> bool {
+@@ -389,17 +387,59 @@ pub(super) fn sel_isEqual(env: &mut Environment, lhs: SEL, rhs: SEL) -> bool {
      lhs.as_str(&env.mem) == rhs.as_str(&env.mem)
  }
  
@@ -7516,6 +7539,17 @@ index 5c68a5965b5c3573b5d4191886bcf65c83978b85..9c47451385acdc15fc9f4cca36b570f4
 +        } else {
 +            0
 +        }
++    }
++}
++fn warn_invalid_selector_name(budget: &mut WarningBudget, name: ConstPtr<u8>, reason: &str) {
++    match budget.next() {
++        1..=3 => log!(
++            "Warning: sel_registerName({:?}): {}; returning null selector",
++            name,
++            reason
++        ),
++        4 => log!("Warning: additional invalid selector-name messages suppressed for this session"),
++        _ => (),
 +    }
 +}
 +fn warn_non_utf8_selector_once(budget: &mut WarningBudget, sel_cstr: ConstPtr<u8>) {
