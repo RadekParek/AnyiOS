@@ -5,6 +5,7 @@ import java.util.Locale
 
 /** Human-readable evidence, kept separate from the machine-readable report. */
 internal object CompatibilityIssues {
+    private const val MAX_AVAILABLE_DETAILS = 256
     /** The activity supplies these only after validating the current output files. */
     data class Artifacts(val native: Boolean = false, val semiEmulated: Boolean = false, val bounded: Boolean = false)
 
@@ -14,7 +15,8 @@ internal object CompatibilityIssues {
         val problems: List<String>,
         val unresolvedImports: Int,
         val importsIncomplete: Boolean,
-        val importDetails: String?,
+        private val importDetailsSource: JSONObject?,
+        val availableTruncated: Boolean,
     ) {
         // This describes outstanding issues, not whether any work was completed.
         fun isEmpty() = problems.isEmpty() && unresolvedImports == 0 && !importsIncomplete
@@ -27,15 +29,16 @@ internal object CompatibilityIssues {
                 appendLine()
                 appendLine("Available providers (not evidence of game linkage)")
                 available.forEach { appendLine("- $it") }
+                if (availableTruncated) appendLine("- Additional provider entries are in the full machine-readable report.")
             }
             appendLine()
             appendLine("Outstanding compatibility issues")
             if (this@Summary.isEmpty()) appendLine("No outstanding issues are listed by this analysis.")
             problems.forEach { appendLine("- $it") }
-            if (importsIncomplete && importDetails == null) appendLine("Import analysis is incomplete.")
-            if (importDetails != null && (unresolvedImports > 0 || importsIncomplete)) {
+            if (importsIncomplete && importDetailsSource == null) appendLine("Import analysis is incomplete.")
+            if (importDetailsSource != null && (unresolvedImports > 0 || importsIncomplete)) {
                 appendLine()
-                appendLine(importDetails)
+                appendLine(ApiNeedReport.format(importDetailsSource))
             }
             append("Analysis and export checks do not prove game linkage or gameplay.")
         }
@@ -43,7 +46,15 @@ internal object CompatibilityIssues {
 
     fun summarize(report: JSONObject, artifacts: Artifacts = Artifacts()): Summary {
         val completed = ArrayList<String>()
-        val available = ArrayList<String>()
+        // A large import inventory must not retain thousands of formatted
+        // strings every time the game details screen is rebuilt. The complete
+        // machine-readable report remains available separately.
+        val available = LinkedHashSet<String>()
+        var availableTruncated = false
+        fun offerAvailable(value: String) {
+            if (value in available) return
+            if (available.size < MAX_AVAILABLE_DETAILS) available.add(value) else availableTruncated = true
+        }
         val problems = ArrayList<String>()
         val seen = HashSet<String>()
         fun add(value: String) {
@@ -74,14 +85,14 @@ internal object CompatibilityIssues {
                     val bytes = link.optLong("androidLinkedTextBytes", 0)
                     val total = link.optLong("executableTextBytes", 0)
                     completed.add("Packaged a translated ARM64 library in the Native APK; the APK digest was checked.")
-                    available.add("Host reports $count recompiled and relinked function(s) ($bytes/$total source text bytes); ELF symbols and dependencies were not independently inspected on this device.")
+                    offerAvailable("Host reports $count recompiled and relinked function(s) ($bytes/$total source text bytes); ELF symbols and dependencies were not independently inspected on this device.")
                     link.optJSONArray("hostReportedFunctionSymbols")?.let { symbols ->
                         for (index in 0 until minOf(symbols.length(), 100)) {
-                            symbols.optString(index).takeIf { it.isNotBlank() }?.let { available.add("Host-reported function: $it") }
+                            symbols.optString(index).takeIf { it.isNotBlank() }?.let { offerAvailable("Host-reported function: $it") }
                         }
                     }
                 } else {
-                    available.add("The Native APK records a portable-C handoff; per-symbol ELF checks have not been independently confirmed for this build.")
+                    offerAvailable("The Native APK records a portable-C handoff; per-symbol ELF checks have not been independently confirmed for this build.")
                 }
             } else {
                 completed.add("Packaged the original ARM32 executable and experimental guest-CPU runtime in the Native APK; no static game conversion is claimed.")
@@ -146,16 +157,16 @@ internal object CompatibilityIssues {
                 val name = item.optString("sourceSymbol").takeIf { it.isNotBlank() } ?: continue
                 when (item.optString("classification")) {
                     "BIONIC_SYMBOL_CANDIDATE" -> if (item.optBoolean("verifiedOnDevice", false))
-                        available.add("$name: Android export found on this device; game linkage unverified.")
+                        offerAvailable("$name: Android export found on this device; game linkage unverified.")
                     "IMPLEMENTED_API_REPLACEMENT_AVAILABLE" -> if (item.optBoolean("runtimeVerified", false))
-                        available.add("$name: compatibility export found on this device; game linkage unverified.")
+                        offerAvailable("$name: compatibility export found on this device; game linkage unverified.")
                     "COMPAT_VERIFIED_HANDLER_RESOLVED" ->
-                        available.add("$name: tested guest adapter registered; this game's binding is unverified.")
+                        offerAvailable("$name: tested guest adapter registered; this game's binding is unverified.")
                 }
             }
         }
         val imports = mapping?.let(ApiNeedReport::summary)
-        return Summary(completed, available.distinct(), problems, imports?.unresolved ?: 0,
-            imports?.incomplete ?: false, mapping?.let(ApiNeedReport::format))
+        return Summary(completed, available.toList(), problems, imports?.unresolved ?: 0,
+            imports?.incomplete ?: false, mapping, availableTruncated)
     }
 }

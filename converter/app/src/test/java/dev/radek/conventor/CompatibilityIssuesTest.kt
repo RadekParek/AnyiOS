@@ -89,6 +89,17 @@ class CompatibilityIssuesTest {
         }
     }
 
+    @Test fun largeAvailableInventoryIsBoundedAndDisclosesOmissions() {
+        val symbols = JSONArray()
+        for (index in 0 until 1_000) symbols.put(symbol("_available$index", "BIONIC_SYMBOL_CANDIDATE", true))
+        val mapping = JSONObject().put("distinctImportSymbols", 1_000).put("classificationStatus", "COMPLETE")
+            .put("symbols", symbols)
+        val summary = CompatibilityIssues.summarize(JSONObject().put("apiMapping", mapping))
+        assertEquals(256, summary.available.size)
+        assertTrue(summary.availableTruncated)
+        assertTrue(summary.format().contains("Additional provider entries are in the full machine-readable report"))
+    }
+
     @Test fun emptyReportIsNotACompatibilityGuarantee() {
         val summary = CompatibilityIssues.summarize(JSONObject())
         assertTrue(summary.isEmpty())

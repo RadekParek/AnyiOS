@@ -14,6 +14,9 @@
   header checks. Removed host-command, attach-host-APK, open-installed-app and
   build-preview controls from game details; prior previews, logs and full reports
   remain accessible under More details. Force-convert explanations are shorter.
+  Large provider inventories are capped in the human-readable summary with an
+  explicit notice; the full machine-readable inventory remains available, and
+  detailed import formatting is deferred until the report is opened or exported.
 - Corrected the Native GLES guest float-argument ABI. The Native bridge is ES 1
   only: it now rejects an ES 2/3 context rather than masquerading an ES 1 context
   as ES 2, and no longer uses an ES 2 EGL config as a fixed-function substitute.

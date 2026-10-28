@@ -810,7 +810,8 @@ class MainActivity : Activity() {
         if (issues.available.isNotEmpty()) {
             text("Available, not game-linked", 15f, muted, true)
             issues.available.take(2).forEach { text(it, 13f, muted) }
-            if (issues.available.size > 2) text("${issues.available.size - 2} more in the report.", 12f, muted)
+            if (issues.availableTruncated) text("More in the report; the full inventory is in More details.", 12f, muted)
+            else if (issues.available.size > 2) text("${issues.available.size - 2} more in the report.", 12f, muted)
         }
         text("Outstanding", 15f, statusColor("BLOCKED"), true)
         if (issues.isEmpty()) text("No issues listed; gameplay is unverified.", 14f, muted)
