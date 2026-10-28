@@ -181,7 +181,7 @@ public class LatestGameLogTest {
         assertThrows(java.io.IOException.class, () -> LatestGameLog.preview(data, 100));
         assertThrows(
             java.io.IOException.class, () -> LatestGameLog.copy(data, new ByteArrayOutputStream()));
-        assertEquals("keep me", Files.readString(other.toPath()));
+        assertEquals("keep me", new String(Files.readAllBytes(other.toPath()), StandardCharsets.UTF_8));
         Files.delete(log.toPath());
         File sidecar = new File(data, "AnyiOSEMU_last_blocker.txt");
         Files.createSymbolicLink(sidecar.toPath(), other.toPath());

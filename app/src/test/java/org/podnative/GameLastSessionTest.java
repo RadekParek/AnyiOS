@@ -105,7 +105,7 @@ public class GameLastSessionTest {
                                       .stream()
                                       .filter(game -> game.directory.equals(first))
                                       .findFirst()
-                                      .orElseThrow();
+                                      .orElseThrow(() -> new AssertionError("Missing first game"));
         AtomicReference<File> source = new AtomicReference<>();
         library.prepareAnyiOSEmu(chosen, source::set);
         drain();
