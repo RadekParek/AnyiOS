@@ -5296,10 +5296,18 @@ index 25130279d197c09882c966a0e1e3a9e743660363..c3a033529bc3ef4033ae92e786a2256e
  }
  
 diff --git a/src/fs.rs b/src/fs.rs
-index c3ab190935da2e0ca31cf8d36e68f2fc8f53e615..e1676290ce004b8dd88745c91789c1d4e02cad86 100644
+index c3ab190935da2e0ca31cf8d36e68f2fc8f53e615..c3119181b3769a6ab94d511365622ca61b3fbc6f 100644
 --- a/src/fs.rs
 +++ b/src/fs.rs
-@@ -457,7 +457,7 @@ fn handle_open_err<T, E: std::fmt::Display, P: std::fmt::Debug>(
+@@ -26,6 +26,7 @@
+ //! See also [crate::paths], which has paths for host files used by touchHLE.
+ 
+ mod bundle;
++mod ipa_names;
+ 
+ pub use bundle::BundleData;
+ 
+@@ -457,7 +458,7 @@ fn handle_open_err<T, E: std::fmt::Display, P: std::fmt::Debug>(
  ) -> T {
      match open_result {
          Ok(ok) => ok,
@@ -5309,40 +5317,19 @@ index c3ab190935da2e0ca31cf8d36e68f2fc8f53e615..e1676290ce004b8dd88745c91789c1d4
  }
  
 diff --git a/src/fs/bundle.rs b/src/fs/bundle.rs
-index 3f47b5f03a1cdcd487e364059c3f286979280f0d..08599ad8780a73c42ad01624c65ca89b1b6785ee 100644
+index 3f47b5f03a1cdcd487e364059c3f286979280f0d..dd6c397ebbfa02f311d8d3066a4c86766d763c4d 100644
 --- a/src/fs/bundle.rs
 +++ b/src/fs/bundle.rs
-@@ -83,6 +83,29 @@ fn zip_entry_name(file: &zip::read::ZipFile) -> String {
-     }
- }
- 
-+/// Normalize harmless archive spelling differences consistently with the
-+/// Android importer; never let traversal components enter the guest tree.
-+fn normalized_member_name(name: &str) -> Option<String> {
-+    if name.contains('\0') {
-+        return None;
-+    }
-+    let name = name.replace('\\', "/").replace(':', "_");
-+    let mut parts = Vec::new();
-+    for part in name.split('/') {
-+        if part == ".." {
-+            return None;
-+        }
-+        if !part.is_empty() && part != "." {
-+            parts.push(part);
-+        }
-+    }
-+    if parts.is_empty() {
-+        None
-+    } else {
-+        Some(parts.join("/"))
-+    }
-+}
-+
- /// Represents an open app bundle, either a directory or a zip file.
- pub enum BundleData {
-     HostDirectory(PathBuf),
-@@ -111,6 +134,9 @@ impl BundleData {
+@@ -5,7 +5,7 @@
+  */
+ //! IPA file format support, allowing it to be used as part of the guest
+ //! filesystem.
+-use crate::fs::{FsNode, GuestPath};
++use crate::fs::{ipa_names::normalized_member_name, FsNode, GuestPath};
+ use crate::libc::time::{calendar_date_to_timestamp, time_t, tm};
+ use std::cell::RefCell;
+ use std::collections::HashMap;
+@@ -111,6 +111,9 @@ impl BundleData {
                      continue;
                  }
              };
@@ -5352,7 +5339,7 @@ index 3f47b5f03a1cdcd487e364059c3f286979280f0d..08599ad8780a73c42ad01624c65ca89b
              if let Some(name) = path
                  .strip_prefix("Payload/")
                  .and_then(|path| path.split_once('/'))
-@@ -184,10 +210,12 @@ impl BundleData {
+@@ -184,10 +187,12 @@ impl BundleData {
                      // rest of the bundle is still loaded. If a skipped entry
                      // is actually needed later, `IpaFileRef::open()` will
                      // return an empty file and log a warning.
@@ -5369,7 +5356,7 @@ index 3f47b5f03a1cdcd487e364059c3f286979280f0d..08599ad8780a73c42ad01624c65ca89b
                          Ok(name_and_dir) => name_and_dir,
                          Err(e) => {
                              log!(
-@@ -198,7 +226,14 @@ impl BundleData {
+@@ -198,7 +203,14 @@ impl BundleData {
                              continue;
                          }
                      };
@@ -5385,7 +5372,7 @@ index 3f47b5f03a1cdcd487e364059c3f286979280f0d..08599ad8780a73c42ad01624c65ca89b
                          let path = GuestPath::new(path);
                          if is_dir {
                              builder.add_directory(path);
-@@ -234,8 +269,10 @@ impl BundleData {
+@@ -234,8 +246,10 @@ impl BundleData {
                  let plist_path = format!("{bundle_path}/Info.plist");
                  let index = (0..zip.len())
                      .find(|&i| {
@@ -5398,24 +5385,10 @@ index 3f47b5f03a1cdcd487e364059c3f286979280f0d..08599ad8780a73c42ad01624c65ca89b
                      })
                      .ok_or_else(|| {
                          "Could not open Info.plist from the IPA archive: file not found".to_string()
-@@ -463,6 +500,48 @@ mod tests {
+@@ -463,6 +477,36 @@ mod tests {
      use crate::fs::FileLocation;
      use std::io::{Read, Write};
  
-+    #[test]
-+    fn normalized_names_are_consistent_and_reject_traversal() {
-+        assert_eq!(
-+            normalized_member_name("./Payload//Game.app/./Info.plist").as_deref(),
-+            Some("Payload/Game.app/Info.plist")
-+        );
-+        assert_eq!(
-+            normalized_member_name("\\Payload\\Game.app\\Data\\foo").as_deref(),
-+            Some("Payload/Game.app/Data/foo")
-+        );
-+        assert!(normalized_member_name("Payload/Game.app/../outside").is_none());
-+        assert!(normalized_member_name("Payload/\0bad").is_none());
-+    }
-+
 +    #[test]
 +    fn ipa_with_normalized_names_and_a_similarly_named_sibling() {
 +        let dir = std::env::temp_dir().join("anyiose_test_normalized_ipa");
@@ -5426,6 +5399,7 @@ index 3f47b5f03a1cdcd487e364059c3f286979280f0d..08599ad8780a73c42ad01624c65ca89b
 +        for (name, contents) in [
 +            ("./Payload//TestApp.app/./Info.plist", "plist"),
 +            ("Payload\\TestApp.app\\Game", "exec"),
++            ("Payload/TestApp.app/Level:One.dat", "resource"),
 +            ("Payload/TestApp.app.bak/not-a-child", "sibling"),
 +            ("Payload/TestApp.app/../not-a-child", "traversal"),
 +        ] {
@@ -5441,12 +5415,72 @@ index 3f47b5f03a1cdcd487e364059c3f286979280f0d..08599ad8780a73c42ad01624c65ca89b
 +        };
 +        assert!(children.contains_key("Info.plist"));
 +        assert!(children.contains_key("Game"));
++        assert!(children.contains_key("Level:One.dat"));
 +        assert!(!children.contains_key("not-a-child"));
 +    }
 +
      /// Regression test: IPAs with entries whose local file header is corrupt
      /// used to cause a panic (`InvalidArchive("Invalid local file header")`)
      /// when the bundle was loaded. Now such entries are skipped instead.
+diff --git a/src/fs/ipa_names.rs b/src/fs/ipa_names.rs
+new file mode 100644
+index 0000000000000000000000000000000000000000..374584ff421ca18a85fbdbaba8c6cb4c8d91eb8d
+--- /dev/null
++++ b/src/fs/ipa_names.rs
+@@ -0,0 +1,53 @@
++/*
++ * This Source Code Form is subject to the terms of the Mozilla Public
++ * License, v. 2.0. If a copy of the MPL was not distributed with this
++ * file, You can obtain one at https://mozilla.org/MPL/2.0/.
++ */
++/// Normalize archive separators and dot components without admitting traversal.
++/// Preserve colons: unlike the Android extractor's host-safe filenames, these
++/// are guest paths and valid resource names must stay byte-for-byte accessible.
++pub(super) fn normalized_member_name(name: &str) -> Option<String> {
++    if name.contains('\0') {
++        return None;
++    }
++    let name = name.replace('\\', "/");
++    let mut parts = Vec::new();
++    for part in name.split('/') {
++        if part == ".." {
++            return None;
++        }
++        if !part.is_empty() && part != "." {
++            parts.push(part);
++        }
++    }
++    if parts.is_empty() {
++        None
++    } else {
++        Some(parts.join("/"))
++    }
++}
++
++#[cfg(test)]
++mod tests {
++    use super::normalized_member_name;
++
++    #[test]
++    fn normalized_names_preserve_guest_resources_and_reject_traversal() {
++        assert_eq!(
++            normalized_member_name("./Payload//Game.app/./Info.plist").as_deref(),
++            Some("Payload/Game.app/Info.plist")
++        );
++        assert_eq!(
++            normalized_member_name("\\Payload\\Game.app\\Data\\foo").as_deref(),
++            Some("Payload/Game.app/Data/foo")
++        );
++        assert_eq!(
++            normalized_member_name("Payload/Game.app/Level:One.dat").as_deref(),
++            Some("Payload/Game.app/Level:One.dat")
++        );
++        assert!(normalized_member_name("Payload/Game.app/../outside").is_none());
++        assert!(normalized_member_name("Payload/Game.app/..\\outside").is_none());
++        assert!(normalized_member_name("///./").is_none());
++        assert!(normalized_member_name("Payload/\0bad").is_none());
++    }
++}
 diff --git a/src/gles/gles1_native.rs b/src/gles/gles1_native.rs
 index 199b834b7a34839b9fdf86f3e96be98fffd6e71b..e9defc5e59d4063d3bfbf50d414cf288657f9322 100644
 --- a/src/gles/gles1_native.rs

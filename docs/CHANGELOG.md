@@ -27,8 +27,8 @@
 - Normalized harmless IPA member/icon spellings without stripping real spaces;
   rejected icon metadata no longer aborts import. Traversal, duplicate/case
   collisions, links, ZIP bombs and containment checks remain in place. The
-  emulator's IPA reader recognizes the same safe spelling variations and avoids
-  pulling in a similarly named sibling bundle.
+  emulator's IPA reader recognizes safe spelling variations, preserves valid
+  colon-containing guest resource names and excludes similarly named siblings.
 - dyld now reports actual image slides and stable image-name pointers. `dlopen`,
   `dlsym`, `dlclose` and `dlerror` track preloaded guest/host libraries, scoped
   handles and per-thread errors, without exposing private guest symbols. Runtime
@@ -50,9 +50,10 @@
 
 ### Validation and limitations
 - Host checks exercise the real loader/scheduling code with mocks, FAT/Mach-O
-  and native runtime tests, and ZIP/manifest/options regressions; they do not
-  prove device rendering, actual frame rates, audio playback, clock speeds or
-  successful gameplay. Terraria's reported audio assertion was not reproduced:
+  and native runtime tests, and ZIP/manifest/options regressions. Android CI
+  also tests permission removal against an AAPT-compiled standalone template;
+  this does not prove signed-APK enforcement or device rendering, actual frame
+  rates, audio playback, clock speeds or successful gameplay. Terraria's reported audio assertion was not reproduced:
   its IPA was not supplied, and no root cause was inferred from the log alone.
 - AnyiOSEMU TestApp requires its separate LLVM 12 and common-3.0 SDK: **TestApp
   not run** in this environment. See PR checks for Android/Linux/Windows builds
