@@ -391,6 +391,12 @@ int main() {
     image = loadMachO(b.data(), b.size());
     assert(image.cpuSubtype == 6 && image.arch == IsaArch::ArmV6);
     assert(image.summary().find("ARMv6") != std::string::npos);
+    // v5TEJ uses the ARMv5TE translator; Jazelle bytecode itself is not emulated.
+    b = executable();
+    put(b, 8, 7);
+    image = loadMachO(b.data(), b.size());
+    assert(image.cpuSubtype == 7 && image.arch == IsaArch::ArmV5);
+    assert(image.summary().find("no Jazelle bytecode") != std::string::npos);
     b = executable();
     put(b, 8, 12);
     try {

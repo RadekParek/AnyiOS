@@ -23,8 +23,8 @@ public class AnyiOSEmuSourceTest {
         File gameDirectory = temporary.newFolder("game-icon-fallback");
         File recoveredIcon = new File(gameDirectory, "icon.png");
         assertEquals(true, recoveredIcon.createNewFile());
-        GameLibrary.Game game = new GameLibrary.Game(gameDirectory,
-            new JSONObject().put("kind", "IPA"));
+        GameLibrary.Game game =
+            new GameLibrary.Game(gameDirectory, new JSONObject().put("kind", "IPA"));
 
         assertEquals(recoveredIcon, game.cover());
         File cover = new File(gameDirectory, "cover.png");
@@ -36,7 +36,8 @@ public class AnyiOSEmuSourceTest {
     public void universalArm32AndArm64GameIsLaunchableThroughItsArm32Slice() throws Exception {
         File gameDirectory = temporary.newFolder("game-universal");
         GameLibrary.Game game = new GameLibrary.Game(gameDirectory,
-            new JSONObject().put("kind", "IPA")
+            new JSONObject()
+                .put("kind", "IPA")
                 .put("architecture", "ARM64 + ARM32 universal (ARM32 selected: ARMv7)"));
 
         assertEquals(true, game.canLaunchInAnyiOSEMU());
@@ -55,13 +56,15 @@ public class AnyiOSEmuSourceTest {
     public void negativeArm64NoteDoesNotBecomeAPositiveBadge() throws Exception {
         File directory = temporary.newFolder("game-arm32-universal");
         GameLibrary.Game game = new GameLibrary.Game(directory,
-            new JSONObject().put("kind", "IPA").put("architecture",
-                "ARMv7 · ARM32 universal (no ARM64 slice detected)"));
+            new JSONObject()
+                .put("kind", "IPA")
+                .put("architecture", "ARMv7 · ARM32 universal (no ARM64 slice detected)"));
         assertEquals(true, game.canLaunchInAnyiOSEMU());
         assertEquals("ARM32", game.architectureChip());
         GameLibrary.Game old = new GameLibrary.Game(directory,
-            new JSONObject().put("kind", "IPA").put("architecture",
-                "ARMv7 · ARM32 universal - no ARM64 slice detected"));
+            new JSONObject()
+                .put("kind", "IPA")
+                .put("architecture", "ARMv7 · ARM32 universal - no ARM64 slice detected"));
         assertEquals("ARM32", old.architectureChip());
     }
 
@@ -69,13 +72,15 @@ public class AnyiOSEmuSourceTest {
     public void arm64_32IsNotMisrepresentedAsAnArm64Slice() throws Exception {
         File directory = temporary.newFolder("game-arm64-32");
         GameLibrary.Game game = new GameLibrary.Game(directory,
-            new JSONObject().put("kind", "IPA").put("architecture",
-                "ARM64_32 + ARM32 universal (ARM32 selected: ARMv7)"));
+            new JSONObject()
+                .put("kind", "IPA")
+                .put("architecture", "ARM64_32 + ARM32 universal (ARM32 selected: ARMv7)"));
         assertEquals(true, game.canLaunchInAnyiOSEMU());
         assertEquals("ARM64_32 + ARM32", game.architectureChip());
         GameLibrary.Game both = new GameLibrary.Game(directory,
-            new JSONObject().put("kind", "IPA").put("architecture",
-                "ARM64 + ARM64_32 + ARM32 universal (ARM32 selected: ARMv7)"));
+            new JSONObject()
+                .put("kind", "IPA")
+                .put("architecture", "ARM64 + ARM64_32 + ARM32 universal (ARM32 selected: ARMv7)"));
         assertEquals("ARM64 + ARM64_32 + ARM32", both.architectureChip());
     }
 
@@ -89,18 +94,32 @@ public class AnyiOSEmuSourceTest {
     }
 
     @Test
+    public void armV5tejSliceIsLaunchableAsAnArmThumbFallback() throws Exception {
+        File gameDirectory = temporary.newFolder("game-armv5tej");
+        GameLibrary.Game game = new GameLibrary.Game(gameDirectory,
+            new JSONObject().put("kind", "IPA").put("architecture", "ARMv5TEJ · ARM32"));
+        assertEquals(true, game.canLaunchInAnyiOSEMU());
+    }
+
+    @Test
     public void arm64OnlyAndPreviouslyBlockedEntriesAreNotLaunchable() throws Exception {
         File arm64Directory = temporary.newFolder("game-arm64");
         GameLibrary.Game arm64 = new GameLibrary.Game(arm64Directory,
-            new JSONObject().put("kind", "IPA").put("architecture", "ARM64")
+            new JSONObject()
+                .put("kind", "IPA")
+                .put("architecture", "ARM64")
                 .put("status", "Unsupported"));
         File staleDirectory = temporary.newFolder("game-stale-unsupported");
         GameLibrary.Game stale = new GameLibrary.Game(staleDirectory,
-            new JSONObject().put("kind", "IPA").put("architecture", "ARM64")
+            new JSONObject()
+                .put("kind", "IPA")
+                .put("architecture", "ARM64")
                 .put("status", "Imported"));
         File legacyDirectory = temporary.newFolder("game-armv4t");
         GameLibrary.Game legacy = new GameLibrary.Game(legacyDirectory,
-            new JSONObject().put("kind", "IPA").put("architecture", "ARMv4T")
+            new JSONObject()
+                .put("kind", "IPA")
+                .put("architecture", "ARMv4T")
                 .put("status", "Imported"));
 
         assertEquals(false, arm64.canLaunchInAnyiOSEMU());
@@ -118,7 +137,9 @@ public class AnyiOSEmuSourceTest {
         assertEquals(true, new File(appBundle, "Example").createNewFile());
 
         GameLibrary.Game game = new GameLibrary.Game(gameDirectory,
-            new JSONObject().put("kind", "Folder").put("executable", "Payload/Example.app/Example"));
+            new JSONObject()
+                .put("kind", "Folder")
+                .put("executable", "Payload/Example.app/Example"));
 
         assertEquals(appBundle.getCanonicalFile(), game.anyioseSource().getCanonicalFile());
         assertNotEquals(importRoot.getCanonicalFile(), game.anyioseSource().getCanonicalFile());

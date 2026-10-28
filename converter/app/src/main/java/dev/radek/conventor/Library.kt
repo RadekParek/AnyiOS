@@ -447,7 +447,7 @@ class Library(private val context: Context) {
                     val slice = slices.getJSONObject(index)
                     encrypted = encrypted || slice.optBoolean("encrypted")
                     val arch = slice.optString("architecture")
-                    if (file == binary && arch in listOf("arm64", "armv7", "armv7s", "armv6")) hasCandidate = true
+                    if (file == binary && arch in listOf("arm64", "armv7", "armv7s", "armv7f", "armv6", "armv5tej")) hasCandidate = true
                     val deps = slice.optJSONArray("dependencies") ?: JSONArray()
                     val imports = slice.optJSONArray("imports") ?: JSONArray()
                     val associationComplete = !slice.optBoolean("importsTruncated", false) &&
@@ -820,10 +820,18 @@ internal fun extractIcon(app: File, names: List<String>, dir: File): JSONObject 
     // Info.plist names are authoritative. If a name includes an extension, try
     // scale variants of its basename (Icon.png -> Icon@3x.png) before the exact
     // fallback. This also keeps icon choice independent of the Mach-O CPU slices.
+    val safeNames = mutableListOf<String>()
     for (rawName in names) {
-        val name = rawName.trim()
-        if (name.isEmpty()) continue
-        SafeZip.validateName(name) // fail closed on traversal or absolute names
+        // Optional icon metadata should not abort conversion. Normalize the
+        // same harmless syntax as extracted members, but reject traversal and
+        // record it before trying other icons/fallbacks.
+        val name = try {
+            SafeZip.memberName(rawName)
+        } catch (error: IllegalArgumentException) {
+            attempt(rawName, false, "icon name rejected: ${error.message}")
+            continue
+        }
+        safeNames.add(name)
         val lower = name.lowercase(java.util.Locale.ROOT)
         val extension = listOf(".png", ".jpg", ".jpeg").firstOrNull { lower.endsWith(it) }
         val base = if (extension == null) name else name.dropLast(extension.length)
@@ -914,7 +922,7 @@ internal fun extractIcon(app: File, names: List<String>, dir: File): JSONObject 
     // Modern iOS games commonly keep their only app icon in a compiled asset
     // catalog. Inspect every bounded catalog and retain the largest usable
     // rendition, comparing its source dimensions with any loose declared icon.
-    val preferred = names.firstOrNull()?.substringBeforeLast('.', names.firstOrNull().orEmpty())
+    val preferred = safeNames.firstOrNull()?.substringBeforeLast('.', safeNames.firstOrNull().orEmpty())
     fun catalogMatchesPreferred(source: String): Boolean {
         if (preferred.isNullOrBlank()) return true
         val stem = source.substringAfter(':').substringBeforeLast('.', source.substringAfter(':'))

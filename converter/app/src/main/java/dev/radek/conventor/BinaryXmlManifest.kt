@@ -41,6 +41,7 @@ internal object BinaryXmlManifest {
         label: String,
         minSdkVersion: Int = MIN_SDK_VERSION,
         targetSdkVersion: Int = TARGET_SDK_VERSION,
+        removeInternetPermission: Boolean = false,
     ): ByteArray {
         require(packageName.matches(Regex("[A-Za-z_][A-Za-z0-9_]*(\\.[A-Za-z_][A-Za-z0-9_]*)+"))) {
             "invalid Android package name"
@@ -80,6 +81,7 @@ internal object BinaryXmlManifest {
         val pool = poolChunk!!
 
         val (decoded, flags) = decodePoolStrings(pool)
+        if (removeInternetPermission) removeInternetUsesPermission(chunks, decoded)
         val replacements = mapOf(TEMPLATE_PACKAGE to packageName, TEMPLATE_LABEL to label)
         for (source in replacements.keys) {
             require(decoded.count { it == source } == 1) { "template string sentinel is missing or ambiguous: $source" }
@@ -142,6 +144,81 @@ internal object BinaryXmlManifest {
         val result = output.toByteArray()
         putU32(result, 4, result.size.toLong())
         return result
+    }
+
+    /**
+     * Remove INTERNET at package level so Android also blocks host WebViews and
+     * native sockets, not just the emulator's guest network APIs. Reject an
+     * unexpected resource-valued permission name rather than assuming offline.
+     * https://developer.android.com/develop/connectivity/network-ops/connecting
+     */
+    /** Decode declared permissions for contract checks without relying on unused pool strings. */
+    internal fun declaredPermissionNames(manifest: ByteArray): Set<String> {
+        require(u16(manifest, 0) == RES_XML_TYPE && u32(manifest, 4) == manifest.size.toLong())
+        val elements = mutableListOf<ByteArray>()
+        var pool: ByteArray? = null
+        var offset = 8
+        while (offset < manifest.size) {
+            require(offset + 8 <= manifest.size)
+            val type = u16(manifest, offset)
+            val size = u32(manifest, offset + 4)
+            require(size >= 8 && size <= (manifest.size - offset).toLong())
+            val chunk = manifest.copyOfRange(offset, offset + size.toInt())
+            if (type == RES_STRING_POOL_TYPE) {
+                require(pool == null); pool = chunk
+            } else if (type == RES_XML_START_ELEMENT_TYPE) elements += chunk
+            offset += size.toInt()
+        }
+        val strings = decodePoolStrings(pool ?: error("Missing string pool")).first
+        return elements.filter { elementName(strings, it) in setOf("uses-permission", "uses-permission-sdk-23", "uses-permission-sdk-m") }
+            .map { androidNameAttribute(it, strings) ?: error("Unresolved permission name") }.toSet()
+    }
+
+    private fun removeInternetUsesPermission(chunks: MutableList<Pair<Int, ByteArray>>, strings: List<String>) {
+        var removed = 0
+        var index = 0
+        while (index < chunks.size) {
+            val (type, bytes) = chunks[index]
+            val element = if (type == RES_XML_START_ELEMENT_TYPE) elementName(strings, bytes) else ""
+            if (element in setOf("uses-permission", "uses-permission-sdk-23", "uses-permission-sdk-m")) {
+                val name = androidNameAttribute(bytes, strings)
+                    ?: throw IllegalArgumentException("Offline template has an unresolved permission name")
+                if (name == "android.permission.INTERNET") {
+                    require(index + 1 < chunks.size && chunks[index + 1].first == RES_XML_END_ELEMENT_TYPE &&
+                        elementName(strings, chunks[index + 1].second) == element) {
+                        "Unexpected INTERNET permission element layout"
+                    }
+                    chunks.removeAt(index + 1)
+                    chunks.removeAt(index)
+                    removed++
+                    continue
+                }
+            }
+            index++
+        }
+        require(removed > 0) { "Offline template is missing its expected INTERNET permission" }
+    }
+
+    private fun androidNameAttribute(chunk: ByteArray, strings: List<String>): String? {
+        require(chunk.size >= NODE_BYTES + ATTR_EXT_BYTES) { "truncated permission element" }
+        val start = NODE_BYTES + u16(chunk, NODE_BYTES + 8)
+        val stride = u16(chunk, NODE_BYTES + 10)
+        val count = u16(chunk, NODE_BYTES + 12)
+        require(stride >= ATTRIBUTE_BYTES && start >= NODE_BYTES + ATTR_EXT_BYTES &&
+            start.toLong() + count.toLong() * stride <= chunk.size.toLong()) { "invalid permission attributes" }
+        for (i in 0 until count) {
+            val base = start + i * stride
+            val ns = u32(chunk, base)
+            val name = u32(chunk, base + 4)
+            if (ns >= strings.size.toLong() || name >= strings.size.toLong()) continue
+            if (strings[ns.toInt()] != ANDROID_NAMESPACE || strings[name.toInt()] != "name") continue
+            val raw = u32(chunk, base + 8)
+            val kind = chunk[base + 15].toInt() and 0xff
+            val value = if (raw != NO_STRING) raw else if (kind == 0x03) u32(chunk, base + 16) else NO_STRING
+            if (value >= strings.size.toLong()) return null
+            return strings[value.toInt()]
+        }
+        return null
     }
 
     // --- <uses-sdk> handling ------------------------------------------------

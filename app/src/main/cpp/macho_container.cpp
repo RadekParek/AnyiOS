@@ -13,15 +13,17 @@ int arm32SubtypeRank(uint32_t subtype) {
     if (subtype & 0xff000000u) return -1;
     switch (subtype) {
         case 9:
-            return 4;  // ARMv7
+            return 5;  // ARMv7
         case 11:
-            return 3;  // ARMv7s
+            return 4;  // ARMv7s
         case 10:
-            return 2;  // ARMv7f
+            return 3;  // ARMv7f
         case 6:
-            return 1;  // ARMv6
+            return 2;  // ARMv6
         case 0:
-            return 0;  // Generic ARM
+            return 1;  // Generic ARM
+        case 7:
+            return 0;  // ARMv5TEJ fallback; ARM/Thumb, no Jazelle bytecode
         default:
             return -1;
     }
@@ -93,7 +95,7 @@ MachOSlice selectArm32Slice(const uint8_t* b, size_t n, uint64_t fileSize) {
                 throw Error("FAT_SLICE_OVERLAP", "architecture slices overlap");
         ranges.push_back({offset, offset + size});
         if (cpu == 12) {
-            // Prefer ARMv7, then v7s, v7f, v6 and generic ARM. Never choose ARM64.
+            // Prefer existing v7/v6/generic slices; use ARMv5TEJ only as a fallback.
             const int rank = arm32SubtypeRank(subtype);
             if (rank > best) {
                 best = rank;

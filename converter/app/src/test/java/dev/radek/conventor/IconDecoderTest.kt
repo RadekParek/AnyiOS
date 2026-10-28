@@ -293,4 +293,24 @@ class IconDecoderTest {
             root.deleteRecursively()
         }
     }
+    @Test fun invalidOptionalIconNamesDoNotAbortImportOrReadOutsideBundle() {
+        val root = java.nio.file.Files.createTempDirectory("radek-invalid-icon").toFile()
+        try {
+            val app = File(root, "Fixture.app").apply { mkdirs() }
+            File(root, "outside.png").writeBytes(platformPng(Color.RED))
+            File(app, "GoodIcon.png").writeBytes(platformPng(Color.GREEN))
+            val out = File(root, "result").apply { mkdirs() }
+            val result = extractIcon(app, listOf("../outside", "a/../../outside", "./GoodIcon"), out)
+            assertEquals("SUPPORTED", result.getString("status"))
+            assertTrue(result.getString("source").endsWith("GoodIcon.png"))
+            val attempts = result.getJSONArray("attempts")
+            assertTrue((0 until attempts.length()).any {
+                attempts.getJSONObject(it).optString("detail").startsWith("icon name rejected")
+            })
+            val saved = BitmapFactory.decodeFile(File(out, "icon.png").path)
+            assertEquals(Color.GREEN, saved!!.getPixel(0, 0))
+            saved.recycle()
+        } finally { root.deleteRecursively() }
+    }
+
 }

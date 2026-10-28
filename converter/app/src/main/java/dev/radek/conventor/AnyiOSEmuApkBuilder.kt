@@ -35,7 +35,7 @@ internal class AnyiOSEmuApkBuilder(private val context: Context) {
                 require(slice.has("encrypted") && !slice.optBoolean("encrypted", true)) {
                     "Encrypted or unverified executables cannot be packaged; DRM is not bypassed"
                 }
-                if (slice.optString("architecture").lowercase() in setOf("armv6", "armv7", "armv7s", "armv7f", "arm32")) arm32 = true
+                if (slice.optString("architecture").lowercase() in setOf("armv5tej", "armv6", "armv7", "armv7s", "armv7f", "arm32")) arm32 = true
             }
             require(arm32) { "AnyiOSEMU requires an ARM32 slice; ARM64-only apps are unsupported" }
             val dependencies = report.optJSONObject("dependencies") ?: error("Embedded images were not analyzed")
@@ -60,6 +60,8 @@ internal class AnyiOSEmuApkBuilder(private val context: Context) {
         require(source.isFile && source.length() > 0) { "Retained IPA not found" }
         val report = JSONObject(File(dir, "report.json").readText())
         val app = report.optJSONObject("application") ?: error("Missing application metadata")
+        // Freeze the per-game choices before any asynchronous packaging work.
+        val settings = ConvertSettings.load(dir)
         val sourceHash = report.optJSONObject("source")?.optString("sha256").orEmpty()
         require(sourceHash.matches(Regex("[0-9a-f]{64}")) && app.optString("sha256") == sourceHash)
         val name = ArtifactNames.anyioseApkFileName(report)
@@ -103,7 +105,8 @@ internal class AnyiOSEmuApkBuilder(private val context: Context) {
                 require(bytes.isNotEmpty() && bytes.size <= limit) { "Missing or oversized template: $path" }
                 bytes
             }
-            val manifest = BinaryXmlManifest.customize(asset("AndroidManifest.xml"), packageName, label, 29, 35)
+            val manifest = BinaryXmlManifest.customize(asset("AndroidManifest.xml"), packageName, label, 29, 35,
+                removeInternetPermission = settings.offline)
             val resources = ResourceTablePackagePatcher.customize(asset("resources.arsc"), packageName)
             val dexNames = asset("template-dex-entries.txt", 16 * 1024).toString(Charsets.UTF_8).lineSequence()
                 .map { it.substringBefore(':').trim() }.filter { it == "classes.dex" || DEX.matches(it) }
@@ -128,6 +131,7 @@ internal class AnyiOSEmuApkBuilder(private val context: Context) {
             val metadata = JSONObject().put("contract", AnyiOSEmuArtifactContract.CONTRACT)
                 .put("sourceSha256", sourceHash).put("sourceBytes", source.length())
                 .put("runtime", "AnyiOSEMU").put("gameplayVerified", false)
+                .put("convertSettings", settings.toJson())
             val entries = ArrayList<AlignedApkZip.Entry>()
             entries += AlignedApkZip.Entry("AndroidManifest.xml", manifest)
             entries += AlignedApkZip.Entry("resources.arsc", resources)
@@ -159,11 +163,13 @@ internal class AnyiOSEmuApkBuilder(private val context: Context) {
                 .joinToString("") { "%02x".format(it.toInt() and 0xff) }
             require(actualCert == certificateHash) { "Unexpected APK signer" }
             @Suppress("DEPRECATION")
-            val info = context.packageManager.getPackageArchiveInfo(signed.path, android.content.pm.PackageManager.GET_ACTIVITIES)
+            val info = context.packageManager.getPackageArchiveInfo(signed.path, android.content.pm.PackageManager.GET_ACTIVITIES or android.content.pm.PackageManager.GET_PERMISSIONS)
                 ?: error("Android could not parse the standalone APK")
             require(info.packageName == packageName && info.applicationInfo?.className == "org.podnative.StandaloneApplication" &&
                 info.activities.orEmpty().any { it.name == "org.podnative.StandaloneLauncherActivity" } &&
                 info.activities.orEmpty().any { it.name == "org.podnative.StandaloneGameActivity" }) { "Standalone launcher is invalid" }
+            val requestsInternet = info.requestedPermissions.orEmpty().contains("android.permission.INTERNET")
+            require(requestsInternet != settings.offline) { "Standalone network permission does not match convert settings" }
             require(InstallAudit.inspect(context, signed, packageName).blockers.isEmpty()) { "Standalone APK is not installable on this device" }
             signed.copyTo(pending, overwrite = true)
             if (result.exists()) require(result.renameTo(backup)) { "Cannot preserve the previous APK" }
@@ -181,6 +187,7 @@ internal class AnyiOSEmuApkBuilder(private val context: Context) {
                     .put("installPath", "Android/obb/$packageName/" +
                         ArtifactNames.obbFileName(packageName, ArtifactNames.ANYIOSE_VERSION_CODE))
                     .put("provisioning", "best-effort mirror on first launch; private IPA remains authoritative"))
+                .put("convertSettings", settings.toJson())
                 .put("completeGameConversion", false).put("gamePlayable", false).put("runtimeExecution", "NOT_TESTED")
                 .put("graphics", "Bundled ANGLE with native GLES fallback").put("targetAbi", "arm64-v8a")
             report.put("anyioseConversion", conversion)

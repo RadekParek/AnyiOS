@@ -56,7 +56,7 @@ object SafeZip {
         require(name.isNotEmpty() && '\u0000' !in name) { "unsafe ZIP path" }
         var candidate = name.replace('\\', '/').replace(':', '_')
         while (candidate.startsWith("/")) candidate = candidate.substring(1)
-        val parts = candidate.split('/').map { it.trim() }.filter { it.isNotEmpty() && it != "." }
+        val parts = candidate.split('/').filter { it.isNotEmpty() && it != "." }
         require(parts.isNotEmpty() && parts.none { it == ".." }) { "unsafe ZIP path" }
         require(parts.size <= MAX_NAME_COMPONENTS) { "unsafe ZIP path: more than $MAX_NAME_COMPONENTS path components" }
         require(parts.all { it.toByteArray().size <= MAX_COMPONENT_BYTES }) {

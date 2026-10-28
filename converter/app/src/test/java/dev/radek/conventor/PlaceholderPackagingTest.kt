@@ -58,6 +58,23 @@ class PlaceholderPackagingTest {
         assertEquals(large, readPool(pool)[2])
     }
 
+    @Test fun offlineBinaryXmlRemovesInternetAndPreservesOtherPermissions() {
+        val original = permissionManifest()
+        val normal = BinaryXmlManifest.customize(original, "dev.radek.game", "Game")
+        val offline = BinaryXmlManifest.customize(original, "dev.radek.game", "Game", removeInternetPermission = true)
+        assertEquals(setOf("android.permission.INTERNET", "android.permission.VIBRATE"),
+            BinaryXmlManifest.declaredPermissionNames(normal))
+        assertEquals(setOf("android.permission.VIBRATE"), BinaryXmlManifest.declaredPermissionNames(offline))
+        assertEquals(offline.size.toLong(), u32(offline, 4))
+    }
+
+    @Test fun offlineBinaryXmlRejectsUnresolvedPermissionNames() {
+        val original = permissionManifest(unresolved = true)
+        org.junit.Assert.assertThrows(IllegalArgumentException::class.java) {
+            BinaryXmlManifest.customize(original, "dev.radek.game", "Game", removeInternetPermission = true)
+        }
+    }
+
     @Test fun binaryXmlManifestRejectsUnsafePackageNames() {
         val original = binaryXml(listOf("dev.radek.placeholder", "__RADEK_PLACEHOLDER_LABEL__"))
         org.junit.Assert.assertThrows(IllegalArgumentException::class.java) {
@@ -78,6 +95,38 @@ class PlaceholderPackagingTest {
         org.junit.Assert.assertThrows(IllegalArgumentException::class.java) {
             ResourceTablePackagePatcher.customize(resourcesTable("dev.radek.other"), "dev.radek.placeholder.p0123456789abcdef01234567")
         }
+    }
+
+    private fun permissionManifest(unresolved: Boolean = false): ByteArray {
+        val strings = listOf("dev.radek.placeholder", "__RADEK_PLACEHOLDER_LABEL__", "manifest",
+            "uses-permission", "http://schemas.android.com/apk/res/android", "name",
+            "android.permission.INTERNET", "android.permission.VIBRATE")
+        val poolOnly = binaryXml(strings)
+        val poolEnd = 8 + u32(poolOnly, 12).toInt()
+        fun start(nameIndex: Int, valueIndex: Int?): ByteArray {
+            val size = 36 + if (valueIndex == null) 0 else 20
+            return ByteArray(size).also { node ->
+                putU16(node, 0, 0x0102); putU16(node, 2, 16); putU32(node, 4, size)
+                putU32(node, 12, -1); putU32(node, 16, -1); putU32(node, 20, nameIndex)
+                putU16(node, 24, 20); putU16(node, 26, 20); putU16(node, 28, if (valueIndex == null) 0 else 1)
+                if (valueIndex != null) {
+                    putU32(node, 36, 4); putU32(node, 40, 5)
+                    putU32(node, 44, if (unresolved) -1 else valueIndex)
+                    putU16(node, 48, 8); node[51] = (if (unresolved) 1 else 3).toByte()
+                    putU32(node, 52, valueIndex)
+                }
+            }
+        }
+        fun end(nameIndex: Int): ByteArray = ByteArray(24).also { node ->
+            putU16(node, 0, 0x0103); putU16(node, 2, 16); putU32(node, 4, node.size)
+            putU32(node, 12, -1); putU32(node, 16, -1); putU32(node, 20, nameIndex)
+        }
+        val output = ByteArrayOutputStream().apply {
+            write(poolOnly, 0, poolEnd); write(start(2, null))
+            write(start(3, 6)); write(end(3)); write(start(3, 7)); write(end(3)); write(end(2))
+        }.toByteArray()
+        putU32(output, 4, output.size)
+        return output
     }
 
     private fun binaryXml(strings: List<String>, utf8: Boolean = true): ByteArray {

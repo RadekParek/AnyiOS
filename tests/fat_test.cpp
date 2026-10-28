@@ -58,6 +58,24 @@ int main() {
     assert(preferred.universal && preferred.offset == 2048 && preferred.subtype == 10);
     assert(!preferred.containsArm64);
 
+    // v5TEJ is a fallback; an existing generic/v6/v7 slice still wins.
+    for (uint32_t better : {0u, 6u, 9u, 10u, 11u}) {
+        auto both = fat();
+        put(both, 8, 12);
+        put(both, 12, 7);
+        put(both, 32, better);
+        auto selected = podnative::selectArm32Slice(both.data(), 72, both.size());
+        assert(selected.offset == 2048 && selected.subtype == better);
+        put(both, 12, better);
+        put(both, 32, 7);
+        selected = podnative::selectArm32Slice(both.data(), 72, both.size());
+        assert(selected.offset == 1024 && selected.subtype == better);
+    }
+    auto onlyV5 = fat();
+    put(onlyV5, 32, 7);
+    auto v5Slice = podnative::selectArm32Slice(onlyV5.data(), 72, onlyV5.size());
+    assert(v5Slice.offset == 2048 && v5Slice.subtype == 7);
+
     auto b = fat();
     put(b, 28, 0x100000c);
     fault(
@@ -88,6 +106,9 @@ int main() {
     put(b, 8, 10, 4, true);
     s = podnative::selectArm32Slice(b.data(), 28, 128);
     assert(!s.universal && s.subtype == 10);
+    put(b, 8, 7, 4, true);
+    s = podnative::selectArm32Slice(b.data(), 28, 128);
+    assert(!s.universal && s.subtype == 7);
     put(b, 8, 5, 4, true);
     fault("MACHO_CPU_SUBTYPE", [&] { podnative::selectArm32Slice(b.data(), 28, 128); });
     put(b, 8, 0x80000009, 4, true);

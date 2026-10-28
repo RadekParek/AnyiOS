@@ -195,8 +195,9 @@ class Cpu::Impl final : public Dynarmic::A32::UserCallbacks {
         config.callbacks = this;
         // iOS "armv6" devices are ARM11 cores, i.e. ARMv6K. Dynarmic has no plain v6
         // selector, and v6K is the superset those binaries were built against.
-        config.arch_version = arch == IsaArch::ArmV6 ? Dynarmic::A32::ArchVersion::v6K
-                                                     : Dynarmic::A32::ArchVersion::v7;
+        config.arch_version = arch == IsaArch::ArmV5   ? Dynarmic::A32::ArchVersion::v5TE
+                              : arch == IsaArch::ArmV6 ? Dynarmic::A32::ArchVersion::v6K
+                                                       : Dynarmic::A32::ArchVersion::v7;
         config.check_halt_on_memory_access = true;
         config.code_cache_size = CodeCacheBytes;
         // LDREX/STREX are how iOS 3-era libSystem builds every atomic and spin lock. They

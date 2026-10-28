@@ -59,7 +59,9 @@ LoadedImage loadMachO(const uint8_t* data, size_t size, size_t budget) {
     std::vector<Segment> segments;
     LoadedImage result;
     result.cpuSubtype = r.u32(8) & 0xffffff;
-    result.arch = result.cpuSubtype == 6 ? IsaArch::ArmV6 : IsaArch::ArmV7;
+    result.arch = result.cpuSubtype == 7   ? IsaArch::ArmV5
+                  : result.cpuSubtype == 6 ? IsaArch::ArmV6
+                                           : IsaArch::ArmV7;
     result.memory = std::make_unique<Memory>(budget);
     bool hasEntry = false, entryIsOffset = false;
     uint64_t entry = 0;
@@ -693,7 +695,10 @@ std::string LoadedImage::summary() const {
     s << "MAPPED_ARM32: " << memory->regions().size() << " regions, " << memory->allocated()
       << " guest bytes; entry=0x" << std::hex << registers[15] << (cpsr & 0x20 ? " Thumb" : " ARM")
       << " SP=0x" << registers[13];
-    s << "\nInstruction set: " << (arch == IsaArch::ArmV6 ? "ARMv6 (ARM11/v6K)" : "ARMv7")
+    s << "\nInstruction set: "
+      << (arch == IsaArch::ArmV5   ? "ARMv5TEJ (ARM/Thumb; no Jazelle bytecode)"
+          : arch == IsaArch::ArmV6 ? "ARMv6 (ARM11/v6K)"
+                                   : "ARMv7")
       << " from CPU subtype " << std::dec << cpuSubtype << ".";
     s << "\nImage mapping is complete; this summary alone does not start the guest.";
     size_t initializerCount = 0;

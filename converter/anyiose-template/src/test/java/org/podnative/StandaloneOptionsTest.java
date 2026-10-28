@@ -20,6 +20,31 @@ public class StandaloneOptionsTest {
         assertFalse(arguments.stream().anyMatch(argument -> argument.startsWith("--screen-size=")));
     }
 
+    @Test public void optInSettingsReachTheGuestWithoutChangingOtherDefaults() {
+        List<String> arguments = Arrays.asList(StandaloneOptions.forGame("/data", "/game", 90,
+                true, true, true, "landscape"));
+        assertTrue(arguments.contains("--screen-size=768x1024"));
+        assertTrue(arguments.contains("--scale-hack=2"));
+        assertTrue(arguments.contains("--no-network-access"));
+        assertFalse(arguments.contains("--allow-network-access"));
+        assertTrue(arguments.contains("--perf-hints"));
+        assertTrue(arguments.contains("--affinity=big"));
+        assertTrue(arguments.contains("--landscape-left"));
+        assertFalse(arguments.contains("--anyiose-initial-portrait"));
+    }
+
+    @Test public void portraitAndUnknownRotationDoNotForceLandscape() {
+        List<String> portrait = Arrays.asList(StandaloneOptions.forGame("/data", "/game", 60,
+                false, false, false, "portrait"));
+        assertTrue(portrait.contains("--anyiose-initial-portrait"));
+        assertFalse(portrait.contains("--landscape-left"));
+        assertFalse(portrait.contains("--screen-size=768x1024"));
+        List<String> unknown = Arrays.asList(StandaloneOptions.forGame("/data", "/game", 60,
+                false, false, false, "invalid"));
+        assertFalse(unknown.contains("--landscape-left"));
+        assertFalse(unknown.contains("--anyiose-initial-portrait"));
+    }
+
     @Test public void missingPayloadAlsoUsesTheQuietHostPolicy() {
         List<String> arguments = Arrays.asList(StandaloneOptions.noGame());
         assertTrue(arguments.contains("--help"));

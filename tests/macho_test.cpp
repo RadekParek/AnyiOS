@@ -35,6 +35,17 @@ int main() {
     b = header();
     put(b, 0, 0xcafebabe);
     expect(b, "MACHO_FORMAT");
+    for (uint32_t subtype : {0u, 6u, 7u, 9u, 10u, 11u}) {
+        b = header();
+        put(b, 8, subtype);
+        expect(b, "INSPECTED_ARM32");
+    }
+    b = header();
+    put(b, 8, 0x80000009);
+    expect(b, "MACHO_CPU_SUBTYPE");
+    b = header();
+    put(b, 8, 12);
+    expect(b, "MACHO_CPU_SUBTYPE");
     b = header();
     put(b, 12, 6);
     expect(b, "MACHO_TYPE");

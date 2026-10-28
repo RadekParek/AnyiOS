@@ -753,9 +753,7 @@ public final class MainActivity extends Activity {
                     .putExtra(AnyiOSEmuActivity.EXTRA_GAME_TITLE, game.title)
                     .putExtra(AnyiOSEmuActivity.EXTRA_SOURCE_PATH, source.getAbsolutePath())
                     .putExtra(AnyiOSEmuActivity.EXTRA_DATA_PATH,
-                        game.anyioseDataDirectory().getAbsolutePath())
-                    .putExtra(AnyiOSEmuActivity.EXTRA_SHOW_CONSOLE,
-                        activity.prefs.getBoolean("showConsole", false));
+                        game.anyioseDataDirectory().getAbsolutePath());
             try {
                 activity.activeAnyiOSEmuGameId = game.id;
                 activity.startActivityForResult(intent, RUN_ANYIOSEMU);
@@ -999,8 +997,6 @@ public final class MainActivity extends Activity {
         settingRow(display, "Performance HUD",
             "Off by default · app CPU normalized across available cores, RAM PSS, FPS and device GPU load when the driver exposes it",
             prefs.getBoolean("performanceHud", false) ? "On" : "Off", this::togglePerformanceHud);
-        settingRow(display, "Session badge", "Brief AnyiOSEMU overlay at launch",
-            prefs.getBoolean("showConsole", false) ? "Shown" : "Hidden", this::toggleConsole);
         // Detailed GLES call logging is useful for black-screen investigations, but can
         // measurably slow the guest. Keep it opt-in.
         settingRow(display, "Verbose logging",
@@ -1116,24 +1112,6 @@ public final class MainActivity extends Activity {
                         home();
                 })
             .setNegativeButton("Cancel", null)
-            .show();
-    }
-    /** The optional session badge is brief; detailed runtime logs remain in the saved report. */
-    private void toggleConsole() {
-        new AlertDialog.Builder(this)
-            .setTitle("Session badge")
-            .setMessage(
-                "Show a brief AnyiOSEMU badge over the game at launch? It fades after five seconds; the display stays clean afterward and the runtime report is saved either way.")
-            .setNegativeButton("Hidden",
-                (dialog, which) -> {
-                    prefs.edit().putBoolean("showConsole", false).apply();
-                    home();
-                })
-            .setPositiveButton("Shown",
-                (dialog, which) -> {
-                    prefs.edit().putBoolean("showConsole", true).apply();
-                    home();
-                })
             .show();
     }
     /**
