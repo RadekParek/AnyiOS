@@ -21,7 +21,9 @@
   details, existing reports and build actions. Unanalyzed games show their
   source metadata and an explicit analysis action. The grid loads 60 entries
   at a time, preserves scroll when expanded or refreshed, and retains an open
-  shared-source detail across activity recreation.
+  shared-source detail across activity recreation. Artwork is decoded off the
+  UI thread at a bounded size, with a 16 MiB cache and stale queued views
+  skipped rather than retaining old screens.
 - Both modules have a visible **All modules** button on every module screen;
   Android Back from either library also returns to the Emulator/Converter
   picker. Navigation clears intervening module activities without cancelling
@@ -42,9 +44,9 @@
 - Added import/report-preservation, manual-analysis, responsive grid, tile,
   pagination, activity-recreation and picker-navigation regressions. Local
   Kotlin and Java compilation used Android 35 stubs and stubbed APK-signing
-  dependencies; local pure-JVM size/guard tests (2) and shared-catalog tests
-  with a fake Android context (7) pass. Full Android/host CI is tracked with
-  the pull request. A physical device has not been used to
+  dependencies; local pure-JVM size/guard and artwork sizing tests (4) and
+  shared-catalog tests with a fake Android context (7) pass. Full Android/host
+  CI is tracked with the pull request. A physical device has not been used to
   verify rendering, typography, transitions, navigation stacks or game play;
   smoothness and exact glass appearance therefore remain unverified. The
   actual Ninjago IPA remains unavailable and its failure is not confirmed fixed.

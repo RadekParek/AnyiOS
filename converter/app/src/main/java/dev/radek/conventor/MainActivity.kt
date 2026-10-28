@@ -64,35 +64,51 @@ private object Jobs {
     }
 }
 
-/** Downsampled, cached, off-main-thread icon loading for large libraries. */
+/** Bounded, off-main-thread artwork loading for large libraries. */
 private object IconLoader {
     private val executor = Executors.newFixedThreadPool(2)
     private val main = Handler(Looper.getMainLooper())
-    private val cache = android.util.LruCache<String, android.graphics.Bitmap>(48)
+    private val cache = object : android.util.LruCache<String, android.graphics.Bitmap>(16 * 1024 * 1024) {
+        override fun sizeOf(key: String, bitmap: android.graphics.Bitmap) = bitmap.byteCount
+    }
 
-    fun load(file: File, targetPixels: Int, apply: (android.graphics.Bitmap?) -> Unit) {
-        if (!file.isFile) { apply(null); return }
-        val key = "${file.path}:${file.lastModified()}:$targetPixels"
-        cache.get(key)?.let { apply(it); return }
+    fun load(file: File, targetPixels: Int, image: ImageView) {
+        if (!file.isFile) return
+        val target = ArtworkSizing.target(targetPixels)
+        val key = "${file.path}:${file.lastModified()}:$target"
+        image.tag = key
+        cache.get(key)?.let { image.setImageBitmap(it); return }
+        // A queued decode must not keep an old Activity or detached grid alive.
+        val imageRef = java.lang.ref.WeakReference(image)
         executor.execute {
+            val current = imageRef.get()
+            if (current == null || !current.isAttachedToWindow || current.tag != key) return@execute
             val bitmap = try {
                 val bounds = android.graphics.BitmapFactory.Options().apply { inJustDecodeBounds = true }
                 android.graphics.BitmapFactory.decodeFile(file.path, bounds)
                 if (bounds.outWidth <= 0 || bounds.outHeight <= 0) null else {
-                    var sample = 1
-                    while (bounds.outWidth / (sample * 2) >= targetPixels &&
-                        bounds.outHeight / (sample * 2) >= targetPixels && sample < 512
-                    ) sample *= 2
-                    android.graphics.BitmapFactory.decodeFile(
-                        file.path,
-                        android.graphics.BitmapFactory.Options().apply { inSampleSize = sample },
+                    val sample = ArtworkSizing.sample(bounds.outWidth, bounds.outHeight, target)
+                    val decoded = android.graphics.BitmapFactory.decodeFile(
+                        file.path, android.graphics.BitmapFactory.Options().apply { inSampleSize = sample },
                     )
+                    if (decoded == null) null else {
+                        val (width, height) = ArtworkSizing.scaled(decoded.width, decoded.height, target)
+                        if (width == decoded.width && height == decoded.height) decoded else {
+                            android.graphics.Bitmap.createScaledBitmap(decoded, width, height, true).also {
+                                if (it !== decoded) decoded.recycle()
+                            }
+                        }
+                    }
                 }
             } catch (_: Throwable) {
                 null
             }
             if (bitmap != null) runCatching { cache.put(key, bitmap) }
-            main.post { runCatching { apply(bitmap) } }
+            main.post {
+                val view = imageRef.get()
+                if (bitmap != null && view != null && view.isAttachedToWindow && view.tag == key)
+                    view.setImageBitmap(bitmap)
+            }
         }
     }
 }
@@ -570,6 +586,7 @@ class MainActivity : Activity() {
             importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO
         }
         artwork.addView(placeholder, FrameLayout.LayoutParams(dp(32), dp(32), Gravity.CENTER))
+        val artworkHeight = SharedTheme.artworkSizeDp(resources.configuration.screenWidthDp, columns)
         val iconPath = sharedIcon(dir)
         if (iconPath.isFile) {
             val icon = ImageView(this).apply {
@@ -577,9 +594,8 @@ class MainActivity : Activity() {
                 importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO
             }
             artwork.addView(icon, FrameLayout.LayoutParams(-1, -1))
-            IconLoader.load(iconPath, dp(256)) { bitmap -> if (bitmap != null) icon.setImageBitmap(bitmap) }
+            icon.post { IconLoader.load(iconPath, dp(artworkHeight), icon) }
         }
-        val artworkHeight = SharedTheme.artworkSizeDp(resources.configuration.screenWidthDp, columns)
         item.addView(artwork, LinearLayout.LayoutParams(dp(artworkHeight), dp(artworkHeight)).apply {
             gravity = Gravity.CENTER_HORIZONTAL
         })
@@ -752,7 +768,7 @@ class MainActivity : Activity() {
         if (iconPath.isFile) {
             val icon = ImageView(this).apply { scaleType = ImageView.ScaleType.CENTER_CROP }
             artwork.addView(icon, FrameLayout.LayoutParams(-1, -1))
-            IconLoader.load(iconPath, dp(96)) { bitmap -> if (bitmap != null) icon.setImageBitmap(bitmap) }
+            icon.post { IconLoader.load(iconPath, dp(96), icon) }
         }
         body.addView(artwork, LinearLayout.LayoutParams(dp(96), dp(96)).apply {
             gravity = Gravity.CENTER_HORIZONTAL; topMargin = dp(14)
