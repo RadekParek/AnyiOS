@@ -114,6 +114,21 @@ class ImportTest {
         } finally { root.deleteRecursively() }
     }
 
+    @Test fun binaryPlistExecutableWithColonSurvivesTheAnalysisPath() {
+        val root = Files.createTempDirectory("radek-binary-plist").toFile()
+        try {
+            val plist = Base64.getDecoder().decode("YnBsaXN0MDDTAQIDBAQFXxATQ0ZCdW5kbGVEaXNwbGF5TmFtZV8QEkNGQnVuZGxlRXhlY3V0YWJsZV8QEkNGQnVuZGxlSWRlbnRpZmllcl1OaW5qYWdvOiBSb3RTXxAQY29tLmV4YW1wbGUuZ2FtZQgPJTpPXQAAAAAAAAEBAAAAAAAAAAYAAAAAAAAAAAAAAAAAAABw")
+            val archive = zip(root, listOf("Payload/Test.app/Info.plist" to plist,
+                "Payload/Test.app/Ninjago: RotS" to byteArrayOf(1, 2)))
+            SafeZip.extract(archive, File(root, "out"))
+            val app = File(root, "out/Payload/Test.app")
+            val info = Plist.read(File(app, "Info.plist").readBytes())
+            val executable = SafeZip.bundleExecutable(info["CFBundleExecutable"])
+            assertEquals("Ninjago: RotS", executable)
+            assertArrayEquals(byteArrayOf(1, 2), File(app, executable).readBytes())
+        } finally { root.deleteRecursively() }
+    }
+
     @Test fun retainsColonDistinctionsButRejectsNormalizedDriveCollisions() {
         val root = Files.createTempDirectory("radek-colon-collision").toFile()
         try {

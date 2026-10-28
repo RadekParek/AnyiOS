@@ -40,6 +40,7 @@ internal class ConvertedApkBuilder(private val context: Context) {
     fun build(dir: File, progress: (Int, String) -> Unit = { _, _ -> }): JSONObject {
         require(dir.isDirectory && File(dir, "source.bin").isFile) { "retained source IPA is missing" }
         val report = JSONObject(File(dir, "report.json").readText())
+        SourcePolicy.requireIpa(report)
         val app = report.optJSONObject("application") ?: error("application metadata missing")
         val source = report.optJSONObject("source") ?: error("source metadata missing")
         val sourceHash = source.optString("sha256")

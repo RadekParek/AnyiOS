@@ -85,8 +85,11 @@ class Library(private val context: Context) {
             .put("nextBlocker", "Not analyzed by Converter. " + meta.optString("blockReason"))
     }.getOrNull()
 
-    fun analyzeShared(dir: File, progress: (Int, String) -> Unit): Pair<File, JSONObject> =
-        import(Uri.EMPTY, dir, progress = progress)
+    fun analyzeShared(dir: File, progress: (Int, String) -> Unit): Pair<File, JSONObject> {
+        val kind = JSONObject(File(dir, "game.json").readText()).optString("kind")
+        return if (kind == "Executable") dir to analyzeExecutable(dir, SharedAnalysisProgress(progress))
+        else import(Uri.EMPTY, dir, progress = progress)
+    }
 
     /** Called while Emulator already owns SharedCatalog; never acquire it again. */
     fun analyzeImportedSource(dir: File, progress: SharedAnalysisProgress): JSONObject {

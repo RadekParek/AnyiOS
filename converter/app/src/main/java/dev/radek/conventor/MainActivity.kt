@@ -192,7 +192,8 @@ class MainActivity : Activity() {
                     val openImport = openImportedResultAfterJob
                     openImportedResultAfterJob = false
                     if (target != null && target.isDirectory && File(target, "report.json").isFile &&
-                        ((currentScreen == Screen.DETAIL && selected == target) || openImport)) {
+                        ((currentScreen == Screen.DETAIL && selected == target) ||
+                            (openImport && currentScreen == Screen.LIBRARY))) {
                         detail(target, if (selected == target) currentScroll?.scrollY ?: 0 else 0)
                     } else if (currentScreen == Screen.LIBRARY) home()
                 }
@@ -688,7 +689,8 @@ class MainActivity : Activity() {
         selected = dir; screen()
         currentScreen = Screen.DETAIL
         if (Jobs.busy && returnToDetailAfterJob == dir) addDetailJobOverlay()
-        if (restoreScrollY > 0) currentScroll?.post { currentScroll?.scrollTo(0, restoreScrollY) }
+        val scroll = currentScroll
+        if (restoreScrollY > 0) scroll?.post { if (currentScroll === scroll) scroll.scrollTo(0, restoreScrollY) }
         val report = try {
             (if (File(dir, "report.json").isFile) JSONObject(File(dir, "report.json").readText()) else library.sharedReport(dir)) ?: error("missing shared entry")
         } catch (_: Exception) {
@@ -701,21 +703,14 @@ class MainActivity : Activity() {
             text(report.optJSONObject("application")?.optString("name", "Shared application") ?: "Shared application", 28f, textColor, true)
             text("One source copy, shared with Emulator. Analysis and generated APKs never replace it.", 15f, muted)
             text(report.optString("nextBlocker"), 14f, muted)
-            if (report.optString("sharedSourceKind") == "IPA") {
-                button("Analyze shared IPA", true) {
-                    if (Jobs.tryRun {
-                        Jobs.begin("Analyzing shared IPA")
-                        library.analyzeShared(dir) { percent, message -> Jobs.update(percent, message) }
-                    }) {
-                        returnToDetailAfterJob = dir; wasBusy = true
-                        detail(dir, currentScroll?.scrollY ?: 0)
-                    }
-                }.isEnabled = !SharedCatalog.isBusy()
-            } else text("Converter currently accepts IPA archives. This source remains available in Emulator.", 14f, muted)
+            if (report.optString("sharedSourceKind") in setOf("IPA", "Folder", "Executable")) {
+                button("Analyze shared source", true) { startSharedAnalysis(dir) }.isEnabled = !SharedCatalog.isBusy()
+            } else text("This source type cannot currently be analyzed here. It remains available in Emulator.", 14f, muted)
             button("Delete shared entry") { confirmDelete(dir) }
             return
         }
         val app = report.optJSONObject("application") ?: JSONObject()
+        val ipaSource = SourcePolicy.supportsIpaPackaging(report)
         button("← Game Library") { home() }
         val iconPath = sharedIcon(dir)
         if (iconPath.isFile) {
@@ -738,7 +733,7 @@ class MainActivity : Activity() {
             "Version / build" to "${app.optString("version")} / ${app.optString("build")}",
             "Minimum iOS" to app.optString("minimumIOSVersion").ifBlank { "Not declared in Info.plist" },
             "Architecture" to architectures(report),
-            "IPA size" to formatBytes(app.optLong("fileSize")),
+            (if (ipaSource) "IPA size" else "Source size") to formatBytes(app.optLong("fileSize")),
             "Executable" to app.optString("executable"),
         )) {
             text(name.uppercase(), 10f, muted, true, metadata); text(value, 15f, parent = metadata)
@@ -905,7 +900,7 @@ class MainActivity : Activity() {
         report.optJSONObject("analysisProgress")?.let { analysis ->
             val analysisCard = card()
             val value = analysis.optInt("percent", 0)
-            text("IPA analysis · $value%", 16f, textColor, true, analysisCard)
+            text("${if (ipaSource) "IPA" else "Source"} analysis · $value%", 16f, textColor, true, analysisCard)
             progressIndicator(analysisCard, value, 10)
             text("${analysis.optString("stage", "queued")} · ${analysis.optString("message")}", 12f, muted, parent = analysisCard)
             text("Analysis completion is not APK-build completion or a playability score.", 12f, muted, parent = analysisCard)
@@ -930,6 +925,10 @@ class MainActivity : Activity() {
         val blockers = report.optJSONArray("blockers")
         if (blockers != null) for (i in 0 until blockers.length()) text(blockers.getString(i), 15f, statusColor(state))
         if (report.has("error")) text(report.getString("error"), 15f, statusColor("FAILED"))
+        if (File(dir, "game.json").isFile && SourcePolicy.canRetryFailedAnalysis(report)) {
+            text("The shared source was kept. Retry analysis without importing it again.", 13f, muted)
+            button("Retry analysis") { startSharedAnalysis(dir) }.isEnabled = !SharedCatalog.isBusy()
+        }
         text("Icon: ${report.optJSONObject("icon")?.optString("reason") ?: "not extracted"}", 13f, muted)
         val edges = report.optJSONObject("dependencies")?.optJSONArray("edges")
         if (edges != null) for (i in 0 until edges.length()) {
@@ -958,7 +957,7 @@ class MainActivity : Activity() {
         button("View full machine-readable report") { showText("Conversion report", report.toString(2)) }
         button("View real conversion logs") { showText("Logs", File(dir, "conversion.jsonl").takeIf { it.isFile }?.readText() ?: "No logs") }
         text("APK conversion", 22f, textColor, true)
-        if (report.optJSONObject("source")?.optString("kind") in setOf("FOLDER", "EXECUTABLE")) {
+        if (!ipaSource && report.optJSONObject("source")?.optString("kind") in setOf("FOLDER", "EXECUTABLE")) {
             text("This source was analyzed in place. Import an IPA to build a standalone APK; folder and executable packaging is not yet supported.", 14f, muted)
         }
         text("A general iOS-to-Android game static recompilation backend and framework/API replacements are not implemented. The Native runtime is the former diagnostic guest-CPU boot-attempt path; its renderer is not connected to Android EGL/GLES. The Semi-Emulated runtime packages AnyiOSEMU and the original ARM32 IPA into an independent APK. Neither path guarantees compatibility or gameplay. A branded preview shell with no executable remains an explicit fallback.", 14f, muted)
@@ -969,7 +968,7 @@ class MainActivity : Activity() {
             (getSystemService(CLIPBOARD_SERVICE) as android.content.ClipboardManager).setPrimaryClip(android.content.ClipData.newPlainText("Host analysis command", command))
             Toast.makeText(this, "Analysis command copied", Toast.LENGTH_SHORT).show()
         }
-        if (app.has("sha256")) button("Attach complete host-converted APK") {
+        if (ipaSource && app.has("sha256")) button("Attach complete host-converted APK") {
             if (!Jobs.busy) startActivityForResult(Intent(Intent.ACTION_OPEN_DOCUMENT).apply { type = "application/vnd.android.package-archive"; addCategory(Intent.CATEGORY_OPENABLE) }, pickerApk)
         }
         val hostConversion = report.optJSONObject("hostConversion")
@@ -1096,7 +1095,7 @@ class MainActivity : Activity() {
                 if (intent == null) Toast.makeText(this, "Game is not installed or not visible to Android", Toast.LENGTH_LONG).show() else startActivity(intent)
             }
         }
-        if (File(dir, "source.bin").isFile && app.has("sha256")) {
+        if (ipaSource && File(dir, "source.bin").isFile && app.has("sha256")) {
             val deviceConvertible = report.optJSONObject("deviceRecompilation")?.let {
                 it.optString("status") == "PROVEN" && it.optInt("coveragePercent", 0) == 100 && it.optInt("functionCount", 0) == 1
             } == true
@@ -1115,6 +1114,22 @@ class MainActivity : Activity() {
                 button(if (placeholderOutputFile != null) "Rebuild preview APK" else "Build preview shell instead") { startForceConvert(dir, false) }
         }
         button("Delete shared entry") { confirmDelete(dir) }
+    }
+
+    private fun startSharedAnalysis(dir: File) {
+        if (Jobs.busy) { Toast.makeText(this, "A job is already running", Toast.LENGTH_SHORT).show(); return }
+        Jobs.begin("Analyzing shared source")
+        returnToDetailAfterJob = dir
+        wasBusy = true
+        val started = Jobs.tryRun {
+            library.analyzeShared(dir) { percent, message -> Jobs.update(percent, message) }
+        }
+        if (!started) {
+            wasBusy = false; returnToDetailAfterJob = null
+            Toast.makeText(this, "A job is already running", Toast.LENGTH_SHORT).show()
+            return
+        }
+        detail(dir, currentScroll?.scrollY ?: 0)
     }
 
     private fun showConvertSettings(dir: File) {

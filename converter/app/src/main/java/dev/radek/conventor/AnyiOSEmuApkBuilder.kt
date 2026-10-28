@@ -59,6 +59,7 @@ internal class AnyiOSEmuApkBuilder(private val context: Context) {
         val source = File(dir, "source.bin")
         require(source.isFile && source.length() > 0) { "Retained IPA not found" }
         val report = JSONObject(File(dir, "report.json").readText())
+        SourcePolicy.requireIpa(report)
         val app = report.optJSONObject("application") ?: error("Missing application metadata")
         // Freeze the per-game choices before any asynchronous packaging work.
         val settings = ConvertSettings.load(dir)
