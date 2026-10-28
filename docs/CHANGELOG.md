@@ -31,8 +31,8 @@
   colon-containing guest resource names and excludes similarly named siblings.
 - dyld now reports actual image slides and stable image-name pointers. `dlopen`,
   `dlsym`, `dlclose` and `dlerror` track preloaded guest/host libraries, scoped
-  handles and per-thread errors, without exposing private guest symbols. Runtime
-  loading of arbitrary new images, host data exports and complete dependency
+  handles and per-thread errors, without exposing local or private-external
+  guest symbols. Runtime loading of arbitrary new images, host data exports and complete dependency
   ordering are still unsupported; C++ ABI interception remains in scope.
 - The Core Animation scheduler keeps deadlines when a forced frame arrives
   early and skips missed deadlines without catch-up bursts. Native GLES1 keeps
