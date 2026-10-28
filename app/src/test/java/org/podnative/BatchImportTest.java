@@ -23,7 +23,6 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.TimeUnit;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipOutputStream;
-import org.json.JSONObject;
 import org.junit.After;
 import org.junit.Before;
 import org.junit.Test;
@@ -159,16 +158,11 @@ public class BatchImportTest {
             assertEquals("Unsupported", game.status);
             assertArrayEquals(
                 original, Files.readAllBytes(new File(game.directory, "source.bin").toPath()));
-            // The intentionally incomplete test bundle cannot finish analysis,
-            // but every imported source must receive its own Converter report.
-            File reportFile = new File(game.directory, "report.json");
-            assertTrue(reportFile.isFile());
-            JSONObject report = new JSONObject(
-                new String(Files.readAllBytes(reportFile.toPath()), StandardCharsets.UTF_8));
-            assertEquals("FAILED", report.getString("state"));
-            assertEquals("IPA", report.getJSONObject("source").getString("kind"));
-            assertTrue(report.getString("error").contains("CFBundleIdentifier"));
-            assertFalse(report.has("deviceConversion"));
+            // Emulator metadata inspection is retained, but Converter does no work
+            // until the user chooses Analyze from this game's details.
+            assertFalse(new File(game.directory, "report.json").exists());
+            assertFalse(new File(game.directory, "conversion.jsonl").exists());
+            assertFalse(new File(game.directory, "extracted").exists());
         }
         assertFalse(SharedCatalog.isBusy());
     }
@@ -181,7 +175,33 @@ public class BatchImportTest {
         assertEquals(1, library.games().size());
         assertTrue(
             library.notice, library.notice.contains("1 of 2 selected files imported; 1 failed"));
-        assertTrue(new File(library.games().get(0).directory, "source.bin").isFile());
+        var game = library.games().get(0);
+        assertTrue(new File(game.directory, "source.bin").isFile());
+        assertFalse(new File(game.directory, "report.json").exists());
+        assertFalse(new File(game.directory, "conversion.jsonl").exists());
+        assertFalse(SharedCatalog.isBusy());
+    }
+
+    @Test
+    public void subsequentImportsLeaveExistingConverterReportAndArtifactsIntact() throws Exception {
+        library.importLegacy(documents.ipa);
+        drain();
+        var originalGame = library.games().get(0);
+        File report = new File(originalGame.directory, "report.json");
+        File artifact = new File(originalGame.directory, "existing-build.apk");
+        byte[] reportBytes =
+            "{\"state\":\"READY\",\"marker\":\"keep\"}".getBytes(StandardCharsets.UTF_8);
+        Files.write(report.toPath(), reportBytes);
+        Files.write(artifact.toPath(), new byte[] {4, 3, 2, 1});
+
+        library.importFile(DocumentsContract.buildDocumentUri("batch.test", "a"));
+        drain();
+        assertEquals(2, library.games().size());
+        assertArrayEquals(reportBytes, Files.readAllBytes(report.toPath()));
+        assertArrayEquals(new byte[] {4, 3, 2, 1}, Files.readAllBytes(artifact.toPath()));
+        for (var game : library.games())
+            if (!game.id.equals(originalGame.id))
+                assertFalse(new File(game.directory, "report.json").exists());
         assertFalse(SharedCatalog.isBusy());
     }
 

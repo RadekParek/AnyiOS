@@ -17,6 +17,8 @@ import android.os.Looper
 import android.provider.Settings
 import android.view.Gravity
 import android.view.View
+import android.view.WindowInsets
+import android.text.TextUtils
 import android.widget.*
 import org.json.JSONArray
 import org.json.JSONObject
@@ -120,6 +122,9 @@ class MainActivity : Activity() {
     private lateinit var body: LinearLayout
     private lateinit var screenRoot: FrameLayout
     private var currentScroll: ScrollView? = null
+    private var screenInitialized = false
+    private var hasResumed = false
+    private var renderedSharedBusy = false
     private var selected: File? = null
     private var progressLabel: TextView? = null
     private var progressBar: ProgressBar? = null
@@ -168,7 +173,10 @@ class MainActivity : Activity() {
     }
 
     private val sharedChanged: () -> Unit = {
-        if (!isFinishing && !isDestroyed && !Jobs.busy && currentScreen == Screen.LIBRARY) home()
+        // Emulator reports copy progress frequently. Rebuild the grid only when
+        // its job starts or finishes, not for each progress notification.
+        if (!isFinishing && !isDestroyed && !Jobs.busy && currentScreen == Screen.LIBRARY &&
+            (!SharedCatalog.isBusy() || !renderedSharedBusy)) home()
     }
     private val sharedObserver = Runnable { sharedChanged() }
     private fun sharedIcon(dir: File): File = File(dir, "cover.png").takeIf { it.isFile } ?: File(dir, "icon.png")
@@ -180,6 +188,8 @@ class MainActivity : Activity() {
         library = Library(applicationContext)
         if (!SharedCatalog.isBusy()) library.recoverInterrupted()
         selected = state?.getString("selected")?.let { File(library.root, it) }
+        visibleEntries = state?.getInt("visibleEntries", 60)?.coerceIn(60, 10000) ?: 60
+        val savedScroll = state?.getInt("scrollY", 0) ?: 0
         if (Jobs.busy) returnToDetailAfterJob = selected
         Jobs.listener = {
             runCatching {
@@ -199,16 +209,29 @@ class MainActivity : Activity() {
                 }
             }
         }
-        if (selected != null && File(selected, "report.json").isFile) detail(selected!!) else home()
+        if (selected?.isDirectory == true && (File(selected, "report.json").isFile || File(selected, "game.json").isFile)) {
+            detail(selected!!, savedScroll)
+        } else {
+            home()
+            currentScroll?.let { scroll ->
+                if (savedScroll > 0) scroll.post { if (currentScroll === scroll) scroll.scrollTo(0, savedScroll) }
+            }
+        }
     }
-    override fun onSaveInstanceState(out: Bundle) { super.onSaveInstanceState(out); out.putString("selected", selected?.name) }
+    override fun onSaveInstanceState(out: Bundle) {
+        out.putString("selected", selected?.name)
+        out.putInt("visibleEntries", visibleEntries)
+        out.putInt("scrollY", currentScroll?.scrollY ?: 0)
+        super.onSaveInstanceState(out)
+    }
     override fun onDestroy() { Jobs.listener = null; super.onDestroy() }
     override fun onPause() { SharedCatalog.unobserve(sharedObserver); super.onPause() }
     override fun onResume() {
         super.onResume()
         SharedCatalog.observe(sharedObserver)
         applyThemePalette()
-        if (!Jobs.busy && !wasBusy && currentScreen == Screen.LIBRARY) home()
+        if (hasResumed && !Jobs.busy && !wasBusy && currentScreen == Screen.LIBRARY) home()
+        hasResumed = true
         if (Jobs.busy) {
             wasBusy = true
             progressLabel?.text = "${Jobs.percent}% · ${Jobs.message}"
@@ -235,25 +258,64 @@ class MainActivity : Activity() {
         cornerRadius = dp(18).toFloat()
         setStroke(dp(1), outlineColor)
     }
-    private fun screen() {
+    private fun screen(next: Screen) {
+        val animatePage = !screenInitialized || currentScreen != next
+        screenInitialized = true
+        currentScreen = next
         progressLabel = null
         progressBar = null
-        val scroll = ScrollView(this).apply { setBackgroundColor(bgColor); isFillViewport = true }
+        val scroll = ScrollView(this).apply { isFillViewport = true; clipToPadding = false }
         currentScroll = scroll
-        screenRoot = FrameLayout(this)
-        body = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(22), dp(30), dp(22), dp(36)) }
+        screenRoot = FrameLayout(this).apply {
+            background = SharedTheme.canvas(this@MainActivity)
+            setOnApplyWindowInsetsListener { view, insets ->
+                if (Build.VERSION.SDK_INT >= 30) {
+                    val bars = insets.getInsets(WindowInsets.Type.systemBars() or WindowInsets.Type.displayCutout())
+                    view.setPadding(bars.left, bars.top, bars.right, bars.bottom)
+                } else {
+                    @Suppress("DEPRECATION")
+                    view.setPadding(insets.systemWindowInsetLeft, insets.systemWindowInsetTop,
+                        insets.systemWindowInsetRight, insets.systemWindowInsetBottom)
+                }
+                insets
+            }
+        }
+        val shell = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        val toolbar = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(dp(22), dp(12), dp(22), dp(10))
+        }
+        val heading = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        toolbar.addView(heading, LinearLayout.LayoutParams(0, -2, 1f))
+        TextView(this).apply {
+            text = "AnyiOS"; textSize = 19f; setTextColor(textColor)
+            typeface = SharedTheme.typeface(this@MainActivity, true)
+            heading.addView(this)
+        }
+        TextView(this).apply {
+            text = "CONVERTER"; textSize = 10f; setTextColor(accent); letterSpacing = 0.08f
+            typeface = SharedTheme.typeface(this@MainActivity, true)
+            heading.addView(this)
+        }
+        toolbar.addView(SharedTheme.moduleButton(this))
+        shell.addView(toolbar)
+        body = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(22), 0, dp(22), dp(36)) }
         scroll.addView(body)
-        screenRoot.addView(scroll, FrameLayout.LayoutParams(-1, -1))
+        shell.addView(scroll, LinearLayout.LayoutParams(-1, 0, 1f))
+        screenRoot.addView(shell, FrameLayout.LayoutParams(-1, -1))
         setContentView(screenRoot)
+        screenRoot.requestApplyInsets()
+        if (animatePage) SharedTheme.reveal(body)
     }
 
     /** Persistent progress on the detail screen, without scrolling away from the action. */
     private fun addDetailJobOverlay() {
-        body.setPadding(dp(22), dp(30), dp(22), dp(160))
+        body.setPadding(dp(22), 0, dp(22), dp(160))
         val overlay = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            background = rounded(panel)
-            elevation = dp(12).toFloat()
+            background = SharedTheme.glass(this@MainActivity, 18)
+            elevation = dp(8).toFloat()
             setPadding(dp(16), dp(12), dp(16), dp(12))
             accessibilityLiveRegion = View.ACCESSIBILITY_LIVE_REGION_POLITE
         }
@@ -269,26 +331,34 @@ class MainActivity : Activity() {
         })
     }
     private fun text(value: String, size: Float = 16f, color: Int = textColor, bold: Boolean = false, parent: LinearLayout = body): TextView = TextView(this).apply {
-        text = value; textSize = size; setTextColor(color); if (bold) setTypeface(typeface, Typeface.BOLD)
+        text = value; textSize = size; setTextColor(color); typeface = SharedTheme.typeface(this@MainActivity, bold)
+        includeFontPadding = false
         setPadding(0, dp(6), 0, dp(7)); parent.addView(this)
     }
     private fun button(label: String, primary: Boolean = false, parent: LinearLayout = body, action: () -> Unit): Button = Button(this).apply {
         text = label; isAllCaps = false; textSize = 15f; setTextColor(if (primary) bgColor else accent)
-        background = android.graphics.drawable.RippleDrawable(
-            android.content.res.ColorStateList.valueOf(if (primary) Color.WHITE else accent),
-            rounded(if (primary) accent else panel), null,
-        )
-        elevation = dp(1).toFloat()
-        parent.addView(this, LinearLayout.LayoutParams(-1, dp(54)).apply { topMargin = dp(10); bottomMargin = dp(3) })
+        typeface = SharedTheme.typeface(this@MainActivity, true)
+        minHeight = dp(54); minimumWidth = 0; minWidth = 0
+        setPadding(dp(16), dp(10), dp(16), dp(10))
+        background = if (primary) android.graphics.drawable.RippleDrawable(
+            android.content.res.ColorStateList.valueOf(0x40ffffff), rounded(accent), null,
+        ) else SharedTheme.glassRipple(this@MainActivity, 18)
+        elevation = 0f
+        parent.addView(this, LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(10); bottomMargin = dp(3) })
+        SharedTheme.pressFeedback(this)
         setOnClickListener { action() }
     }
     private fun dangerButton(label: String, action: () -> Unit): Button = Button(this).apply {
         text = label; isAllCaps = false; textSize = 15f; setTextColor(Color.WHITE)
+        typeface = SharedTheme.typeface(this@MainActivity, true)
+        minHeight = dp(54); minimumWidth = 0; minWidth = 0
+        setPadding(dp(16), dp(10), dp(16), dp(10))
         background = android.graphics.drawable.RippleDrawable(
             android.content.res.ColorStateList.valueOf(Color.WHITE), rounded(Color.rgb(189, 52, 58)), null,
         )
         elevation = dp(2).toFloat()
-        body.addView(this, LinearLayout.LayoutParams(-1, dp(54)).apply { topMargin = dp(12); bottomMargin = dp(4) })
+        body.addView(this, LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(12); bottomMargin = dp(4) })
+        SharedTheme.pressFeedback(this)
         setOnClickListener { action() }
     }
     private fun progressIndicator(parent: LinearLayout, value: Int, height: Int = 8) {
@@ -314,7 +384,7 @@ class MainActivity : Activity() {
         progressLabel = text("${Jobs.percent}% · ${Jobs.message}", 13f, muted, parent = jobCard)
     }
     private fun card(parent: LinearLayout = body): LinearLayout = LinearLayout(this).apply {
-        orientation = LinearLayout.VERTICAL; background = rounded(panel); setPadding(dp(18), dp(14), dp(18), dp(16))
+        orientation = LinearLayout.VERTICAL; background = SharedTheme.glass(this@MainActivity, 22); setPadding(dp(18), dp(14), dp(18), dp(16))
         parent.addView(this, LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(14) })
     }
     // Rendering hundreds of library cards at once stalls the UI thread, so the
@@ -395,164 +465,146 @@ class MainActivity : Activity() {
     @Deprecated("Deprecated in Java")
     override fun onBackPressed() {
         if (currentScreen == Screen.LIBRARY) {
-            super.onBackPressed()
+            SharedTheme.openModules(this)
             return
         }
         home()
     }
 
     private fun home() {
-        selected = null; screen()
-        currentScreen = Screen.LIBRARY
-        text("ANYIOS  /  CONVERTER", 11f, accent, true).letterSpacing = 0.08f
-        text("Analyze & build", 30f, textColor, true)
-        text("Your shared library, ready to explore on Android.", 15f, muted)
-        button("← AnyiOS modules") { finish() }
-        val info = card()
-        text("Your games, one source", 18f, textColor, true, info)
-        text("Emulator imports are analyzed here automatically. IPA builds are experimental: Native is a diagnostic boot attempt; Semi-Emulated includes AnyiOSEMU and the original IPA. A build does not guarantee gameplay.", 14f, muted, parent = info)
-        text("The converter auto-builds only a narrowly proven single-routine subset when importing directly here.", 12f, muted, parent = info)
-        val add = button("Choose IPA", true) { authorize() }; add.isEnabled = !SharedCatalog.isBusy()
+        val previousScroll = if (currentScreen == Screen.LIBRARY) currentScroll?.scrollY ?: 0 else 0
+        selected = null
+        screen(Screen.LIBRARY)
+        renderedSharedBusy = SharedCatalog.isBusy()
+        currentScroll?.let { scroll ->
+            if (previousScroll > 0) scroll.post { if (currentScroll === scroll) scroll.scrollTo(0, previousScroll) }
+        }
+        text("YOUR COLLECTION  /  CONVERTER", 10f, accent, true).letterSpacing = 0.08f
+        text("Game Library", 30f, textColor, true)
+        text("Choose a game to see its analysis and build options.", 14f, muted)
+
+        val actions = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
+        body.addView(actions)
+        val add = button("Add IPA", true, actions) { authorize() }.apply { isEnabled = !SharedCatalog.isBusy() }
+        add.layoutParams = LinearLayout.LayoutParams(0, -2, 1f).apply { rightMargin = dp(5); topMargin = dp(10) }
+        val settings = button("Settings", parent = actions) { settingsScreen() }.apply { isEnabled = !SharedCatalog.isBusy() }
+        settings.layoutParams = LinearLayout.LayoutParams(0, -2, 1f).apply { leftMargin = dp(5); topMargin = dp(10) }
         button("Import folder of IPAs") {
             startActivity(Intent().setClassName(this, "org.podnative.MainActivity").putExtra("importIpaFolder", true))
         }.isEnabled = !SharedCatalog.isBusy()
-        if (SharedCatalog.isBusy() && !Jobs.busy) text("Emulator is updating the shared library. New entries will appear here when it finishes.", 13f, muted)
-        button("Settings", parent = body) { settingsScreen() }.isEnabled = !SharedCatalog.isBusy()
+
+        if (SharedCatalog.isBusy() && !Jobs.busy) text("Emulator is updating the shared library. New entries will appear when it finishes.", 13f, muted)
         if (Jobs.busy) {
             wasBusy = true
             addJobProgressCard()
         } else if (Jobs.message.startsWith("Failed")) text(Jobs.message, 14f, statusColor("FAILED"))
-        text("Game Library", 23f, textColor, true)
+
         val entries = library.entries()
-        text("${entries.size} imported ${if (entries.size == 1) "application" else "applications"} · private device storage", 12f, muted)
+        text("${entries.size} ${if (entries.size == 1) "game" else "games"} · stored on this device", 12f, muted)
         if (entries.isEmpty()) {
-            val empty = card(); text("Your library starts here", 19f, textColor, true, empty)
-            text("Select an .ipa you own or have permission to convert. Encrypted and FairPlay-protected binaries are never decrypted.", 14f, muted, parent = empty)
-        }
-        entries.take(visibleEntries).forEach { (dir, report) ->
-            val item = card(); val app = report.optJSONObject("application") ?: JSONObject()
-            val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }; item.addView(row)
-            val iconPath = sharedIcon(dir)
-            val icon = ImageView(this).apply {
-                setImageResource(dev.radek.conventor.R.drawable.ic_launcher)
-                contentDescription = report.optJSONObject("icon")?.optString("reason")?.takeIf { it.isNotBlank() } ?: "Icon unavailable"
+            val empty = card()
+            text("Your games, in one place", 19f, textColor, true, empty)
+            text("Add an IPA you own, or import games in Emulator. Their shared sources appear here without automatic Converter analysis.", 14f, muted, parent = empty)
+            text("Encrypted and FairPlay-protected binaries are never decrypted.", 12f, muted, parent = empty)
+        } else {
+            val width = resources.configuration.screenWidthDp
+            val columns = SharedTheme.gridColumns(width, resources.configuration.fontScale)
+            val grid = LinearLayout(this).apply {
+                id = dev.radek.conventor.R.id.converter_game_grid
+                orientation = LinearLayout.VERTICAL
             }
-            // Decode off the main thread, downsampled: decoding hundreds of
-            // full-size icons synchronously is what froze large libraries.
-            IconLoader.load(iconPath, dp(56)) { bitmap ->
-                if (bitmap != null) {
-                    icon.setImageBitmap(bitmap)
-                    icon.contentDescription = "Application icon"
+            body.addView(grid, LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(12) })
+            val visible = entries.take(visibleEntries)
+            visible.chunked(columns).forEach { group ->
+                val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.TOP }
+                grid.addView(row)
+                for (column in 0 until columns) {
+                    val cell = if (column < group.size) gameTile(group[column].first, group[column].second, columns) else View(this)
+                    row.addView(cell, LinearLayout.LayoutParams(0, -2, 1f).apply {
+                        setMargins(if (column == 0) 0 else dp(4), 0, if (column == columns - 1) 0 else dp(4), dp(10))
+                    })
                 }
             }
-            icon.background = rounded(if (lightMode) Color.rgb(232, 240, 237) else Color.rgb(28, 57, 49))
-            icon.clipToOutline = true
-            icon.scaleType = ImageView.ScaleType.CENTER_CROP
-            row.addView(icon, LinearLayout.LayoutParams(dp(64), dp(64)).apply { rightMargin = dp(16) })
-            val labels = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }; row.addView(labels, LinearLayout.LayoutParams(0, -2, 1f))
-            text(app.optString("name", "Import failed"), 19f, textColor, true, labels)
-            text(app.optString("bundleId", "No metadata available"), 12f, muted, parent = labels)
-            app.optString("minimumIOSVersion").takeIf { it.isNotBlank() }?.let { text("Minimum iOS $it", 11f, muted, parent = labels) }
-            val state = report.optString("state", "FAILED")
-            text(state.replace('_', ' '), 11f, statusColor(state), true, item).apply {
-                letterSpacing = 0.06f
-                setPadding(dp(10), dp(6), dp(10), dp(6))
-                background = rounded(if (lightMode) Color.rgb(232, 240, 237) else Color.rgb(27, 50, 45))
-            }
-            report.optJSONObject("portProgress")?.let { port ->
-                val androidLink = report.optJSONObject("androidLink")
-                val linkStatus = androidLink?.optString("status", "NOT_REPORTED") ?: "NOT_REPORTED"
-                val linkVerified = isVerifiedAndroidCodeArtifact(androidLink)
-                val percent = if (linkVerified) {
-                    androidLink?.optDouble("androidLinkedTextPercent", port.optDouble("percent", 0.0)) ?: 0.0
-                } else 0.0
-                val linkSummary = when {
-                    linkVerified && linkStatus == "VERIFIED_ANDROID_APK_LIBRARY" ->
-                        "Verified Android APK code-byte coverage: ${formatPortPercent(percent)}% · gameplay not tested"
-                    linkVerified && linkStatus == "VERIFIED_ANDROID_SHARED_LIBRARY" ->
-                        "Verified Android ELF code-byte coverage: ${formatPortPercent(percent)}% · standalone, not a game APK"
-                    else -> "Verified Android-linked code-byte coverage: 0% · no ELF/APK link verified"
-                }
-                val planPercent = report.optJSONObject("staticRecompilationPlan")
-                    ?.takeIf { it.optString("status", "") in listOf("COMPUTED", "TRUNCATED") }
-                    ?.optDouble("percent", 0.0)
-                val planClause = if (planPercent != null) " · host plan: ${formatPortPercent(planPercent)}% of __text (not linked)" else ""
-                text("$linkSummary$planClause", 11f, statusColor(if (linkVerified) "SUPPORTED" else "BLOCKED"), true, item)
-            }
-            report.optJSONObject("analysisProgress")?.let { analysis ->
-                val value = analysis.optInt("percent", 0)
-                text("IPA analysis: $value% · ${analysis.optString("stage", "queued")} · not an APK-build score", 12f, textColor, true, item)
-                progressIndicator(item, value, 6)
-                text(analysis.optString("message"), 11f, muted, parent = item)
-            }
-            report.optJSONObject("conversionProgress")?.let { conversion ->
-                text("Complete-game APK: ${conversion.optString("status", "NOT_BUILT")} · ${conversion.optString("message")}", 11f, muted, parent = item)
-            }
-            report.optJSONObject("apiMapping")?.let { mapping ->
-                val mapped = mapping.optInt("mappedNameCandidates", 0)
-                val total = mapping.optInt("distinctImportSymbols", 0)
-                val coverage = AndroidApiMapper.coveragePercent(mapped, total)
-                val semantic = mapping.optInt("semanticRewriteCandidates", 0)
-                val compilerRuntime = mapping.optInt("compilerRuntimeCandidateCount", 0)
-                val classified = mapping.optInt("classifiedImportSymbols", 0)
-                val triage = mapping.optInt("classificationCoveragePercent", 0)
-                val unmapped = mapping.optInt("unmappedSymbolCount", 0)
-                val verified = mapping.optInt("runtimeVerifiedNdkCandidates", 0)
-                // Legacy report key: count guest-adapter catalog matches, not
-                // per-image runtime bindings or semantic API implementations.
-                val compatCount = mapping.optInt("concreteDarwinProviderCount", 0)
-                val providerCount = mapping.optInt("runtimeProviderCount", 0)
-                val providerPercent = AndroidApiMapper.coveragePercent(providerCount, total)
-                val providerSummary = "catalogued import providers: $providerCount/$total ($providerPercent%)"
-                val totalVerifiedDevice = mapping.optJSONObject("evidence")
-                    ?.optInt("exportsVerifiedOnThisDevice", verified)
-                    ?: verified
-                val verifiedPercent = AndroidApiMapper.coveragePercent(totalVerifiedDevice, total)
-                val verifiedCandidateCount = mapping.optInt("runtimeVerifiedCandidateCount", mapped)
-                val verifiedCandidatePercent = AndroidApiMapper.coveragePercent(verified, verifiedCandidateCount)
-                val runtimeApi = mapping.optInt("runtimeVerifiedAndroidApiLevel", 0)
-                val runtimeStatus = mapping.optString("runtimeNdkResolverStatus", "NOT_RUN")
-                val runtimeSummary = if (runtimeStatus == "CURRENT_DEVICE_DLSYM")
-                    "Android API $runtimeApi exact exports: $verified/$verifiedCandidateCount NDK candidates ($verifiedCandidatePercent%); $totalVerifiedDevice/$total imports ($verifiedPercent%)"
-                else "device export check not run"
-                val runtimeLinked = report.optJSONObject("apiImplementationGeneration")?.optBoolean("runtimeLibraryLinked", false) == true
-                val guestRuntimeProviders = mapping.optInt("guestRuntimeProviderCount", compatCount)
-                val guestRuntimeCatalogStatus = mapping.optString("guestRuntimeProviderCatalogStatus", "NOT_REPORTED")
-                val compilerRuntimeGuestProviders = mapping.optInt("compilerRuntimeGuestProviderCount", 0)
-                val compatSummary = when {
-                    runtimeLinked -> "libioscompat.so runtime linked; individual IPA callsites were not rewritten"
-                    guestRuntimeProviders > 0 -> "$guestRuntimeProviders/$total guest-runtime adapter catalog name match(es); actual import-slot binding is reported at game launch"
-                    guestRuntimeCatalogStatus == "NO_MATCHES" -> "no guest-runtime adapter catalog names matched this IPA"
-                    else -> "guest-runtime adapter catalog status unavailable"
-                }
-                val compilerSummary = if (compilerRuntime > 0) " · compiler-rt/libunwind candidates: $compilerRuntime ($compilerRuntimeGuestProviders have guest-runtime adapter entries; no static NDK link)" else ""
-                val generated = report.optJSONObject("hostConversion")?.optInt("generatedApiReplacements", 0) ?: 0
-                val stubs = mapping.optInt("compatStubHandlerCount", 0)
-                val stubSummary = if (stubs > 0) "$stubs compat stub handlers (unimplemented; not API bodies) · " else ""
-                val summary = if (total == 0) "API symbol triage: N/A (no imported symbols) · $compatSummary$compilerSummary · generated replacements: $generated"
-                    else "Symbol triage: $triage% ($classified/$total) · $providerSummary · ${mappingCoverageSummary(mapping)} · $runtimeSummary · $compatSummary$compilerSummary · $stubSummary$semantic semantic · $unmapped unmapped · generated replacements: $generated"
-                text(summary, 11f, muted, parent = item)
-            }
-            report.optJSONObject("hostConversion")?.takeIf { it.optString("status") == "ATTACHED" }?.let { host ->
-                val origin = if (host.optString("origin") == "ON_DEVICE") "Complete-game conversion built on-device" else "Complete-game host APK attached"
-                text("$origin · ABI ${host.optString("targetAbi")} · ${host.optInt("nativeCodeBytes", 0)} generated native-code bytes · runtime not tested", 11f, accent, parent = item)
-            }
-            text("v${app.optString("version", "—")}  ·  ${architectures(report)}  ·  ${formatBytes(app.optLong("fileSize"))}", 12f, muted, parent = item)
-            item.isClickable = true; item.setOnClickListener { detail(dir) }; item.contentDescription = "View ${app.optString("name")} details"
         }
         if (entries.size > visibleEntries) {
-            button("Show ${entries.size - visibleEntries} more application(s)") {
-                visibleEntries += 120
+            button("Show more games (${entries.size - visibleEntries} remaining)") {
+                visibleEntries += 60
                 home()
             }
         }
-        text("v${packageManager.getPackageInfo(packageName, 0).versionName}  /  ARM64 Android  /  offline inspection", 11f, muted)
+        val info = card()
+        text("Analysis is manual", 15f, textColor, true, info)
+        text("Emulator imports share their original private source. Open a game and choose Analyze when you want a Converter report. A narrowly proven single-routine IPA may still be built during explicit analysis.", 12f, muted, parent = info)
+        text("Builds are experimental and do not guarantee gameplay.", 12f, muted, parent = info)
+    }
+
+    private fun gameTile(dir: File, report: JSONObject, columns: Int): View {
+        val name = library.displayTitle(dir, report)
+        val metadata = library.metadata(dir)
+        val state = report.optString("state", "FAILED")
+        val stateLabel = when (state) {
+            "SHARED_SOURCE" -> "Not analyzed"
+            "READY" -> "Ready"
+            "PARTIAL" -> "Partial"
+            "BLOCKED" -> "Blocked"
+            "FAILED" -> "Analysis failed"
+            else -> state.lowercase(Locale.ROOT).replace('_', ' ').replaceFirstChar { it.titlecase(Locale.ROOT) }
+        }
+        val item = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(9), dp(9), dp(9), dp(11))
+            background = SharedTheme.glassRipple(this@MainActivity, 18)
+            isFocusable = true
+            isClickable = true
+            contentDescription = "Open $name details, $stateLabel"
+            setOnClickListener { detail(dir) }
+            SharedTheme.pressFeedback(this)
+        }
+        val artwork = FrameLayout(this).apply {
+            background = SharedTheme.artwork(this@MainActivity, 16)
+            clipToOutline = true
+        }
+        val placeholder = ImageView(this).apply {
+            setImageResource(dev.radek.conventor.R.drawable.ic_game_outline)
+            imageTintList = android.content.res.ColorStateList.valueOf(accent)
+            importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO
+        }
+        artwork.addView(placeholder, FrameLayout.LayoutParams(dp(32), dp(32), Gravity.CENTER))
+        val iconPath = sharedIcon(dir)
+        if (iconPath.isFile) {
+            val icon = ImageView(this).apply {
+                scaleType = ImageView.ScaleType.CENTER_CROP
+                importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO
+            }
+            artwork.addView(icon, FrameLayout.LayoutParams(-1, -1))
+            IconLoader.load(iconPath, dp(256)) { bitmap -> if (bitmap != null) icon.setImageBitmap(bitmap) }
+        }
+        val artworkHeight = SharedTheme.artworkSizeDp(resources.configuration.screenWidthDp, columns)
+        item.addView(artwork, LinearLayout.LayoutParams(dp(artworkHeight), dp(artworkHeight)).apply {
+            gravity = Gravity.CENTER_HORIZONTAL
+        })
+        fun tileLabel(value: String, size: Float, color: Int, bold: Boolean = false): TextView = TextView(this).apply {
+            text = value; textSize = size; setTextColor(color)
+            typeface = SharedTheme.typeface(this@MainActivity, bold)
+            includeFontPadding = false
+        }
+        item.addView(tileLabel(name, 13f, textColor, true).apply {
+            maxLines = 2; ellipsize = TextUtils.TruncateAt.END; minHeight = dp(32)
+        }, LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(8) })
+        val kind = metadata?.optString("kind")?.takeIf { it.isNotBlank() } ?: report.optJSONObject("source")?.optString("kind").orEmpty()
+        val architecture = metadata?.optString("architecture")?.takeIf { it.isNotBlank() } ?: architectures(report)
+        val subtitle = listOf(architecture, kind).filter { it.isNotBlank() }.joinToString(" · ")
+        item.addView(tileLabel(subtitle, 10f, muted).apply { maxLines = 1; ellipsize = TextUtils.TruncateAt.END },
+            LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(5) })
+        item.addView(tileLabel(stateLabel, 10f, if (state == "SHARED_SOURCE") muted else statusColor(state), true).apply {
+            maxLines = 1; ellipsize = TextUtils.TruncateAt.END
+        }, LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(6) })
+        return item
     }
     private fun settingsScreen() {
         if (Jobs.busy) return
-        screen()
-        currentScreen = Screen.SETTINGS
-        button("← Back") { home() }
+        screen(Screen.SETTINGS)
+        button("Game Library") { home() }
         text("Settings", 28f, textColor, true)
         text("Appearance and host analysis target architecture.", 14f, muted)
 
@@ -619,7 +671,7 @@ class MainActivity : Activity() {
                 .setNegativeButton("Cancel", null)
                 .show()
         }
-        text("Automatic analysis prefers the ARM64 slice in a FAT IPA containing both 32-bit and 64-bit code. Supported ARM32-only inputs select a 32-bit ARMv7 target.", 12f, muted, parent = host)
+        text("When analysis is requested, the automatic ABI setting prefers the ARM64 slice in a FAT IPA containing both 32-bit and 64-bit code. Supported ARM32-only inputs select a 32-bit ARMv7 target.", 12f, muted, parent = host)
         text("This preference only affects the copied host analysis command. It does not mean a game APK can currently be generated.", 12f, muted, parent = host)
 
         button("Restore defaults") {
@@ -685,9 +737,29 @@ class MainActivity : Activity() {
                 }) home()
             }.show()
     }
+    private fun detailArtwork(dir: File) {
+        val artwork = FrameLayout(this).apply {
+            background = SharedTheme.artwork(this@MainActivity, 20)
+            clipToOutline = true
+            importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO
+        }
+        val placeholder = ImageView(this).apply {
+            setImageResource(dev.radek.conventor.R.drawable.ic_game_outline)
+            imageTintList = android.content.res.ColorStateList.valueOf(accent)
+        }
+        artwork.addView(placeholder, FrameLayout.LayoutParams(dp(36), dp(36), Gravity.CENTER))
+        val iconPath = sharedIcon(dir)
+        if (iconPath.isFile) {
+            val icon = ImageView(this).apply { scaleType = ImageView.ScaleType.CENTER_CROP }
+            artwork.addView(icon, FrameLayout.LayoutParams(-1, -1))
+            IconLoader.load(iconPath, dp(96)) { bitmap -> if (bitmap != null) icon.setImageBitmap(bitmap) }
+        }
+        body.addView(artwork, LinearLayout.LayoutParams(dp(96), dp(96)).apply {
+            gravity = Gravity.CENTER_HORIZONTAL; topMargin = dp(14)
+        })
+    }
     private fun detail(dir: File, restoreScrollY: Int = 0) {
-        selected = dir; screen()
-        currentScreen = Screen.DETAIL
+        selected = dir; screen(Screen.DETAIL)
         if (Jobs.busy && returnToDetailAfterJob == dir) addDetailJobOverlay()
         val scroll = currentScroll
         if (restoreScrollY > 0) scroll?.post { if (currentScroll === scroll) scroll.scrollTo(0, restoreScrollY) }
@@ -698,10 +770,26 @@ class MainActivity : Activity() {
             home()
             return
         }
+        val name = library.displayTitle(dir, report)
+        button("Game Library") { home() }
+        detailArtwork(dir)
+        text(name, 28f, textColor, true)
         if (report.optString("state") == "SHARED_SOURCE") {
-            button("← Game Library") { home() }
-            text(report.optJSONObject("application")?.optString("name", "Shared application") ?: "Shared application", 28f, textColor, true)
+            text("Not analyzed", 12f, muted, true)
             text("One source copy, shared with Emulator. Analysis and generated APKs never replace it.", 15f, muted)
+            val shared = library.metadata(dir)
+            val sourceInfo = card()
+            for ((label, value) in listOf(
+                "Source" to shared?.optString("kind").orEmpty(),
+                "Architecture" to shared?.optString("architecture").orEmpty(),
+                "Bundle ID" to shared?.optString("bundleId").orEmpty(),
+                "Version" to shared?.optString("version").orEmpty(),
+            )) {
+                if (value.isNotBlank()) {
+                    text(label.uppercase(Locale.ROOT), 10f, muted, true, sourceInfo)
+                    text(value, 15f, parent = sourceInfo)
+                }
+            }
             text(report.optString("nextBlocker"), 14f, muted)
             if (report.optString("sharedSourceKind") in setOf("IPA", "Folder", "Executable")) {
                 button("Analyze shared source", true) { startSharedAnalysis(dir) }.isEnabled = !SharedCatalog.isBusy()
@@ -711,21 +799,6 @@ class MainActivity : Activity() {
         }
         val app = report.optJSONObject("application") ?: JSONObject()
         val ipaSource = SourcePolicy.supportsIpaPackaging(report)
-        button("← Game Library") { home() }
-        val iconPath = sharedIcon(dir)
-        if (iconPath.isFile) {
-            val icon = ImageView(this).apply {
-                setImageResource(dev.radek.conventor.R.drawable.ic_launcher)
-                contentDescription = "${app.optString("name", "Application")} icon"
-                scaleType = ImageView.ScaleType.FIT_CENTER
-            }
-            body.addView(icon, LinearLayout.LayoutParams(dp(84), dp(84)).apply { gravity = Gravity.CENTER_HORIZONTAL; topMargin = dp(10) })
-            IconLoader.load(iconPath, dp(84)) { bitmap ->
-                if (bitmap != null)
-                    icon.setImageBitmap(bitmap)
-            }
-        }
-        text(app.optString("name", "Application details"), 28f, textColor, true)
         val state = report.optString("state"); text(state, 12f, statusColor(state), true)
         val metadata = card()
         for ((name, value) in listOf(

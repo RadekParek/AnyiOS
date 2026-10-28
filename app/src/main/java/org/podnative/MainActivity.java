@@ -29,6 +29,7 @@ import android.widget.ProgressBar;
 import android.widget.ScrollView;
 import android.widget.TextView;
 import dev.radek.conventor.SharedCatalog;
+import dev.radek.conventor.SharedTheme;
 import java.io.ByteArrayOutputStream;
 import java.io.File;
 import java.io.InputStream;
@@ -58,7 +59,7 @@ public final class MainActivity extends Activity {
     private int background, surface, ink, muted, line, accent, soft;
     private long renderedRevision;
     private boolean renderedBusy;
-    private String renderedNotice = "";
+    private String renderedNotice = "", renderedTab = "";
     private final Runnable libraryChanged = () -> {
         if (isFinishing() || isDestroyed())
             return;
@@ -159,6 +160,7 @@ public final class MainActivity extends Activity {
         StringBuilder notices = new StringBuilder();
         appendNoticeAsset(notices, "anyiose-runtime-notices.txt", "AnyiOSEMU provenance");
         appendNoticeAsset(notices, "LICENSE", "Mozilla Public License 2.0");
+        appendNoticeAsset(notices, "typography/manrope-ofl.txt", "Manrope font license");
         String[] noticeAssets = {"vendor/SDL/LICENSE.txt", "vendor/dynarmic/LICENSE.txt",
             "vendor/dynarmic/README.md", "vendor/openal-soft/COPYING", "vendor/libxml2/Copyright",
             "vendor/stb/LICENSE", "vendor/PVRTDecompress/LICENSE.md",
@@ -207,21 +209,15 @@ public final class MainActivity extends Activity {
         return drawable;
     }
     private void clickable(View view, int fill, int radius, Runnable action) {
-        view.setBackground(
-            new RippleDrawable(ColorStateList.valueOf(dark ? 0x20ffffff : 0x14000000),
-                shape(fill, radius, false), shape(Color.WHITE, radius, false)));
+        if (fill == surface)
+            view.setBackground(SharedTheme.glassRipple(this, radius));
+        else
+            view.setBackground(
+                new RippleDrawable(ColorStateList.valueOf(dark ? 0x20ffffff : 0x14000000),
+                    shape(fill, radius, false), shape(Color.WHITE, radius, false)));
         view.setFocusable(true);
-        view.setOnClickListener(v -> {
-            if (android.animation.ValueAnimator.areAnimatorsEnabled()) {
-                v.animate()
-                    .scaleX(0.97f)
-                    .scaleY(0.97f)
-                    .setDuration(70)
-                    .withEndAction(() -> v.animate().scaleX(1).scaleY(1).setDuration(140).start())
-                    .start();
-            }
-            action.run();
-        });
+        SharedTheme.pressFeedback(view);
+        view.setOnClickListener(v -> action.run());
     }
     private TextView text(String content, int size, int textColor, boolean bold) {
         TextView view = new TextView(this);
@@ -229,8 +225,7 @@ public final class MainActivity extends Activity {
         view.setTextSize(size);
         view.setTextColor(textColor);
         view.setFontFeatureSettings("kern");
-        view.setTypeface(
-            Typeface.create(bold ? "sans-serif-medium" : "sans-serif", Typeface.NORMAL));
+        view.setTypeface(SharedTheme.typeface(this, bold));
         view.setLineSpacing(dp(2), 1);
         view.setIncludeFontPadding(false);
         return view;
@@ -243,7 +238,7 @@ public final class MainActivity extends Activity {
         view.setAllCaps(false);
         view.setText(label);
         view.setTextSize(15);
-        view.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
+        view.setTypeface(SharedTheme.typeface(this, true));
         view.setMinHeight(dp(50));
         view.setMinimumWidth(0);
         view.setMinWidth(0);
@@ -262,20 +257,10 @@ public final class MainActivity extends Activity {
     private LinearLayout card(LinearLayout parent) {
         LinearLayout card = column();
         card.setPadding(dp(18), dp(18), dp(18), dp(18));
-        card.setBackground(shape(surface, 22, true));
+        card.setBackground(SharedTheme.glass(this, 22));
         LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(-1, -2);
         lp.topMargin = dp(16);
         parent.addView(card, lp);
-        if (android.animation.ValueAnimator.areAnimatorsEnabled()) {
-            card.setAlpha(0);
-            card.setTranslationY(dp(12));
-            card.animate()
-                .alpha(1)
-                .translationY(0)
-                .setStartDelay(Math.min(160, parent.getChildCount() * 18))
-                .setDuration(260)
-                .start();
-        }
         return card;
     }
     private void heading(LinearLayout parent, String title, String subtitle) {
@@ -302,7 +287,7 @@ public final class MainActivity extends Activity {
         if (android.os.Build.VERSION.SDK_INT >= 30)
             getWindow().getInsetsController().show(WindowInsets.Type.systemBars());
         LinearLayout root = column();
-        root.setBackgroundColor(background);
+        root.setBackground(SharedTheme.canvas(this));
         root.setOnApplyWindowInsetsListener((view, insets) -> {
             if (android.os.Build.VERSION.SDK_INT >= 30) {
                 android.graphics.Insets bars = insets.getInsets(
@@ -314,23 +299,21 @@ public final class MainActivity extends Activity {
             return insets;
         });
         LinearLayout brand = row();
-        brand.setPadding(dp(22), dp(16), dp(22), dp(8));
+        brand.setPadding(dp(20), dp(12), dp(20), dp(10));
         ImageView logo = new ImageView(this);
         logo.setImageResource(R.drawable.ic_brand);
+        logo.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_NO);
         brand.addView(logo, new LinearLayout.LayoutParams(dp(32), dp(32)));
-        TextView wordmark = text("AnyiOS", 20, ink, true);
-        LinearLayout.LayoutParams wordmarkLp = new LinearLayout.LayoutParams(0, -2, 1);
-        wordmarkLp.leftMargin = dp(10);
-        brand.addView(wordmark, wordmarkLp);
-        TextView preview = text("EMULATOR", 10, accent, true);
-        preview.setLetterSpacing(0.08f);
-        preview.setPadding(dp(10), dp(7), dp(10), dp(7));
-        preview.setBackground(shape(soft, 8, false));
-        brand.addView(preview);
+        LinearLayout brandText = column();
+        LinearLayout.LayoutParams brandTextLp = new LinearLayout.LayoutParams(0, -2, 1);
+        brandTextLp.leftMargin = dp(10);
+        brand.addView(brandText, brandTextLp);
+        brandText.addView(text("AnyiOS", 19, ink, true));
+        TextView moduleName = text("EMULATOR", 10, accent, true);
+        moduleName.setLetterSpacing(0.08f);
+        brandText.addView(moduleName);
+        brand.addView(SharedTheme.moduleButton(this));
         root.addView(brand);
-        brand.setContentDescription("AnyiOS AnyiOSEMU. Tap to return to module selection.");
-        brand.setFocusable(true);
-        brand.setOnClickListener(v -> finish());
         ScrollView scroll = new ScrollView(this);
         scroll.setFillViewport(true);
         scroll.setClipToPadding(false);
@@ -349,7 +332,7 @@ public final class MainActivity extends Activity {
         divider.setBackgroundColor(line);
         root.addView(divider, new LinearLayout.LayoutParams(-1, dp(1)));
         LinearLayout navigation = row();
-        navigation.setBackgroundColor(surface);
+        navigation.setBackground(SharedTheme.glass(this, 0));
         navigation.setPadding(dp(10), dp(7), dp(10), dp(7));
         String[] titles = {"Library", "Settings", "Diagnostics"};
         int[] icons = {R.drawable.ic_library, R.drawable.ic_settings, R.drawable.ic_diagnostics};
@@ -377,6 +360,9 @@ public final class MainActivity extends Activity {
         renderedNotice = library.notice;
         setContentView(root);
         root.requestApplyInsets();
+        if (!tab.equals(renderedTab))
+            SharedTheme.reveal(content);
+        renderedTab = tab;
     }
     private void libraryPage(LinearLayout parent) {
         List<GameLibrary.Game> games = library.games();
@@ -392,7 +378,7 @@ public final class MainActivity extends Activity {
                       : new LinearLayout.LayoutParams(0, -2, 1));
         if (largeText)
             gap(titleRow, 12);
-        Button add = action("＋ Add game", true, this::addGame);
+        Button add = action("Add game", true, this::addGame);
         add.setEnabled(!SharedCatalog.isBusy());
         add.setAlpha(SharedCatalog.isBusy() ? 0.5f : 1);
         titleRow.addView(add);
@@ -432,12 +418,10 @@ public final class MainActivity extends Activity {
             empty.addView(button, new LinearLayout.LayoutParams(-1, -2));
         } else {
             gap(parent, 18);
-            // Emulator-style grid: three tiles per row on phones, four on tablets, and a
-            // readable single column only when the window or text scale demands it.
+            // Both modules use the same responsive tile widths and artwork sizing.
             int width = getResources().getConfiguration().screenWidthDp;
-            int columns = width < 320 || getResources().getConfiguration().fontScale > 1.45f ? 1
-                : width >= 840                                                               ? 4
-                                                                                             : 3;
+            int columns =
+                SharedTheme.gridColumns(width, getResources().getConfiguration().fontScale);
             for (int index = 0; index < games.size(); index += columns) {
                 LinearLayout grid = row();
                 grid.setGravity(Gravity.TOP);
@@ -507,16 +491,13 @@ public final class MainActivity extends Activity {
             + (game.canLaunchInAnyiOSEMU() ? ", open details to launch with AnyiOS"
                                            : ", game launch unavailable"));
         FrameLayout artwork = new FrameLayout(this);
-        GradientDrawable artworkBackdrop = new GradientDrawable(GradientDrawable.Orientation.TL_BR,
-            new int[] {color(dark ? "#174C38" : "#CAF2DD"), color(dark ? "#15342C" : "#E4F4BC")});
-        artworkBackdrop.setCornerRadius(dp(16));
-        artwork.setBackground(artworkBackdrop);
+        artwork.setBackground(SharedTheme.artwork(this, 16));
         artwork.setClipToOutline(true);
-        TextView letter = text(game.title.substring(0, game.title.offsetByCodePoints(0, 1))
-                                   .toUpperCase(java.util.Locale.ROOT),
-            30, accent, true);
-        letter.setGravity(Gravity.CENTER);
-        artwork.addView(letter, new FrameLayout.LayoutParams(-1, -1));
+        ImageView placeholder = new ImageView(this);
+        placeholder.setImageResource(dev.radek.conventor.R.drawable.ic_game_outline);
+        placeholder.setImageTintList(ColorStateList.valueOf(accent));
+        placeholder.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_NO);
+        artwork.addView(placeholder, new FrameLayout.LayoutParams(dp(32), dp(32), Gravity.CENTER));
         if (game.cover().isFile()) {
             ImageView image = new ImageView(this);
             image.setScaleType(ImageView.ScaleType.CENTER_CROP);
@@ -527,9 +508,11 @@ public final class MainActivity extends Activity {
         // A square cover adapts to the current window and grid, not a fixed
         // phone-width rectangle; cap very large tablet tiles to save memory.
         int windowDp = getResources().getConfiguration().screenWidthDp;
-        int artworkDp =
-            Math.max(76, Math.min(180, (windowDp - 44 - (columns - 1) * 8) / columns - 18));
-        card.addView(artwork, new LinearLayout.LayoutParams(-1, dp(artworkDp)));
+        int artworkDp = SharedTheme.artworkSizeDp(windowDp, columns);
+        LinearLayout.LayoutParams artworkLp =
+            new LinearLayout.LayoutParams(dp(artworkDp), dp(artworkDp));
+        artworkLp.gravity = Gravity.CENTER_HORIZONTAL;
+        card.addView(artwork, artworkLp);
         gap(card, 8);
         TextView title = text(game.title, 13, ink, true);
         title.setMaxLines(2);
@@ -537,7 +520,7 @@ public final class MainActivity extends Activity {
         title.setMinHeight(dp(32));
         card.addView(title);
         gap(card, 5);
-        TextView subtitle = text(game.architecture + " · " + game.kind, 9, muted, false);
+        TextView subtitle = text(game.architecture + " · " + game.kind, 10, muted, false);
         subtitle.setMaxLines(1);
         subtitle.setEllipsize(TextUtils.TruncateAt.END);
         card.addView(subtitle);
@@ -546,7 +529,7 @@ public final class MainActivity extends Activity {
         String chip = !game.canLaunchInAnyiOSEMU()
             ? game.status.equals("Encrypted") ? "Encrypted" : game.status
             : game.architectureChip() + " · experimental";
-        TextView status = text(chip, 9, accent, true);
+        TextView status = text(chip, 10, accent, true);
         status.setPadding(dp(7), dp(4), dp(7), dp(4));
         status.setBackground(shape(soft, 6, false));
         status.setMaxLines(1);
@@ -1289,7 +1272,7 @@ public final class MainActivity extends Activity {
         LinearLayout root = column();
         root.setBackgroundColor(color("#10141D"));
         root.setPadding(dp(12), dp(10), dp(12), 0);
-        Button back = action("‹  Stop graphics test", false, this::stop);
+        Button back = action("Stop graphics test", false, this::stop);
         root.addView(back, new LinearLayout.LayoutParams(-1, -2));
         liveStatus = text("Initializing embedded ANGLE…", 11, color("#CCD6EC"), false);
         liveStatus.setMaxLines(3);
@@ -1363,7 +1346,7 @@ public final class MainActivity extends Activity {
             tab = "Library";
             home();
         } else
-            super.onBackPressed();
+            SharedTheme.openModules(this);
     }
     @Override
     protected void onActivityResult(int request, int result, Intent data) {
