@@ -43,8 +43,9 @@
 ### Validation / limits
 - Host CTest exercises recorded GLES1/GLES2/EGL calls, surface replacement,
   display-link ownership, frame signaling and paused/resumed monotonic timers.
-  CI now also runs the GLES/EGL and frame-clock recording-mock tests. Java helper
-  and Kotlin mapper tests use local stub harnesses; CI runs the actual Android
+  CI now also runs the GLES/EGL and frame-clock recording-mock tests and the
+  embedded game-template Robolectric tests on release builds. Java helper and
+  Kotlin mapper tests use local stub harnesses; CI runs the actual Android
   build/tests. No real device, GPU output, gameplay or game-speed result
   was verified. The GLES2 subset does not implement sharegroups, multiple guest
   contexts, all extensions or complete drawable/depth/stencil semantics. The

@@ -273,7 +273,7 @@ jobs:
           elif [ "$VARIANT" = debug ]; then
             gradle --no-daemon --build-cache --parallel :app:lintDebug :app:testDebugUnitTest :converter:lintDebug :converter:testDebugUnitTest :gameruntime-template:testDebugUnitTest :anyiose-template:testDebugUnitTest :app:assembleDebug 2>&1 | tee .local/logs/android-build.log
           else
-            gradle --no-daemon --build-cache --parallel :app:lintRelease :app:testReleaseUnitTest :converter:lintRelease :converter:testReleaseUnitTest :anyiose-template:testReleaseUnitTest :app:assembleRelease 2>&1 | tee .local/logs/android-build.log
+            gradle --no-daemon --build-cache --parallel :app:lintRelease :app:testReleaseUnitTest :converter:lintRelease :converter:testReleaseUnitTest :gameruntime-template:testDebugUnitTest :anyiose-template:testReleaseUnitTest :app:assembleRelease 2>&1 | tee .local/logs/android-build.log
           fi
       - name: Verify Android Dynarmic target architecture
         env:
