@@ -18,6 +18,7 @@ import re
 import shutil
 import struct
 import subprocess
+import tempfile
 import zipfile
 from pathlib import Path
 
@@ -43,6 +44,26 @@ def _file_sha256(path: Path) -> str:
         for chunk in iter(lambda: handle.read(1024 * 1024), b""):
             digest.update(chunk)
     return digest.hexdigest()
+
+
+def _inside_directory(root: Path, path: Path) -> bool:
+    try:
+        path.resolve().relative_to(root.resolve())
+        return True
+    except (OSError, RuntimeError, ValueError):
+        return False
+
+
+def _atomic_copy(source: Path, destination: Path) -> None:
+    """Publish a file without following a pre-existing destination symlink."""
+    fd, name = tempfile.mkstemp(prefix="." + destination.name + "-", suffix=".tmp", dir=destination.parent)
+    pending = Path(name)
+    try:
+        with os.fdopen(fd, "wb") as target, source.open("rb") as original:
+            shutil.copyfileobj(original, target, 1024 * 1024)
+        os.replace(pending, destination)
+    finally:
+        pending.unlink(missing_ok=True)
 
 
 def _host_tags() -> tuple[str, ...]:
@@ -178,9 +199,14 @@ def _load_link_cache(path: Path) -> dict:
 
 
 def _save_link_cache(path: Path, cache: dict) -> None:
-    temporary = path.with_name(path.name + ".tmp")
-    temporary.write_text(json.dumps(cache, indent=2, sort_keys=True), encoding="utf-8")
-    temporary.replace(path)
+    fd, name = tempfile.mkstemp(prefix="." + path.name + "-", suffix=".tmp", dir=path.parent)
+    pending = Path(name)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as stream:
+            stream.write(json.dumps(cache, indent=2, sort_keys=True))
+        pending.replace(path)
+    finally:
+        pending.unlink(missing_ok=True)
 
 
 def _link_failure(status: str, target_abi: str, reason: str) -> dict:
@@ -422,6 +448,8 @@ def _link_generated_with_cmake(
     clang = clang.resolve()
     cmake = str(Path(cmake).resolve())
     link_dir = destination / "android-link" / target_abi
+    if not _inside_directory(destination, link_dir):
+        return _link_failure("BLOCKED_ANDROID_OUTPUT_PATH", target_abi, "link output directory escapes the translation directory")
     link_dir.mkdir(parents=True, exist_ok=True)
     # A CMake cache must never be silently reused with another NDK, compiler,
     # CMake binary, project, or ABI. CMake handles source/header incremental
@@ -433,6 +461,12 @@ def _link_generated_with_cmake(
     )))[:20]
     build_dir = link_dir / ("cmake-build-" + fingerprint)
     output_dir = build_dir / "output"
+    if not _inside_directory(destination, output_dir):
+        return _link_failure("BLOCKED_ANDROID_OUTPUT_PATH", target_abi, "CMake build directory escapes the translation directory")
+    # Do not let a pre-existing cache redirect generated objects or outputs
+    # outside this job. CMake's reviewed project does not create symlinks.
+    if build_dir.is_dir() and any(path.is_symlink() for path in build_dir.rglob("*")):
+        return _link_failure("BLOCKED_ANDROID_OUTPUT_PATH", target_abi, "CMake build directory contains a symlink")
     output_dir.mkdir(parents=True, exist_ok=True)
     _, api_level = _SUPPORTED_ABIS[target_abi]
     commands = [
@@ -473,17 +507,21 @@ def _link_generated_with_cmake(
     verified["attempted"] = True
     if verified["status"] != "VERIFIED_ANDROID_SHARED_LIBRARY":
         rejected = link_dir / "libtranslated_game.unverified.so"
-        shutil.copyfile(built, rejected)
-        verified["unverifiedArtifact"] = str(rejected.relative_to(destination))
+        try:
+            _atomic_copy(built, rejected)
+            verified["unverifiedArtifact"] = str(rejected.relative_to(destination))
+        except OSError as exc:
+            verified["diagnosticArtifactError"] = str(exc)
         verified["linkerOutputTail"] = output[-12000:]
         return verified
     artifact = link_dir / "libtranslated_game.so"
-    temporary = link_dir / "libtranslated_game.so.tmp"
     try:
-        shutil.copyfile(built, temporary)
-        os.replace(temporary, artifact)
-    finally:
-        temporary.unlink(missing_ok=True)
+        _atomic_copy(built, artifact)
+    except OSError as exc:
+        failure = _link_failure("BLOCKED_ANDROID_ARTIFACT_WRITE", target_abi,
+                                f"Verified Android library could not be published: {exc}")
+        failure.update(attempted=True, linkerOutputTail=output[-4000:])
+        return failure
     verified.update(
         artifact=str(artifact.relative_to(destination)), linker=str(clang),
         ndkLinkVerified=True, linkBackend="CMAKE_ANDROID_NDK", cmake=cmake,
@@ -561,10 +599,12 @@ def link_generated_translation(
     triple, api_level = _SUPPORTED_ABIS[target_abi]
     target = f"{triple}{api_level}"
     link_dir = destination / "android-link" / target_abi
+    if not _inside_directory(destination, link_dir):
+        return _link_failure("BLOCKED_ANDROID_OUTPUT_PATH", target_abi, "link output directory escapes the translation directory")
     link_dir.mkdir(parents=True, exist_ok=True)
     artifact = link_dir / "libtranslated_game.so"
     temporary_artifact = link_dir / "libtranslated_game.so.tmp"
-    if temporary_artifact.exists():
+    if temporary_artifact.exists() or temporary_artifact.is_symlink():
         temporary_artifact.unlink()
     flags = [
         f"--target={target}",
@@ -597,6 +637,8 @@ def link_generated_translation(
         f"{clang}|{clang.stat().st_size}|{int(clang.stat().st_mtime)}|{target}"
     )
     object_dir = link_dir / "objects"
+    if not _inside_directory(destination, object_dir):
+        return _link_failure("BLOCKED_ANDROID_OUTPUT_PATH", target_abi, "object directory escapes the translation directory")
     object_dir.mkdir(parents=True, exist_ok=True)
     objects: list[Path] = []
     compiled_units: list[str] = []
@@ -610,13 +652,14 @@ def link_generated_translation(
         if (
             entry.get("key") == key
             and obj.is_file()
+            and not obj.is_symlink()
             and entry.get("objectSha256") == _file_sha256(obj)
         ):
             reused_units.append(obj.name)
             objects.append(obj)
             continue
         cache.pop(obj.name, None)
-        if obj.exists():
+        if obj.exists() or obj.is_symlink():
             obj.unlink()
         compile_command = [
             str(clang), *flags, *[f"-I{d}" for d in include_dirs], "-c", str(unit), "-o", str(obj),
@@ -842,9 +885,9 @@ def prepare_translated_game_runtime_input(
         },
     }
     payload_path = destination / _TRANSLATED_GAME_PAYLOAD_NAME
-    temporary_payload = destination / (_TRANSLATED_GAME_PAYLOAD_NAME + ".tmp")
+    temporary_payload: Path | None = None
     input_path = destination / "translated-game-runtime-input.zip"
-    temporary_input = destination / (input_path.name + ".tmp")
+    temporary_input: Path | None = None
     link_bytes = json.dumps(android_link_report, sort_keys=True, indent=2).encode("utf-8")
     bundle_manifest = {
         "contract": "translated-game-runtime-input-v1",
@@ -880,6 +923,12 @@ def prepare_translated_game_runtime_input(
         },
     }
     try:
+        payload_fd, payload_name = tempfile.mkstemp(prefix=".translated-payload-", suffix=".tmp", dir=destination)
+        os.close(payload_fd)
+        temporary_payload = Path(payload_name)
+        input_fd, input_name = tempfile.mkstemp(prefix=".translated-input-", suffix=".tmp", dir=destination)
+        os.close(input_fd)
+        temporary_input = Path(input_name)
         with zipfile.ZipFile(temporary_payload, "w", compression=zipfile.ZIP_DEFLATED, compresslevel=6) as archive:
             archive.writestr("manifest.json", json.dumps(manifest, sort_keys=True, separators=(",", ":")))
             archive.write(memory_path, "rt_mem.bin")
@@ -903,8 +952,10 @@ def prepare_translated_game_runtime_input(
         os.replace(temporary_payload, payload_path)
         os.replace(temporary_input, input_path)
     except (OSError, zipfile.BadZipFile, RuntimeError) as exc:
-        temporary_payload.unlink(missing_ok=True)
-        temporary_input.unlink(missing_ok=True)
+        if temporary_payload is not None:
+            temporary_payload.unlink(missing_ok=True)
+        if temporary_input is not None:
+            temporary_input.unlink(missing_ok=True)
         # Do not remove the last verified handoff when a new attempt fails.
         return {**failure, "reason": f"translated game-runtime package input could not be written: {exc}"}
 

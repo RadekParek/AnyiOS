@@ -68,6 +68,12 @@ internal object CompatibilityIssues {
                 if (reason.isNotEmpty()) add("Native Android link: $reason")
             }
         }
+        if (problems.isEmpty()) {
+            when (report.optString("state")) {
+                "FAILED" -> add("Analysis failed without a detailed reason; inspect the full report and logs.")
+                "BLOCKED" -> add("Conversion is blocked; inspect the full report and logs for details.")
+            }
+        }
         val mapping = report.optJSONObject("apiMapping")
         val imports = mapping?.let(ApiNeedReport::summary)
         return Summary(

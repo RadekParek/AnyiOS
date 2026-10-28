@@ -258,7 +258,15 @@ class AndroidLinkVerificationTests(unittest.TestCase):
                 "artifact": "android-link/arm64-v8a/libtranslated_game.so",
             })
 
+            sentinel = root / "original-source"
+            sentinel.write_bytes(b"do not overwrite")
+            try:
+                (root / "translated-game-payload.zip.tmp").symlink_to(sentinel)
+                (root / "translated-game-runtime-input.zip.tmp").symlink_to(sentinel)
+            except (OSError, NotImplementedError):
+                pass  # Windows without symlink privileges still exercises the handoff.
             prepared = prepare_translated_game_runtime_input(root, "arm64-v8a", link_report)
+            self.assertEqual(sentinel.read_bytes(), b"do not overwrite")
 
             self.assertEqual(prepared["status"], "READY_FOR_GAME_RUNTIME_APK")
             self.assertTrue(prepared["readyForGameRuntimeApk"])

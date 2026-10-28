@@ -1,6 +1,7 @@
 import argparse
 import json
 import sys
+import tempfile
 from pathlib import Path
 from .apk import Toolchain, validate_apk, validate_experimental_shell
 from .gameruntime import manifest_summary, run_gameboot
@@ -82,12 +83,16 @@ def main():
             # Preserve any old library/handoff on failure; the new report says
             # explicitly whether this run verified and packaged anything.
             report_path = directory / "android-link-report.json"
-            pending = directory / ".android-link-report.json.tmp"
+            pending = None
             try:
-                pending.write_text(json.dumps(link, indent=2, ensure_ascii=True), encoding="utf-8")
+                with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", dir=directory,
+                                                 prefix=".android-link-report-", suffix=".tmp", delete=False) as stream:
+                    pending = Path(stream.name)
+                    stream.write(json.dumps(link, indent=2, ensure_ascii=True))
                 pending.replace(report_path)
             finally:
-                pending.unlink(missing_ok=True)
+                if pending is not None:
+                    pending.unlink(missing_ok=True)
             print(json.dumps({"androidLink": link, "handoff": handoff, "linkReport": str(report_path)}, indent=2))
             return 0 if handoff and handoff.get("readyForGameRuntimeApk") else 2
         if args.command == "gameboot":

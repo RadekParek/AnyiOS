@@ -58,6 +58,14 @@ class CompatibilityIssuesTest {
         assertTrue(CompatibilityIssues.summarize(JSONObject().put("apiMapping", notRun)).importsIncomplete)
     }
 
+    @Test fun failedOrBlockedReportsNeverLookLikeCleanAnalysis() {
+        for (state in listOf("FAILED", "BLOCKED")) {
+            val summary = CompatibilityIssues.summarize(JSONObject().put("state", state))
+            assertFalse(summary.isEmpty())
+            assertFalse(summary.format().contains("No outstanding issues"))
+        }
+    }
+
     @Test fun emptyReportIsNotACompatibilityGuarantee() {
         val summary = CompatibilityIssues.summarize(JSONObject())
         assertTrue(summary.isEmpty())

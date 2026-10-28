@@ -14,6 +14,7 @@ from unittest import mock
 
 from radek.game import lsda, macho
 from radek.game.android_linker import (
+    _atomic_copy,
     link_generated_translation,
     prepare_translated_game_runtime_input,
 )
@@ -93,6 +94,88 @@ class OptionalSectionsTests(unittest.TestCase):
             self.assertNotEqual(completed.returncode, 0)
             self.assertIn("authorization", completed.stderr)
             self.assertEqual(sorted(p.name for p in root.iterdir()), ["sentinel"])
+
+    def test_atomic_publication_and_report_do_not_follow_output_symlinks(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "new.bin"
+            source.write_bytes(b"new verified bytes")
+            sentinel = root / "original-source"
+            sentinel.write_bytes(b"do not overwrite")
+            output = root / "library.so"
+            try:
+                output.symlink_to(sentinel)
+            except (OSError, NotImplementedError):
+                self.skipTest("host cannot create symlinks")
+            _atomic_copy(source, output)
+            self.assertEqual(sentinel.read_bytes(), b"do not overwrite")
+            self.assertEqual(output.read_bytes(), b"new verified bytes")
+
+            translation = root / "translation"
+            translation.mkdir()
+            (translation / ".android-link-report.json.tmp").symlink_to(sentinel)
+            (translation / "android-link-report.json").symlink_to(sentinel)
+            cli = subprocess.run(
+                [
+                    sys.executable,
+                    "-m",
+                    "radek",
+                    "relink",
+                    str(translation),
+                    "--authorized",
+                ],
+                cwd=ROOT,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertEqual(cli.returncode, 2, cli.stderr)
+            self.assertEqual(sentinel.read_bytes(), b"do not overwrite")
+            report = json.loads(
+                (translation / "android-link-report.json").read_text(encoding="utf-8")
+            )
+            self.assertEqual(report["status"], "BLOCKED_TRANSLATION_ARTIFACTS_MISSING")
+
+    def test_link_output_cannot_escape_through_a_symlink(self):
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            root = base / "translation"
+            root.mkdir()
+            outside = base / "outside"
+            outside.mkdir()
+            try:
+                (root / "android-link").symlink_to(outside, target_is_directory=True)
+            except (OSError, NotImplementedError):
+                self.skipTest("host cannot create symlinks")
+            for name in ("game_all.c", "rt_gen.c", "rt_gen.h"):
+                (root / name).write_text("/* fixture */", encoding="utf-8")
+            (root / "rt_report.json").write_text("{}", encoding="utf-8")
+            compiler = base / "ndk/toolchains/llvm/prebuilt/linux-x86_64/bin/clang"
+            compiler.parent.mkdir(parents=True)
+            compiler.write_text("fixture", encoding="utf-8")
+            sysroot = compiler.parent.parent / "sysroot"
+            sysroot.mkdir()
+            toolchain = base / "ndk/build/cmake/android.toolchain.cmake"
+            toolchain.parent.mkdir(parents=True)
+            toolchain.write_text("# fake; no tool runs", encoding="utf-8")
+            with (
+                mock.patch(
+                    "radek.game.android_linker.find_android_clang",
+                    return_value=(compiler, sysroot, ""),
+                ),
+                mock.patch(
+                    "radek.game.android_linker.shutil.which",
+                    return_value=sys.executable,
+                ),
+            ):
+                for backend in ("clang", "cmake"):
+                    with self.subTest(backend=backend):
+                        blocked = link_generated_translation(root, backend=backend)
+                        self.assertEqual(
+                            blocked["status"], "BLOCKED_ANDROID_OUTPUT_PATH"
+                        )
+                        self.assertFalse(blocked["allVerificationsPassed"])
+            self.assertEqual(list(outside.iterdir()), [])
 
     def test_missing_toolchain_and_cmake_are_explicit_failures(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -189,6 +272,26 @@ class OptionalSectionsTests(unittest.TestCase):
                         self.assertEqual(
                             old_handoff.read_bytes(), b"previous verified handoff"
                         )
+
+                # A build cache supplied by an untrusted directory must not
+                # redirect CMake output through an existing symlink.
+                build_dirs = list(
+                    (root / "android-link/arm64-v8a").glob("cmake-build-*")
+                )
+                self.assertEqual(len(build_dirs), 1)
+                cache_link = build_dirs[0] / "redirect"
+                try:
+                    cache_link.symlink_to(old_handoff)
+                except (OSError, NotImplementedError):
+                    pass
+                else:
+                    with mock.patch(
+                        "radek.game.android_linker.subprocess.run"
+                    ) as never_run:
+                        blocked = link_generated_translation(root, backend="cmake")
+                    self.assertEqual(blocked["status"], "BLOCKED_ANDROID_OUTPUT_PATH")
+                    never_run.assert_not_called()
+                    cache_link.unlink()
 
                 commands = []
 
