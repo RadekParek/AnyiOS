@@ -13,11 +13,15 @@ internal data class ConvertSettings(
     val offline: Boolean = false,
     val performance: Boolean = false,
     val orientation: String = "default",
+    val classic1024: Boolean = false,
 ) {
-    init { require(orientation in setOf("default", "-90", "90", "180", "portrait")) { "Unknown startup rotation" } }
+    init {
+        require(orientation in setOf("default", "-90", "90", "180", "portrait")) { "Unknown startup rotation" }
+        require(!(classic320 && classic1024)) { "Only one display profile can be selected" }
+    }
 
-    fun toJson() = JSONObject().put("classic320", classic320).put("offline", offline)
-        .put("performance", performance).put("orientation", orientation)
+    fun toJson() = JSONObject().put("classic320", classic320).put("classic1024", classic1024)
+        .put("offline", offline).put("performance", performance).put("orientation", orientation)
 
     companion object {
         private const val FILE = "convert-settings.json"
@@ -33,7 +37,7 @@ internal data class ConvertSettings(
             // legacy portrait remains available until the user changes it.
             val profile = if (json.has("classic320")) flag("classic320") else flag("classic43")
             val rotation = if (orientation == "landscape") "-90" else orientation
-            return ConvertSettings(profile, flag("offline"), flag("performance"), rotation)
+            return ConvertSettings(profile, flag("offline"), flag("performance"), rotation, flag("classic1024"))
         }
         fun load(dir: File): ConvertSettings {
             val file = File(dir, FILE)

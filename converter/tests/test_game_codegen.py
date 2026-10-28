@@ -8,6 +8,7 @@ import unittest
 import zipfile
 from pathlib import Path
 from types import SimpleNamespace
+from unittest import mock
 
 from radek.game.android_linker import (
     link_generated_translation,
@@ -257,7 +258,15 @@ class AndroidLinkVerificationTests(unittest.TestCase):
                 "artifact": "android-link/arm64-v8a/libtranslated_game.so",
             })
 
+            sentinel = root / "original-source"
+            sentinel.write_bytes(b"do not overwrite")
+            try:
+                (root / "translated-game-payload.zip.tmp").symlink_to(sentinel)
+                (root / "translated-game-runtime-input.zip.tmp").symlink_to(sentinel)
+            except (OSError, NotImplementedError):
+                pass  # Windows without symlink privileges still exercises the handoff.
             prepared = prepare_translated_game_runtime_input(root, "arm64-v8a", link_report)
+            self.assertEqual(sentinel.read_bytes(), b"do not overwrite")
 
             self.assertEqual(prepared["status"], "READY_FOR_GAME_RUNTIME_APK")
             self.assertTrue(prepared["readyForGameRuntimeApk"])
@@ -275,6 +284,17 @@ class AndroidLinkVerificationTests(unittest.TestCase):
                 payload_manifest = json.loads(payload.read("manifest.json"))
                 self.assertEqual(payload_manifest["contract"], "translated-game-payload-v1")
                 self.assertEqual(payload.read("rt_mem.bin"), b"guest-memory")
+            old_input = (root / prepared["runtimeInputBundle"]).read_bytes()
+            old_payload = (root / prepared["translatedGamePayload"]).read_bytes()
+            with mock.patch.object(zipfile.ZipFile, "testzip", side_effect=OSError("simulated disk failure")):
+                failed = prepare_translated_game_runtime_input(root, "arm64-v8a", link_report)
+            self.assertFalse(failed["readyForGameRuntimeApk"])
+            self.assertEqual((root / prepared["runtimeInputBundle"]).read_bytes(), old_input)
+            self.assertEqual((root / prepared["translatedGamePayload"]).read_bytes(), old_payload)
+            unsupported = prepare_translated_game_runtime_input(root, "armeabi-v7a", link_report)
+            self.assertFalse(unsupported["readyForGameRuntimeApk"])
+            self.assertIn("arm64-v8a", unsupported["reason"])
+            self.assertEqual((root / prepared["runtimeInputBundle"]).read_bytes(), old_input)
 
     def test_runtime_input_is_blocked_when_entrypoint_verification_is_missing(self):
         blocked = prepare_translated_game_runtime_input(

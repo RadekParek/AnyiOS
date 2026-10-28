@@ -1,5 +1,63 @@
 # Changelog
 
+## 2026-10-28 — Safer large imports, issue-focused reports and 2× display profiles
+
+### Fixed / changed
+- Relaxed Converter ZIP handling for real highly compressible resources without
+  disabling bomb protection. A non-ZIP64 member may now be up to 4,294,967,294
+  bytes, and an entire archive shares a 256 MiB allowance for expansion beyond
+  250:1. Larger excess, encrypted entries, links, traversal, duplicate names,
+  CRC/size mismatches and other unsafe ZIPs still fail. The specific member and
+  limit are reported. Free-space preflight now reserves only bytes still to be
+  written, rather than charging for the already-stored IPA or previously copied
+  data. The bounded static APK packager checks large resource sizes before
+  buffering them; its separate limits still apply.
+- Converter's game detail and exported compatibility summary emphasize actual
+  blockers, unverified dependencies and unresolved API needs. Fully resolved
+  entries and completed analysis/port-progress cards are omitted. Missing or
+  truncated inventories remain visible, and a catalogued provider is not
+  reported as proof of a linked game. The complete `report.json`, analysis
+  history remains retained and logs remain accessible; manual analysis and retry are retained.
+- Replaced the previous **480 × 320 points, 3:2, 4×** choice with **2×** and
+  added a separate **1024 × 768 points, 4:3, 2×** choice. They are mutually
+  exclusive and off by default. Older `classic43` settings retain their prior
+  3:2 meaning. At content scale 1, their full landscape backing drawables
+  request 960 × 640 and 2048 × 1536 pixels respectively. AnyiOSEMU now honors
+  scaling in two game-specific fixed-drawable paths and gives an explicit screen
+  size precedence over those paths; size multiplication is saturating and
+  clamped. Game-owned texture targets remain unscaled, and actual graphics
+  allocations depend on content scale and driver limits. Existing standalone
+  APKs contain a settings snapshot: rebuild and reinstall to apply a change.
+
+### Added / rewired
+- Added an optional host **Android NDK + CMake** backend for the existing ARM32
+  to portable-C translator and a `radek relink` command for its generated output.
+  The direct NDK-clang backend remains the default for analysis. Both backends
+  require verified Android ELF architecture, dependencies, translated-function
+  exports and JNI entry before publishing a library. ABI-specific build caches
+  are isolated; a failed relink preserves the last verified library and handoff.
+  Converter can copy the host command and import the verified ARM64 handoff;
+  ARMv7 libraries can be built but the Android handoff importer is ARM64-only.
+  The lifter now accepts classic executables that legitimately lack optional
+  stub/pointer/initializer/exception sections while still rejecting inconsistent
+  exception metadata. It opens large IPAs without copying the whole archive to
+  host memory and retains a separate 512 MiB executable lifting limit.
+- The CMake backend links generated C and an existing runtime; it does **not**
+  turn arbitrary Mach-O frameworks into Android libraries or implement missing
+  framework behavior. The translated runner still lacks an EGL/GLES connection;
+  a verified ELF or imported handoff is not proof of a playable game or APK.
+
+### Validation / limits
+- Added ZIP, profile, report and portable-C linker regressions. Local host tests
+  cover safe expansion, cleanup, settings migration, issue filtering and synthetic
+  code generation; a synthetic host CMake build compiles the project, and its
+  x86-64 ELF is correctly rejected as an Android ARM library. CI is configured to
+  exercise real NDK/CMake ARM64 and ARMv7 links and the ARM64 handoff.
+- No affected IPA or physical device was available. The exact previously reported
+  ZIP failure, visual scaling, rendering, FPS, and gameplay remain unverified on
+  the affected games. Hardware limits and texture-backed render targets can
+  prevent a uniform apparent 2× increase. Upstream TestApp was not run locally.
+
 ## 2026-10-28 — 4× classic profile, diagnostics and launch polish
 
 ### Fixed and rewired

@@ -68,6 +68,14 @@ hash-bound `translated-game-runtime-input.zip` containing the native library,
 `rt_mem.bin` payload, and reports. It is an APK-builder input—not an APK or
 proof of runtime execution.
 
+The default host backend invokes NDK clang directly; `--android-linker cmake`
+selects the optional NDK CMake project. Existing generated C can be relinked with
+`python3 -m radek relink <bytecode-translation-dir> --authorized --backend cmake`.
+The build stays ABI-specific, and failed builds or verification leave earlier
+verified outputs in place. ARMv7 can produce a verified standalone ELF but
+cannot currently produce an Android-importable handoff: the device importer is
+ARM64-only. CMake does not convert arbitrary iOS frameworks into Android code.
+
 On-device, the game-runtime detail screen can import that ZIP. During the APK
 build the selected ARM executable hash is matched to the handoff, its manifest
 and file hashes are checked, the ARM64 ELF and dependency policy are checked

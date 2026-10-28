@@ -235,6 +235,13 @@ def _resource_inventory(app: Path, executable_name: str) -> tuple[list[dict], di
         if relative == executable_name:
             continue
         safe_name(relative)
+        size = path.stat().st_size
+        # Check before allocating. Large IPA resources can be extracted safely,
+        # but this separate bounded static packager buffers its inputs.
+        if size > MAX_RESOURCE_FILE_BYTES:
+            raise InputError("bundle resource exceeds the bounded converter size limit: " + relative)
+        if total + size > MAX_RESOURCE_TOTAL_BYTES:
+            raise InputError("bundle resources exceed the bounded converter total limit")
         payload = path.read_bytes()
         if len(payload) > MAX_RESOURCE_FILE_BYTES:
             raise InputError("bundle resource exceeds the bounded converter size limit: " + relative)

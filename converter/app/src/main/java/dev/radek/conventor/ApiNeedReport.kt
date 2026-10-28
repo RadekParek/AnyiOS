@@ -22,9 +22,21 @@ internal object ApiNeedReport {
         IMPLEMENTATION_UNVERIFIED, // code exists, but the export was not resolved
     }
 
+    data class Summary(val total: Int, val listed: Int, val unresolved: Int, val incomplete: Boolean)
+
+    fun summary(mapping: JSONObject): Summary {
+        val symbols = mapping.optJSONArray("symbols") ?: JSONArray()
+        val items = (0 until symbols.length()).mapNotNull { symbols.optJSONObject(it) }
+        val total = mapping.optInt("distinctImportSymbols", symbols.length()).coerceAtLeast(0)
+        val incomplete = items.size != total || items.size != symbols.length() || mapping.optBoolean("truncated", false) ||
+            mapping.optString("classificationStatus") in setOf("PARTIAL", "TRUNCATED", "INCOMPLETE", "FAILED", "NOT_RUN")
+        return Summary(total, items.size, items.count { needFor(it) != null }, incomplete)
+    }
+
     fun format(mapping: JSONObject): String {
         val symbols = mapping.optJSONArray("symbols") ?: JSONArray()
-        val total = mapping.optInt("distinctImportSymbols", symbols.length())
+        val summary = summary(mapping)
+        val total = summary.total
 
         val items = (0 until symbols.length()).mapNotNull { symbols.optJSONObject(it) }
 
@@ -43,8 +55,7 @@ internal object ApiNeedReport {
         val needCount = items.size - resolved
         val lines = mutableListOf<String>()
         lines += "Unimplemented / unresolved NDK needs: $needCount of $total imports"
-        if (items.size < total || mapping.optBoolean("truncated", false) ||
-            mapping.optString("classificationStatus") in setOf("PARTIAL", "TRUNCATED")) {
+        if (summary.incomplete) {
             lines += "Only ${items.size} of $total imports are listed; analysis may be incomplete."
         }
         if (needCount == 0) {

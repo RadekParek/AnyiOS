@@ -33,7 +33,7 @@ from .llvm_ir import emit as emit_llvm_ir, verify as verify_llvm_ir
 from .plan import plan_coverage
 from .ghidra import inspect as ghidra_inspect
 from .recon import reconstruct
-from .recon.report import blockers as recon_blockers, markdown as recon_markdown, summary as recon_summary
+from .recon.report import markdown as recon_markdown, summary as recon_summary
 
 STATES = {
     "IMPORTED",
@@ -161,7 +161,7 @@ class Pipeline:
         }
         self._last_save = None
 
-    def _record_bytecode_translation(self, ipa: Path, target_abi: str = "auto") -> None:
+    def _record_bytecode_translation(self, ipa: Path, target_abi: str = "auto", android_linker: str = "clang") -> None:
         """Emit the complete translated ARM game source after leaf proving stops.
 
         The complete-game prover is intentionally stricter than the translator:
@@ -231,7 +231,7 @@ class Pipeline:
 
         link_target_abi = target_abi if target_abi in ("arm64-v8a", "armeabi-v7a") else "arm64-v8a"
         try:
-            android_link = link_generated_translation(destination, link_target_abi)
+            android_link = link_generated_translation(destination, link_target_abi, backend=android_linker)
         except Exception as exc:  # noqa: BLE001 - linking is optional and must fail closed
             android_link = {
                 "status": "BLOCKED_ANDROID_LINK_FAILED",
@@ -739,8 +739,11 @@ class Pipeline:
         analyze_only=False,
         target_abi: str = "auto",
         ghidra_home: Path | None = None,
+        android_linker: str = "clang",
     ):
         try:
+            if android_linker not in ("clang", "cmake"):
+                raise ValueError("unsupported Android linker backend")
             if not authorized:
                 raise ValueError(
                     "authorization confirmation is required; protected binaries are never decrypted"
@@ -896,7 +899,7 @@ class Pipeline:
                             "(see the Conversion ceiling section of reconstruction.md)"
                         )
                     self._record_static_recompilation_plan(executable)
-                    self._record_bytecode_translation(ipa, target_abi)
+                    self._record_bytecode_translation(ipa, target_abi, android_linker)
                     self.transition("BLOCKED", str(exc))
                     return self.report
                 # Emit a real, self-contained Android function artifact from the

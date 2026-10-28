@@ -12,7 +12,7 @@ import org.json.JSONObject;
 public final class StandaloneGameActivity extends org.anyiose.android.MainActivity {
     private File data;
     private float cap = 60;
-    private boolean classic320, offline, performance;
+    private boolean classic320, classic1024, offline, performance;
     private String orientation = "default";
     @Override protected void onCreate(Bundle state) {
         data = new File(getFilesDir(), "game-data");
@@ -28,7 +28,7 @@ public final class StandaloneGameActivity extends org.anyiose.android.MainActivi
         if (data == null || !data.isDirectory() || !source.isFile())
             return StandaloneOptions.noGame();
         return StandaloneOptions.forGame(data.getAbsolutePath(), source.getAbsolutePath(), cap,
-                classic320, offline, performance, orientation);
+                classic320, classic1024, offline, performance, orientation);
     }
     @Override protected boolean shouldShowStartupErrors() {
         return false;
@@ -45,6 +45,9 @@ public final class StandaloneGameActivity extends org.anyiose.android.MainActivi
             JSONObject settings = new JSONObject(bytes.toString("UTF-8")).optJSONObject("convertSettings");
             if (settings == null) return; // Old generated APKs retain their defaults.
             classic320 = settings.optBoolean("classic320", settings.optBoolean("classic43", false));
+            // Old classic43 was already migrated to the 3:2 profile by the
+            // Converter. The new 4:3 choice has a distinct key.
+            classic1024 = !classic320 && settings.optBoolean("classic1024", false);
             offline = settings.optBoolean("offline", false);
             performance = settings.optBoolean("performance", false);
             String value = settings.optString("orientation", "default");

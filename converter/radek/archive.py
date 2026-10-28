@@ -2,11 +2,9 @@
 
 from __future__ import annotations
 import hashlib
-import os
 import plistlib
 import shutil
 import stat
-import tempfile
 import zipfile
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
@@ -27,13 +25,15 @@ class Limits:
     stop ZIP bombs rather than to police how large a game may be.
     """
 
-    file_bytes: int = 1024 * 1024 * 1024
+    # Match the Android non-ZIP64 member ceiling. The host can read ZIP64,
+    # but keeping this bound prevents oversized single-member expansion.
+    file_bytes: int = 0xFFFF_FFFE
     entries: int = 65534
     ratio: int = 250
-    # Legacy fields kept for callers that still pass them explicitly. The
-    # default is now unlimited: an archive is bounded by the machine's free
-    # space (see :func:`require_free_space`), not by a pre-picked total.
+    # Keep this legacy positional field in its original position.
     expanded_bytes: int | None = None
+    # A single archive-wide allowance above ratio, not an allowance per entry.
+    high_compression_bytes: int = 256 * 1024 * 1024
 
 
 def require_free_space(path: Path, needed_bytes: int) -> None:
@@ -79,8 +79,10 @@ def safe_name(name: str) -> PurePosixPath:
 
 
 def extract_ipa(source: Path, destination: Path, limits: Limits = Limits()) -> None:
-    """Destination must not exist. Remove all partial output on any failure."""
-    require_free_space(destination, source.stat().st_size)
+    """Destination must not exist. Preflight all members; clean up on failure."""
+    if limits.file_bytes < 0 or limits.entries < 0 or limits.ratio <= 0 or limits.high_compression_bytes < 0:
+        raise ValueError("invalid ZIP limits")
+    require_free_space(destination, 0)
     destination.mkdir(mode=0o700, parents=False, exist_ok=False)
     try:
         with zipfile.ZipFile(source) as archive:
@@ -89,6 +91,8 @@ def extract_ipa(source: Path, destination: Path, limits: Limits = Limits()) -> N
                 raise InputError("too many ZIP entries")
             seen: set[str] = set()
             total = 0
+            excess = 0
+            validated = []
             for info in infos:
                 rel = safe_name(info.filename)
                 folded = str(rel).casefold()
@@ -103,13 +107,27 @@ def extract_ipa(source: Path, destination: Path, limits: Limits = Limits()) -> N
                     raise InputError("encrypted ZIP is prohibited")
                 if info.compress_type not in (zipfile.ZIP_STORED, zipfile.ZIP_DEFLATED):
                     raise InputError("unsupported ZIP compression")
+                if info.file_size < 0 or info.compress_size < 0:
+                    raise InputError(f"ZIP member {info.filename!r} has an unknown size")
                 if info.file_size > limits.file_bytes:
-                    raise InputError("ZIP member too large")
-                if info.file_size > max(1, info.compress_size) * limits.ratio:
-                    raise InputError("ZIP expansion ratio exceeds limit")
+                    raise InputError(f"ZIP member {info.filename!r} exceeds the {limits.file_bytes} byte member-size limit")
+                excess += max(0, info.file_size - max(1, info.compress_size) * limits.ratio)
+                if excess > limits.high_compression_bytes:
+                    raise InputError(
+                        f"ZIP expansion safety limit at {info.filename!r}: {info.file_size} bytes expanded "
+                        f"from {info.compress_size} compressed; the archive's "
+                        f"{limits.high_compression_bytes} byte high-compression allowance is exhausted"
+                    )
+                if info.is_dir() and info.file_size != 0:
+                    raise InputError(f"ZIP directory {info.filename!r} contains data")
                 total += info.file_size
                 if limits.expanded_bytes is not None and total > limits.expanded_bytes:
                     raise InputError("ZIP expanded size exceeds limit")
+                validated.append((info, rel))
+            # The input archive is already on disk; only newly extracted bytes
+            # need to fit in the remaining free space (plus safety headroom).
+            require_free_space(destination, total)
+            for info, rel in validated:
                 target = destination.joinpath(*rel.parts)
                 if info.is_dir():
                     target.mkdir(parents=True, exist_ok=True)
@@ -122,6 +140,7 @@ def extract_ipa(source: Path, destination: Path, limits: Limits = Limits()) -> N
                         if written > info.file_size or written > limits.file_bytes:
                             raise InputError("ZIP actual size exceeds advertised size")
                         dst.write(chunk)
+                # ZipFile also checks each member's CRC while streaming.
                 if written != info.file_size:
                     raise InputError("truncated ZIP entry")
                 target.chmod(0o600)

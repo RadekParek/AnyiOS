@@ -4842,10 +4842,18 @@ index 2bc59e270031d4df1feb1703368a64b6323f5af1..b58c3485142b85bee136e2064f60768e
  
  /// Bind the calling thread's current EAGL context to the host window and
 diff --git a/src/frameworks/opengles/eagl.rs b/src/frameworks/opengles/eagl.rs
-index a851662a83fd6924498c8cc51748ba12eb2e3fc8..1a246b100a6dbe662e84baaee4d22e195a660fab 100644
+index a851662a83fd6924498c8cc51748ba12eb2e3fc8..b16c297defce07fd340e79b79d7d2abd31e329a7 100644
 --- a/src/frameworks/opengles/eagl.rs
 +++ b/src/frameworks/opengles/eagl.rs
-@@ -158,6 +158,8 @@ fn effective_eagl_api(
+@@ -5,6 +5,7 @@
+  */
+ //! EAGL.
+ 
++use super::scale_framebuffer::drawable_storage_size;
+ use super::software_vao::VertexArrayState;
+ use crate::dyld::{export_c_func, ConstantExports, FunctionExports, HostConstant};
+ use crate::frameworks::core_animation::ca_eagl_layer::{
+@@ -158,6 +159,8 @@ fn effective_eagl_api(
  /// context (the presenter) always restores what it found, so the mirror stays
  /// valid across presents.
  pub(super) struct GLShadowState {
@@ -4854,7 +4862,7 @@ index a851662a83fd6924498c8cc51748ba12eb2e3fc8..1a246b100a6dbe662e84baaee4d22e19
      /// `GL_ARRAY_BUFFER_BINDING`.
      pub(super) array_buffer: GLuint,
      /// `GL_ELEMENT_ARRAY_BUFFER_BINDING`. `None` means "unknown, ask the
-@@ -195,6 +197,7 @@ pub(super) struct GLShadowState {
+@@ -195,6 +198,7 @@ pub(super) struct GLShadowState {
  impl Default for GLShadowState {
      fn default() -> Self {
          GLShadowState {
@@ -4862,8 +4870,59 @@ index a851662a83fd6924498c8cc51748ba12eb2e3fc8..1a246b100a6dbe662e84baaee4d22e19
              array_buffer: 0,
              element_array_buffer: Some(0),
              fog_enabled: false,
+@@ -685,9 +689,13 @@ pub const CLASSES: ClassExports = objc_classes! {
+         if matches!(
+             env.bundle.bundle_identifier(),
+             "com.apprisetec9.minionjump" | "com.risinghighapps.kingdomprincepro"
+-        ) {
+-            log!("UltraHLE MinionJump: forcing EAGL renderbuffer storage to 1024x768");
+-            (1024, 768)
++        ) && !env.options.explicit_screen_size {
++            // Preserve the existing game-specific base size, but honor an
++            // explicit scale hack. Explicit --screen-size profiles use the
++            // actual layer bounds instead of this historical override.
++            let size = drawable_storage_size(1024.0, 768.0, 1.0, env.options.scale_hack.get());
++            log!("MinionJump compatibility EAGL renderbuffer: {}x{}", size.0, size.1);
++            size
+         } else {
+             let bounds: CGRect = msg![env; drawable bounds];
+             let CGSize { width, height } = bounds.size;
+@@ -750,31 +758,8 @@ pub const CLASSES: ClassExports = objc_classes! {
+ 
+             let scale_hack = env.options.scale_hack.get();
+ 
+-            let mut width = (width * contents_scale).round() as u32 * scale_hack;
+-            let mut height = (height * contents_scale).round() as u32 * scale_hack;
+-
+-            // If even the fallback produced a degenerate size, clamp to a
+-            // minimum 1x1 so the GL call below cannot receive a zero extent.
+-            width = width.max(1);
+-            height = height.max(1);
+-            // ... and to a sane maximum, so a bogus bounds/contentsScale/
+-            // scale-hack combination can't overflow the GLsizei conversion
+-            // below (a host panic) or ask the driver for gigabytes.
+-            const MAX_RENDERBUFFER_DIMENSION: u32 = 16384;
+-            if width > MAX_RENDERBUFFER_DIMENSION || height > MAX_RENDERBUFFER_DIMENSION {
+-                log!(
+-                    "[renderbufferStorage:{:?} fromDrawable:{:?}] Warning: clamping \
+-                     oversized renderbuffer {}x{} to at most {}x{}",
+-                    target,
+-                    drawable,
+-                    width,
+-                    height,
+-                    MAX_RENDERBUFFER_DIMENSION,
+-                    MAX_RENDERBUFFER_DIMENSION
+-                );
+-                width = width.min(MAX_RENDERBUFFER_DIMENSION);
+-                height = height.min(MAX_RENDERBUFFER_DIMENSION);
+-            }
++            let (mut width, mut height) =
++                drawable_storage_size(width, height, contents_scale, scale_hack);
+ 
+             // RBSIZE-DIAG: log renderbuffer storage dimensions each time so a
+             // mid-run resize (loading screen vs game scene) is visible.
 diff --git a/src/frameworks/opengles/gles_guest.rs b/src/frameworks/opengles/gles_guest.rs
-index 1163b1139822e4d4f9afdd5d26f3bb8ec81f0343..81ada50b4a32ee50f062f710f547d26b5796f732 100644
+index 1163b1139822e4d4f9afdd5d26f3bb8ec81f0343..46671cd6c14ab7dddc553f629551fc5bc1b89684 100644
 --- a/src/frameworks/opengles/gles_guest.rs
 +++ b/src/frameworks/opengles/gles_guest.rs
 @@ -425,6 +425,28 @@ fn glGetFloatv(env: &mut Environment, pname: GLenum, params: MutPtr<GLfloat>) {
@@ -5037,6 +5096,15 @@ index 1163b1139822e4d4f9afdd5d26f3bb8ec81f0343..81ada50b4a32ee50f062f710f547d26b
      })
  }
  fn glLineWidth(env: &mut Environment, val: GLfloat) {
+@@ -1689,7 +1756,7 @@ fn glRenderbufferStorageMultisampleAPPLE(
+     // Apply --scale-hack so an MSAA renderbuffer matches the size of the
+     // single-sample one it'll be resolved into.
+     let factor = env.options.scale_hack.get() as GLsizei;
+-    let (width, height) = (width * factor, height * factor);
++    let (width, height) = (width.saturating_mul(factor), height.saturating_mul(factor));
+     with_ctx_and_mem(env, |gles, _mem| unsafe {
+         gles.RenderbufferStorageMultisampleAPPLE(target, samples, internalformat, width, height)
+     })
 @@ -2712,6 +2779,7 @@ fn glGenTextures(env: &mut Environment, n: GLsizei, textures: MutPtr<GLuint>) {
      })
  }
@@ -5098,6 +5166,15 @@ index 1163b1139822e4d4f9afdd5d26f3bb8ec81f0343..81ada50b4a32ee50f062f710f547d26b
          }
      })
  }
+@@ -3551,7 +3605,7 @@ fn glRenderbufferStorageOES(
+     height: GLsizei,
+ ) {
+     let factor = env.options.scale_hack.get() as GLsizei;
+-    let (width, height) = (width * factor, height * factor);
++    let (width, height) = (width.saturating_mul(factor), height.saturating_mul(factor));
+     with_ctx_and_mem(env, |gles, _mem| unsafe {
+         gles.RenderbufferStorageOES(target, internalformat, width, height)
+     })
 @@ -3563,16 +3617,15 @@ fn glFramebufferRenderbufferOES(
      renderbuffertarget: GLenum,
      renderbuffer: GLuint,
@@ -5236,10 +5313,10 @@ index 1163b1139822e4d4f9afdd5d26f3bb8ec81f0343..81ada50b4a32ee50f062f710f547d26b
  
 diff --git a/src/frameworks/opengles/scale_framebuffer.rs b/src/frameworks/opengles/scale_framebuffer.rs
 new file mode 100644
-index 0000000000000000000000000000000000000000..91d22bf1133959589d2f5177ad1a92f8ad082683
+index 0000000000000000000000000000000000000000..c072e209285dd79d5558f44a00b823d26fb78af9
 --- /dev/null
 +++ b/src/frameworks/opengles/scale_framebuffer.rs
-@@ -0,0 +1,274 @@
+@@ -0,0 +1,304 @@
 +/*
 + * This Source Code Form is subject to the terms of the Mozilla Public
 + * License, v. 2.0. If a copy of the MPL was not distributed with this
@@ -5253,6 +5330,26 @@ index 0000000000000000000000000000000000000000..91d22bf1133959589d2f5177ad1a92f8
 +//! https://developer.apple.com/library/archive/documentation/3DDrawing/Conceptual/OpenGLES_ProgrammingGuide/WorkingwithEAGLContexts/WorkingwithEAGLContexts.html
 +
 +use std::collections::HashMap;
++
++/// Convert a CAEAGLayer's point bounds and contentsScale to backing pixels,
++/// then apply the opt-in scale hack. Apple specifies the layer's dimensions in
++/// points and its contentsScale in pixels per point:
++/// https://developer.apple.com/library/archive/documentation/3DDrawing/Conceptual/OpenGLES_ProgrammingGuide/WorkingwithEAGLContexts/WorkingwithEAGLContexts.html
++/// Saturation happens before the cap so malformed guest values cannot overflow.
++pub(super) fn drawable_storage_size(
++    width: f32,
++    height: f32,
++    contents_scale: f32,
++    factor: u32,
++) -> (u32, u32) {
++    const MAX_DIMENSION: u32 = 16384;
++    let dimension = |points: f32| {
++        ((points * contents_scale).round() as u32)
++            .saturating_mul(factor)
++            .clamp(1, MAX_DIMENSION)
++    };
++    (dimension(width), dimension(height))
++}
 +
 +pub(super) type Rect = (i32, i32, i32, i32);
 +
@@ -5423,6 +5520,16 @@ index 0000000000000000000000000000000000000000..91d22bf1133959589d2f5177ad1a92f8
 +#[cfg(test)]
 +mod tests {
 +    use super::*;
++
++    #[test]
++    fn two_times_profiles_scale_drawable_pixels_and_preserve_content_scale() {
++        assert_eq!(drawable_storage_size(480.0, 320.0, 1.0, 2), (960, 640));
++        assert_eq!(drawable_storage_size(1024.0, 768.0, 1.0, 2), (2048, 1536));
++        assert_eq!(drawable_storage_size(320.0, 480.0, 1.0, 2), (640, 960));
++        assert_eq!(drawable_storage_size(480.0, 320.0, 2.0, 2), (1920, 1280));
++        assert_eq!(drawable_storage_size(1024.0, 768.0, 1.0, 1), (1024, 768));
++        assert_eq!(drawable_storage_size(f32::MAX, 0.0, 2.0, u32::MAX), (16384, 1));
++    }
 +
 +    #[test]
 +    fn drawable_and_renderbuffer_scale_both_rectangles_but_textures_do_not() {
@@ -8523,10 +8630,17 @@ index 5c68a5965b5c3573b5d4191886bcf65c83978b85..64d5bb65a68ed221e8617ec902ad2e29
 +    }
  }
 diff --git a/src/options.rs b/src/options.rs
-index f19834ba9b628cb422b8d0a0319650beb3223a3e..44a16e7dc5f90ab62c5952c78a880bf0afd29bf4 100644
+index f19834ba9b628cb422b8d0a0319650beb3223a3e..20b1e1e1b9c803c00b4d16056276713a0ec80b70 100644
 --- a/src/options.rs
 +++ b/src/options.rs
-@@ -106,6 +106,8 @@ pub struct Options {
+@@ -102,10 +102,15 @@ pub struct Options {
+     /// `--device-family=auto` (from the host display) or via the explicit
+     /// `--screen-size=WxH` override below.
+     pub host_screen_size: Option<(u32, u32)>,
++    /// True only for an explicit --screen-size; auto probing must not disable
++    /// established app-specific renderbuffer compatibility defaults.
++    pub explicit_screen_size: bool,
+     /// Disable the Cheat Engine-style memory trainer overlay. The trainer
      /// is off by default; opt in with `--trainer`.
      pub trainer_disabled: bool,
      pub initial_orientation: DeviceOrientation,
@@ -8535,7 +8649,7 @@ index f19834ba9b628cb422b8d0a0319650beb3223a3e..44a16e7dc5f90ab62c5952c78a880bf0
      /// iOS version reported to guest applications. `None` uses the latest compatibility version.
      pub ios_version: Option<(i32, i32, i32)>,
      /// On iOS, present an OpenGL ES 2.0 renderbuffer directly even when its
-@@ -147,6 +149,8 @@ pub struct Options {
+@@ -147,6 +152,8 @@ pub struct Options {
      pub headless: bool,
      pub print_fps: bool,
      pub fps_limit: Option<f64>,
@@ -8544,15 +8658,17 @@ index f19834ba9b628cb422b8d0a0319650beb3223a3e..44a16e7dc5f90ab62c5952c78a880bf0
      pub force_composition: bool,
      /// See [PresentMode]. Can also be set with the `TOUCHHLE_PRESENT_MODE`
      /// environment variable (the option takes precedence).
-@@ -304,6 +308,7 @@ impl Default for Options {
+@@ -303,7 +310,9 @@ impl Default for Options {
+             device_family: None,
              auto_device_family: false,
              host_screen_size: None,
++            explicit_screen_size: false,
              initial_orientation: DeviceOrientation::Portrait,
 +            force_initial_orientation: false,
              ios_version: None,
              ios_es2_direct_present: false,
              scale_hack: NonZeroU32::new(1).unwrap(),
-@@ -327,6 +332,7 @@ impl Default for Options {
+@@ -327,6 +336,7 @@ impl Default for Options {
              headless: false,
              print_fps: false,
              fps_limit: Some(60.0),
@@ -8560,7 +8676,7 @@ index f19834ba9b628cb422b8d0a0319650beb3223a3e..44a16e7dc5f90ab62c5952c78a880bf0
              force_composition: false,
              present_mode: std::env::var("TOUCHHLE_PRESENT_MODE")
                  .ok()
-@@ -372,7 +378,7 @@ impl Default for Options {
+@@ -372,7 +382,7 @@ impl Default for Options {
              // case). Default the fix-up to ON so games work out of the
              // box on Android — users can still disable it via
              // `--fix-texture-min-filter=false` in
@@ -8569,7 +8685,7 @@ index f19834ba9b628cb422b8d0a0319650beb3223a3e..44a16e7dc5f90ab62c5952c78a880bf0
              // depends on mipmap minification (rare among iOS 2.x/3.x
              // titles). On desktop hosts (where the user is likely
              // running Mesa / Apple PowerVR / NVIDIA / AMD, all
-@@ -427,6 +433,9 @@ impl Options {
+@@ -427,6 +437,9 @@ impl Options {
              self.reverse_attrib_locations = true;
          } else if arg == "--no-reverse-attrib-locations" {
              self.reverse_attrib_locations = false;
@@ -8579,7 +8695,15 @@ index f19834ba9b628cb422b8d0a0319650beb3223a3e..44a16e7dc5f90ab62c5952c78a880bf0
          } else if arg == "--landscape-left" {
              self.initial_orientation = DeviceOrientation::LandscapeLeft;
          } else if arg == "--landscape-right" {
-@@ -610,23 +619,25 @@ impl Options {
+@@ -484,6 +497,7 @@ impl Options {
+                 return Err("--screen-size= dimensions must be non-zero".to_string());
+             }
+             self.host_screen_size = Some((w, h));
++            self.explicit_screen_size = true;
+         } else if let Some(value) = arg.strip_prefix("--scale-hack=") {
+             self.scale_hack = value
+                 .parse()
+@@ -610,23 +624,25 @@ impl Options {
                      .ok_or_else(|| "Invalid value for --fps-limit=".to_string())?;
                  self.fps_limit = Some(limit);
              }
@@ -8610,7 +8734,7 @@ index f19834ba9b628cb422b8d0a0319650beb3223a3e..44a16e7dc5f90ab62c5952c78a880bf0
          } else if arg == "--vsync" {
              self.vsync = VsyncMode::On;
          } else if arg == "--no-vsync" {
-@@ -641,11 +652,13 @@ impl Options {
+@@ -641,11 +657,13 @@ impl Options {
              // layer reads this via the env var, so set it here.
              std::env::set_var("TOUCHHLE_LANDSCAPE_UISCREEN_BOUNDS", "1");
          } else if let Some(value) = arg.strip_prefix("--present-rotate=") {
@@ -8628,7 +8752,7 @@ index f19834ba9b628cb422b8d0a0319650beb3223a3e..44a16e7dc5f90ab62c5952c78a880bf0
              }
              self.present_rotate = Some(deg);
          } else if arg == "--rotation-fix" {
-@@ -794,6 +807,16 @@ fn parse_dump_options(options: &str) -> Result<DumpingOptions, String> {
+@@ -794,6 +812,16 @@ fn parse_dump_options(options: &str) -> Result<DumpingOptions, String> {
  mod option_parsing_tests {
      use super::*;
  

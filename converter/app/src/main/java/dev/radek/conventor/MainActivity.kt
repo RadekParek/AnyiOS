@@ -113,18 +113,6 @@ private object IconLoader {
     }
 }
 
-private fun formatPortPercent(value: Double): String =
-    String.format(Locale.ROOT, "%.6f", value.coerceIn(0.0, 100.0)).trimEnd('0').trimEnd('.')
-
-private fun isVerifiedAndroidCodeArtifact(link: JSONObject?): Boolean {
-    if (link == null) return false
-    return link.optString("status") in setOf("VERIFIED_ANDROID_SHARED_LIBRARY", "VERIFIED_ANDROID_APK_LIBRARY") &&
-        link.optBoolean("architectureVerified", false) &&
-        link.optBoolean("dependenciesVerified", false) &&
-        link.optBoolean("exportsVerified", false) &&
-        link.optBoolean("allVerificationsPassed", false)
-}
-
 class MainActivity : Activity() {
     private var bgColor = Color.rgb(11, 16, 29)
     private var panel = Color.rgb(20, 29, 47)
@@ -417,63 +405,6 @@ class MainActivity : Activity() {
         else -> if (lightMode) Color.rgb(145, 83, 0) else Color.rgb(245, 203, 116)
     }
     private fun formatBytes(n: Long) = "%.1f MiB".format(n / 1048576.0)
-
-    /**
-     * Headline for import triage: every reviewed Android mapping kind first (each
-     * import gets exactly one), then the strict same-name NDK subset, which is
-     * deliberately smaller. Neither number is implementation or linkage.
-     */
-    private fun mappingCoverageSummary(mapping: JSONObject): String {
-        val total = mapping.optInt("distinctImportSymbols", 0)
-        if (total == 0) return "Android API candidates: N/A (no imports)"
-        val direct = mapping.optInt("mappedNameCandidates", 0)
-        val directPercent = AndroidApiMapper.coveragePercent(direct, total)
-        val providers = mapping.optInt("runtimeProviderCount", 0)
-        val providerPercent = AndroidApiMapper.coveragePercent(providers, total)
-        val reviewed = mapping.optInt("reviewedMappingCount", direct)
-        val reviewedPercent = AndroidApiMapper.coveragePercent(reviewed, total)
-        val breakdown = mapping.optJSONObject("reviewedMapping")?.optJSONObject("breakdown")
-        val kinds = if (breakdown == null) emptyList() else listOf(
-            breakdown.optInt("sameNameNdkOrSystemExport", 0) to "same-name NDK/system exports",
-            breakdown.optInt("guestRuntimeAdapterCatalogued", 0) to "compat-runtime guest adapter catalog entries",
-            breakdown.optInt("concreteCompatImplementation", 0) to "compiled compat implementations",
-            breakdown.optInt("compilerRuntimeToolchain", 0) to "toolchain-runtime candidates",
-            breakdown.optInt("reviewedSemanticApiTarget", 0) to "semantic API targets",
-        ).filter { it.first > 0 }.map { "${it.first} ${it.second}" }
-        return "Catalogued import providers: $providerPercent% ($providers/$total = exact NDK/system candidates plus compat-runtime guest adapter entries)" +
-            " · Reviewed Android mappings: $reviewedPercent% ($reviewed/$total" +
-            (if (kinds.isEmpty()) "" else " = ${kinds.joinToString(" + ")}") + ")" +
-            " · strict same-name NDK subset (smaller by design, its own measure): $directPercent% ($direct/$total)"
-    }
-
-    /**
-     * Explains a strict same-name headline below 100% instead of making it look
-     * like the mapper dropped imports. Same-name NDK coverage is an
-     * exact-name catalog test; reviewed compat, semantic, and compiler-runtime
-     * targets deliberately stay outside that denominator.
-     */
-    private fun strictNdkSubsetExplanation(mapping: JSONObject): String {
-        val total = mapping.optInt("distinctImportSymbols", 0)
-        val direct = mapping.optInt("mappedNameCandidates", 0)
-        if (total == 0 || direct >= total) return ""
-        val remaining = total - direct
-        val breakdown = mapping.optJSONObject("reviewedMapping")?.optJSONObject("breakdown")
-        val reasons = if (breakdown == null) emptyList() else listOf(
-            breakdown.optInt("guestRuntimeAdapterCatalogued", 0) to "compat-runtime guest adapter catalog entries",
-            breakdown.optInt("concreteCompatImplementation", 0) to "compatibility implementations",
-            breakdown.optInt("reviewedSemanticApiTarget", 0) to "semantic API targets",
-            breakdown.optInt("compilerRuntimeToolchain", 0) to "compiler-runtime or unwind targets",
-        ).filter { it.first > 0 }.map { "${it.first} ${it.second}" }
-        val detail = if (reasons.isEmpty()) {
-            "$remaining imports need a non-name-based adapter or have no direct public NDK export."
-        } else {
-            "$remaining remaining imports are " + reasons.joinToString(", ") +
-                "; those are different mapping kinds, not same-name NDK exports."
-        }
-        return "Why the strict NDK figure is ${AndroidApiMapper.coveragePercent(direct, total)}%: " +
-            "it counts only exact public Android NDK/system export names ($direct/$total), " + detail +
-            " Reviewed mapping coverage is the separate measure for all reviewed targets."
-    }
 
     /**
      * Which top-level screen is showing, so the system back gesture navigates
@@ -834,229 +765,38 @@ class MainActivity : Activity() {
         )) {
             text(name.uppercase(), 10f, muted, true, metadata); text(value, 15f, parent = metadata)
         }
-        report.optJSONObject("apiMapping")?.let { mapping ->
-            val mapped = mapping.optInt("mappedNameCandidates", 0)
-            val total = mapping.optInt("distinctImportSymbols", 0)
-            val coverage = AndroidApiMapper.coveragePercent(mapped, total)
-            val mappingCard = card()
-            val semantic = mapping.optInt("semanticRewriteCandidates", 0)
-            val compilerRuntime = mapping.optInt("compilerRuntimeCandidateCount", 0)
-            val classified = mapping.optInt("classifiedImportSymbols", 0)
-            val triage = mapping.optInt("classificationCoveragePercent", 0)
-            val unmapped = mapping.optInt("unmappedSymbolCount", 0)
-            val verified = mapping.optInt("runtimeVerifiedNdkCandidates", 0)
-            val legacyDarwinProviderCatalogCount = mapping.optInt("concreteDarwinProviderCount", 0)
-            val providerCount = mapping.optInt("runtimeProviderCount", 0)
-            val providerPercent = AndroidApiMapper.coveragePercent(providerCount, total)
-            val providerSummary = " · catalogued import providers: $providerCount/$total ($providerPercent%)"
-            val totalVerifiedDevice = mapping.optJSONObject("evidence")
-                ?.optInt("exportsVerifiedOnThisDevice", verified)
-                ?: verified
-            val verifiedPercent = AndroidApiMapper.coveragePercent(totalVerifiedDevice, total)
-            val verifiedCandidateCount = mapping.optInt("runtimeVerifiedCandidateCount", mapped)
-            val verifiedCandidatePercent = AndroidApiMapper.coveragePercent(verified, verifiedCandidateCount)
-            val runtimeApi = mapping.optInt("runtimeVerifiedAndroidApiLevel", 0)
-            val runtimeStatus = mapping.optString("runtimeNdkResolverStatus", "NOT_RUN")
-            val runtimeSummary = if (runtimeStatus == "CURRENT_DEVICE_DLSYM")
-                " · Android API $runtimeApi exact exports: $verified/$verifiedCandidateCount NDK candidates ($verifiedCandidatePercent%); $totalVerifiedDevice/$total imports ($verifiedPercent%)"
-            else ""
-            val runtimeLinked = report.optJSONObject("apiImplementationGeneration")?.optBoolean("runtimeLibraryLinked", false) == true
-            val guestRuntimeProviders = mapping.optInt("guestRuntimeProviderCount", legacyDarwinProviderCatalogCount)
-            val guestRuntimeCatalogStatus = mapping.optString("guestRuntimeProviderCatalogStatus", "NOT_REPORTED")
-            val compilerRuntimeGuestProviders = mapping.optInt("compilerRuntimeGuestProviderCount", 0)
-            val compatSummary = when {
-                runtimeLinked -> " · libioscompat.so runtime linked; no individual IPA callsites rewritten"
-                guestRuntimeProviders > 0 -> " · $guestRuntimeProviders/$total guest-runtime adapter catalog name match(es); actual import-slot binding appears at game launch"
-                guestRuntimeCatalogStatus == "NO_MATCHES" -> " · no guest-runtime adapter catalog names matched this IPA"
-                else -> ""
-            }
-            val compilerSummary = if (compilerRuntime > 0) " · compiler-rt/libunwind candidates: $compilerRuntime ($compilerRuntimeGuestProviders have guest-runtime adapter entries; no static NDK link)" else ""
-            val stubs = mapping.optInt("compatStubHandlerCount", 0)
-            val verifiedHandlers = mapping.optInt("compatVerifiedHandlerCount", 0)
-            val stubSummary = buildString {
-                if (stubs > 0) append(" · compat stub handlers (unimplemented; not API bodies): $stubs")
-                if (verifiedHandlers > 0) append(" · compat verified handlers: $verifiedHandlers")
-            }
-            val summary = if (total == 0) "Android API candidates: N/A (no imports)$compatSummary$compilerSummary"
-                else "Symbol triage: $triage% ($classified/$total)$providerSummary · ${mappingCoverageSummary(mapping)}$runtimeSummary$compatSummary$compilerSummary$stubSummary · semantic rewrites: $semantic · unmapped: $unmapped"
-            text(summary, 16f, textColor, true, mappingCard)
-            strictNdkSubsetExplanation(mapping).takeIf { it.isNotBlank() }?.let {
-                text(it, 12f, muted, parent = mappingCard)
-            }
-            if (total > 0) {
-                val needs = ApiNeedReport.format(mapping)
-                button("View unresolved compatibility needs", parent = mappingCard) {
-                    showText("Unresolved compatibility needs", needs)
-                }
-                button("Export unresolved needs", parent = mappingCard) {
-                    val appInfo = report.optJSONObject("application") ?: JSONObject()
-                    val bundleId = appInfo.optString("bundleId")
-                    val output = ndkNeedsHeader(appInfo.optString("name"), bundleId, appInfo.optString("version")) + needs
-                    val safeBundle = bundleId.ifBlank { "game" }.replace(Regex("[^A-Za-z0-9._-]"), "_")
-                    saveNeedsText(output, "$safeBundle-ndk-needs.txt")
-                }
-            }
-            val generated = report.optJSONObject("hostConversion")?.optInt("generatedApiReplacements", 0) ?: 0
-            val triageNote = if (mapping.optString("classificationStatus") == "COMPLETE" && total > 0)
-                "All $classified observed import symbols were categorized; categorization is not static recompilation."
-            else "Import categorization is incomplete or there were no imported symbols."
-            val mappingDisclosure = when {
-                generated > 0 -> "The on-device mapper generated no per-game code; an attached complete-game host conversion reports $generated generated API replacement(s). Runtime behavior is not device-tested. $triageNote"
-                runtimeLinked -> "$triageNote The packaged libioscompat.so runtime is linked through DT_NEEDED. The proven executable has no imports, so no individual IPA API callsite was rewritten or counted as a linked replacement. Other candidates are not implementations."
-                guestRuntimeProviders > 0 -> "$triageNote $guestRuntimeProviders imported symbol(s) match the compat-runtime guest-adapter catalog. This is not proof the game's slots were bound, calls were linked, or full API semantics are implemented; inspect runtimeLinking after launch."
-                legacyDarwinProviderCatalogCount > 0 -> "$triageNote A legacy report field records $legacyDarwinProviderCatalogCount compatibility catalog name match(es); it does not establish per-image slot binding, callsite rewriting, or a game link."
-                else -> "$triageNote The analyzer runtime contains compatibility exports, but no matching provider was verified for this IPA; no per-game replacement was linked. Other candidates do not predict gameplay compatibility or stability."
-            }
-            text(mapping.optString("measure") + " $mappingDisclosure", 13f, muted, parent = mappingCard)
-            mapping.optJSONObject("evidence")?.let { evidence ->
-                val verifiedDevice = evidence.optInt("exportsVerifiedOnThisDevice", 0)
-                val verifiedDevicePercent = AndroidApiMapper.coveragePercent(verifiedDevice, total)
-                val hostTested = evidence.optInt("hostTestedImplementations", 0)
-                val hostTestedPercent = AndroidApiMapper.coveragePercent(hostTested, total)
-                text(
-                    "Per-import evidence · $verifiedDevice/$total ($verifiedDevicePercent%) device exports verified · " +
-                        "$hostTested/$total ($hostTestedPercent%) host-tested implementations · " +
-                        "${evidence.optInt("stubOnlyCount", 0)} stub-only · ${evidence.optInt("noneCount", 0)} none · " +
-                        "0 game callsites linked",
-                    12f,
-                    muted,
-                    parent = mappingCard,
-                )
-            }
-        }
-        report.optJSONObject("portProgress")?.let { port ->
-            val portCard = card()
-            val rawPercent = port.optDouble("percent", port.optInt("percent", 0).toDouble())
-            val androidLink = report.optJSONObject("androidLink")
-            val linkStatus = androidLink?.optString("status", "NOT_REPORTED") ?: "NOT_REPORTED"
-            val linkVerified = isVerifiedAndroidCodeArtifact(androidLink)
-            val percent = if (linkVerified) {
-                androidLink?.optDouble("androidLinkedTextPercent", rawPercent) ?: rawPercent
-            } else 0.0
-            val heading = when {
-                linkVerified && linkStatus == "VERIFIED_ANDROID_APK_LIBRARY" ->
-                    "Verified Android APK code-byte coverage: ${formatPortPercent(percent)}% · gameplay not tested"
-                linkVerified && linkStatus == "VERIFIED_ANDROID_SHARED_LIBRARY" ->
-                    "Verified Android ELF code-byte coverage: ${formatPortPercent(percent)}% · standalone library, not a game APK"
-                else ->
-                    "Verified Android-linked code-byte progress: 0% · no Android ELF/APK link verified"
-            }
-            text(heading, 16f, statusColor(if (linkVerified) "SUPPORTED" else "BLOCKED"), true, portCard)
-            text(port.optString("basis"), 13f, muted, parent = portCard)
-            val plan = report.optJSONObject("staticRecompilationPlan")
-            if (plan != null) {
-                val planStatus = plan.optString("status", "UNAVAILABLE")
-                if (planStatus == "COMPUTED" || planStatus == "TRUNCATED") {
-                    val planPercent = plan.optDouble("percent", plan.optInt("percent", 0).toDouble())
-                    text(
-                        "Host static-recompilation plan: ${formatPortPercent(planPercent)}% of executable __text " +
-                            "(${plan.optInt("functionsStaticallyRecompiled", 0)}/${plan.optInt("functionsDiscovered", 0)} " +
-                            "discovered function(s), ${plan.optInt("staticallyRecompiledBytes", 0)}/" +
-                            "${plan.optInt("executableTextBytes", 0)} byte(s)) — host source bytes only, " +
-                            "not linked into an APK and not device code.",
-                        12f, muted, parent = portCard,
-                    )
-                } else {
-                    val reason = plan.optString("reason", "")
-                    val detail = if (reason.isBlank()) "" else ": $reason"
-                    text(
-                        "Host static-recompilation plan: not measured here ($planStatus$detail). " +
-                            "The device prover only recompiles an executable proven to be one closed-integer routine; " +
-                            "run the host CLI (python3 -m radek analyze …) to compute the wider plan for this IPA.",
-                        12f, muted, parent = portCard,
-                    )
-                }
-            } else if (port.optString("status") == "NO_RUNNABLE_ANDROID_CODE_BUILT") {
-                text(
-                    "The on-device prover statically recompiles an executable only when its whole code is one " +
-                        "proven closed-integer routine, so a full game reports 0% here. Run the host CLI " +
-                        "(python3 -m radek analyze …) for the wider static-recompilation plan of the same IPA.",
-                    12f, muted, parent = portCard,
-                )
-            }
-            report.optJSONObject("bytecodeTranslation")?.let { translation ->
-                val status = translation.optString("status", "NOT_REPORTED")
-                if (status == "GENERATED_PORTABLE_C") {
-                    val portablePercent = translation.optDouble("percent", 0.0)
-                    text(
-                        "Host portable-C translation coverage: ${formatPortPercent(portablePercent)}% of executable __text " +
-                            "(${translation.optInt("translatedTextBytes", 0)}/${translation.optInt("executableTextBytes", 0)} " +
-                            "unique instruction byte(s), ${translation.optInt("translatedFunctionCount", 0)} function(s)). " +
-                            "This is generated portable C, not Android-linked code or an APK.",
-                        12f, muted, parent = portCard,
-                    )
-                } else {
-                    text(
-                        "Host portable-C translation coverage: not generated ($status); this does not change Android-linked progress.",
-                        12f, muted, parent = portCard,
-                    )
-                }
-            }
-        }
-        report.optJSONObject("analysisProgress")?.let { analysis ->
-            val analysisCard = card()
+        // Completed analysis/coverage and resolved items live in the full JSON;
+        // the ordinary report focuses on work that remains or failed.
+        report.optJSONObject("analysisProgress")?.takeIf {
+            Jobs.busy && it.optString("status") == "RUNNING" && it.optInt("percent", 0) < 100
+        }?.let { analysis ->
+            val progress = card()
             val value = analysis.optInt("percent", 0)
-            text("${if (ipaSource) "IPA" else "Source"} analysis · $value%", 16f, textColor, true, analysisCard)
-            progressIndicator(analysisCard, value, 10)
-            text("${analysis.optString("stage", "queued")} · ${analysis.optString("message")}", 12f, muted, parent = analysisCard)
-            text("Analysis completion is not APK-build completion or a playability score.", 12f, muted, parent = analysisCard)
-        }
-        report.optJSONObject("conversionProgress")?.let { conversion ->
-            val buildCard = card()
-            text("Host APK validation/attachment · ${conversion.optInt("percent", 0)}% · ${conversion.optString("status", "NOT_BUILT")}", 16f, statusColor(conversion.optString("status")), true, buildCard)
-            text(conversion.optString("message"), 12f, muted, parent = buildCard)
-            text("This is the complete-game APK path; it requires statically recompiled reachable code, API replacements, resources and lifecycle. Force convert offers a Native diagnostic boot-attempt runtime or a standalone Semi-Emulated AnyiOSEMU APK. A source-free installable preview shell remains a separate fallback.", 12f, muted, parent = buildCard)
-        }
-        report.optJSONObject("deviceRecompilation")?.takeIf { it.optString("status") == "PROVEN" && it.optInt("coveragePercent", 0) == 100 }?.let { proof ->
-            val proofCard = card()
-            text("Bounded conversion proof verified on-device", 16f, accent, true, proofCard)
-            text("${proof.optInt("sourceBytes", 0)} executable bytes form one proven closed-integer routine covering 100% of __text. Force convert turns this proof into a signed APK whose statically recompiled entry runs through JNI (returned value is displayed on launch).", 12f, muted, parent = proofCard)
+            text("Analysis in progress · $value%", 16f, textColor, true, progress)
+            progressIndicator(progress, value, 10)
+            text(analysis.optString("message"), 12f, muted, parent = progress)
         }
         text("Compatibility report", 22f, textColor, true)
-        report.optString("nextBlocker").takeIf { it.isNotBlank() }?.let { next ->
-            // One red line: the single thing standing between this IPA and a
-            // fully converted APK. Copy it back and it gets fixed next.
-            text("NEXT BLOCKER: $next", 16f, Color.rgb(255, 68, 68), true)
-        }
-        val blockers = report.optJSONArray("blockers")
-        if (blockers != null) for (i in 0 until blockers.length()) text(blockers.getString(i), 15f, statusColor(state))
-        if (report.has("error")) text(report.getString("error"), 15f, statusColor("FAILED"))
-        val imageErrors = report.optJSONObject("dependencies")?.optJSONArray("analysisErrors")
-        if (imageErrors != null && imageErrors.length() > 0) {
-            for (i in 0 until minOf(imageErrors.length(), 5)) {
-                val failure = imageErrors.optJSONObject(i) ?: continue
-                text("Image: ${failure.optString("path", "unknown")} · ${failure.optString("reason", "decode failed")}", 13f, muted)
+        val issues = CompatibilityIssues.summarize(report)
+        if (issues.isEmpty()) {
+            text("No outstanding issues are listed. Gameplay is not verified.", 14f, muted)
+        } else {
+            issues.problems.take(4).forEach { text(it, 15f, statusColor("BLOCKED")) }
+            if (issues.problems.size > 4) text("${issues.problems.size - 4} more issue(s) in the report.", 13f, muted)
+            if (issues.unresolvedImports > 0)
+                text("${issues.unresolvedImports} imported API(s) still need work or verification.", 14f, textColor, true)
+            if (issues.importsIncomplete) text("Import analysis is incomplete; more issues may be missing.", 13f, statusColor("BLOCKED"))
+            button("View outstanding issues") { showText("Outstanding compatibility issues", issues.format()) }
+            button("Export outstanding issues") {
+                val bundleId = app.optString("bundleId")
+                val output = ndkNeedsHeader(app.optString("name"), bundleId, app.optString("version")) + issues.format()
+                val safeBundle = bundleId.ifBlank { "game" }.replace(Regex("[^A-Za-z0-9._-]"), "_")
+                saveNeedsText(output, "$safeBundle-compatibility-issues.txt")
             }
-            if (imageErrors.length() > 5) text("More image errors are listed in the full report.", 12f, muted)
         }
         if (File(dir, "game.json").isFile && SourcePolicy.canRetryFailedAnalysis(report)) {
             text("The shared source and previous report are kept. Retry analysis without importing again; this does not rebuild an APK.", 13f, muted)
             button("Retry analysis") { startSharedAnalysis(dir) }.isEnabled = !SharedCatalog.isBusy()
-        }
-        text("Icon: ${report.optJSONObject("icon")?.optString("reason") ?: "not extracted"}", 13f, muted)
-        val edges = report.optJSONObject("dependencies")?.optJSONArray("edges")
-        if (edges != null) for (i in 0 until edges.length()) {
-            val dep = edges.getJSONObject(i)
-            val grade = dep.optString("status", "no-execution-path-yet").uppercase()
-            text("$grade · ${dep.getString("installName")}", 13f, muted)
-            text(dep.optString("reason"), 11f, muted)
-            dep.optJSONObject("evidence")?.let { evidence ->
-                val observed = evidence.optInt("observedImportCount", 0)
-                val verifiedDev = evidence.optInt("exportsVerifiedOnThisDevice", 0)
-                val verifiedDevPct = AndroidApiMapper.coveragePercent(verifiedDev, observed)
-                val hostTest = evidence.optInt("hostTestedImplementations", 0)
-                val hostTestPct = AndroidApiMapper.coveragePercent(hostTest, observed)
-                val note = if (observed == 0) "no per-import evidence" else
-                    "$verifiedDev/$observed ($verifiedDevPct%) device exports verified, " +
-                        "$hostTest/$observed ($hostTestPct%) host-tested implementations, " +
-                        "${evidence.optInt("stubOnlyCount", 0)} stub-only, ${evidence.optInt("noneCount", 0)} none"
-                text(
-                    "Evidence: $note · ${evidence.optString("associationStatus", "UNKNOWN").lowercase()} import association · " +
-                        "0 callsites linked; 0 recompiled bytes linked",
-                    11f,
-                    muted,
-                )
-            }
         }
         button("View full machine-readable report") { showText("Conversion report", report.toString(2)) }
         button("View real conversion logs") { showText("Logs", File(dir, "conversion.jsonl").takeIf { it.isFile }?.readText() ?: "No logs") }
@@ -1072,6 +812,12 @@ class MainActivity : Activity() {
             (getSystemService(CLIPBOARD_SERVICE) as android.content.ClipboardManager).setPrimaryClip(android.content.ClipData.newPlainText("Host analysis command", command))
             Toast.makeText(this, "Analysis command copied", Toast.LENGTH_SHORT).show()
         }
+        button("Copy host NDK/CMake relink command") {
+            val command = "python3 -m radek relink workspace/analysis-result/bytecode-translation --authorized --backend cmake"
+            (getSystemService(CLIPBOARD_SERVICE) as android.content.ClipboardManager).setPrimaryClip(android.content.ClipData.newPlainText("Host NDK/CMake relink command", command))
+            Toast.makeText(this, "Host command copied; import the verified handoff after relinking", Toast.LENGTH_LONG).show()
+        }
+        text("NDK/CMake relinks generated portable C on a computer. It does not compile arbitrary iOS binaries or add a renderer.", 12f, muted)
         if (ipaSource && app.has("sha256")) button("Attach complete host-converted APK") {
             if (!Jobs.busy) startActivityForResult(Intent(Intent.ACTION_OPEN_DOCUMENT).apply { type = "application/vnd.android.package-archive"; addCategory(Intent.CATEGORY_OPENABLE) }, pickerApk)
         }
@@ -1253,8 +999,14 @@ class MainActivity : Activity() {
             text = label; isChecked = checked; content.addView(this)
         }
         explanation("These per-game choices are built into new Semi-Emulated APKs only. Rebuild and reinstall to apply changes. Native diagnostic and other APKs do not use them.")
-        val classic = toggle("Classic 3:2 · 480 × 320 points · 4× render scale", saved.classic320)
-        explanation("At layer content scale 1, a full drawable requests 1920 × 1280 in landscape or 1280 × 1920 in portrait. Content scale and hardware limits affect allocation; game-owned textures may stay at their original size. 4× uses more memory and GPU time.")
+        explanation("Display profile · choose one (landscape dimensions shown). Both classic profiles request 2× internal rendering; this uses extra GPU memory and time. Game-owned textures may remain at their original size.")
+        val profiles = listOf("Default / game decides", "3:2 · 480 × 320 · 2× scale", "4:3 · 1024 × 768 · 2× scale")
+        val profile = Spinner(this).apply {
+            adapter = ArrayAdapter(this@MainActivity, android.R.layout.simple_spinner_dropdown_item, profiles)
+            setSelection(if (saved.classic320) 1 else if (saved.classic1024) 2 else 0)
+            content.addView(this)
+        }
+        explanation("At content scale 1, full-screen landscape drawables request 960 × 640 or 2048 × 1536 pixels respectively; portrait swaps the axes. Games, layer sizes and hardware limits can affect the result.")
         val offline = toggle("Force network access off", saved.offline)
         explanation("The generated APK does not request Android's Internet permission; the emulator's guest network APIs are disabled too.")
         val performance = toggle("Request maximum performance", saved.performance)
@@ -1277,8 +1029,13 @@ class MainActivity : Activity() {
             .setNegativeButton("Cancel", null)
             .setPositiveButton("Save") { _, _ ->
                 try {
-                    ConvertSettings.save(dir, ConvertSettings(classic.isChecked, offline.isChecked,
-                        performance.isChecked, orientationValues[orientation.selectedItemPosition.coerceIn(0, orientationValues.lastIndex)]))
+                    ConvertSettings.save(dir, ConvertSettings(
+                        classic320 = profile.selectedItemPosition == 1,
+                        offline = offline.isChecked,
+                        performance = performance.isChecked,
+                        orientation = orientationValues[orientation.selectedItemPosition.coerceIn(0, orientationValues.lastIndex)],
+                        classic1024 = profile.selectedItemPosition == 2,
+                    ))
                     Toast.makeText(this, "Saved for the next Semi-Emulated build", Toast.LENGTH_LONG).show()
                 } catch (error: Exception) {
                     Toast.makeText(this, "Could not save convert settings: ${error.message}", Toast.LENGTH_LONG).show()
@@ -1702,12 +1459,15 @@ class MainActivity : Activity() {
                     requireNotNull(input) { "cannot read selected APK" }
                     temporary.outputStream().use { output ->
                         val buffer = ByteArray(65536)
-                        var total = 0L
+                        var sinceStorageCheck = 1048576L
                         while (true) {
                             val n = input.read(buffer)
                             if (n < 0) break
-                            total += n
-                            SafeZip.requireStorage(dir, total)
+                            sinceStorageCheck += n
+                            if (sinceStorageCheck >= 1048576L) {
+                                SafeZip.requireStorage(dir, 65536L)
+                                sinceStorageCheck = 0
+                            }
                             output.write(buffer, 0, n)
                         }
                     }
@@ -1753,11 +1513,8 @@ class MainActivity : Activity() {
                     // everything the packagers may legitimately emit, while still
                     // refusing a bomb that claims more than the storage it came from.
                     require(zipEntries.size <= ConvertedApkBuilder.MAX_RESOURCE_FILES + 4096) { "APK has too many entries" }
-                    require(zipEntries.all { it.size <= SafeZip.MAX_FILE }) { "APK contains an oversized entry" }
-                    require(
-                        zipEntries.sumOf { it.size.coerceAtLeast(0L) } <=
-                            zipEntries.sumOf { it.compressedSize.coerceAtLeast(1L) } * SafeZip.MAX_EXPANSION_RATIO
-                    ) { "APK expands beyond the allowed ratio" }
+                    val expansionBudget = SafeZip.ExpansionBudget()
+                    zipEntries.forEach { expansionBudget.admit(it.name, it.size, it.compressedSize) }
                     val names = zipEntries.map { it.name }
                     names.forEach { SafeZip.validateName(it) }
                     require(names.size == names.toSet().size) { "APK contains duplicate paths" }

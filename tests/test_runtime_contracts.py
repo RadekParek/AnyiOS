@@ -94,10 +94,23 @@ class RuntimeContractTests(unittest.TestCase):
             )
 
     def test_scale_hack_is_wired_to_context_queries_and_multisample_targets(self):
+        options = read(TEMPLATE / "java/org/podnative/StandaloneOptions.java")
+        self.assertIn('"--screen-size=480x320", "--scale-hack=2"', options)
+        self.assertIn('"--screen-size=1024x768", "--scale-hack=2"', options)
+        self.assertNotIn('"--scale-hack=4"', options)
         path = ENGINE / "src/frameworks/opengles/gles_guest.rs"
         if not path.is_file():
             self.skipTest("pinned engine is not initialized in the host-only suite")
         source = read(path)
+        eagl = read(ENGINE / "src/frameworks/opengles/eagl.rs")
+        self.assertIn("!env.options.explicit_screen_size", eagl)
+        self.assertIn(
+            "drawable_storage_size(width, height, contents_scale, scale_hack)", eagl
+        )
+        self.assertIn(
+            "drawable_storage_size(1024.0, 768.0, 1.0, env.options.scale_hack.get())",
+            eagl,
+        )
         for name in ("glGetIntegerv", "glGetFloatv", "glGetFixedv"):
             body = source.split(f"fn {name}(", 1)[1].split("\nfn ", 1)[0]
             self.assertIn("query_divisor", body)

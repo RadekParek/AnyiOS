@@ -14,7 +14,6 @@ emits the C sources + blobs the ``radek/game/rt`` runtime links against:
 from __future__ import annotations
 
 import hashlib
-import io
 import json
 import os
 import re
@@ -35,6 +34,8 @@ def _find_exec(zf: zipfile.ZipFile) -> str:
         if name.startswith("Payload/") and name.endswith(".app/Info.plist")
     )
     for info_name in infos:
+        if zf.getinfo(info_name).file_size > 8 * 1024 * 1024:
+            raise ValueError("Info.plist exceeds 8 MiB")
         try:
             import plistlib
 
@@ -56,9 +57,16 @@ def _find_exec(zf: zipfile.ZipFile) -> str:
 
 
 def load_ipa(ipa_path: str):
-    with open(ipa_path, "rb") as f:
-        zf = zipfile.ZipFile(io.BytesIO(f.read()))
-    raw = zf.read(_find_exec(zf))
+    # Open the archive directly instead of copying an entire multi-gigabyte IPA
+    # into RAM. Only the executable is needed by this bounded host lifter.
+    with zipfile.ZipFile(ipa_path) as zf:
+        if len(zf.infolist()) > 65534:
+            raise ValueError("IPA has too many entries for the portable-C lifter")
+        name = _find_exec(zf)
+        info = zf.getinfo(name)
+        if info.file_size <= 0 or info.file_size > 512 * 1024 * 1024:
+            raise ValueError("IPA executable is empty or exceeds the 512 MiB host lifting limit")
+        raw = zf.read(info)
     img = macho.parse(raw)
     funcs = disasm.disassemble_all(img)
     ctx = lift.build_context(img, funcs)
@@ -203,7 +211,7 @@ def generate(ipa_path: str, out_dir: str) -> dict:
         extrel.append((r.address, name))
 
     # ---- non-lazy pointer syms (slot addr -> symbol) ----
-    nl_sec = img.section_named("__DATA", "__nl_symbol_ptr")
+    nl_sec = img.optional_section("__DATA", "__nl_symbol_ptr")
     nl_syms = []
     if nl_sec is not None:
         base = nl_sec.address
@@ -221,7 +229,7 @@ def generate(ipa_path: str, out_dir: str) -> dict:
             nl_syms.append((base + 4 * k, name))
 
     # ---- la_ptr syms (slot addr -> symbol), for table completeness ----
-    la_sec = img.section_named("__DATA", "__la_symbol_ptr")
+    la_sec = img.optional_section("__DATA", "__la_symbol_ptr")
     la_syms = []
     if la_sec is not None:
         base = la_sec.address
@@ -239,7 +247,7 @@ def generate(ipa_path: str, out_dir: str) -> dict:
             la_syms.append((base + 4 * k, name))
 
     # ---- mod-init addrs ----
-    mod_sec = img.section_named("__DATA", "__mod_init_func")
+    mod_sec = img.optional_section("__DATA", "__mod_init_func")
     modinits = []
     if mod_sec is not None:
         for k in range(mod_sec.size // 4):

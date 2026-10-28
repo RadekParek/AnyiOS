@@ -171,6 +171,22 @@ def macho(
     return bytes(data)
 
 
+def classic_game_macho_without_optional_sections():
+    """A classic ARM Mach-O with no stubs, lazy pointers, ObjC or exceptions.
+
+    The bounded game lifter understands classic LC_DYSYMTAB, not modern
+    LC_MAIN. Keep one _main symbol and an empty indirect/relocation table.
+    """
+    data = bytearray(macho(cpu=12, subtype=9))
+    segment_size = 124
+    # Replace the generic fixture's LC_MAIN with an inert LC_UUID.
+    struct.pack_into("<II16s", data, 28 + segment_size, 0x1B, 24, bytes(16))
+    fields = (0, 0, 0, 1, 1, 0) + (0,) * 12
+    struct.pack_into("<II18I", data, 28 + segment_size + 24 + 24, 0xB, 80, *fields)
+    struct.pack_into("<II", data, 16, 4, segment_size + 24 + 24 + 80)
+    return bytes(data)
+
+
 def fat(slices, wide=False, little=False):
     endian = "<" if little else ">"
     out = bytearray(4096)

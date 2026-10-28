@@ -187,11 +187,15 @@ class Image:
                 return section
         return None
 
+    def optional_section(self, segment: str, name: str) -> Section | None:
+        return next((section for section in self.sections
+                     if section.segment == segment and section.name == name), None)
+
     def section_named(self, segment: str, name: str) -> Section:
-        for section in self.sections:
-            if section.segment == segment and section.name == name:
-                return section
-        raise MachOError(f"missing section {segment},{name}")
+        section = self.optional_section(segment, name)
+        if section is None:
+            raise MachOError(f"missing section {segment},{name}")
+        return section
 
     def file_offset(self, address: int) -> int:
         for segment in self.segments:
@@ -459,7 +463,9 @@ def import_name(image: Image, symbol_index: int) -> str:
 
 def stub_map(image: Image) -> list:
     """Map every __symbol_stub slot to (stub_addr, lazy_slot_addr, import_name)."""
-    stubs = image.section_named("__TEXT", "__symbol_stub4")
+    stubs = image.optional_section("__TEXT", "__symbol_stub4")
+    if stubs is None or stubs.size == 0:
+        return []  # Many valid executables have no import stubs.
     lazy = image.section_named("__DATA", "__la_symbol_ptr")
     if stubs.reserved2 not in (12,):
         raise UnsupportedImage(f"unexpected stub size {stubs.reserved2}")
@@ -481,7 +487,9 @@ def stub_map(image: Image) -> list:
 
 def non_lazy_map(image: Image) -> list:
     """Map every __nl_symbol_ptr slot to (slot_addr, import_name | None)."""
-    section = image.section_named("__DATA", "__nl_symbol_ptr")
+    section = image.optional_section("__DATA", "__nl_symbol_ptr")
+    if section is None:
+        return []
     entries = []
     for i in range(section.size // 4):
         symbol_index = image.indirect_symbols[section.reserved1 + i]

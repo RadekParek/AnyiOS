@@ -173,6 +173,61 @@ class ImportTest {
             assertFalse(File(root, "out").exists()); assertFalse(File(root, "escape").exists())
         } finally { root.deleteRecursively() }
     }
+    @Test fun extractsHighlyCompressibleResourcesWithinAnArchiveWideBudget() {
+        val root = Files.createTempDirectory("radek-compressible").toFile()
+        try {
+            val data = ByteArray(2 * 1024 * 1024)
+            val archive = zip(root, listOf("Payload/Test.app/empty-texture" to data))
+            val out = File(root, "out")
+            SafeZip.extract(archive, out)
+            assertArrayEquals(data, File(out, "Payload/Test.app/empty-texture").readBytes())
+            assertTrue(archive.length() * SafeZip.MAX_EXPANSION_RATIO < data.size)
+        } finally { root.deleteRecursively() }
+    }
+    @Test fun highCompressionBudgetIsCumulativeAndLargeMembersHaveDistinctErrors() {
+        val budget = SafeZip.ExpansionBudget(maxFile = 100_000, ratio = 10, allowance = 1_000)
+        budget.admit("first", 650, 10) // 550 excess
+        budget.admit("second", 550, 10) // 450 excess
+        val bomb = assertThrows(IllegalArgumentException::class.java) { budget.admit("third", 101, 10) }
+        assertTrue(bomb.message!!.contains("third"))
+        assertTrue(bomb.message!!.contains("expansion safety"))
+        val large = assertThrows(IllegalArgumentException::class.java) { budget.admit("large", 100_001, 1) }
+        assertTrue(large.message!!.contains("member-size"))
+        assertThrows(IllegalArgumentException::class.java) { budget.admit("unknown", -1, 1) }
+        // ZIP64 APK metadata must not wrap compressedSize * ratio.
+        SafeZip.ExpansionBudget().admit("large-compressed", 1024, Long.MAX_VALUE)
+        SafeZip.ExpansionBudget().admit("valid-over-1gib", 2L * 1024 * 1024 * 1024, 2L * 1024 * 1024 * 1024)
+    }
+    @Test fun rejectsOversizedExpansionBeforeExtractingAndCleansUp() {
+        val root = Files.createTempDirectory("radek-bomb").toFile()
+        try {
+            val archive = zip(root, listOf("valid" to byteArrayOf(1), "bomb" to ByteArray(1024 * 1024)))
+            val bytes = archive.readBytes()
+            val positions = (0..bytes.size - 46).filter { bytes[it] == 0x50.toByte() && bytes[it + 1] == 0x4b.toByte() && bytes[it + 2] == 1.toByte() && bytes[it + 3] == 2.toByte() }
+            val header = positions.last()
+            val fakeSize = 300 * 1024 * 1024
+            repeat(4) { bytes[header + 24 + it] = (fakeSize ushr (it * 8)).toByte() }
+            archive.writeBytes(bytes)
+            val out = File(root, "out")
+            val error = assertThrows(IllegalArgumentException::class.java) { SafeZip.extract(archive, out) }
+            assertTrue(error.message!!.contains("bomb"))
+            assertTrue(error.message!!.contains("expansion safety"))
+            assertFalse(out.exists())
+        } finally { root.deleteRecursively() }
+    }
+    @Test fun crcMismatchIsStillRejectedAndCleanedUp() {
+        val root = Files.createTempDirectory("radek-crc").toFile()
+        try {
+            val archive = zip(root, listOf("resource" to "hello".toByteArray()))
+            val bytes = archive.readBytes()
+            val header = (0..bytes.size - 46).first { bytes[it] == 0x50.toByte() && bytes[it + 1] == 0x4b.toByte() && bytes[it + 2] == 1.toByte() && bytes[it + 3] == 2.toByte() }
+            bytes[header + 16] = (bytes[header + 16].toInt() xor 1).toByte()
+            archive.writeBytes(bytes)
+            val out = File(root, "out")
+            assertThrows(IllegalArgumentException::class.java) { SafeZip.extract(archive, out) }
+            assertFalse(out.exists())
+        } finally { root.deleteRecursively() }
+    }
     @Test fun rejectsSymlinksFromCentralDirectory() {
         val root = Files.createTempDirectory("radek-test").toFile()
         try {

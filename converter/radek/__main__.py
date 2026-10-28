@@ -1,8 +1,8 @@
 import argparse
 import json
 import sys
+import tempfile
 from pathlib import Path
-from .pipeline import Pipeline
 from .apk import Toolchain, validate_apk, validate_experimental_shell
 from .gameruntime import manifest_summary, run_gameboot
 
@@ -24,11 +24,20 @@ def main():
             help="optional local desktop Ghidra installation for bounded diagnostic pseudocode (Linux/macOS)",
         )
         p.add_argument(
+            "--android-linker", choices=("clang", "cmake"), default="clang",
+            help="host backend for optional portable-C linking (default: NDK clang)",
+        )
+        p.add_argument(
             "--target-abi",
             choices=("auto", "arm64-v8a", "armeabi-v7a"),
             default="auto",
             help="assessment target ABI; auto prefers ARM64 in a FAT IPA and selects ARMv7 for ARM32-only inputs; no APK is emitted",
         )
+    p = sub.add_parser("relink", help="relink existing translated C with the Android NDK on a host")
+    p.add_argument("translation_dir", type=Path, help="existing bytecode-translation directory")
+    p.add_argument("--authorized", action="store_true", help="confirm permission to process this translation")
+    p.add_argument("--backend", choices=("clang", "cmake"), default="cmake")
+    p.add_argument("--target-abi", choices=("arm64-v8a", "armeabi-v7a"), default="arm64-v8a")
     p = sub.add_parser(
         "gameboot",
         help="probe the game-runtime boot attempt for one authorized IPA (contract game-runtime-v1)",
@@ -60,6 +69,32 @@ def main():
     )
     args = parser.parse_args()
     try:
+        if args.command == "relink":
+            if not args.authorized:
+                raise ValueError("authorization confirmation is required before compiling translated code")
+            from .game.android_linker import link_generated_translation, prepare_translated_game_runtime_input
+            directory = args.translation_dir.resolve(strict=True)
+            if not directory.is_dir():
+                raise ValueError("translation directory does not exist")
+            link = link_generated_translation(directory, args.target_abi, backend=args.backend)
+            handoff = None
+            if link.get("status") == "VERIFIED_ANDROID_SHARED_LIBRARY":
+                handoff = prepare_translated_game_runtime_input(directory, args.target_abi, link)
+            # Preserve any old library/handoff on failure; the new report says
+            # explicitly whether this run verified and packaged anything.
+            report_path = directory / "android-link-report.json"
+            pending = None
+            try:
+                with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", dir=directory,
+                                                 prefix=".android-link-report-", suffix=".tmp", delete=False) as stream:
+                    pending = Path(stream.name)
+                    stream.write(json.dumps(link, indent=2, ensure_ascii=True))
+                pending.replace(report_path)
+            finally:
+                if pending is not None:
+                    pending.unlink(missing_ok=True)
+            print(json.dumps({"androidLink": link, "handoff": handoff, "linkReport": str(report_path)}, indent=2))
+            return 0 if handoff and handoff.get("readyForGameRuntimeApk") else 2
         if args.command == "gameboot":
             manifest = run_gameboot(args.ipa, args.authorized, args.output)
             summary = manifest_summary(manifest)
@@ -81,12 +116,14 @@ def main():
             )
             print(json.dumps(result, indent=2))
             return 0
+        from .pipeline import Pipeline
         result = Pipeline(args.output).run(
             args.ipa,
             args.authorized,
             args.command == "analyze",
             args.target_abi,
             ghidra_home=args.ghidra_home,
+            android_linker=args.android_linker,
         )
         print(
             json.dumps(
