@@ -27,7 +27,8 @@
 - Both modules have a visible **All modules** button on every module screen;
   Android Back from either library also returns to the Emulator/Converter
   picker. Navigation clears intervening module activities without cancelling
-  the shared background job or touching game files.
+  the shared background job or touching game files. An older Converter activity
+  cannot disconnect the current activity's job-progress listener when destroyed.
 - Refreshed the picker and both modules with a common palette, translucent
   glass-inspired gradients/highlights, outline-vector fallback art instead of
   decorative glyphs, and responsive grid sizing for narrow screens and large

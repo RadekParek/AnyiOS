@@ -113,6 +113,22 @@ class ConverterUiTest {
         assertEquals(report, reportFile.readText())
     }
 
+    @Test fun destroyingOlderConverterDoesNotDisconnectTheCurrentJobListener() {
+        start()
+        val older = requireNotNull(controller)
+        val olderListener = Jobs.listener
+        start()
+        val currentListener = Jobs.listener
+        try {
+            assertNotNull(olderListener)
+            assertNotNull(currentListener)
+            assertNotSame(olderListener, currentListener)
+        } finally {
+            older.pause().stop().destroy()
+        }
+        assertSame(currentListener, Jobs.listener)
+    }
+
     @Test fun gridPagesAreBoundedAndCanRevealTheRemainingGames() {
         repeat(65) { entry("Game ${it.toString().padStart(2, '0')}") }
         val activity = start()

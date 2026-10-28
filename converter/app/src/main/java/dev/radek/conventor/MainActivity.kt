@@ -28,7 +28,7 @@ import java.util.Locale
 import java.util.concurrent.Executors
 import java.util.zip.ZipFile
 
-private object Jobs {
+internal object Jobs {
     private val executor = Executors.newSingleThreadExecutor()
     private val main = Handler(Looper.getMainLooper())
     @Volatile var busy = false
@@ -195,6 +195,24 @@ class MainActivity : Activity() {
             (!SharedCatalog.isBusy() || !renderedSharedBusy)) home()
     }
     private val sharedObserver = Runnable { sharedChanged() }
+    private val jobsListener: () -> Unit = {
+        runCatching {
+            progressLabel?.text = "${Jobs.percent}% · ${Jobs.message}"
+            progressBar?.progress = Jobs.percent
+            if (wasBusy && !Jobs.busy) {
+                wasBusy = false
+                val target = returnToDetailAfterJob
+                returnToDetailAfterJob = null
+                val openImport = openImportedResultAfterJob
+                openImportedResultAfterJob = false
+                if (target != null && target.isDirectory && File(target, "report.json").isFile &&
+                    ((currentScreen == Screen.DETAIL && selected == target) ||
+                        (openImport && currentScreen == Screen.LIBRARY))) {
+                    detail(target, if (selected == target) currentScroll?.scrollY ?: 0 else 0)
+                } else if (currentScreen == Screen.LIBRARY) home()
+            }
+        }
+    }
     private fun sharedIcon(dir: File): File = File(dir, "cover.png").takeIf { it.isFile } ?: File(dir, "icon.png")
 
     override fun onCreate(state: Bundle?) {
@@ -207,24 +225,7 @@ class MainActivity : Activity() {
         visibleEntries = state?.getInt("visibleEntries", 60)?.coerceIn(60, 10000) ?: 60
         val savedScroll = state?.getInt("scrollY", 0) ?: 0
         if (Jobs.busy) returnToDetailAfterJob = selected
-        Jobs.listener = {
-            runCatching {
-                progressLabel?.text = "${Jobs.percent}% · ${Jobs.message}"
-                progressBar?.progress = Jobs.percent
-                if (wasBusy && !Jobs.busy) {
-                    wasBusy = false
-                    val target = returnToDetailAfterJob
-                    returnToDetailAfterJob = null
-                    val openImport = openImportedResultAfterJob
-                    openImportedResultAfterJob = false
-                    if (target != null && target.isDirectory && File(target, "report.json").isFile &&
-                        ((currentScreen == Screen.DETAIL && selected == target) ||
-                            (openImport && currentScreen == Screen.LIBRARY))) {
-                        detail(target, if (selected == target) currentScroll?.scrollY ?: 0 else 0)
-                    } else if (currentScreen == Screen.LIBRARY) home()
-                }
-            }
-        }
+        Jobs.listener = jobsListener
         if (selected?.isDirectory == true && (File(selected, "report.json").isFile || File(selected, "game.json").isFile)) {
             detail(selected!!, savedScroll)
         } else {
@@ -240,7 +241,11 @@ class MainActivity : Activity() {
         out.putInt("scrollY", currentScroll?.scrollY ?: 0)
         super.onSaveInstanceState(out)
     }
-    override fun onDestroy() { Jobs.listener = null; super.onDestroy() }
+    override fun onDestroy() {
+        // A newly opened Converter can register before an older instance is destroyed.
+        if (Jobs.listener === jobsListener) Jobs.listener = null
+        super.onDestroy()
+    }
     override fun onPause() { SharedCatalog.unobserve(sharedObserver); super.onPause() }
     override fun onResume() {
         super.onResume()
