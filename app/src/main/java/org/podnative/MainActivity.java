@@ -487,6 +487,8 @@ public final class MainActivity extends Activity {
         LinearLayout card = column();
         card.setPadding(dp(9), dp(9), dp(9), dp(11));
         clickable(card, surface, 18, () -> gameDetails(game));
+        card.setTag("launch:" + game.id);
+        card.setElevation(dp(1));
         card.setContentDescription(game.title + ", " + game.architecture + ", " + game.status
             + (game.canLaunchInAnyiOSEMU() ? ", open details to launch with AnyiOS"
                                            : ", game launch unavailable"));
@@ -543,7 +545,7 @@ public final class MainActivity extends Activity {
         Dialog sheet = new Dialog(this);
         LinearLayout content = column();
         content.setPadding(dp(24), dp(26), dp(24), dp(28));
-        content.setBackground(shape(surface, 26, false));
+        content.setBackground(SharedTheme.glass(this, 26));
         content.addView(text("Add to your library", 25, ink, true));
         gap(content, 10);
         content.addView(text(
@@ -604,7 +606,7 @@ public final class MainActivity extends Activity {
         ScrollView scroll = new ScrollView(this);
         LinearLayout content = column();
         content.setPadding(dp(24), dp(26), dp(24), dp(28));
-        content.setBackground(shape(surface, 26, false));
+        content.setBackground(SharedTheme.glass(this, 26));
         scroll.addView(content);
         content.addView(text(game.title, 25, ink, true));
         gap(content, 8);
@@ -748,7 +750,23 @@ public final class MainActivity extends Activity {
                         game.anyioseDataDirectory().getAbsolutePath());
             try {
                 activity.activeAnyiOSEmuGameId = game.id;
-                activity.startActivityForResult(intent, RUN_ANYIOSEMU);
+                // Only the main Emulator's library launch uses this zoom.
+                // A fresh card may have replaced the original while preparation
+                // ran, so resolve the anchor from the current view hierarchy.
+                View anchor =
+                    activity.getWindow().getDecorView().findViewWithTag("launch:" + game.id);
+                if (android.animation.ValueAnimator.areAnimatorsEnabled() && anchor != null
+                    && anchor.isAttachedToWindow() && anchor.getWidth() > 0
+                    && anchor.getHeight() > 0) {
+                    android.app.ActivityOptions options =
+                        android.app.ActivityOptions.makeScaleUpAnimation(
+                            anchor, 0, 0, anchor.getWidth(), anchor.getHeight());
+                    activity.startActivityForResult(intent, RUN_ANYIOSEMU, options.toBundle());
+                } else {
+                    activity.startActivityForResult(intent, RUN_ANYIOSEMU);
+                    if (!android.animation.ValueAnimator.areAnimatorsEnabled())
+                        activity.overridePendingTransition(0, 0);
+                }
                 activity.library.recordAnyiOSEmuReport(game.id,
                     "AnyiOSEMU session outcome pending; the runtime log will be captured on exit.");
             } catch (Exception e) {
@@ -958,7 +976,9 @@ public final class MainActivity extends Activity {
     }
 
     private void settings(LinearLayout parent) {
+        gap(parent, 10);
         heading(parent, "Settings", "Simple controls. Clear limits.");
+        gap(parent, 10);
         LinearLayout display = card(parent);
         display.addView(text("DISPLAY", 11, muted, true));
         int[] displaySize = DisplayResolution.displaySize(this);

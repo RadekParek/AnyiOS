@@ -117,9 +117,21 @@ class Library(private val context: Context) {
     }.getOrNull()
 
     fun analyzeShared(dir: File, progress: (Int, String) -> Unit): Pair<File, JSONObject> {
+        require(dir.canonicalFile.parentFile == root.canonicalFile && dir.isDirectory) { "invalid shared entry" }
         val kind = JSONObject(File(dir, "game.json").readText()).optString("kind")
+        val oldFile = File(dir, "report.json")
+        val retry = oldFile.isFile
+        if (retry) {
+            val oldReport = JSONObject(oldFile.readText())
+            require(SourcePolicy.canRetryFailedAnalysis(oldReport)) { "Existing report or artifact cannot be replaced by analysis" }
+            // Preserve the exact prior report before the first progress save. A
+            // failed copy aborts retry and leaves the original untouched.
+            val history = File(dir, "analysis-history")
+            require(history.isDirectory || history.mkdirs()) { "cannot create analysis history" }
+            oldFile.copyTo(File(history, "report-${UUID.randomUUID()}.json"), overwrite = false)
+        }
         return if (kind == "Executable") dir to analyzeExecutable(dir, SharedAnalysisProgress(progress))
-        else import(Uri.EMPTY, dir, progress = progress)
+        else import(Uri.EMPTY, dir, autoBuildProven = !retry, progress = progress)
     }
 
     fun interface SharedAnalysisProgress { fun update(percent: Int, message: String) }
@@ -495,12 +507,8 @@ class Library(private val context: Context) {
                 incompatibleReasons.add(reason)
             }
             var hasCandidate = false
-            val machoMagics = setOf("cffaedfe", "cefaedfe", "feedface", "feedfacf", "cafebabe", "cafebabf", "bebafeca", "bfbafeca")
             val embeddedFiles = app.walkTopDown().filter { file ->
-                if (!file.isFile || file == binary) return@filter false
-                val head = ByteArray(4)
-                val size = file.inputStream().use { it.read(head) }
-                size == 4 && head.joinToString("") { "%02x".format(it.toInt() and 255) } in machoMagics
+                file != binary && EmbeddedImage.isCandidate(file)
             }.toList()
             val embeddedPaths = embeddedFiles.map { it.relativeTo(app).path.replace(File.separatorChar, '/') }.toSet()
             val executableDirectory = binary.relativeTo(app).parentFile?.path?.replace(File.separatorChar, '/').orEmpty()

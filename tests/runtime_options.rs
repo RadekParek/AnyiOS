@@ -48,8 +48,8 @@ fn classic_offline_and_orientation_arguments_apply_to_actual_options() {
     assert!(o.network_access);
     for arg in [
         "--device-family=auto",
-        "--screen-size=768x1024",
-        "--scale-hack=2",
+        "--screen-size=480x320",
+        "--scale-hack=4",
         "--no-network-access",
         "--perf-hints",
         "--affinity=big",
@@ -57,8 +57,8 @@ fn classic_offline_and_orientation_arguments_apply_to_actual_options() {
     ] {
         assert!(o.parse_argument(arg).unwrap(), "{arg}");
     }
-    assert_eq!(o.host_screen_size, Some((768, 1024)));
-    assert_eq!(o.scale_hack.get(), 2);
+    assert_eq!(o.host_screen_size, Some((480, 320)));
+    assert_eq!(o.scale_hack.get(), 4);
     assert!(!o.network_access && o.perf_hints && o.force_initial_orientation);
     assert_eq!(o.initial_orientation, window::DeviceOrientation::Portrait);
     assert_eq!(o.affinity.as_deref(), Some("big"));

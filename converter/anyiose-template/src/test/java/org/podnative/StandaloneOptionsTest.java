@@ -24,7 +24,7 @@ public class StandaloneOptionsTest {
         List<String> arguments = Arrays.asList(StandaloneOptions.forGame("/data", "/game", 90,
                 true, true, true, "-90"));
         assertTrue(arguments.contains("--screen-size=480x320"));
-        assertTrue(arguments.contains("--scale-hack=3"));
+        assertTrue(arguments.contains("--scale-hack=4"));
         assertTrue(arguments.contains("--no-network-access"));
         assertFalse(arguments.contains("--allow-network-access"));
         assertTrue(arguments.contains("--perf-hints"));

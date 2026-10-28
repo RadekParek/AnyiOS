@@ -9,6 +9,7 @@
 #include <mutex>
 #include <optional>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 namespace radek::compat_runtime {
@@ -53,7 +54,7 @@ class ShimRegistry {
     std::map<std::string, ShimBinding> bindings_;
     // Stable pointers into bindings_ (std::map nodes never move and nothing erases),
     // so a callout dispatches without copying the binding or its callbacks.
-    std::map<GuestAddress, const ShimBinding *> callouts_;
+    std::unordered_map<GuestAddress, const ShimBinding *> callouts_;
     std::map<std::string, GuestImageInitializer> imageInitializers_;
 
   public:

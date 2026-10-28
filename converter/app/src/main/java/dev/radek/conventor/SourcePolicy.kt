@@ -15,7 +15,9 @@ internal object SourcePolicy {
     }
 
     fun canRetryFailedAnalysis(report: JSONObject): Boolean =
-        report.optString("state") == "FAILED" &&
+        (report.optString("state") == "FAILED" ||
+            (report.optString("state") == "BLOCKED" &&
+                (report.optJSONObject("dependencies")?.optInt("failedImageCount", 0) ?: 0) > 0)) &&
             listOf("hostConversion", "deviceConversion", "gameRuntimeConversion", "anyioseConversion", "placeholderConversion")
                 .none { report.has(it) }
 }

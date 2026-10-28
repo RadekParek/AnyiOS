@@ -4739,6 +4739,781 @@ index 871bd0ca7bb2597a59c55b2fdcce92a2e5f79fe5..5bb07a16575336a4fed5a898ae137ef1
  - (bool)hasUnifiedMemory { true }
  - (NSUInteger)recommendedMaxWorkingSetSize { 0 }
  - (bool)supportsFamily:(NSUInteger)_family { false }
+diff --git a/src/frameworks/opengles.rs b/src/frameworks/opengles.rs
+index 2bc59e270031d4df1feb1703368a64b6323f5af1..b58c3485142b85bee136e2064f60768e38d00cd3 100644
+--- a/src/frameworks/opengles.rs
++++ b/src/frameworks/opengles.rs
+@@ -11,9 +11,10 @@
+ 
+ mod eagl;
+ mod gles_guest;
++mod scale_framebuffer;
+ mod software_vao;
+ 
+-use touchHLE_gl_bindings::gles11::types::{GLenum, GLint, GLsizei, GLuint};
++use touchHLE_gl_bindings::gles11::types::{GLenum, GLuint};
+ 
+ use crate::mem::ConstPtr;
+ 
+@@ -41,26 +42,7 @@ pub struct State {
+     sync_objects: std::collections::HashMap<GLuint, gles_guest::GuestSyncObject>,
+     /// Next candidate guest `GLsync` handle (0 is never handed out).
+     next_sync_handle: GLuint,
+-    /// The framebuffer object the guest currently has bound, per thread.
+-    bound_framebuffers: std::collections::HashMap<crate::ThreadId, GLuint>,
+-    /// Framebuffer objects whose colour attachment is a *texture*.
+-    ///
+-    /// The scale hack enlarges renderbuffers (both the EAGL drawable's and any
+-    /// the app allocates via `glRenderbufferStorage`), so scaling a viewport
+-    /// aimed at those is correct. Textures are never enlarged, so a viewport
+-    /// aimed at a texture-backed framebuffer must be left alone — otherwise the
+-    /// app draws `scale_hack` times too large into an unscaled target and you
+-    /// see a magnified bottom-left corner (Flappy Bird renders through a
+-    /// 288x512 texture FBO and did exactly that).
+-    texture_backed_framebuffers: std::collections::HashSet<GLuint>,
+-    /// The last viewport the guest asked for, in guest (unscaled) co-ordinates.
+-    ///
+-    /// The GL viewport is global state rather than per-framebuffer, and apps
+-    /// are free to call `glViewport` *before* binding the framebuffer they mean
+-    /// it for (Flappy Bird does). Whether the scale hack applies therefore
+-    /// cannot be decided when `glViewport` is called — we remember the request
+-    /// and re-apply it with the right scaling whenever the binding changes.
+-    guest_viewports: std::collections::HashMap<crate::ThreadId, (GLint, GLint, GLsizei, GLsizei)>,
++
+ }
+ impl State {
+     fn current_ctx_for_thread(&mut self, thread: crate::ThreadId) -> &mut Option<crate::objc::id> {
+@@ -68,57 +50,6 @@ impl State {
+         self.current_ctxs.entry(thread).or_insert(None)
+     }
+ 
+-    pub fn set_bound_framebuffer(&mut self, thread: crate::ThreadId, framebuffer: GLuint) {
+-        self.bound_framebuffers.insert(thread, framebuffer);
+-    }
+-
+-    /// Record what kind of colour attachment a framebuffer was given, so
+-    /// `glViewport` can tell whether the scale hack applies to it.
+-    pub fn set_colour_attachment_is_texture(&mut self, thread: crate::ThreadId, is_texture: bool) {
+-        let framebuffer = self
+-            .bound_framebuffers
+-            .get(&thread)
+-            .copied()
+-            .unwrap_or_default();
+-        // Framebuffer 0 is the window/drawable itself and is always scaled.
+-        if framebuffer == 0 {
+-            return;
+-        }
+-        if is_texture {
+-            self.texture_backed_framebuffers.insert(framebuffer);
+-        } else {
+-            self.texture_backed_framebuffers.remove(&framebuffer);
+-        }
+-    }
+-
+-    /// Whether the scale hack should be applied to `glViewport` right now.
+-    ///
+-    /// Defaults to `true` (the historical behaviour) unless we positively know
+-    /// the bound framebuffer is texture-backed, so anything we failed to track
+-    /// keeps working exactly as before.
+-    pub fn set_guest_viewport(
+-        &mut self,
+-        thread: crate::ThreadId,
+-        viewport: (GLint, GLint, GLsizei, GLsizei),
+-    ) {
+-        self.guest_viewports.insert(thread, viewport);
+-    }
+-
+-    pub fn guest_viewport(
+-        &self,
+-        thread: crate::ThreadId,
+-    ) -> Option<(GLint, GLint, GLsizei, GLsizei)> {
+-        self.guest_viewports.get(&thread).copied()
+-    }
+-
+-    pub fn scale_hack_applies_to_viewport(&self, thread: crate::ThreadId) -> bool {
+-        let framebuffer = self
+-            .bound_framebuffers
+-            .get(&thread)
+-            .copied()
+-            .unwrap_or_default();
+-        !self.texture_backed_framebuffers.contains(&framebuffer)
+-    }
+ }
+ 
+ /// Bind the calling thread's current EAGL context to the host window and
+diff --git a/src/frameworks/opengles/eagl.rs b/src/frameworks/opengles/eagl.rs
+index a851662a83fd6924498c8cc51748ba12eb2e3fc8..1a246b100a6dbe662e84baaee4d22e195a660fab 100644
+--- a/src/frameworks/opengles/eagl.rs
++++ b/src/frameworks/opengles/eagl.rs
+@@ -158,6 +158,8 @@ fn effective_eagl_api(
+ /// context (the presenter) always restores what it found, so the mirror stays
+ /// valid across presents.
+ pub(super) struct GLShadowState {
++    /// Guest viewport, scissor and framebuffer scaling for this context.
++    pub(super) scale_framebuffer: super::scale_framebuffer::FramebufferScaleState,
+     /// `GL_ARRAY_BUFFER_BINDING`.
+     pub(super) array_buffer: GLuint,
+     /// `GL_ELEMENT_ARRAY_BUFFER_BINDING`. `None` means "unknown, ask the
+@@ -195,6 +197,7 @@ pub(super) struct GLShadowState {
+ impl Default for GLShadowState {
+     fn default() -> Self {
+         GLShadowState {
++            scale_framebuffer: Default::default(),
+             array_buffer: 0,
+             element_array_buffer: Some(0),
+             fog_enabled: false,
+diff --git a/src/frameworks/opengles/gles_guest.rs b/src/frameworks/opengles/gles_guest.rs
+index 1163b1139822e4d4f9afdd5d26f3bb8ec81f0343..81ada50b4a32ee50f062f710f547d26b5796f732 100644
+--- a/src/frameworks/opengles/gles_guest.rs
++++ b/src/frameworks/opengles/gles_guest.rs
+@@ -425,6 +425,28 @@ fn glGetFloatv(env: &mut Environment, pname: GLenum, params: MutPtr<GLfloat>) {
+     if params.is_null() {
+         return;
+     }
++    let factor = env.options.scale_hack.get() as GLsizei;
++    if factor != 1
++        && matches!(pname, 0x0ba2 | 0x0c10)
++        && env
++            .framework_state
++            .opengles
++            .current_ctx_for_thread(env.current_thread)
++            .is_some()
++    {
++        with_ctx_mem_and_shadow(env, |gles, mem, shadow| unsafe {
++            let params = mem.ptr_at_mut(params, 16);
++            gles.GetFloatv(pname, params);
++            let divisor = shadow.scale_framebuffer.query_divisor(pname, factor) as GLfloat;
++            if divisor != 1.0 {
++                for index in 0..4 {
++                    let value = params.add(index).read_unaligned() / divisor;
++                    params.add(index).write_unaligned(value);
++                }
++            }
++        });
++        return;
++    }
+     if env
+         .framework_state
+         .opengles
+@@ -443,6 +465,28 @@ fn glGetIntegerv(env: &mut Environment, pname: GLenum, params: MutPtr<GLint>) {
+     if params.is_null() {
+         return;
+     }
++    let factor = env.options.scale_hack.get() as GLsizei;
++    if factor != 1
++        && matches!(pname, 0x0ba2 | 0x0c10)
++        && env
++            .framework_state
++            .opengles
++            .current_ctx_for_thread(env.current_thread)
++            .is_some()
++    {
++        with_ctx_mem_and_shadow(env, |gles, mem, shadow| unsafe {
++            let params = mem.ptr_at_mut(params, 16);
++            gles.GetIntegerv(pname, params);
++            let divisor = shadow.scale_framebuffer.query_divisor(pname, factor);
++            if divisor != 1 {
++                for index in 0..4 {
++                    let value = params.add(index).read_unaligned() / divisor;
++                    params.add(index).write_unaligned(value);
++                }
++            }
++        });
++        return;
++    }
+     match pname {
+         gles11::NUM_COMPRESSED_TEXTURE_FORMATS => {
+             env.mem
+@@ -484,6 +528,28 @@ fn glGetFixedv(env: &mut Environment, pname: GLenum, params: MutPtr<GLfixed>) {
+     if params.is_null() {
+         return;
+     }
++    let factor = env.options.scale_hack.get() as GLsizei;
++    if factor != 1
++        && matches!(pname, 0x0ba2 | 0x0c10)
++        && env
++            .framework_state
++            .opengles
++            .current_ctx_for_thread(env.current_thread)
++            .is_some()
++    {
++        with_ctx_mem_and_shadow(env, |gles, mem, shadow| unsafe {
++            let params = mem.ptr_at_mut(params, 16);
++            gles.GetFixedv(pname, params);
++            let divisor = shadow.scale_framebuffer.query_divisor(pname, factor);
++            if divisor != 1 {
++                for index in 0..4 {
++                    let value = params.add(index).read_unaligned() / divisor;
++                    params.add(index).write_unaligned(value);
++                }
++            }
++        });
++        return;
++    }
+     if env
+         .framework_state
+         .opengles
+@@ -724,6 +790,19 @@ fn glSampleCoveragex(env: &mut Environment, value: GLclampx, invert: GLboolean)
+ fn glShadeModel(env: &mut Environment, mode: GLenum) {
+     with_ctx_and_mem(env, |gles, _mem| unsafe { gles.ShadeModel(mode) })
+ }
++// Re-apply guest context state when the *kind* of draw target changes.
++unsafe fn reapply_scaled_rectangles(gles: &mut dyn GLES, shadow: &GLShadowState, factor: GLsizei) {
++    let scale = &shadow.scale_framebuffer;
++    if let Some(rect) = scale.viewport {
++        let (x, y, width, height) = scale.scaled(rect, factor);
++        gles.Viewport(x, y, width, height);
++    }
++    if let Some(rect) = scale.scissor {
++        let (x, y, width, height) = scale.scaled(rect, factor);
++        gles.Scissor(x, y, width, height);
++    }
++}
++
+ fn glScissor(env: &mut Environment, x: GLint, y: GLint, width: GLsizei, height: GLsizei) {
+     {
+         use std::sync::atomic::{AtomicBool, Ordering};
+@@ -739,10 +818,16 @@ fn glScissor(env: &mut Environment, x: GLint, y: GLint, width: GLsizei, height:
+         }
+     }
+     let factor = env.options.scale_hack.get() as GLsizei;
+-    let (x, y) = (x * factor, y * factor);
+-    let (width, height) = (width * factor, height * factor);
+-    with_ctx_and_mem(env, |gles, _mem| unsafe {
+-        gles.Scissor(x, y, width, height)
++    if factor == 1 {
++        with_ctx_and_mem(env, |gles, _mem| unsafe { gles.Scissor(x, y, width, height) });
++        return;
++    }
++    with_ctx_mem_and_shadow(env, |gles, _mem, shadow| unsafe {
++        let rect = (x, y, width, height);
++        // GL rejects negative dimensions without changing the previous state.
++        if width >= 0 && height >= 0 { shadow.scale_framebuffer.scissor = Some(rect); }
++        let (x, y, width, height) = shadow.scale_framebuffer.scaled(rect, factor);
++        gles.Scissor(x, y, width, height);
+     })
+ }
+ fn glViewport(env: &mut Environment, x: GLint, y: GLint, width: GLsizei, height: GLsizei) {
+@@ -811,33 +896,15 @@ fn glViewport(env: &mut Environment, x: GLint, y: GLint, width: GLsizei, height:
+         }
+     }
+     let factor = env.options.scale_hack.get() as GLsizei;
+-    // The scale hack only enlarges the EAGL drawable's renderbuffer, not the
+-    // framebuffer objects an app creates for itself. Scaling a viewport aimed
+-    // at one of those draws the app's content `factor` times too large inside
+-    // an unscaled target, which is why Flappy Bird (which renders through a
+-    // 288x512 offscreen buffer at its native art size) appeared hugely zoomed
+-    // in at any scale above 1, while apps that draw straight to the drawable
+-    // (e.g. Touch & Go) were unaffected.
+-    //
+-    // GL_FRAMEBUFFER_BINDING_OES and GL_FRAMEBUFFER_BINDING are both 0x8CA6, so
+-    // this single query is correct for ES 1.1 and ES 2.0 alike.
+-    let thread = env.current_thread;
+-    // Remember the request so it can be re-applied if the guest binds a
+-    // different framebuffer afterwards (see glBindFramebufferOES).
+-    env.framework_state
+-        .opengles
+-        .set_guest_viewport(thread, (x, y, width, height));
+-    let apply_scale_hack = env
+-        .framework_state
+-        .opengles
+-        .scale_hack_applies_to_viewport(thread);
+-    let (x, y, width, height) = if apply_scale_hack {
+-        (x * factor, y * factor, width * factor, height * factor)
+-    } else {
+-        (x, y, width, height)
+-    };
+-    with_ctx_and_mem(env, |gles, _mem| unsafe {
+-        gles.Viewport(x, y, width, height)
++    if factor == 1 {
++        with_ctx_and_mem(env, |gles, _mem| unsafe { gles.Viewport(x, y, width, height) });
++        return;
++    }
++    with_ctx_mem_and_shadow(env, |gles, _mem, shadow| unsafe {
++        let rect = (x, y, width, height);
++        if width >= 0 && height >= 0 { shadow.scale_framebuffer.viewport = Some(rect); }
++        let (x, y, width, height) = shadow.scale_framebuffer.scaled(rect, factor);
++        gles.Viewport(x, y, width, height);
+     })
+ }
+ fn glLineWidth(env: &mut Environment, val: GLfloat) {
+@@ -2712,6 +2779,7 @@ fn glGenTextures(env: &mut Environment, n: GLsizei, textures: MutPtr<GLuint>) {
+     })
+ }
+ fn glDeleteTextures(env: &mut Environment, n: GLsizei, textures: ConstPtr<GLuint>) {
++    let factor = env.options.scale_hack.get() as GLsizei;
+     with_ctx_mem_and_shadow(env, |gles, mem, shadow| {
+         let n_usize: GuestUSize = n.try_into().unwrap();
+         // Copy the names out with unaligned reads: the guest array needn't be
+@@ -2719,9 +2787,12 @@ fn glDeleteTextures(env: &mut Environment, n: GLsizei, textures: ConstPtr<GLuint
+         // over it would be undefined behaviour.
+         let deleted: Vec<GLuint> = (0..n_usize).map(|i| mem.read(textures + i)).collect();
+         unsafe { gles.DeleteTextures(n, deleted.as_ptr()) };
++        let mut detached = false;
+         for texture in deleted {
+             shadow.forget_pvrtc_texture(texture);
++            if factor != 1 { detached |= shadow.scale_framebuffer.delete_texture(texture); }
+         }
++        if detached { unsafe { reapply_scaled_rectangles(gles, shadow, factor) }; }
+     })
+ }
+ fn glActiveTexture(env: &mut Environment, texture: GLenum) {
+@@ -3509,32 +3580,15 @@ fn glIsRenderbufferOES(env: &mut Environment, renderbuffer: GLuint) -> GLboolean
+     })
+ }
+ fn glBindFramebufferOES(env: &mut Environment, target: GLenum, framebuffer: GLuint) {
+-    let thread = env.current_thread;
+-    env.framework_state
+-        .opengles
+-        .set_bound_framebuffer(thread, framebuffer);
+-    // The viewport is global GL state, so a viewport the guest set while a
+-    // different framebuffer was bound may need different scale-hack treatment
+-    // now. Re-apply the guest's last request against the new binding. Without
+-    // the scale hack both treatments are identical, so there is nothing to do.
+     let factor = env.options.scale_hack.get() as GLsizei;
+-    let viewport = if factor != 1 {
+-        env.framework_state.opengles.guest_viewport(thread)
+-    } else {
+-        None
+-    };
+-    let apply_scale_hack = env
+-        .framework_state
+-        .opengles
+-        .scale_hack_applies_to_viewport(thread);
+-    with_ctx_and_mem(env, |gles, _mem| unsafe {
++    if factor == 1 {
++        with_ctx_and_mem(env, |gles, _mem| unsafe { gles.BindFramebufferOES(target, framebuffer) });
++        return;
++    }
++    with_ctx_mem_and_shadow(env, |gles, _mem, shadow| unsafe {
+         gles.BindFramebufferOES(target, framebuffer);
+-        if let Some((x, y, width, height)) = viewport {
+-            if apply_scale_hack {
+-                gles.Viewport(x * factor, y * factor, width * factor, height * factor)
+-            } else {
+-                gles.Viewport(x, y, width, height)
+-            }
++        if shadow.scale_framebuffer.bind(target, framebuffer) {
++            reapply_scaled_rectangles(gles, shadow, factor);
+         }
+     })
+ }
+@@ -3563,16 +3617,15 @@ fn glFramebufferRenderbufferOES(
+     renderbuffertarget: GLenum,
+     renderbuffer: GLuint,
+ ) {
+-    if attachment == gles11::COLOR_ATTACHMENT0_OES {
+-        // Renderbuffers are enlarged by the scale hack, so a viewport aimed at
+-        // this framebuffer should be scaled as usual.
+-        let thread = env.current_thread;
+-        env.framework_state
+-            .opengles
+-            .set_colour_attachment_is_texture(thread, false);
+-    }
+-    with_ctx_and_mem(env, |gles, _mem| unsafe {
++    let factor = env.options.scale_hack.get() as GLsizei;
++    with_ctx_mem_and_shadow(env, |gles, _mem, shadow| unsafe {
+         gles.FramebufferRenderbufferOES(target, attachment, renderbuffertarget, renderbuffer);
++        if factor != 1 && attachment == gles11::COLOR_ATTACHMENT0_OES
++            && renderbuffertarget == gles11::RENDERBUFFER_OES
++            && shadow.scale_framebuffer.attach_renderbuffer(target)
++        {
++            reapply_scaled_rectangles(gles, shadow, factor);
++        }
+         // When an iOS app attaches its drawable color renderbuffer to an FBO,
+         // it commonly forgets to also attach a depth renderbuffer. On real iOS
+         // GPUs / desktop GL the missing depth attachment is treated leniently,
+@@ -3651,14 +3704,15 @@ fn glFramebufferTexture2DOES(
+     texture: GLuint,
+     level: i32,
+ ) {
+-    if attachment == gles11::COLOR_ATTACHMENT0_OES {
+-        let thread = env.current_thread;
+-        env.framework_state
+-            .opengles
+-            .set_colour_attachment_is_texture(thread, texture != 0);
+-    }
+-    with_ctx_and_mem(env, |gles, _mem| unsafe {
+-        gles.FramebufferTexture2DOES(target, attachment, textarget, texture, level)
++    let factor = env.options.scale_hack.get() as GLsizei;
++    with_ctx_mem_and_shadow(env, |gles, _mem, shadow| unsafe {
++        gles.FramebufferTexture2DOES(target, attachment, textarget, texture, level);
++        if factor != 1 && attachment == gles11::COLOR_ATTACHMENT0_OES
++            && super::scale_framebuffer::valid_texture_attachment(texture, textarget, level, gles.is_es3())
++            && shadow.scale_framebuffer.attach_texture(target, texture)
++        {
++            reapply_scaled_rectangles(gles, shadow, factor);
++        }
+     })
+ }
+ fn glGetFramebufferAttachmentParameterivOES(
+@@ -3694,10 +3748,18 @@ fn glCheckFramebufferStatusOES(env: &mut Environment, target: GLenum) -> GLenum
+     })
+ }
+ fn glDeleteFramebuffersOES(env: &mut Environment, n: GLsizei, framebuffers: ConstPtr<GLuint>) {
+-    with_ctx_and_mem(env, |gles, mem| {
++    let factor = env.options.scale_hack.get() as GLsizei;
++    with_ctx_mem_and_shadow(env, |gles, mem, shadow| {
+         let n_usize: GuestUSize = n.try_into().unwrap();
+-        let framebuffers = mem.ptr_at(framebuffers, n_usize);
+-        unsafe { gles.DeleteFramebuffersOES(n, framebuffers) }
++        let deleted: Vec<GLuint> = (0..n_usize).map(|i| mem.read(framebuffers + i)).collect();
++        unsafe { gles.DeleteFramebuffersOES(n, deleted.as_ptr()) };
++        if factor != 1 {
++            let mut rebound = false;
++            for framebuffer in deleted {
++                rebound |= shadow.scale_framebuffer.delete_framebuffer(framebuffer);
++            }
++            if rebound { unsafe { reapply_scaled_rectangles(gles, shadow, factor) }; }
++        }
+     })
+ }
+ fn glDeleteRenderbuffersOES(env: &mut Environment, n: GLsizei, renderbuffers: ConstPtr<GLuint>) {
+@@ -6850,7 +6912,24 @@ fn glBlitFramebuffer(
+     mask: GLbitfield,
+     filter: GLenum,
+ ) {
+-    with_ctx_and_mem(env, |gles, _mem| unsafe {
++    let factor = env.options.scale_hack.get() as GLsizei;
++    if factor == 1 {
++        with_ctx_and_mem(env, |gles, _mem| unsafe {
++            gles.BlitFramebuffer(
++                src_x0, src_y0, src_x1, src_y1, dst_x0, dst_y0, dst_x1, dst_y1, mask, filter,
++            )
++        });
++        return;
++    }
++    // ES 3 blits use independent read and draw framebuffer coordinates:
++    // https://docs.gl/es3/glBlitFramebuffer
++    with_ctx_mem_and_shadow(env, |gles, _mem, shadow| unsafe {
++        let (src_x0, src_y0, src_x1, src_y1) = shadow
++            .scale_framebuffer
++            .scaled_read((src_x0, src_y0, src_x1, src_y1), factor);
++        let (dst_x0, dst_y0, dst_x1, dst_y1) = shadow
++            .scale_framebuffer
++            .scaled((dst_x0, dst_y0, dst_x1, dst_y1), factor);
+         gles.BlitFramebuffer(
+             src_x0, src_y0, src_x1, src_y1, dst_x0, dst_y0, dst_x1, dst_y1, mask, filter,
+         )
+@@ -6865,6 +6944,11 @@ fn glRenderbufferStorageMultisample(
+     width: GLsizei,
+     height: GLsizei,
+ ) {
++    // Like the APPLE multisample path and ordinary renderbuffers, core ES 3
++    // storage must match the scale-hacked drawable to resolve the whole image.
++    let factor = env.options.scale_hack.get() as GLsizei;
++    let width = width.saturating_mul(factor);
++    let height = height.saturating_mul(factor);
+     with_ctx_and_mem(env, |gles, _mem| unsafe {
+         gles.RenderbufferStorageMultisample(target, samples, internalformat, width, height)
+     });
+@@ -6878,8 +6962,24 @@ fn glFramebufferTextureLayer(
+     level: GLint,
+     layer: GLint,
+ ) {
+-    with_ctx_and_mem(env, |gles, _mem| unsafe {
+-        gles.FramebufferTextureLayer(target, attachment, texture, level, layer)
++    let factor = env.options.scale_hack.get() as GLsizei;
++    if factor == 1 {
++        with_ctx_and_mem(env, |gles, _mem| unsafe {
++            gles.FramebufferTextureLayer(target, attachment, texture, level, layer)
++        });
++        return;
++    }
++    // Zero detaches; for a non-zero texture, layer and level must be valid.
++    // https://docs.gl/es3/glFramebufferTextureLayer
++    with_ctx_mem_and_shadow(env, |gles, _mem, shadow| unsafe {
++        gles.FramebufferTextureLayer(target, attachment, texture, level, layer);
++        if gles.is_es3()
++            && attachment == gles11::COLOR_ATTACHMENT0_OES
++            && (texture == 0 || (level >= 0 && layer >= 0))
++            && shadow.scale_framebuffer.attach_texture(target, texture)
++        {
++            reapply_scaled_rectangles(gles, shadow, factor);
++        }
+     });
+ }
+ 
+diff --git a/src/frameworks/opengles/scale_framebuffer.rs b/src/frameworks/opengles/scale_framebuffer.rs
+new file mode 100644
+index 0000000000000000000000000000000000000000..91d22bf1133959589d2f5177ad1a92f8ad082683
+--- /dev/null
++++ b/src/frameworks/opengles/scale_framebuffer.rs
+@@ -0,0 +1,274 @@
++/*
++ * This Source Code Form is subject to the terms of the Mozilla Public
++ * License, v. 2.0. If a copy of the MPL was not distributed with this
++ * file, You can obtain one at https://mozilla.org/MPL/2.0/.
++ */
++//! Per-EAGL-context scale-hack state. Renderbuffers are scaled; textures are not.
++//!
++//! Apple describes EAGL state as belonging to the current context and shows
++//! both renderbuffer and texture framebuffer destinations:
++//! https://developer.apple.com/library/archive/documentation/3DDrawing/Conceptual/OpenGLES_ProgrammingGuide/WorkingwithOpenGLESContexts/WorkingwithOpenGLESContexts.html
++//! https://developer.apple.com/library/archive/documentation/3DDrawing/Conceptual/OpenGLES_ProgrammingGuide/WorkingwithEAGLContexts/WorkingwithEAGLContexts.html
++
++use std::collections::HashMap;
++
++pub(super) type Rect = (i32, i32, i32, i32);
++
++/// OpenGL ES ignores textarget and level when detaching texture zero.
++/// GLES 1/2 require level zero for an attached texture; GLES 3 permits mip levels.
++/// https://docs.gl/es2/glFramebufferTexture2D
++/// https://docs.gl/es3/glFramebufferTexture2D
++pub(super) fn valid_texture_attachment(texture: u32, target: u32, level: i32, es3: bool) -> bool {
++    texture == 0
++        || ((target == 0x0de1 || (0x8515..=0x851a).contains(&target))
++            && level >= 0
++            && (es3 || level == 0))
++}
++
++#[derive(Clone, Copy, Debug, PartialEq, Eq)]
++enum TextureAttachment {
++    Named(u32),
++    // A deleted object remains attached to an unbound FBO, even if its old
++    // name is subsequently reused. See glFramebufferTexture2D notes:
++    // https://registry.khronos.org/OpenGL-Refpages/es2.0/xhtml/glFramebufferTexture2D.xml
++    Deleted,
++}
++
++#[derive(Default)]
++pub(super) struct FramebufferScaleState {
++    draw_framebuffer: u32,
++    read_framebuffer: u32,
++    textures: HashMap<u32, TextureAttachment>,
++    pub(super) viewport: Option<Rect>,
++    pub(super) scissor: Option<Rect>,
++}
++
++impl FramebufferScaleState {
++    fn scaled_for_framebuffer(&self, framebuffer: u32, rect: Rect, factor: i32) -> Rect {
++        let f = if self.textures.contains_key(&framebuffer) {
++            1
++        } else {
++            factor
++        };
++        // Avoid a host overflow/panic on pathological guest coordinates.
++        (
++            rect.0.saturating_mul(f),
++            rect.1.saturating_mul(f),
++            rect.2.saturating_mul(f),
++            rect.3.saturating_mul(f),
++        )
++    }
++
++    pub(super) fn scaled(&self, rect: Rect, factor: i32) -> Rect {
++        self.scaled_for_framebuffer(self.draw_framebuffer, rect, factor)
++    }
++
++    pub(super) fn scaled_read(&self, rect: Rect, factor: i32) -> Rect {
++        self.scaled_for_framebuffer(self.read_framebuffer, rect, factor)
++    }
++
++    /// Only divide driver query results if this context has a tracked guest
++    /// request. Before the guest's first call, the driver's initial size is
++    /// implementation-defined and may not have been multiplied by us.
++    pub(super) fn query_divisor(&self, pname: u32, factor: i32) -> i32 {
++        let known = match pname {
++            0x0ba2 => self.viewport.is_some(), // GL_VIEWPORT
++            0x0c10 => self.scissor.is_some(),  // GL_SCISSOR_BOX
++            _ => false,
++        };
++        if known {
++            self.scaled((1, 0, 0, 0), factor).0
++        } else {
++            1
++        }
++    }
++
++    // FRAMEBUFFER changes both bindings; ES 3 / APPLE multisample can
++    // change READ_FRAMEBUFFER and DRAW_FRAMEBUFFER independently.
++    pub(super) fn bind(&mut self, target: u32, framebuffer: u32) -> bool {
++        match target {
++            0x8d40 => {
++                self.draw_framebuffer = framebuffer;
++                self.read_framebuffer = framebuffer;
++                true
++            }
++            0x8ca9 => {
++                self.draw_framebuffer = framebuffer;
++                true
++            }
++            0x8ca8 => {
++                self.read_framebuffer = framebuffer;
++                false
++            }
++            _ => false,
++        }
++    }
++
++    fn framebuffer_for_target(&self, target: u32) -> Option<u32> {
++        match target {
++            0x8d40 | 0x8ca9 => Some(self.draw_framebuffer),
++            0x8ca8 => Some(self.read_framebuffer),
++            _ => None,
++        }
++    }
++
++    pub(super) fn attach_texture(&mut self, target: u32, texture: u32) -> bool {
++        let Some(framebuffer) = self.framebuffer_for_target(target) else {
++            return false;
++        };
++        if framebuffer == 0 {
++            return false;
++        }
++        if texture == 0 {
++            self.textures.remove(&framebuffer);
++        } else {
++            self.textures
++                .insert(framebuffer, TextureAttachment::Named(texture));
++        }
++        framebuffer == self.draw_framebuffer
++    }
++
++    pub(super) fn attach_renderbuffer(&mut self, target: u32) -> bool {
++        let Some(framebuffer) = self.framebuffer_for_target(target) else {
++            return false;
++        };
++        if framebuffer == 0 {
++            return false;
++        }
++        self.textures.remove(&framebuffer);
++        framebuffer == self.draw_framebuffer
++    }
++
++    pub(super) fn delete_framebuffer(&mut self, framebuffer: u32) -> bool {
++        if framebuffer == 0 {
++            return false;
++        }
++        self.textures.remove(&framebuffer);
++        if self.read_framebuffer == framebuffer {
++            self.read_framebuffer = 0;
++        }
++        if self.draw_framebuffer == framebuffer {
++            self.draw_framebuffer = 0;
++            true
++        } else {
++            false
++        }
++    }
++
++    pub(super) fn delete_texture(&mut self, texture: u32) -> bool {
++        if texture == 0 {
++            return false;
++        }
++        let mut detached = false;
++        let draw_framebuffer = self.draw_framebuffer;
++        let read_framebuffer = self.read_framebuffer;
++        self.textures.retain(|&framebuffer, attached| {
++            if *attached != TextureAttachment::Named(texture) {
++                return true;
++            }
++            if framebuffer == draw_framebuffer || framebuffer == read_framebuffer {
++                detached |= framebuffer == draw_framebuffer;
++                false
++            } else {
++                *attached = TextureAttachment::Deleted;
++                true
++            }
++        });
++        detached
++    }
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++
++    #[test]
++    fn drawable_and_renderbuffer_scale_both_rectangles_but_textures_do_not() {
++        let mut state = FramebufferScaleState::default();
++        let rect = (3, 4, 480, 320);
++        state.viewport = Some(rect);
++        state.scissor = Some((10, 12, 100, 80));
++        assert_eq!(state.scaled(rect, 4), (12, 16, 1920, 1280));
++        state.bind(0x8d40, 7);
++        state.attach_texture(0x8d40, 9);
++        assert_eq!(state.scaled(rect, 4), rect);
++        assert_eq!(state.scaled(state.scissor.unwrap(), 4), (10, 12, 100, 80));
++        state.attach_renderbuffer(0x8d40);
++        assert_eq!(state.scaled(rect, 4), (12, 16, 1920, 1280));
++        assert_eq!(state.scaled(rect, 1), rect);
++    }
++
++    #[test]
++    fn reusing_framebuffer_and_texture_names_does_not_reuse_stale_state() {
++        let mut state = FramebufferScaleState::default();
++        let rect = (0, 0, 10, 20);
++        state.bind(0x8d40, 1);
++        state.attach_texture(0x8d40, 12);
++        state.bind(0x8d40, 2);
++        state.attach_texture(0x8d40, 12);
++        assert!(state.delete_texture(12)); // detaches only the bound FBO
++        assert_eq!(state.scaled(rect, 4), (0, 0, 40, 80));
++        state.bind(0x8d40, 1); // deleted texture object remains attached here
++        assert_eq!(state.scaled(rect, 4), rect);
++        assert!(!state.delete_texture(12)); // a reused name is not the old object
++        assert_eq!(state.scaled(rect, 4), rect);
++        assert!(state.delete_framebuffer(1));
++        state.bind(0x8d40, 1); // newly allocated FBO with the same name
++        assert_eq!(state.scaled(rect, 4), (0, 0, 40, 80));
++    }
++
++    #[test]
++    fn queries_only_unscale_tracked_rectangles_on_scaled_targets() {
++        let mut state = FramebufferScaleState::default();
++        assert_eq!(state.query_divisor(0x0ba2, 4), 1);
++        state.viewport = Some((0, 0, 480, 320));
++        assert_eq!(state.query_divisor(0x0ba2, 4), 4);
++        assert_eq!(state.query_divisor(0x0c10, 4), 1);
++        state.scissor = Some((0, 0, 100, 90));
++        assert_eq!(state.query_divisor(0x0c10, 4), 4);
++        state.bind(0x8d40, 7);
++        state.attach_texture(0x8d40, 9);
++        assert_eq!(state.query_divisor(0x0ba2, 4), 1);
++        assert_eq!(state.query_divisor(0x0c10, 4), 1);
++        assert_eq!(state.query_divisor(0xffff, 4), 1);
++    }
++
++    #[test]
++    fn texture_detach_ignores_target_and_level_but_real_attachments_are_validated() {
++        assert!(valid_texture_attachment(0, 0, -1, false));
++        assert!(valid_texture_attachment(3, 0x0de1, 0, false));
++        assert!(!valid_texture_attachment(3, 0, 0, false));
++        assert!(!valid_texture_attachment(3, 0x0de1, 1, false));
++        assert!(valid_texture_attachment(3, 0x0de1, 1, true));
++        assert!(!valid_texture_attachment(3, 0x0de1, -1, true));
++    }
++
++    #[test]
++    fn read_target_does_not_change_draw_target_scaling() {
++        let mut state = FramebufferScaleState::default();
++        let rect = (0, 0, 10, 20);
++        assert!(state.bind(0x8d40, 4));
++        state.attach_texture(0x8d40, 8);
++        assert!(!state.bind(0x8ca8, 9));
++        state.attach_renderbuffer(0x8ca8);
++        assert_eq!(state.scaled(rect, 4), rect);
++        assert_eq!(state.scaled_read(rect, 4), (0, 0, 40, 80));
++        assert!(!state.bind(0xdead, 0));
++        assert_eq!(state.scaled(rect, 4), rect);
++        assert!(state.bind(0x8ca9, 9));
++        assert_eq!(state.scaled(rect, 4), (0, 0, 40, 80));
++    }
++
++    #[test]
++    fn different_contexts_keep_independent_bindings_and_guest_rectangles() {
++        let mut a = FramebufferScaleState::default();
++        let mut b = FramebufferScaleState::default();
++        a.bind(0x8d40, 1);
++        b.bind(0x8d40, 1);
++        a.attach_texture(0x8d40, 2);
++        a.viewport = Some((0, 0, 20, 30));
++        b.viewport = Some((0, 0, 5, 6));
++        assert_eq!(a.scaled(a.viewport.unwrap(), 4), (0, 0, 20, 30));
++        assert_eq!(b.scaled(b.viewport.unwrap(), 4), (0, 0, 20, 24));
++    }
++}
 diff --git a/src/frameworks/system_configuration/sc_network_reachability.rs b/src/frameworks/system_configuration/sc_network_reachability.rs
 index 9f0f7cc8c4facc23748f99cdee20bba435786f9e..c472fdd99c60209b3a264ffed918a9e537754a30 100644
 --- a/src/frameworks/system_configuration/sc_network_reachability.rs

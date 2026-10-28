@@ -485,6 +485,46 @@ void testGuestMemoryAndHeap() {
     CHECK(memory.callbacks().regions().size() == 2);
 }
 
+void testDirtyPagesAcrossWritePaths() {
+    GuestAddressSpace memory;
+    const auto rw = MemoryPermission::Read | MemoryPermission::Write;
+    memory.mapAt(0x1000, 4096, rw, "first");
+    memory.mapAt(0x2000, 4096, rw, "second");
+    memory.clearDirty();
+    std::uint32_t value = 0x12345678;
+    CHECK(memory.write(0x1ffe, &value, sizeof(value))); // spans two regions
+    std::vector<GuestAddress> pages;
+    CHECK(memory.drainDirtyPages([&pages](GuestAddress address, const std::uint8_t *, std::size_t) {
+        pages.push_back(address);
+        return true;
+    }));
+    CHECK((pages == std::vector<GuestAddress>{0x1000, 0x2000}));
+    CHECK(memory.writeFromGuest(0x1000, &value, sizeof(value)));
+    CHECK(memory.drainDirtyPages([&pages](GuestAddress address, const std::uint8_t *, std::size_t) {
+        pages.push_back(address);
+        return true;
+    }));
+    CHECK(pages.size() == 2); // guest relay is never uploaded again
+    CHECK(memory.guestToHost(0x2008, sizeof(value), MemoryPermission::Write) != nullptr);
+    CHECK(!memory.drainDirtyPages([](GuestAddress, const std::uint8_t *, std::size_t) { return false; }));
+    pages.clear();
+    CHECK(memory.drainDirtyPages([&pages](GuestAddress address, const std::uint8_t *, std::size_t) {
+        pages.push_back(address);
+        return true;
+    }));
+    CHECK((pages == std::vector<GuestAddress>{0x2000}));
+    memory.unmap(0x2000);
+    memory.mapAt(0x2000, 4096, rw, "reused");
+    memory.clearDirty();
+    CHECK(memory.initialize(0x2004, &value, sizeof(value)));
+    pages.clear();
+    CHECK(memory.drainDirtyPages([&pages](GuestAddress address, const std::uint8_t *, std::size_t) {
+        pages.push_back(address);
+        return true;
+    }));
+    CHECK((pages == std::vector<GuestAddress>{0x2000}));
+}
+
 void testShimRegistry() {
     ShimRegistry registry;
     int calls = 0;
@@ -2238,6 +2278,7 @@ void testCpuBackendBoundary() {
 
 int main() {
     testGuestMemoryAndHeap();
+    testDirtyPagesAcrossWritePaths();
     testShimRegistry();
     testGuestPthreadCreateTransfersAndJoins();
     testSjLjContextRegistrationAndUnregistration();

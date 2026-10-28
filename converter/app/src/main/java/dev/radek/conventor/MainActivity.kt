@@ -1021,8 +1021,16 @@ class MainActivity : Activity() {
         val blockers = report.optJSONArray("blockers")
         if (blockers != null) for (i in 0 until blockers.length()) text(blockers.getString(i), 15f, statusColor(state))
         if (report.has("error")) text(report.getString("error"), 15f, statusColor("FAILED"))
+        val imageErrors = report.optJSONObject("dependencies")?.optJSONArray("analysisErrors")
+        if (imageErrors != null && imageErrors.length() > 0) {
+            for (i in 0 until minOf(imageErrors.length(), 5)) {
+                val failure = imageErrors.optJSONObject(i) ?: continue
+                text("Image: ${failure.optString("path", "unknown")} · ${failure.optString("reason", "decode failed")}", 13f, muted)
+            }
+            if (imageErrors.length() > 5) text("More image errors are listed in the full report.", 12f, muted)
+        }
         if (File(dir, "game.json").isFile && SourcePolicy.canRetryFailedAnalysis(report)) {
-            text("The shared source was kept. Retry analysis without importing it again.", 13f, muted)
+            text("The shared source and previous report are kept. Retry analysis without importing again; this does not rebuild an APK.", 13f, muted)
             button("Retry analysis") { startSharedAnalysis(dir) }.isEnabled = !SharedCatalog.isBusy()
         }
         text("Icon: ${report.optJSONObject("icon")?.optString("reason") ?: "not extracted"}", 13f, muted)
@@ -1245,8 +1253,8 @@ class MainActivity : Activity() {
             text = label; isChecked = checked; content.addView(this)
         }
         explanation("These per-game choices are built into new Semi-Emulated APKs only. Rebuild and reinstall to apply changes. Native diagnostic and other APKs do not use them.")
-        val classic = toggle("Classic 3:2 · 480 × 320 points · 3× render scale", saved.classic320)
-        explanation("Landscape 480 × 320 (1440 × 960 at 3×); portrait 320 × 480 (960 × 1440 at 3×). The larger render target can use more memory and GPU time.")
+        val classic = toggle("Classic 3:2 · 480 × 320 points · 4× render scale", saved.classic320)
+        explanation("At layer content scale 1, a full drawable requests 1920 × 1280 in landscape or 1280 × 1920 in portrait. Content scale and hardware limits affect allocation; game-owned textures may stay at their original size. 4× uses more memory and GPU time.")
         val offline = toggle("Force network access off", saved.offline)
         explanation("The generated APK does not request Android's Internet permission; the emulator's guest network APIs are disabled too.")
         val performance = toggle("Request maximum performance", saved.performance)
