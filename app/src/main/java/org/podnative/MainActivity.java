@@ -318,11 +318,11 @@ public final class MainActivity extends Activity {
         ImageView logo = new ImageView(this);
         logo.setImageResource(R.drawable.ic_brand);
         brand.addView(logo, new LinearLayout.LayoutParams(dp(32), dp(32)));
-        TextView wordmark = text("AnyiOS / AnyiOSEMU", 19, ink, true);
+        TextView wordmark = text("AnyiOS", 20, ink, true);
         LinearLayout.LayoutParams wordmarkLp = new LinearLayout.LayoutParams(0, -2, 1);
         wordmarkLp.leftMargin = dp(10);
         brand.addView(wordmark, wordmarkLp);
-        TextView preview = text("PREVIEW", 10, muted, true);
+        TextView preview = text("EMULATOR", 10, accent, true);
         preview.setLetterSpacing(0.08f);
         preview.setPadding(dp(10), dp(7), dp(10), dp(7));
         preview.setBackground(shape(soft, 8, false));
@@ -381,6 +381,10 @@ public final class MainActivity extends Activity {
     private void libraryPage(LinearLayout parent) {
         List<GameLibrary.Game> games = library.games();
         boolean largeText = getResources().getConfiguration().fontScale > 1.35f;
+        TextView eyebrow = text("YOUR COLLECTION  /  ANYIOSEMU", 10, accent, true);
+        eyebrow.setLetterSpacing(0.08f);
+        gap(parent, 14);
+        parent.addView(eyebrow);
         LinearLayout titleRow = largeText ? column() : row();
         TextView title = text("Library", 31, ink, true);
         titleRow.addView(title,
@@ -392,7 +396,7 @@ public final class MainActivity extends Activity {
         add.setEnabled(!SharedCatalog.isBusy());
         add.setAlpha(SharedCatalog.isBusy() ? 0.5f : 1);
         titleRow.addView(add);
-        gap(parent, 18);
+        gap(parent, 10);
         parent.addView(titleRow);
         gap(parent, 8);
         parent.addView(text(games.isEmpty() ? "Your games, together in one place."
@@ -443,7 +447,7 @@ public final class MainActivity extends Activity {
                     lp.setMargins(
                         column == 0 ? 0 : dp(4), 0, column == columns - 1 ? 0 : dp(4), dp(10));
                     if (position < games.size())
-                        grid.addView(gameCard(games.get(position)), lp);
+                        grid.addView(gameCard(games.get(position), columns), lp);
                     else
                         grid.addView(new View(this), lp);
                 }
@@ -495,7 +499,7 @@ public final class MainActivity extends Activity {
             button(notice, "Dismiss", false, library::dismissNotice);
         }
     }
-    private View gameCard(GameLibrary.Game game) {
+    private View gameCard(GameLibrary.Game game, int columns) {
         LinearLayout card = column();
         card.setPadding(dp(9), dp(9), dp(9), dp(11));
         clickable(card, surface, 18, () -> gameDetails(game));
@@ -520,7 +524,12 @@ public final class MainActivity extends Activity {
             ArtworkLoader.load(game.cover(), dp(256), image);
             artwork.addView(image, new FrameLayout.LayoutParams(-1, -1));
         }
-        card.addView(artwork, new LinearLayout.LayoutParams(-1, dp(92)));
+        // A square cover adapts to the current window and grid, not a fixed
+        // phone-width rectangle; cap very large tablet tiles to save memory.
+        int windowDp = getResources().getConfiguration().screenWidthDp;
+        int artworkDp =
+            Math.max(76, Math.min(180, (windowDp - 44 - (columns - 1) * 8) / columns - 18));
+        card.addView(artwork, new LinearLayout.LayoutParams(-1, dp(artworkDp)));
         gap(card, 8);
         TextView title = text(game.title, 13, ink, true);
         title.setMaxLines(2);

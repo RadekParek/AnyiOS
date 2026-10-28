@@ -23,6 +23,7 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.TimeUnit;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipOutputStream;
+import org.json.JSONObject;
 import org.junit.After;
 import org.junit.Before;
 import org.junit.Test;
@@ -158,19 +159,28 @@ public class BatchImportTest {
             assertEquals("Unsupported", game.status);
             assertArrayEquals(
                 original, Files.readAllBytes(new File(game.directory, "source.bin").toPath()));
+            // The intentionally incomplete test bundle cannot finish analysis,
+            // but every imported source must receive its own Converter report.
+            File reportFile = new File(game.directory, "report.json");
+            assertTrue(reportFile.isFile());
+            JSONObject report = new JSONObject(
+                new String(Files.readAllBytes(reportFile.toPath()), StandardCharsets.UTF_8));
+            assertEquals("FAILED", report.getString("state"));
+            assertEquals("IPA", report.getJSONObject("source").getString("kind"));
+            assertTrue(report.getString("error").contains("CFBundleIdentifier"));
+            assertFalse(report.has("deviceConversion"));
         }
         assertFalse(SharedCatalog.isBusy());
     }
     @Test
     public void selectedIpaFilesImportIndependentlyAndContinueAfterOneFailure() throws Exception {
-        library.importFiles(Arrays.asList(
-            DocumentsContract.buildDocumentUri("batch.test", "a"),
+        library.importFiles(Arrays.asList(DocumentsContract.buildDocumentUri("batch.test", "a"),
             DocumentsContract.buildDocumentUri("batch.test", "bad")));
         drain();
 
         assertEquals(1, library.games().size());
-        assertTrue(library.notice,
-            library.notice.contains("1 of 2 selected files imported; 1 failed"));
+        assertTrue(
+            library.notice, library.notice.contains("1 of 2 selected files imported; 1 failed"));
         assertTrue(new File(library.games().get(0).directory, "source.bin").isFile());
         assertFalse(SharedCatalog.isBusy());
     }

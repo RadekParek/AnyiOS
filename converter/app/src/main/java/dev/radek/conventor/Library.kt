@@ -75,7 +75,7 @@ class Library(private val context: Context) {
         return result
     }
 
-    /** Emulator-only entries are visible immediately, without copying or auto-converting. */
+    /** Emulator-only entries remain visible even before analysis, without copying. */
     fun sharedReport(dir: File): JSONObject? = runCatching {
         val meta = JSONObject(File(dir, "game.json").readText())
         JSONObject().put("state", "SHARED_SOURCE")
@@ -85,8 +85,80 @@ class Library(private val context: Context) {
             .put("nextBlocker", "Not analyzed by Converter. " + meta.optString("blockReason"))
     }.getOrNull()
 
-    fun analyzeShared(dir: File, progress: (Int, String) -> Unit): Pair<File, JSONObject> =
-        import(Uri.EMPTY, dir, progress)
+    fun analyzeShared(dir: File, progress: (Int, String) -> Unit): Pair<File, JSONObject> {
+        val kind = JSONObject(File(dir, "game.json").readText()).optString("kind")
+        return if (kind == "Executable") dir to analyzeExecutable(dir, SharedAnalysisProgress(progress), automatic = false)
+        else import(Uri.EMPTY, dir, progress = progress)
+    }
+
+    /** Called while Emulator already owns SharedCatalog; never acquire it again. */
+    fun analyzeImportedSource(dir: File, progress: SharedAnalysisProgress): JSONObject {
+        val kind = JSONObject(File(dir, "game.json").readText()).optString("kind")
+        return if (kind == "Executable") analyzeExecutable(dir, progress, automatic = true)
+        else import(Uri.EMPTY, dir, autoBuildProven = false, automaticAnalysis = true) { percent, message -> progress.update(percent, message) }.second
+    }
+
+    fun interface SharedAnalysisProgress { fun update(percent: Int, message: String) }
+
+    /** An executable-only import has no bundle/resources, but can still be inspected. */
+    private fun analyzeExecutable(dir: File, progress: SharedAnalysisProgress, automatic: Boolean): JSONObject {
+        require(dir.canonicalFile.parentFile == root.canonicalFile && dir.isDirectory) { "invalid shared entry" }
+        val metadata = JSONObject(File(dir, "game.json").readText())
+        val source = File(dir, "source.bin")
+        val report = JSONObject().put("schemaVersion", 1).put("authorizationConfirmed", true)
+        try {
+            require(source.isFile) { "Executable is missing" }
+            AnalysisMemory.check(source.length(), automatic)
+            progress.update(0, "Hashing the imported executable")
+            val digest = MessageDigest.getInstance("SHA-256")
+            source.inputStream().use { input ->
+                val buffer = ByteArray(65536)
+                while (true) {
+                    val count = input.read(buffer)
+                    if (count < 0) break
+                    digest.update(buffer, 0, count)
+                    progress.update(5, "Hashing the imported executable")
+                }
+            }
+            val hash = digest.digest().joinToString("") { "%02x".format(it.toInt() and 255) }
+            report.put("source", JSONObject().put("path", "source.bin").put("kind", "EXECUTABLE")
+                .put("originalName", metadata.optString("originalName")).put("sha256", hash).put("bytes", source.length()))
+            report.put("application", JSONObject().put("name", metadata.optString("title", "Imported executable"))
+                .put("bundleId", metadata.optString("bundleId")).put("version", metadata.optString("version"))
+                .put("sha256", hash).put("fileSize", source.length()))
+            progress.update(25, "Inspecting the imported Mach-O executable")
+            val macho = JSONObject(NativeBridge.analyzeCompact(source.readBytes()))
+            val slices = macho.optJSONArray("slices") ?: error("Mach-O analysis failed: ${macho.optString("error", "no slices decoded")}")
+            report.put("machO", macho)
+            val nodes = JSONArray().put(JSONObject().put("path", metadata.optString("originalName")).put("analysis", macho))
+            report.put("dependencies", JSONObject().put("nodes", nodes).put("edges", JSONArray()))
+            report.put("apiMapping", AndroidApiMapper.analyze(nodes,
+                resolveNdkLibrary = { NativeBridge.findAndroidLibrary(it) },
+                runtimeApiLevel = android.os.Build.VERSION.SDK_INT,
+                resolveApiReplacement = { NativeBridge.findImplementedApiReplacement(it) },
+                resolveCompatHandler = { symbol -> NativeBridge.compatRegisterStub(symbol); NativeBridge.compatClassify(symbol) }))
+            val encrypted = (0 until slices.length()).any { slices.optJSONObject(it)?.optBoolean("encrypted") == true }
+            val message = if (encrypted)
+                "Protected/encrypted executable; DRM is not bypassed. A complete authorized IPA is required to package a game."
+            else "Executable-only analysis cannot inspect missing bundle resources or build an APK. Import an IPA to package a game."
+            report.put("state", if (encrypted) ConversionState.BLOCKED.name else ConversionState.PARTIAL.name).put("nextBlocker", message)
+                .put("blockers", JSONArray().put(message))
+                .put("analysisProgress", JSONObject().put("status", "COMPLETE").put("percent", 100).put("message", message))
+            progress.update(100, "Executable analysis complete")
+        } catch (cancelled: java.util.concurrent.CancellationException) {
+            report.put("state", ConversionState.FAILED.name).put("error", "Analysis cancelled; the imported source was kept")
+            throw cancelled
+        } catch (error: Exception) {
+            report.put("state", ConversionState.FAILED.name).put("error", error.message ?: error.javaClass.simpleName)
+        } catch (error: LinkageError) {
+            report.put("state", ConversionState.FAILED.name).put("error", "Native analyzer unavailable: ${error.message}")
+        } catch (_: OutOfMemoryError) {
+            report.put("state", ConversionState.FAILED.name).put("error", "Not enough memory for analysis; the imported source was kept")
+        } finally {
+            save(dir, report)
+        }
+        return report
+    }
 
     fun save(dir: File, report: JSONObject) {
         val temporary = File(dir, "report.json.tmp")
@@ -201,9 +273,13 @@ class Library(private val context: Context) {
         return fallbackName to queried?.second
     }
 
-    fun import(uri: Uri, existing: File? = null, progress: (Int, String) -> Unit): Pair<File, JSONObject> {
+    fun import(uri: Uri, existing: File? = null, autoBuildProven: Boolean = true,
+        automaticAnalysis: Boolean = false, progress: (Int, String) -> Unit): Pair<File, JSONObject> {
+        val sharedMeta = existing?.let { runCatching { JSONObject(File(it, "game.json").readText()) }.getOrNull() }
+        val folderSource = sharedMeta?.optString("kind") == "Folder"
         val (originalName, expectedSourceBytes) = if (existing == null) sourceDetails(uri) else
-            (sharedReport(existing)?.optJSONObject("application")?.optString("name", "Imported app") + ".ipa") to File(existing, "source.bin").length()
+            (sharedMeta?.optString("originalName")?.takeIf { it.isNotBlank() } ?: "Imported app.ipa") to
+                File(existing, if (folderSource) "bundle" else "source.bin").length()
         val dir = existing ?: File(root, "game-${UUID.randomUUID()}").apply { check(mkdir()) }
         require(dir.canonicalFile.parentFile == root.canonicalFile && dir.isDirectory) { "invalid shared entry" }
 
@@ -230,7 +306,7 @@ class Library(private val context: Context) {
                 .put("androidLinkVerified", false)
                 .put("linkedIntoGame", false)
                 .put("basis", "No Android code has been verified in an Android ELF/APK artifact. API candidates, host plans, and analysis progress do not count as Android-linked code."))
-        val source = File(dir, "source.bin")
+        val source = File(dir, if (folderSource) "bundle" else "source.bin")
         var sourceReady = existing != null
         var progressPercent = 0
         var lastPersistedPercent = -1
@@ -267,15 +343,21 @@ class Library(private val context: Context) {
             save(dir, report)
         }
         try {
-            log(ConversionState.IMPORTED, "Copying selected IPA into isolated private storage", 0)
+            log(ConversionState.IMPORTED, if (existing != null) "Analyzing the existing shared source" else "Copying selected IPA into isolated private storage", 0)
             val digest = MessageDigest.getInstance("SHA-256")
-            if (existing != null) {
+            var folderSnapshot: SharedFolder.Snapshot? = null
+            if (folderSource) {
+                folderSnapshot = SharedFolder.inspect(source) { bytes ->
+                    updateProgress(2, "IMPORTING", "Hashing imported app folder · ${formatBytes(bytes)}")
+                }
+            } else if (existing != null) {
                 source.inputStream().use { input ->
                     val buffer = ByteArray(65536)
                     while (true) {
                         val n = input.read(buffer)
                         if (n < 0) break
                         digest.update(buffer, 0, n)
+                        updateProgress(2, "IMPORTING", "Hashing the shared IPA")
                     }
                 }
             } else {
@@ -296,13 +378,16 @@ class Library(private val context: Context) {
             }
             }
             updateProgress(5, "IMPORTED", "Input staged; checking archive and bundle contents", forceSave = true)
-            val hash = digest.digest().joinToString("") { "%02x".format(it.toInt() and 255) }
-            report.put("source", JSONObject().put("path", "source.bin").put("originalName", originalName)
-                .put("sha256", hash).put("bytes", source.length()))
+            val hash = folderSnapshot?.sha256 ?: digest.digest().joinToString("") { "%02x".format(it.toInt() and 255) }
+            val sourceBytes = folderSnapshot?.bytes ?: source.length()
+            report.put("source", JSONObject().put("path", if (folderSource) "bundle" else "source.bin")
+                .put("kind", if (folderSource) "FOLDER" else "IPA").put("originalName", originalName)
+                .put("sha256", hash).put("bytes", sourceBytes)
+                .put("hashBasis", if (folderSource) "sorted, framed folder inventory" else "IPA bytes"))
             save(dir, report)
             sourceReady = true
             if (existing == null) SharedCatalog.publish(dir, originalName)
-            SafeZip.extract(
+            if (!folderSource) SafeZip.extract(
                 source,
                 File(dir, "extracted"),
                 onFile = { done, total ->
@@ -315,20 +400,20 @@ class Library(private val context: Context) {
                 },
             )
             log(ConversionState.ANALYZING, "Reading Info.plist and application icon", 25)
-            val apps = File(dir, "extracted/Payload").listFiles().orEmpty().filter { it.isDirectory && it.name.endsWith(".app") }
+            val apps = if (folderSource) listOf(requireNotNull(folderSnapshot).app)
+                else File(dir, "extracted/Payload").listFiles().orEmpty().filter { it.isDirectory && it.name.endsWith(".app") }
             require(apps.size == 1) { "expected exactly one Payload/*.app" }
             val app = apps.single()
             val plistFile = File(app, "Info.plist"); require(plistFile.length() <= 8 * 1024 * 1024)
             val plist = Plist.read(plistFile.readBytes())
-            val executable = plist["CFBundleExecutable"] as? String ?: error("CFBundleExecutable missing")
-            require(SafeZip.validateName(executable) == executable && '/' !in executable)
+            val executable = SafeZip.bundleExecutable(plist["CFBundleExecutable"])
             val bundle = plist["CFBundleIdentifier"] as? String ?: error("CFBundleIdentifier missing")
             require(bundle.isNotBlank())
             val minimumIOSVersion = (plist["MinimumOSVersion"] as? String)?.takeIf { it.isNotBlank() }.orEmpty()
             report.put("application", JSONObject().put("name", plist["CFBundleDisplayName"] ?: plist["CFBundleName"] ?: executable)
                 .put("bundleId", bundle).put("version", plist["CFBundleShortVersionString"] ?: "")
                 .put("build", plist["CFBundleVersion"] ?: "").put("executable", executable)
-                .put("minimumIOSVersion", minimumIOSVersion).put("fileSize", source.length()).put("sha256", hash))
+                .put("minimumIOSVersion", minimumIOSVersion).put("fileSize", sourceBytes).put("sha256", hash))
             val names = mutableListOf<String>()
             for (key in listOf("CFBundleIcons", "CFBundleIcons~ipad")) {
                 val icons = plist[key] as? Map<*, *>
@@ -344,7 +429,8 @@ class Library(private val context: Context) {
             updateProgress(40, "ICON_RECOVERY", if (iconReport.optString("status") == "SUPPORTED") "Recovered the original game icon for the analysis library" else "No compatible icon could be decoded")
             updateProgress(44, "ANALYZING", "Launcher icon recovered; preparing bounded native analysis")
             val binary = File(app, executable)
-            require(binary.isFile && binary.length() <= MAX_EXECUTABLE_BYTES) { "Missing executable or exceeds the on-device ${MAX_EXECUTABLE_BYTES / (1024 * 1024)} MiB analysis limit; use the host analyzer for larger files" }
+            require(binary.isFile) { "Executable named by Info.plist is missing" }
+            AnalysisMemory.check(binary.length(), automaticAnalysis)
             log(ConversionState.ANALYZING, "Parsing Mach-O load commands, symbols, fixups and dependencies", 33)
             val binaryBytes = binary.readBytes()
             val macho = JSONObject(NativeBridge.analyzeCompact(binaryBytes))
@@ -519,13 +605,10 @@ class Library(private val context: Context) {
             for (file in embeddedFiles) {
                 val relative = file.relativeTo(app).path
                 val embedded = try {
-                    if (file.length() > MAX_EXECUTABLE_BYTES) {
-                        analysisErrors.put(JSONObject().put("path", relative)
-                            .put("reason", "embedded image exceeds the on-device ${MAX_EXECUTABLE_BYTES / (1024 * 1024)} MiB analysis limit"))
-                        null
-                    } else {
-                        JSONObject(NativeBridge.analyzeCompact(file.readBytes()))
-                    }
+                    AnalysisMemory.check(file.length(), automaticAnalysis)
+                    JSONObject(NativeBridge.analyzeCompact(file.readBytes()))
+                } catch (error: OutOfMemoryError) {
+                    throw error
                 } catch (error: Throwable) {
                     analysisErrors.put(JSONObject().put("path", relative)
                         .put("reason", error.message ?: error.javaClass.simpleName))
@@ -709,7 +792,7 @@ class Library(private val context: Context) {
             }
             report.put("blockers", JSONArray().put(reason)).put("hostCommand", "python3 -m radek analyze input.ipa --authorized --output workspace/analysis")
             val terminalState = if (encrypted || incompatible || !hasCandidate) ConversionState.BLOCKED else ConversionState.PARTIAL
-            if (deviceProven && terminalState == ConversionState.PARTIAL) {
+            if (deviceProven && terminalState == ConversionState.PARTIAL && autoBuildProven && !folderSource) {
                 // Automatic bounded conversion: everything is statically proven, so
                 // the signed APK is built right after analysis with no user action.
                 report.put("conversionProgress", JSONObject()
@@ -773,11 +856,26 @@ class Library(private val context: Context) {
                     "stops at the first unimplemented import; open the NDK needs log to read the exact " +
                     "symbol name, then that symbol gets a real implementation."
             }
-            report.put("nextBlocker", nextBlocker)
+            report.put("nextBlocker", if (folderSource)
+                "APK packaging requires an IPA; this extracted folder was analyzed without copying its source." else nextBlocker)
             save(dir, report)
+        } catch (cancelled: java.util.concurrent.CancellationException) {
+            report.put("state", ConversionState.FAILED.name).put("error", "Analysis cancelled; the imported source was kept")
+            report.optJSONObject("analysisProgress")?.put("status", "FAILED")?.put("message", "Analysis cancelled")
+            save(dir, report)
+            throw cancelled
         } catch (e: Exception) {
             report.put("error", "${e.javaClass.simpleName}: ${e.message}")
             log(ConversionState.FAILED, e.message ?: "Import failed", progressPercent)
+        } catch (e: LinkageError) {
+            report.put("error", "Native analyzer unavailable: ${e.message}")
+            log(ConversionState.FAILED, "Native analyzer unavailable: ${e.message}", progressPercent)
+        } catch (_: OutOfMemoryError) {
+            val message = if (sourceReady) "Not enough memory for analysis; the imported source was kept"
+                else "Not enough memory to finish importing this source"
+            report.put("state", ConversionState.FAILED.name).put("error", message)
+            report.optJSONObject("analysisProgress")?.put("status", "FAILED")?.put("message", message)
+            save(dir, report)
         } finally {
             if (!sourceReady && existing == null) source.delete()
             File(dir, "extracted").deleteRecursively()
@@ -794,9 +892,6 @@ private val ICON_SUFFIXES = listOf(
 )
 private const val ICON_MAX_BYTES = 16L * 1024 * 1024
 private const val ICON_TARGET = 512
-/** Device-memory guard for one Mach-O executable; not an archive policy limit. */
-private const val MAX_EXECUTABLE_BYTES = 1024L * 1024 * 1024
-
 /**
  * Resolve the best icon in a bundle and record every attempt.
  * Order: Info.plist names -> scale/device variants -> icon-like bundle images ->

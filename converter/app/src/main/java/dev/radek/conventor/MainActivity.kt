@@ -118,11 +118,14 @@ class MainActivity : Activity() {
     private val preferences by lazy { getSharedPreferences("radek_settings", MODE_PRIVATE) }
     private lateinit var library: Library
     private lateinit var body: LinearLayout
+    private lateinit var screenRoot: FrameLayout
+    private var currentScroll: ScrollView? = null
     private var selected: File? = null
     private var progressLabel: TextView? = null
     private var progressBar: ProgressBar? = null
     private var wasBusy = false
     private var returnToDetailAfterJob: File? = null
+    private var openImportedResultAfterJob = false
     private var pendingInstall: Pair<File, String>? = null
     private val pickerIpa = 100
     private val pickerApk = 101
@@ -177,6 +180,7 @@ class MainActivity : Activity() {
         library = Library(applicationContext)
         if (!SharedCatalog.isBusy()) library.recoverInterrupted()
         selected = state?.getString("selected")?.let { File(library.root, it) }
+        if (Jobs.busy) returnToDetailAfterJob = selected
         Jobs.listener = {
             runCatching {
                 progressLabel?.text = "${Jobs.percent}% · ${Jobs.message}"
@@ -185,7 +189,13 @@ class MainActivity : Activity() {
                     wasBusy = false
                     val target = returnToDetailAfterJob
                     returnToDetailAfterJob = null
-                    if (target != null && target.isDirectory && File(target, "report.json").isFile) detail(target) else home()
+                    val openImport = openImportedResultAfterJob
+                    openImportedResultAfterJob = false
+                    if (target != null && target.isDirectory && File(target, "report.json").isFile &&
+                        ((currentScreen == Screen.DETAIL && selected == target) ||
+                            (openImport && currentScreen == Screen.LIBRARY))) {
+                        detail(target, if (selected == target) currentScroll?.scrollY ?: 0 else 0)
+                    } else if (currentScreen == Screen.LIBRARY) home()
                 }
             }
         }
@@ -209,7 +219,9 @@ class MainActivity : Activity() {
             // to wipe app data to escape.
             wasBusy = false
             runCatching { library.recoverInterrupted() }
-            if (selected != null && File(selected, "report.json").isFile) detail(selected!!) else home()
+            if (currentScreen == Screen.DETAIL && selected != null && File(selected, "report.json").isFile)
+                detail(selected!!, currentScroll?.scrollY ?: 0)
+            else if (currentScreen == Screen.LIBRARY) home()
         }
         val pending = pendingInstall
         if (pending != null && packageManager.canRequestPackageInstalls()) {
@@ -227,8 +239,34 @@ class MainActivity : Activity() {
         progressLabel = null
         progressBar = null
         val scroll = ScrollView(this).apply { setBackgroundColor(bgColor); isFillViewport = true }
+        currentScroll = scroll
+        screenRoot = FrameLayout(this)
         body = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(22), dp(30), dp(22), dp(36)) }
-        scroll.addView(body); setContentView(scroll)
+        scroll.addView(body)
+        screenRoot.addView(scroll, FrameLayout.LayoutParams(-1, -1))
+        setContentView(screenRoot)
+    }
+
+    /** Persistent progress on the detail screen, without scrolling away from the action. */
+    private fun addDetailJobOverlay() {
+        body.setPadding(dp(22), dp(30), dp(22), dp(160))
+        val overlay = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            background = rounded(panel)
+            elevation = dp(12).toFloat()
+            setPadding(dp(16), dp(12), dp(16), dp(12))
+            accessibilityLiveRegion = View.ACCESSIBILITY_LIVE_REGION_POLITE
+        }
+        text(Jobs.title, 14f, textColor, true, overlay)
+        progressBar = ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal).apply {
+            max = 100; progress = Jobs.percent
+            progressTintList = android.content.res.ColorStateList.valueOf(accent)
+            overlay.addView(this, LinearLayout.LayoutParams(-1, dp(8)))
+        }
+        progressLabel = text("${Jobs.percent}% · ${Jobs.message}", 12f, muted, parent = overlay)
+        screenRoot.addView(overlay, FrameLayout.LayoutParams(-1, -2, Gravity.BOTTOM).apply {
+            setMargins(dp(16), 0, dp(16), dp(16))
+        })
     }
     private fun text(value: String, size: Float = 16f, color: Int = textColor, bold: Boolean = false, parent: LinearLayout = body): TextView = TextView(this).apply {
         text = value; textSize = size; setTextColor(color); if (bold) setTypeface(typeface, Typeface.BOLD)
@@ -366,13 +404,14 @@ class MainActivity : Activity() {
     private fun home() {
         selected = null; screen()
         currentScreen = Screen.LIBRARY
-        text("ANYIOS  /  CONVERTER", 11f, accent, true)
-        text("Converter", 30f, textColor, true)
-        text("Import an IPA to automatically inspect its code and Android compatibility.", 15f, muted)
+        text("ANYIOS  /  CONVERTER", 11f, accent, true).letterSpacing = 0.08f
+        text("Analyze & build", 30f, textColor, true)
+        text("Your shared library, ready to explore on Android.", 15f, muted)
         button("← AnyiOS modules") { finish() }
         val info = card()
-        text("Bounded conversion, honest everywhere else", 17f, textColor, true, info)
-        text("The on-device app analyzes every IPA and automatically converts the proven subset: an executable whose whole code is one closed-integer routine becomes a signed APK whose statically recompiled entry runs through JNI. Force convert offers the Native diagnostic runtime or a standalone Semi-Emulated APK containing AnyiOSEMU and the original IPA. Both are experimental; compatibility depends on the game and device. Host APKs are accepted only when they declare a complete game conversion and pass provenance and package checks.", 14f, muted, parent = info)
+        text("Your games, one source", 18f, textColor, true, info)
+        text("Emulator imports are analyzed here automatically. IPA builds are experimental: Native is a diagnostic boot attempt; Semi-Emulated includes AnyiOSEMU and the original IPA. A build does not guarantee gameplay.", 14f, muted, parent = info)
+        text("The converter auto-builds only a narrowly proven single-routine subset when importing directly here.", 12f, muted, parent = info)
         val add = button("Choose IPA", true) { authorize() }; add.isEnabled = !SharedCatalog.isBusy()
         button("Import folder of IPAs") {
             startActivity(Intent().setClassName(this, "org.podnative.MainActivity").putExtra("importIpaFolder", true))
@@ -406,13 +445,20 @@ class MainActivity : Activity() {
                     icon.contentDescription = "Application icon"
                 }
             }
-            row.addView(icon, LinearLayout.LayoutParams(dp(56), dp(56)).apply { rightMargin = dp(14) })
+            icon.background = rounded(if (lightMode) Color.rgb(232, 240, 237) else Color.rgb(28, 57, 49))
+            icon.clipToOutline = true
+            icon.scaleType = ImageView.ScaleType.CENTER_CROP
+            row.addView(icon, LinearLayout.LayoutParams(dp(64), dp(64)).apply { rightMargin = dp(16) })
             val labels = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }; row.addView(labels, LinearLayout.LayoutParams(0, -2, 1f))
             text(app.optString("name", "Import failed"), 19f, textColor, true, labels)
             text(app.optString("bundleId", "No metadata available"), 12f, muted, parent = labels)
             app.optString("minimumIOSVersion").takeIf { it.isNotBlank() }?.let { text("Minimum iOS $it", 11f, muted, parent = labels) }
             val state = report.optString("state", "FAILED")
-            text(state, 11f, statusColor(state), true, item)
+            text(state.replace('_', ' '), 11f, statusColor(state), true, item).apply {
+                letterSpacing = 0.06f
+                setPadding(dp(10), dp(6), dp(10), dp(6))
+                background = rounded(if (lightMode) Color.rgb(232, 240, 237) else Color.rgb(27, 50, 45))
+            }
             report.optJSONObject("portProgress")?.let { port ->
                 val androidLink = report.optJSONObject("androidLink")
                 val linkStatus = androidLink?.optString("status", "NOT_REPORTED") ?: "NOT_REPORTED"
@@ -639,9 +685,12 @@ class MainActivity : Activity() {
                 }) home()
             }.show()
     }
-    private fun detail(dir: File) {
+    private fun detail(dir: File, restoreScrollY: Int = 0) {
         selected = dir; screen()
         currentScreen = Screen.DETAIL
+        if (Jobs.busy && returnToDetailAfterJob == dir) addDetailJobOverlay()
+        val scroll = currentScroll
+        if (restoreScrollY > 0) scroll?.post { if (currentScroll === scroll) scroll.scrollTo(0, restoreScrollY) }
         val report = try {
             (if (File(dir, "report.json").isFile) JSONObject(File(dir, "report.json").readText()) else library.sharedReport(dir)) ?: error("missing shared entry")
         } catch (_: Exception) {
@@ -654,18 +703,14 @@ class MainActivity : Activity() {
             text(report.optJSONObject("application")?.optString("name", "Shared application") ?: "Shared application", 28f, textColor, true)
             text("One source copy, shared with Emulator. Analysis and generated APKs never replace it.", 15f, muted)
             text(report.optString("nextBlocker"), 14f, muted)
-            if (report.optString("sharedSourceKind") == "IPA") {
-                button("Analyze shared IPA", true) {
-                    if (Jobs.tryRun {
-                        Jobs.begin("Analyzing shared IPA")
-                        library.analyzeShared(dir) { percent, message -> Jobs.update(percent, message) }
-                    }) { returnToDetailAfterJob = dir; home() }
-                }.isEnabled = !SharedCatalog.isBusy()
-            } else text("Converter currently accepts IPA archives. This source remains available in Emulator.", 14f, muted)
+            if (report.optString("sharedSourceKind") in setOf("IPA", "Folder", "Executable")) {
+                button("Analyze shared source", true) { startSharedAnalysis(dir) }.isEnabled = !SharedCatalog.isBusy()
+            } else text("This source type cannot currently be analyzed here. It remains available in Emulator.", 14f, muted)
             button("Delete shared entry") { confirmDelete(dir) }
             return
         }
         val app = report.optJSONObject("application") ?: JSONObject()
+        val ipaSource = SourcePolicy.supportsIpaPackaging(report)
         button("← Game Library") { home() }
         val iconPath = sharedIcon(dir)
         if (iconPath.isFile) {
@@ -682,14 +727,13 @@ class MainActivity : Activity() {
         }
         text(app.optString("name", "Application details"), 28f, textColor, true)
         val state = report.optString("state"); text(state, 12f, statusColor(state), true)
-        if (Jobs.busy) addJobProgressCard()
         val metadata = card()
         for ((name, value) in listOf(
             "Bundle ID" to app.optString("bundleId"),
             "Version / build" to "${app.optString("version")} / ${app.optString("build")}",
             "Minimum iOS" to app.optString("minimumIOSVersion").ifBlank { "Not declared in Info.plist" },
             "Architecture" to architectures(report),
-            "IPA size" to formatBytes(app.optLong("fileSize")),
+            (if (ipaSource) "IPA size" else "Source size") to formatBytes(app.optLong("fileSize")),
             "Executable" to app.optString("executable"),
         )) {
             text(name.uppercase(), 10f, muted, true, metadata); text(value, 15f, parent = metadata)
@@ -744,13 +788,16 @@ class MainActivity : Activity() {
                 text(it, 12f, muted, parent = mappingCard)
             }
             if (total > 0) {
-                button("List this IPA's unimplemented / unresolved NDK needs", parent = mappingCard) {
+                val needs = ApiNeedReport.format(mapping)
+                button("View unresolved compatibility needs", parent = mappingCard) {
+                    showText("Unresolved compatibility needs", needs)
+                }
+                button("Export unresolved needs", parent = mappingCard) {
                     val appInfo = report.optJSONObject("application") ?: JSONObject()
-                    val gameName = appInfo.optString("name")
                     val bundleId = appInfo.optString("bundleId")
-                    val text = ndkNeedsHeader(gameName, bundleId, appInfo.optString("version")) + ApiNeedReport.format(mapping)
+                    val output = ndkNeedsHeader(appInfo.optString("name"), bundleId, appInfo.optString("version")) + needs
                     val safeBundle = bundleId.ifBlank { "game" }.replace(Regex("[^A-Za-z0-9._-]"), "_")
-                    saveNeedsText(text, "$safeBundle-ndk-needs.txt")
+                    saveNeedsText(output, "$safeBundle-ndk-needs.txt")
                 }
             }
             val generated = report.optJSONObject("hostConversion")?.optInt("generatedApiReplacements", 0) ?: 0
@@ -853,7 +900,7 @@ class MainActivity : Activity() {
         report.optJSONObject("analysisProgress")?.let { analysis ->
             val analysisCard = card()
             val value = analysis.optInt("percent", 0)
-            text("IPA analysis · $value%", 16f, textColor, true, analysisCard)
+            text("${if (ipaSource) "IPA" else "Source"} analysis · $value%", 16f, textColor, true, analysisCard)
             progressIndicator(analysisCard, value, 10)
             text("${analysis.optString("stage", "queued")} · ${analysis.optString("message")}", 12f, muted, parent = analysisCard)
             text("Analysis completion is not APK-build completion or a playability score.", 12f, muted, parent = analysisCard)
@@ -878,6 +925,10 @@ class MainActivity : Activity() {
         val blockers = report.optJSONArray("blockers")
         if (blockers != null) for (i in 0 until blockers.length()) text(blockers.getString(i), 15f, statusColor(state))
         if (report.has("error")) text(report.getString("error"), 15f, statusColor("FAILED"))
+        if (File(dir, "game.json").isFile && SourcePolicy.canRetryFailedAnalysis(report)) {
+            text("The shared source was kept. Retry analysis without importing it again.", 13f, muted)
+            button("Retry analysis") { startSharedAnalysis(dir) }.isEnabled = !SharedCatalog.isBusy()
+        }
         text("Icon: ${report.optJSONObject("icon")?.optString("reason") ?: "not extracted"}", 13f, muted)
         val edges = report.optJSONObject("dependencies")?.optJSONArray("edges")
         if (edges != null) for (i in 0 until edges.length()) {
@@ -906,6 +957,9 @@ class MainActivity : Activity() {
         button("View full machine-readable report") { showText("Conversion report", report.toString(2)) }
         button("View real conversion logs") { showText("Logs", File(dir, "conversion.jsonl").takeIf { it.isFile }?.readText() ?: "No logs") }
         text("APK conversion", 22f, textColor, true)
+        if (!ipaSource && report.optJSONObject("source")?.optString("kind") in setOf("FOLDER", "EXECUTABLE")) {
+            text("This source was analyzed in place. Import an IPA to build a standalone APK; folder and executable packaging is not yet supported.", 14f, muted)
+        }
         text("A general iOS-to-Android game static recompilation backend and framework/API replacements are not implemented. The Native runtime is the former diagnostic guest-CPU boot-attempt path; its renderer is not connected to Android EGL/GLES. The Semi-Emulated runtime packages AnyiOSEMU and the original ARM32 IPA into an independent APK. Neither path guarantees compatibility or gameplay. A branded preview shell with no executable remains an explicit fallback.", 14f, muted)
         button("Copy host analysis command") {
             val abi = preferences.getString("target_abi", "auto") ?: "auto"
@@ -914,7 +968,7 @@ class MainActivity : Activity() {
             (getSystemService(CLIPBOARD_SERVICE) as android.content.ClipboardManager).setPrimaryClip(android.content.ClipData.newPlainText("Host analysis command", command))
             Toast.makeText(this, "Analysis command copied", Toast.LENGTH_SHORT).show()
         }
-        if (app.has("sha256")) button("Attach complete host-converted APK") {
+        if (ipaSource && app.has("sha256")) button("Attach complete host-converted APK") {
             if (!Jobs.busy) startActivityForResult(Intent(Intent.ACTION_OPEN_DOCUMENT).apply { type = "application/vnd.android.package-archive"; addCategory(Intent.CATEGORY_OPENABLE) }, pickerApk)
         }
         val hostConversion = report.optJSONObject("hostConversion")
@@ -942,7 +996,7 @@ class MainActivity : Activity() {
                 val deviceResult = report.optJSONObject("deviceConversion")
                 deviceResult?.optJSONObject("expansionObb")?.optString("name")?.takeIf { it.isNotBlank() }?.let { obb ->
                     text("Optional resource OBB: $obb. The APK keeps all resources; the launcher does not require the OBB.", 12f, muted)
-                    button("Share $obb") { shareResultExpansion(dir, obb) }
+                    button("Share $obb") { shareResultExpansion(dir, obb, "bounded") }
                 }
                 deviceResult?.optJSONObject("expansionObbStatus")?.let { status ->
                     if (status.optString("status") == "NOT_CREATED") text(status.optString("message"), 12f, muted)
@@ -1005,7 +1059,7 @@ class MainActivity : Activity() {
                     val embedded = expansion.optBoolean("alsoEmbeddedInApk", false) && !expansion.optBoolean("required", true)
                     text(if (embedded) "Optional game-resource OBB: $obb. The APK also contains the resources."
                         else "Older build may have resources only in $obb, which the diagnostic launcher cannot extract. Rebuild for a self-contained APK.", 12f, muted)
-                    button("Share $obb") { shareResultExpansion(dir, obb) }
+                    button("Share $obb") { shareResultExpansion(dir, obb, "native") }
                 }
             }
             gameRuntimeConversion?.optJSONObject("expansionObbStatus")?.let { status ->
@@ -1034,14 +1088,14 @@ class MainActivity : Activity() {
             button("Share ${anyioseFile.name}") { shareResultApk(dir, anyioseFile.name) }
             anyioseConversion?.optJSONObject("expansionObb")?.optString("name")?.takeIf { it.isNotBlank() }?.let { obb ->
                 text("The game creates an optional OBB copy on first launch when Android allows it. This uses extra storage and may slow startup; the APK stays self-contained and private data remains authoritative.", 12f, muted)
-                button("Share $obb") { shareResultExpansion(dir, obb) }
+                button("Share $obb") { shareResultExpansion(dir, obb, "anyiose") }
             }
             button("Open installed Semi-Emulated game") {
                 val intent = anyioseConversion?.optString("package")?.let { packageManager.getLaunchIntentForPackage(it) }
                 if (intent == null) Toast.makeText(this, "Game is not installed or not visible to Android", Toast.LENGTH_LONG).show() else startActivity(intent)
             }
         }
-        if (File(dir, "source.bin").isFile && app.has("sha256")) {
+        if (ipaSource && File(dir, "source.bin").isFile && app.has("sha256")) {
             val deviceConvertible = report.optJSONObject("deviceRecompilation")?.let {
                 it.optString("status") == "PROVEN" && it.optInt("coveragePercent", 0) == 100 && it.optInt("functionCount", 0) == 1
             } == true
@@ -1062,6 +1116,22 @@ class MainActivity : Activity() {
         button("Delete shared entry") { confirmDelete(dir) }
     }
 
+    private fun startSharedAnalysis(dir: File) {
+        if (Jobs.busy) { Toast.makeText(this, "A job is already running", Toast.LENGTH_SHORT).show(); return }
+        Jobs.begin("Analyzing shared source")
+        returnToDetailAfterJob = dir
+        wasBusy = true
+        val started = Jobs.tryRun {
+            library.analyzeShared(dir) { percent, message -> Jobs.update(percent, message) }
+        }
+        if (!started) {
+            wasBusy = false; returnToDetailAfterJob = null
+            Toast.makeText(this, "A job is already running", Toast.LENGTH_SHORT).show()
+            return
+        }
+        detail(dir, currentScroll?.scrollY ?: 0)
+    }
+
     private fun showConvertSettings(dir: File) {
         if (Jobs.busy) { Toast.makeText(this, "Wait for the current job to finish", Toast.LENGTH_SHORT).show(); return }
         val saved = try { ConvertSettings.load(dir) } catch (error: Exception) {
@@ -1079,15 +1149,20 @@ class MainActivity : Activity() {
             text = label; isChecked = checked; content.addView(this)
         }
         explanation("These per-game choices are built into new Semi-Emulated APKs only. Rebuild and reinstall to apply changes. Native diagnostic and other APKs do not use them.")
-        val classic = toggle("Classic 4:3 · 1024 × 768 points · 2× scale hack", saved.classic43)
-        explanation("Landscape 1024 × 768, portrait 768 × 1024; the 2× render size can use more memory and GPU time.")
+        val classic = toggle("Classic 3:2 · 480 × 320 points · 3× render scale", saved.classic320)
+        explanation("Landscape 480 × 320 (1440 × 960 at 3×); portrait 320 × 480 (960 × 1440 at 3×). The larger render target can use more memory and GPU time.")
         val offline = toggle("Force network access off", saved.offline)
         explanation("The generated APK does not request Android's Internet permission; the emulator's guest network APIs are disabled too.")
         val performance = toggle("Request maximum performance", saved.performance)
         explanation("Best-effort Android sustained-performance, CPU affinity and performance hints. The system controls CPU/GPU clocks; this does not guarantee maximum clocks or higher FPS and may increase heat or battery use.")
-        explanation("Startup rotation (the game may later request another orientation)")
-        val orientationNames = listOf("Default / game decides", "Portrait", "Landscape")
-        val orientationValues = listOf("default", "portrait", "landscape")
+        explanation("Startup rotation from portrait; the game may later request another orientation. Touch input follows the orientation.")
+        val orientationNames = mutableListOf("Default / game decides", "−90°", "+90°", "180°")
+        val orientationValues = mutableListOf("default", "-90", "90", "180")
+        if (saved.orientation == "portrait") {
+            // Preserve an existing explicit portrait choice until changed.
+            orientationNames.add("Previously selected: portrait")
+            orientationValues.add("portrait")
+        }
         val orientation = Spinner(this).apply {
             adapter = ArrayAdapter(this@MainActivity, android.R.layout.simple_spinner_dropdown_item, orientationNames)
             setSelection(orientationValues.indexOf(saved.orientation).coerceAtLeast(0))
@@ -1099,7 +1174,7 @@ class MainActivity : Activity() {
             .setPositiveButton("Save") { _, _ ->
                 try {
                     ConvertSettings.save(dir, ConvertSettings(classic.isChecked, offline.isChecked,
-                        performance.isChecked, orientationValues[orientation.selectedItemPosition.coerceIn(0, 2)]))
+                        performance.isChecked, orientationValues[orientation.selectedItemPosition.coerceIn(0, orientationValues.lastIndex)]))
                     Toast.makeText(this, "Saved for the next Semi-Emulated build", Toast.LENGTH_LONG).show()
                 } catch (error: Exception) {
                     Toast.makeText(this, "Could not save convert settings: ${error.message}", Toast.LENGTH_LONG).show()
@@ -1108,7 +1183,13 @@ class MainActivity : Activity() {
     }
 
     private fun showForceConvertChoices(dir: File, nativeBuilt: Boolean, semiEmulatedBuilt: Boolean, translatedInputPresent: Boolean) {
-        val message = "Native runtime builds the existing diagnostic guest-CPU boot-attempt APK. " +
+        val bundleId = runCatching { JSONObject(File(dir, "report.json").readText())
+            .optJSONObject("application")?.optString("bundleId").orEmpty() }.getOrDefault("")
+        val exactId = ArtifactNames.androidPackageName(bundleId, "a".repeat(64), "b".repeat(64)) == bundleId
+        val identityNote = if (exactId)
+            "Both variants use Android package $bundleId and its matching OBB folder. Installing one may replace the other or conflict with an existing app; back up its data first. "
+        else "This iOS bundle ID cannot be used as an Android package; a safe generated package and matching OBB folder will be used instead. "
+        val message = identityNote + "\n\nNative runtime builds the existing diagnostic guest-CPU boot-attempt APK. " +
             (if (translatedInputPresent) "The staged portable-C handoff will be revalidated. " else "") +
             "It does not have an Android EGL/GLES renderer.\n\n" +
             "Semi-Emulated builds a self-contained APK containing AnyiOSEMU and the IPA, launches only this game, " +
@@ -1136,7 +1217,7 @@ class MainActivity : Activity() {
             wasBusy = false; returnToDetailAfterJob = null
             Toast.makeText(this, "A job is already running", Toast.LENGTH_SHORT).show(); return
         }
-        home()
+        detail(dir, currentScroll?.scrollY ?: 0)
     }
 
     private fun startForceConvert(dir: File, convertible: Boolean) {
@@ -1168,7 +1249,7 @@ class MainActivity : Activity() {
             Toast.makeText(this, "A job is already running", Toast.LENGTH_SHORT).show()
             return
         }
-        home()
+        detail(dir, currentScroll?.scrollY ?: 0)
     }
 
     private fun chooseTranslatedRuntimeInput(dir: File) {
@@ -1262,7 +1343,7 @@ class MainActivity : Activity() {
             Toast.makeText(this, "A job is already running", Toast.LENGTH_SHORT).show()
             return
         }
-        home()
+        detail(dir, currentScroll?.scrollY ?: 0)
     }
 
     private fun startGameRuntimeBuild(dir: File) {
@@ -1293,7 +1374,7 @@ class MainActivity : Activity() {
             Toast.makeText(this, "A job is already running", Toast.LENGTH_SHORT).show()
             return
         }
-        home()
+        detail(dir, currentScroll?.scrollY ?: 0)
     }
 
     private fun shareResultApk(dir: File, name: String) {
@@ -1313,12 +1394,12 @@ class MainActivity : Activity() {
         startActivity(Intent.createChooser(share, "Share APK result"))
     }
 
-    private fun shareResultExpansion(dir: File, name: String) {
+    private fun shareResultExpansion(dir: File, name: String, kind: String) {
         // ResultProvider validates the exact name, source binding and digest.
         // On recent Android, the user may not be able to pick Android/obb in
         // the system file picker; the standalone game provisions its own copy.
         val uri = Uri.Builder().scheme("content").authority("${packageName}.converter.results")
-            .appendPath(dir.name).appendPath(name).build()
+            .appendPath(dir.name).appendPath(name).appendQueryParameter("kind", kind).build()
         val share = Intent(Intent.ACTION_SEND).apply {
             type = "application/octet-stream"
             putExtra(Intent.EXTRA_STREAM, uri)
@@ -1400,15 +1481,18 @@ class MainActivity : Activity() {
                 val state = report.optString("state", "FAILED")
                 Jobs.update(100, "$state · IPA analysis finished · APK ${report.optJSONObject("conversionProgress")?.optString("status", "NOT_BUILT") ?: "NOT_BUILT"}")
             }
-            if (started) { wasBusy = true; home() }
+            if (started) { wasBusy = true; openImportedResultAfterJob = true; home() }
         } else if (requestCode == pickerApk) {
             val dir = selected ?: return
             if (Jobs.busy) {
                 Toast.makeText(this, "A job is already running; wait for it to finish first", Toast.LENGTH_LONG).show()
                 return
             }
+            Jobs.begin("Attaching host APK")
+            returnToDetailAfterJob = dir
             val started = Jobs.tryRun { attachApk(context, uri, dir); Jobs.update("Host APK attached") }
-            if (started) { wasBusy = true; home() }
+            if (started) { wasBusy = true; detail(dir, currentScroll?.scrollY ?: 0) }
+            else returnToDetailAfterJob = null
         } else if (requestCode == pickerTranslatedRuntimeInput) {
             val dir = selected ?: return
             importTranslatedRuntimeInput(uri, dir)

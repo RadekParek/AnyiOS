@@ -12,7 +12,7 @@ import org.json.JSONObject;
 public final class StandaloneGameActivity extends org.anyiose.android.MainActivity {
     private File data;
     private float cap = 60;
-    private boolean classic43, offline, performance;
+    private boolean classic320, offline, performance;
     private String orientation = "default";
     @Override protected void onCreate(Bundle state) {
         data = new File(getFilesDir(), "game-data");
@@ -28,7 +28,7 @@ public final class StandaloneGameActivity extends org.anyiose.android.MainActivi
         if (data == null || !data.isDirectory() || !source.isFile())
             return StandaloneOptions.noGame();
         return StandaloneOptions.forGame(data.getAbsolutePath(), source.getAbsolutePath(), cap,
-                classic43, offline, performance, orientation);
+                classic320, offline, performance, orientation);
     }
     @Override protected boolean shouldShowStartupErrors() {
         return false;
@@ -44,11 +44,12 @@ public final class StandaloneGameActivity extends org.anyiose.android.MainActivi
             }
             JSONObject settings = new JSONObject(bytes.toString("UTF-8")).optJSONObject("convertSettings");
             if (settings == null) return; // Old generated APKs retain their defaults.
-            classic43 = settings.optBoolean("classic43", false);
+            classic320 = settings.optBoolean("classic320", settings.optBoolean("classic43", false));
             offline = settings.optBoolean("offline", false);
             performance = settings.optBoolean("performance", false);
             String value = settings.optString("orientation", "default");
-            if ("portrait".equals(value) || "landscape".equals(value)) orientation = value;
+            if ("-90".equals(value) || "90".equals(value) || "180".equals(value)
+                    || "portrait".equals(value) || "landscape".equals(value)) orientation = value;
         } catch (Exception ignored) {
             // Signed metadata is normally valid; safe defaults preserve existing behavior.
         }

@@ -595,6 +595,7 @@ class AndroidApiMapperTest {
                     .put("reason", "The stub does not implement the API."))
                 .put(JSONObject()
                     .put("sourceSymbol", "_ResolvedApi")
+                    .put("runtimeVerified", true)
                     .put("classification", "IMPLEMENTED_API_REPLACEMENT_AVAILABLE")
                     .put("targetLibrary", "libioscompat.so")
                     .put("targetSymbol", "radek_impl_resolved_api")))
@@ -614,6 +615,19 @@ class AndroidApiMapperTest {
         assertFalse(output.contains("_ResolvedApi"))
         assertFalse(output.contains("device export verification"))
         assertFalse(output.contains("not a linked-game or complete-API count"))
+    }
+
+    @Test fun compatibilityNeedsDoesNotHideAnUnverifiedImplementationOrIncompleteInventory() {
+        val mapping = JSONObject().put("distinctImportSymbols", 3).put("classificationStatus", "PARTIAL")
+            .put("symbols", JSONArray()
+                .put(JSONObject().put("sourceSymbol", "_NotResolved").put("classification", "IMPLEMENTED_API_REPLACEMENT_AVAILABLE")
+                    .put("runtimeVerified", false))
+                .put(JSONObject().put("sourceSymbol", "_Resolved").put("classification", "IMPLEMENTED_API_REPLACEMENT_AVAILABLE")
+                    .put("runtimeVerified", true)))
+        val output = ApiNeedReport.format(mapping)
+        assertTrue(output.contains("_NotResolved"))
+        assertFalse(output.contains("  _Resolved"))
+        assertTrue(output.contains("Only 2 of 3 imports are listed"))
     }
 
     @Test fun compatResolverExceptionsFallBackToUnmapped() {

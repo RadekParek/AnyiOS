@@ -13,6 +13,31 @@ import org.robolectric.annotation.Config
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [28], manifest = Config.NONE)
 class CompleteGameExpansionContractTest {
+    @Test fun exactBundleIdAndSeparatedSidecarAreValidated() {
+        val dir = Files.createTempDirectory("converted-bundle-obb").toFile()
+        try {
+            val source = "a".repeat(64); val signer = "b".repeat(64)
+            val pkg = "com.lego.riseofthesnakes"
+            val report = JSONObject().put("source", JSONObject().put("sha256", source).put("originalName", "Game.ipa"))
+                .put("application", JSONObject().put("sha256", source).put("bundleId", pkg))
+            val apkName = ArtifactNames.apkFileName(report)
+            val apk = File(dir, apkName).apply { writeText("APK") }
+            val name = ArtifactNames.obbFileName(pkg, 1)
+            val obb = File(dir, "expansion-bounded/$name").apply { parentFile.mkdirs(); writeText("bounded") }
+            val expansion = JSONObject().put("name", name).put("storage", "bounded").put("bytes", obb.length())
+                .put("sha256", AnyiOSEmuArtifactContract.sha256(obb)).put("required", false)
+            report.put("deviceConversion", JSONObject().put("status", "GENERATED_ON_DEVICE").put("contract", "complete-game-v1")
+                .put("completeGameConversion", true).put("artifact", apkName).put("package", pkg).put("sourceSha256", source)
+                .put("sha256", AnyiOSEmuArtifactContract.sha256(apk)).put("signing", JSONObject().put("certificateSha256", signer))
+                .put("expansionObb", expansion))
+            report.put("hostConversion", JSONObject().put("status", "ATTACHED").put("origin", "ON_DEVICE")
+                .put("contract", "complete-game-v1").put("completeGameConversion", true).put("artifact", apkName).put("package", pkg))
+            assertEquals(obb.canonicalFile, CompleteGameExpansionContract.validate(report, dir, name))
+            expansion.put("storage", "native")
+            assertThrows(IllegalArgumentException::class.java) { CompleteGameExpansionContract.validate(report, dir, name) }
+        } finally { dir.deleteRecursively() }
+    }
+
     @Test fun sharesOnlyTheOptionalExpansionBoundToTheCurrentApk() {
         val dir = Files.createTempDirectory("converted-obb").toFile()
         try {

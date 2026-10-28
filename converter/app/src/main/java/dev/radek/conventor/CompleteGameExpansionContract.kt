@@ -19,7 +19,11 @@ internal object CompleteGameExpansionContract {
         val signer = conversion.optJSONObject("signing")?.optString("certificateSha256").orEmpty()
         require(sourceHash.matches(Regex("[0-9a-f]{64}")) && sourceHash == appHash &&
             conversion.optString("sourceSha256") == sourceHash && signer.matches(Regex("[0-9a-f]{64}")))
-        val packageName = "dev.radek.converted.p${sourceHash.take(20)}${signer.take(8)}"
+        val packageName = conversion.optString("package")
+        val expected = ArtifactNames.androidPackageName(
+            report.optJSONObject("application")?.optString("bundleId").orEmpty(), sourceHash, signer)
+        val legacy = "dev.radek.converted.p${sourceHash.take(20)}${signer.take(8)}"
+        require(packageName == expected || packageName == legacy) { "The converted package does not match the source" }
         val apkName = ArtifactNames.apkFileName(report)
         require(conversion.optString("package") == packageName && attached.optString("package") == packageName &&
             conversion.optString("artifact") == apkName && attached.optString("artifact") == apkName)
@@ -30,11 +34,11 @@ internal object CompleteGameExpansionContract {
             AnyiOSEmuArtifactContract.sha256(apk) == apkHash) { "The converted APK is missing or has changed" }
         val expansion = conversion.optJSONObject("expansionObb") ?: error("No expansion file is recorded")
         val obbName = ArtifactNames.obbFileName(packageName, ArtifactNames.CONVERTED_VERSION_CODE)
-        val file = File(root, obbName).canonicalFile
+        val file = ArtifactNames.expansionFile(root, obbName, expansion.optString("storage"), "bounded")
         val digest = expansion.optString("sha256")
         require(requestedName == obbName && expansion.optString("name") == obbName &&
             !expansion.optBoolean("required", true) && digest.matches(Regex("[0-9a-f]{64}")) &&
-            file.parentFile == root && file.isFile && file.length() == expansion.optLong("bytes", -1) &&
+            file.isFile && file.length() == expansion.optLong("bytes", -1) &&
             AnyiOSEmuArtifactContract.sha256(file) == digest) { "The expansion is missing or has changed" }
         return file
     }

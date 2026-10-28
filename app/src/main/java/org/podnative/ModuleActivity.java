@@ -43,28 +43,46 @@ public final class ModuleActivity extends Activity {
                 : 0);
         ScrollView scroll = new ScrollView(this);
         scroll.setFillViewport(true);
-        scroll.setBackgroundColor(background);
+        GradientDrawable canvas = new GradientDrawable(GradientDrawable.Orientation.TOP_BOTTOM,
+            new int[] {background, Color.parseColor(light ? "#E9F0F5" : "#101B2B")});
+        scroll.setBackground(canvas);
         LinearLayout body = new LinearLayout(this);
         body.setOrientation(LinearLayout.VERTICAL);
         body.setPadding(dp(24), dp(38), dp(24), dp(32));
         scroll.addView(body);
+        LinearLayout header = new LinearLayout(this);
+        header.setGravity(Gravity.CENTER_VERTICAL);
         ImageView mark = new ImageView(this);
         mark.setImageResource(R.drawable.ic_brand);
         mark.setContentDescription("AnyiOS pocket player");
-        body.addView(mark, new LinearLayout.LayoutParams(dp(64), dp(64)));
-        label(body, "ANYIOS", 13, accent, true);
-        label(body, "Your apps.\nOne shared library.", 34, ink, true);
+        header.addView(mark, new LinearLayout.LayoutParams(dp(48), dp(48)));
+        LinearLayout headerText = new LinearLayout(this);
+        headerText.setOrientation(LinearLayout.VERTICAL);
+        LinearLayout.LayoutParams headerParams = new LinearLayout.LayoutParams(0, -2, 1);
+        headerParams.leftMargin = dp(12);
+        header.addView(headerText, headerParams);
+        TextView wordmark = label(headerText, "AnyiOS", 19, ink, true);
+        wordmark.setPadding(0, 0, 0, 0);
+        TextView caption = label(headerText, "YOUR POCKET LIBRARY", 10, muted, true);
+        caption.setLetterSpacing(0.08f);
+        caption.setPadding(0, dp(3), 0, 0);
+        body.addView(header);
+        TextView intro = label(body, "PLAY  /  DISCOVER  /  BUILD", 11, accent, true);
+        intro.setLetterSpacing(0.08f);
+        LinearLayout.LayoutParams introParams = (LinearLayout.LayoutParams) intro.getLayoutParams();
+        introParams.topMargin = dp(32);
+        label(body, "Your games.\nOne shared library.", 34, ink, true);
         label(body,
-            "Choose how you want to work with your iOS apps. Original files stay untouched.", 16,
-            muted, false);
+            "Play and explore your iOS games, or inspect them for Android. Your original files stay untouched.",
+            15, muted, false);
         module(body, "01  /  PLAY & EXPLORE", "Emulator",
-            "Try eligible ARM32 iPhone and iPad apps in the experimental runtime. Universal ARM64+ARM32 apps use ARM32; ARM64-only apps remain unsupported. Compatibility and device rendering require game-by-game validation.",
+            "Launch eligible ARM32 apps with AnyiOSEMU. Compatibility and rendering vary by game and device.",
             MainActivity.class, 0);
         module(body, "02  /  ANALYZE & BUILD", "Converter",
-            "Inspect an IPA, convert supported code, or build an explicitly experimental runtime APK. Conversion is not a promise of playability.",
+            "Analyze your library and build experimental Android APKs. A build does not guarantee gameplay.",
             dev.radek.conventor.MainActivity.class, 1);
         label(body,
-            "Imports appear in both modules. Generated APKs are separate outputs, never replacements for your IPA.",
+            "One private source, two ways to explore. ARM64-only games are not supported by AnyiOSEMU.",
             13, muted, false);
         label(body, "AnyiOS " + BuildConfig.VERSION_NAME, 12, muted, false);
         setContentView(scroll);
@@ -97,8 +115,34 @@ public final class ModuleActivity extends Activity {
         params.topMargin = dp(18);
         params.bottomMargin = dp(8);
         parent.addView(card, params);
-        label(card, eyebrow, 11, accent, true);
-        label(card, title + "  →", 26, ink, true);
+        TextView overline = label(card, eyebrow, 10, accent, true);
+        overline.setLetterSpacing(0.08f);
+        LinearLayout heading = new LinearLayout(this);
+        heading.setGravity(Gravity.CENTER_VERTICAL);
+        ImageView icon = new ImageView(this);
+        icon.setImageResource(index == 0 ? R.drawable.ic_library : R.drawable.ic_diagnostics);
+        icon.setImageTintList(ColorStateList.valueOf(accent));
+        icon.setPadding(dp(12), dp(12), dp(12), dp(12));
+        GradientDrawable iconShape = new GradientDrawable();
+        iconShape.setColor(index == 0 ? 0x185ce3b5 : 0x187db4ff);
+        iconShape.setCornerRadius(dp(14));
+        icon.setBackground(iconShape);
+        icon.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_NO);
+        heading.addView(icon, new LinearLayout.LayoutParams(dp(48), dp(48)));
+        TextView name = new TextView(this);
+        name.setText(title);
+        name.setTextSize(25);
+        name.setTextColor(ink);
+        name.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
+        LinearLayout.LayoutParams nameParams = new LinearLayout.LayoutParams(0, -2, 1);
+        nameParams.leftMargin = dp(14);
+        heading.addView(name, nameParams);
+        TextView arrow = new TextView(this);
+        arrow.setText("↗");
+        arrow.setTextSize(23);
+        arrow.setTextColor(accent);
+        heading.addView(arrow);
+        card.addView(heading);
         label(card, subtitle, 14, muted, false);
         card.setOnClickListener(v -> startActivity(new Intent(this, activity)));
         if (android.animation.ValueAnimator.areAnimatorsEnabled()) {

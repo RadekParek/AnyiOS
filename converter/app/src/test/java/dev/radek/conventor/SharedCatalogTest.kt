@@ -67,6 +67,49 @@ class SharedCatalogTest {
         } finally { SharedCatalog.end(); entry.deleteRecursively() }
     }
 
+    @Test fun cancelledAutomaticAnalysisKeepsItsPublishedSourceAndLease() {
+        val library = Library(RuntimeEnvironment.getApplication())
+        val entry = File(library.root, "game-${UUID.randomUUID()}").apply { mkdirs() }
+        try {
+            val bytes = byteArrayOf(1, 2, 3, 4)
+            File(entry, "source.bin").writeBytes(bytes)
+            File(entry, "game.json").writeText(JSONObject().put("kind", "IPA").put("originalName", "game.ipa").toString())
+            assertTrue(SharedCatalog.tryBegin())
+            assertThrows(java.util.concurrent.CancellationException::class.java) {
+                library.analyzeImportedSource(entry) { _, _ -> throw java.util.concurrent.CancellationException() }
+            }
+            assertTrue(SharedCatalog.isBusy()) // caller still owns the lease
+            assertArrayEquals(bytes, File(entry, "source.bin").readBytes())
+            val report = JSONObject(File(entry, "report.json").readText())
+            assertEquals("FAILED", report.getString("state"))
+            assertTrue(SourcePolicy.canRetryFailedAnalysis(report))
+        } finally { SharedCatalog.end(); entry.deleteRecursively() }
+    }
+
+    @Test fun sharedFolderAndExecutableAnalysesNeverReplaceTheSources() {
+        val library = Library(RuntimeEnvironment.getApplication())
+        val folder = File(library.root, "game-${UUID.randomUUID()}").apply { mkdirs() }
+        val executable = File(library.root, "game-${UUID.randomUUID()}").apply { mkdirs() }
+        try {
+            val bundle = File(folder, "bundle").apply { mkdirs() }
+            File(bundle, "Info.plist").writeText("not a valid plist")
+            File(folder, "game.json").writeText(JSONObject().put("kind", "Folder").put("originalName", "Game.app").toString())
+            val folderReport = library.analyzeImportedSource(folder) { _, _ -> }
+            assertEquals("FOLDER", folderReport.getJSONObject("source").getString("kind"))
+            assertEquals("not a valid plist", File(bundle, "Info.plist").readText())
+            assertFalse(File(folder, "source.bin").exists())
+            assertFalse(folderReport.has("deviceConversion"))
+
+            val bytes = byteArrayOf(1, 2, 3, 4)
+            File(executable, "source.bin").writeBytes(bytes)
+            File(executable, "game.json").writeText(JSONObject().put("kind", "Executable").put("originalName", "Game").toString())
+            val executableReport = library.analyzeShared(executable) { _, _ -> }.second
+            assertEquals("EXECUTABLE", executableReport.getJSONObject("source").getString("kind"))
+            assertArrayEquals(bytes, File(executable, "source.bin").readBytes())
+            assertFalse(executableReport.has("deviceConversion"))
+        } finally { folder.deleteRecursively(); executable.deleteRecursively() }
+    }
+
     @Test fun interruptedConverterReportWithoutHashCannotDeleteCanonicalSource() {
         val library = Library(RuntimeEnvironment.getApplication())
         val entry = File(library.root, "game-${UUID.randomUUID()}").apply { mkdirs() }

@@ -19,6 +19,7 @@ internal object ApiNeedReport {
         COMPILER_RUNTIME,  // needs the NDK compiler-rt/libunwind runtime
         GUEST_ADAPTER,     // bounded guest adapter exists, semantics incomplete
         NDK_UNVERIFIED,    // same-name NDK candidate, not confirmed on device
+        IMPLEMENTATION_UNVERIFIED, // code exists, but the export was not resolved
     }
 
     fun format(mapping: JSONObject): String {
@@ -42,11 +43,15 @@ internal object ApiNeedReport {
         val needCount = items.size - resolved
         val lines = mutableListOf<String>()
         lines += "Unimplemented / unresolved NDK needs: $needCount of $total imports"
+        if (items.size < total || mapping.optBoolean("truncated", false) ||
+            mapping.optString("classificationStatus") in setOf("PARTIAL", "TRUNCATED")) {
+            lines += "Only ${items.size} of $total imports are listed; analysis may be incomplete."
+        }
         if (needCount == 0) {
-            lines += "Every observed import already has a verified export or a concrete implementation."
+            lines += "No unresolved providers in the listed imports. Verified exports do not prove the game linked or will run."
             return lines.joinToString("\n")
         }
-        lines += "Only symbols that still lack a real binding are listed; resolved imports are hidden."
+        lines += "Resolved providers are hidden. Export checks do not prove guest slot binding or game compatibility."
         lines += ""
 
         // Ordered from most actionable (stubs / unmapped) to least.
@@ -68,6 +73,9 @@ internal object ApiNeedReport {
         section(lines, byNeed[Need.NDK_UNVERIFIED], "NDK CANDIDATES - same-name export, NOT yet verified on this device") { item ->
             targetOf(item)
         }
+        section(lines, byNeed[Need.IMPLEMENTATION_UNVERIFIED], "IMPLEMENTED - export not resolved on this device") { item ->
+            targetOf(item)
+        }
         return lines.joinToString("\n")
     }
 
@@ -76,7 +84,8 @@ internal object ApiNeedReport {
         return when (item.optString("classification", "UNMAPPED")) {
             "BIONIC_SYMBOL_CANDIDATE" ->
                 if (item.optBoolean("verifiedOnDevice")) null else Need.NDK_UNVERIFIED
-            "IMPLEMENTED_API_REPLACEMENT_AVAILABLE",
+            "IMPLEMENTED_API_REPLACEMENT_AVAILABLE" ->
+                if (item.optBoolean("runtimeVerified")) null else Need.IMPLEMENTATION_UNVERIFIED
             "COMPAT_VERIFIED_HANDLER_RESOLVED" -> null
             "SEMANTIC_REWRITE_CANDIDATE" -> Need.SEMANTIC
             "COMPILER_RUNTIME_CANDIDATE" -> Need.COMPILER_RUNTIME

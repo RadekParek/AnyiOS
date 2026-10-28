@@ -37,6 +37,31 @@ class AnyiOSEmuArtifactTest {
         assertThrows(IllegalArgumentException::class.java) { AnyiOSEmuApkBuilder.requireSupportedSource(embedded) }
     }
 
+    @Test fun standalonePackageUsesExactBundleIdButOlderArtifactsRemainValid() {
+        val dir = Files.createTempDirectory("anyiose-package").toFile()
+        try {
+            val hash = "a".repeat(64)
+            val signer = "b".repeat(64)
+            val bundle = "com.lego.riseofthesnakes"
+            val report = JSONObject().put("source", JSONObject().put("sha256", hash).put("originalName", "Game.ipa"))
+                .put("application", JSONObject().put("sha256", hash).put("bundleId", bundle))
+            val name = ArtifactNames.anyioseApkFileName(report)
+            val apk = dir.resolve(name).apply { writeText("fixture") }
+            val conversion = JSONObject().put("status", "GENERATED").put("contract", AnyiOSEmuArtifactContract.CONTRACT)
+                .put("artifact", name).put("sourceSha256", hash).put("certificateSha256", signer)
+                .put("package", AnyiOSEmuArtifactContract.packageName(bundle, hash, signer))
+                .put("sha256", AnyiOSEmuArtifactContract.sha256(apk)).put("embeddedSource", true).put("embeddedRuntime", true)
+                .put("installableAndroidPackage", true).put("completeGameConversion", false).put("gamePlayable", false)
+            report.put("anyioseConversion", conversion)
+            assertEquals(bundle, conversion.getString("package"))
+            assertEquals(apk.canonicalFile, AnyiOSEmuArtifactContract.validate(report, dir, name))
+            conversion.put("package", AnyiOSEmuArtifactContract.packageName(hash, signer))
+            assertEquals(apk.canonicalFile, AnyiOSEmuArtifactContract.validate(report, dir, name))
+            conversion.put("package", "com.other.game")
+            assertThrows(IllegalArgumentException::class.java) { AnyiOSEmuArtifactContract.validate(report, dir, name) }
+        } finally { dir.deleteRecursively() }
+    }
+
     @Test fun separateStandaloneArtifactIsBoundToSourceSignerAndDigest() {
         val dir = Files.createTempDirectory("anyiose-artifact").toFile()
         try {

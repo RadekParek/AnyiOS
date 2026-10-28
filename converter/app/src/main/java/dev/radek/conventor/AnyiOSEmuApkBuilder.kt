@@ -59,6 +59,7 @@ internal class AnyiOSEmuApkBuilder(private val context: Context) {
         val source = File(dir, "source.bin")
         require(source.isFile && source.length() > 0) { "Retained IPA not found" }
         val report = JSONObject(File(dir, "report.json").readText())
+        SourcePolicy.requireIpa(report)
         val app = report.optJSONObject("application") ?: error("Missing application metadata")
         // Freeze the per-game choices before any asynchronous packaging work.
         val settings = ConvertSettings.load(dir)
@@ -94,7 +95,8 @@ internal class AnyiOSEmuApkBuilder(private val context: Context) {
             val identity = PlaceholderSigningIdentity.loadOrCreate(File(context.noBackupFilesDir, "placeholder-apk-signing-identity.bin"))
             val certificateHash = MessageDigest.getInstance("SHA-256").digest(identity.certificate.encoded)
                 .joinToString("") { "%02x".format(it.toInt() and 0xff) }
-            val packageName = AnyiOSEmuArtifactContract.packageName(sourceHash, certificateHash)
+            val packageName = AnyiOSEmuArtifactContract.packageName(app.optString("bundleId"), sourceHash, certificateHash)
+            require(packageName != context.packageName) { "The game bundle ID conflicts with AnyiOS itself; refusing to replace the host app" }
             val label = app.optString("name").filterNot { Character.isISOControl(it) }.take(160).trim().ifBlank { "Game" }
             val libraries = CompatibilityRuntime.extractAnyiOSEmuInstalled(context, File(workspace, "lib"))
             val runtimeAssets = stageRuntimeAssets(File(workspace, "assets"))
@@ -186,7 +188,7 @@ internal class AnyiOSEmuApkBuilder(private val context: Context) {
                     .put("format", "unchanged IPA ZIP")
                     .put("installPath", "Android/obb/$packageName/" +
                         ArtifactNames.obbFileName(packageName, ArtifactNames.ANYIOSE_VERSION_CODE))
-                    .put("provisioning", "best-effort mirror on first launch; private IPA remains authoritative"))
+                    .put("provisioning", "best-effort mirror on first launch; existing different OBBs are preserved and private IPA remains authoritative"))
                 .put("convertSettings", settings.toJson())
                 .put("completeGameConversion", false).put("gamePlayable", false).put("runtimeExecution", "NOT_TESTED")
                 .put("graphics", "Bundled ANGLE with native GLES fallback").put("targetAbi", "arm64-v8a")

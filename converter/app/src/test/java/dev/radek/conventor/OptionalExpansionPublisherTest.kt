@@ -27,6 +27,17 @@ class OptionalExpansionPublisherTest {
         assertFalse(File(dir, ".$name.optional-pending").exists())
     }
 
+    @Test fun identicalObbNamesAreIsolatedByRuntime() = withDirectory { dir ->
+        assertNull(OptionalExpansionPublisher.publish(dir, name, "native", { it.writeText("native") }) {})
+        assertNull(OptionalExpansionPublisher.publish(dir, name, "bounded", { it.writeText("bounded") }) {})
+        assertEquals("native", ArtifactNames.expansionFile(dir, name, "native", "native").readText())
+        assertEquals("bounded", ArtifactNames.expansionFile(dir, name, "bounded", "bounded").readText())
+        assertNotNull(OptionalExpansionPublisher.publish(dir, name, "../unsafe", { it.writeText("no") }) {})
+        org.junit.Assert.assertThrows(IllegalArgumentException::class.java) {
+            ArtifactNames.expansionFile(dir, name, "bounded", "native")
+        }
+    }
+
     @Test fun resourceArchivePreservesRelativePathsAndContents() = withDirectory { dir ->
         val first = File(dir, "input1").apply { writeBytes(byteArrayOf(0, 1, 2, 3)) }
         val second = File(dir, "input2").apply { writeText("hello") }

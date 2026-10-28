@@ -9,14 +9,14 @@ import java.nio.file.StandardCopyOption
 
 /** Per-library-entry choices; the immutable snapshot is signed into each standalone APK. */
 internal data class ConvertSettings(
-    val classic43: Boolean = false,
+    val classic320: Boolean = false,
     val offline: Boolean = false,
     val performance: Boolean = false,
     val orientation: String = "default",
 ) {
-    init { require(orientation in setOf("default", "portrait", "landscape")) { "Unknown startup rotation" } }
+    init { require(orientation in setOf("default", "-90", "90", "180", "portrait")) { "Unknown startup rotation" } }
 
-    fun toJson() = JSONObject().put("classic43", classic43).put("offline", offline)
+    fun toJson() = JSONObject().put("classic320", classic320).put("offline", offline)
         .put("performance", performance).put("orientation", orientation)
 
     companion object {
@@ -28,7 +28,12 @@ internal data class ConvertSettings(
             }
             val orientation = if (json.has("orientation")) json.opt("orientation") as? String
                 ?: throw IllegalArgumentException("Invalid startup rotation") else "default"
-            return ConvertSettings(flag("classic43"), flag("offline"), flag("performance"), orientation)
+            // Keep previously saved opt-ins without silently re-enabling any
+            // defaults. The retired 4:3 choice becomes the new 3:2 profile;
+            // legacy portrait remains available until the user changes it.
+            val profile = if (json.has("classic320")) flag("classic320") else flag("classic43")
+            val rotation = if (orientation == "landscape") "-90" else orientation
+            return ConvertSettings(profile, flag("offline"), flag("performance"), rotation)
         }
         fun load(dir: File): ConvertSettings {
             val file = File(dir, FILE)

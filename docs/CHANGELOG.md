@@ -1,5 +1,65 @@
 # Changelog
 
+## 2026-10-28 — Shared analysis, display profile, package identity and polish
+
+### Added
+- Emulator imports are analyzed in the Converter under the existing shared job
+  lease, using the original private source. IPA, extracted app folder and
+  executable-only analysis are supported; only IPAs currently support APK
+  packaging. Cancelling analysis keeps the already-imported game. The emulator
+  does not automatically build an APK when adding a game.
+- Per-game Semi-Emulated settings now offer **480 × 320 points at 3×** (3:2),
+  with 320 × 480 in portrait and a requested 1440 × 960 / 960 × 1440 render
+  size. Startup rotation offers −90°, +90° and 180° plus the default.
+- Actionable compatibility needs can be viewed or exported, with resolved
+  providers omitted and incomplete/unverified evidence identified.
+
+### Changed and rewired
+- New game APKs use the exact iOS bundle identifier as their Android package
+  when it is a valid Android ID; Android's OBB folder and filename then match
+  that package. Invalid identifiers use a signer-bound generated fallback.
+  Existing generated APKs keep their prior identity and remain shareable.
+- Runtime variants using the same ID cannot be installed side-by-side and can
+  conflict with an existing Android app or signing key. Installation warnings
+  recommend backing up existing data. The standalone IPA remains self-contained;
+  its optional OBB mirror never overwrites a different existing OBB.
+- Native and bounded optional OBBs are stored separately in the private
+  library, even when their Android filenames coincide. Share URIs select the
+  correct runtime and validate source, package and digest. Folder and bare
+  executable reports no longer offer IPA-only packaging; builders also reject
+  these source types while accepting legacy IPA reports. On-device analysis
+  now applies the native analyzer's existing 256 MiB executable limit before
+  allocating instead of attempting to read up to 1 GiB first.
+- Converter ZIP extraction and executable validation preserve legitimate
+  colon-containing filenames and give specific Info.plist diagnostics. Path
+  traversal, links, normalized collisions, expansion and containment checks
+  remain enforced. The Ninjago IPA was not supplied, so its exact failing name
+  and end-to-end result are not verified.
+- Force-convert progress stays on the selected game's details and preserves
+  scroll position. The module picker, Emulator library and Converter have a
+  refreshed, shared game-library visual language.
+
+### Removed / replaced
+- The previous 1024 × 768 / 2× profile and new portrait/landscape selector were
+  replaced by the 3:2 profile and degree choices. Legacy saved portrait and
+  landscape choices remain readable; the old profile opt-in migrates to the
+  new profile. Default behavior stays unchanged.
+
+### Validation and limitations
+- Local standalone storage/options tests (12), storage/ZIP tests (11),
+  artifact/settings contracts (13), API mapper (21), source-policy (2),
+  analysis-memory (2),
+  binary-plist/ZIP safety tests (11 selected), and shared-catalog tests (6)
+  pass. The last used a fake Android context rather than Robolectric; several
+  contract tests used JSON-java and a stub runner. Converter Kotlin and main
+  app Java compiled against an Android 35 jar with stubbed build dependencies;
+  formatting checks pass. CI and physical-device validation are tracked with
+  the pull request. The real
+  Ninjago IPA and actual device rendering, touch rotation, performance and OBB
+  provisioning were not tested here. **TestApp not run** (requires its separate
+  LLVM 12 and common-3.0 SDK). Optional native/bounded OBB exports are not
+  loaded by their launchers; Android may restrict manual OBB placement.
+
 ## 2026-10-28 — Compatibility and per-game conversion settings
 
 ### Added

@@ -60,6 +60,7 @@ internal class GameRuntimeApkBuilder(private val context: Context) {
     fun build(dir: File, progress: (Int, String) -> Unit = { _, _ -> }): JSONObject {
         require(dir.isDirectory && File(dir, "source.bin").isFile) { "retained source IPA is missing" }
         val report = JSONObject(File(dir, "report.json").readText())
+        SourcePolicy.requireIpa(report)
         val app = report.optJSONObject("application") ?: error("application metadata missing")
         val source = report.optJSONObject("source") ?: error("source metadata missing")
         val sourceHash = source.optString("sha256")
@@ -118,8 +119,7 @@ internal class GameRuntimeApkBuilder(private val context: Context) {
             require(apps.size == 1) { "expected exactly one Payload/*.app" }
             val appDir = apps.single()
             val plist = Plist.read(File(appDir, "Info.plist").readBytes())
-            val executableName = plist["CFBundleExecutable"] as? String ?: error("CFBundleExecutable missing")
-            require(SafeZip.validateName(executableName) == executableName && '/' !in executableName)
+            val executableName = SafeZip.bundleExecutable(plist["CFBundleExecutable"])
             val binary = File(appDir, executableName)
             require(binary.isFile && binary.length() in 1..MAX_EXECUTABLE_BYTES) { "executable missing or exceeds the on-device 256 MiB limit" }
 
@@ -212,6 +212,7 @@ internal class GameRuntimeApkBuilder(private val context: Context) {
             // package instead of the installer's opaque SIGNATURE_MISMATCH.
             val packageName = ArtifactNames.androidPackageName(
                 app.optString("bundleId"), sourceHash, certificateHash)
+            require(packageName != context.packageName) { "The game bundle ID conflicts with AnyiOS itself; refusing to replace the host app" }
             require(packageName.length <= 127)
             val manifest = BinaryXmlManifest.customize(templateManifest, packageName, appName)
             val resources = ResourceTablePackagePatcher.customize(templateResources, packageName)
@@ -503,10 +504,11 @@ internal class GameRuntimeApkBuilder(private val context: Context) {
             val expansionError = OptionalExpansionPublisher.publish(
                 dir,
                 obbName,
+                "native",
                 { destination -> ResourceExpansionArchive.write(destination, resourceEntries) },
                 { artifact ->
                     conversion.put("expansionObb", JSONObject()
-                        .put("name", artifact.name)
+                        .put("storage", "native").put("name", artifact.name)
                         .put("bytes", artifact.bytes)
                         .put("sha256", artifact.sha256)
                         .put("required", false)

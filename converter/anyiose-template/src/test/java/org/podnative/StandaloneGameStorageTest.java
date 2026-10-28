@@ -12,7 +12,7 @@ import org.junit.rules.TemporaryFolder;
 
 public class StandaloneGameStorageTest {
     @Rule public TemporaryFolder temporary = new TemporaryFolder();
-    private static final String PACKAGE = "dev.anyiose.game.p123";
+    private static final String PACKAGE = "com.lego.riseofthesnakes";
     private static final byte[] GAME = "authorized IPA ZIP fixture".getBytes(java.nio.charset.StandardCharsets.UTF_8);
 
     private static String sha(byte[] value) throws Exception {
@@ -40,10 +40,12 @@ public class StandaloneGameStorageTest {
         // A repeated launch reuses the files without reopening the APK asset.
         StandaloneGameStorage.prepare(data, obb, PACKAGE, GAME.length, sha(GAME), asset);
         assertEquals(1, opens.get());
-        // A corrupt mirror is repaired from the already-verified private IPA.
+        // An existing different OBB can belong to another runtime/app using
+        // the same bundle ID. It must not be overwritten, even if damaged.
         Files.write(expansion.toPath(), new byte[] {1, 2, 3});
         StandaloneGameStorage.prepare(data, obb, PACKAGE, GAME.length, sha(GAME), asset);
-        assertArrayEquals(GAME, Files.readAllBytes(expansion.toPath()));
+        assertArrayEquals(new byte[] {1, 2, 3}, Files.readAllBytes(expansion.toPath()));
+        assertArrayEquals(GAME, Files.readAllBytes(privateGame.toPath()));
         assertEquals(1, opens.get());
     }
 

@@ -85,6 +85,63 @@ class ImportTest {
             assertArrayEquals(byteArrayOf(7), File(root, "out/Payload/Test.app/ Icon .png").readBytes())
         } finally { root.deleteRecursively() }
     }
+    @Test fun preservesColonNamesAcrossPlistExtractionAndResourcePackaging() {
+        val root = Files.createTempDirectory("radek-colon").toFile()
+        try {
+            // A plausible filename, not a claim about the unreproduced Ninjago IPA.
+            val executable = "Ninjago: RotS"
+            val plist = """<?xml version="1.0"?><plist version="1.0"><dict>
+                <key>CFBundleExecutable</key><string>$executable</string>
+                <key>CFBundleIdentifier</key><string>com.example.game</string>
+                </dict></plist>""".toByteArray()
+            val prefix = "Payload/Game: The Adventure.app/"
+            val archive = zip(root, listOf(prefix + "Info.plist" to plist,
+                prefix + executable to byteArrayOf(1, 2, 3), prefix + "Textures/Level: 1.png" to byteArrayOf(4)))
+            val out = File(root, "out")
+            SafeZip.extract(archive, out)
+            val app = File(out, prefix)
+            val parsed = Plist.read(File(app, "Info.plist").readBytes())
+            assertEquals(executable, SafeZip.bundleExecutable(parsed["CFBundleExecutable"]))
+            assertArrayEquals(byteArrayOf(1, 2, 3), File(app, executable).readBytes())
+            val resource = "Textures/Level: 1.png"
+            assertEquals(resource, SafeZip.validateName(resource))
+            assertArrayEquals(byteArrayOf(4), File(app, resource).readBytes())
+            assertEquals("C_/dir/file", SafeZip.memberName("./C:/dir/file"))
+            for (invalid in listOf("../escape", "dir/file", "/absolute", "dir\\file", ".", "..", "bad\u0000name")) {
+                val error = assertThrows(IllegalArgumentException::class.java) { SafeZip.bundleExecutable(invalid) }
+                assertTrue(error.message!!.contains("CFBundleExecutable"))
+            }
+        } finally { root.deleteRecursively() }
+    }
+
+    @Test fun binaryPlistExecutableWithColonSurvivesTheAnalysisPath() {
+        val root = Files.createTempDirectory("radek-binary-plist").toFile()
+        try {
+            val plist = Base64.getDecoder().decode("YnBsaXN0MDDTAQIDBAQFXxATQ0ZCdW5kbGVEaXNwbGF5TmFtZV8QEkNGQnVuZGxlRXhlY3V0YWJsZV8QEkNGQnVuZGxlSWRlbnRpZmllcl1OaW5qYWdvOiBSb3RTXxAQY29tLmV4YW1wbGUuZ2FtZQgPJTpPXQAAAAAAAAEBAAAAAAAAAAYAAAAAAAAAAAAAAAAAAABw")
+            val archive = zip(root, listOf("Payload/Test.app/Info.plist" to plist,
+                "Payload/Test.app/Ninjago: RotS" to byteArrayOf(1, 2)))
+            SafeZip.extract(archive, File(root, "out"))
+            val app = File(root, "out/Payload/Test.app")
+            val info = Plist.read(File(app, "Info.plist").readBytes())
+            val executable = SafeZip.bundleExecutable(info["CFBundleExecutable"])
+            assertEquals("Ninjago: RotS", executable)
+            assertArrayEquals(byteArrayOf(1, 2), File(app, executable).readBytes())
+        } finally { root.deleteRecursively() }
+    }
+
+    @Test fun retainsColonDistinctionsButRejectsNormalizedDriveCollisions() {
+        val root = Files.createTempDirectory("radek-colon-collision").toFile()
+        try {
+            val archive = zip(root, listOf("Payload/Test.app/A:B" to byteArrayOf(1),
+                "Payload/Test.app/A_B" to byteArrayOf(2)))
+            SafeZip.extract(archive, File(root, "out"))
+            assertArrayEquals(byteArrayOf(1), File(root, "out/Payload/Test.app/A:B").readBytes())
+            assertArrayEquals(byteArrayOf(2), File(root, "out/Payload/Test.app/A_B").readBytes())
+            val collision = zip(root, listOf("./C:/file" to byteArrayOf(1), "C_/file" to byteArrayOf(2)))
+            assertThrows(IllegalArgumentException::class.java) { SafeZip.extract(collision, File(root, "collision")) }
+            assertFalse(File(root, "collision").exists())
+        } finally { root.deleteRecursively() }
+    }
     @Test fun rejectsEntriesThatCollideAfterNormalization() {
         val root = Files.createTempDirectory("radek-collision").toFile()
         try {
