@@ -183,6 +183,29 @@ public class BatchImportTest {
     }
 
     @Test
+    public void executableOnlyImportDoesNotStartConverterAnalysis() throws Exception {
+        byte[] bytes = new byte[32];
+        bytes[0] = (byte) 0xcf;
+        bytes[1] = (byte) 0xfa;
+        bytes[2] = (byte) 0xed;
+        bytes[3] = (byte) 0xfe;
+        bytes[4] = 12;
+        bytes[7] = 1;
+        File source = new File(RuntimeEnvironment.getApplication().getCacheDir(), "owned.bin");
+        Files.write(source.toPath(), bytes);
+        library.importLegacy(source);
+        drain();
+        assertEquals(1, library.games().size());
+        var game = library.games().get(0);
+        assertEquals("Executable", game.kind);
+        assertArrayEquals(
+            bytes, Files.readAllBytes(new File(game.directory, "source.bin").toPath()));
+        assertFalse(new File(game.directory, "report.json").exists());
+        assertFalse(new File(game.directory, "conversion.jsonl").exists());
+        assertFalse(SharedCatalog.isBusy());
+    }
+
+    @Test
     public void subsequentImportsLeaveExistingConverterReportAndArtifactsIntact() throws Exception {
         library.importLegacy(documents.ipa);
         drain();

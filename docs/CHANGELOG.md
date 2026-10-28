@@ -34,15 +34,17 @@
 - Bundled the Manrope variable font (Google Fonts repository, commit
   `b31870aff700ab7a1d74fa0c6887d95beb9e0037`, font SHA-256
   `3ae11c49db0455a3cc33e37d380f20fdb8c7f8b41dc07625c177e3d87a9d6ae6`).
-  Its SIL Open Font License is shipped in `assets/typography/manrope-ofl.txt`
-  and exposed in the app's notices; Android's system font is a fallback.
+  The font family selects its regular and bold weight axes explicitly. Its SIL
+  Open Font License is shipped in `assets/typography/manrope-ofl.txt` and
+  exposed in the app's notices; Android's system font is a fallback.
 
 ### Validation and limitations
 - Added import/report-preservation, manual-analysis, responsive grid, tile,
   pagination, activity-recreation and picker-navigation regressions. Local
   Kotlin and Java compilation used Android 35 stubs and stubbed APK-signing
-  dependencies; local pure-JVM size/guard tests pass. Full Android/host CI is
-  tracked with the pull request. A physical device has not been used to
+  dependencies; local pure-JVM size/guard tests (2) and shared-catalog tests
+  with a fake Android context (7) pass. Full Android/host CI is tracked with
+  the pull request. A physical device has not been used to
   verify rendering, typography, transitions, navigation stacks or game play;
   smoothness and exact glass appearance therefore remain unverified. The
   actual Ninjago IPA remains unavailable and its failure is not confirmed fixed.

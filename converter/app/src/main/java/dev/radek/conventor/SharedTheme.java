@@ -106,9 +106,9 @@ public final class SharedTheme {
     public static synchronized Typeface typeface(Context context, boolean emphasis) {
         if (regular == null || semibold == null) {
             try {
-                Typeface font = context.getResources().getFont(R.font.manrope);
+                Typeface font = context.getResources().getFont(R.font.manrope_family);
                 if (Build.VERSION.SDK_INT >= 28) {
-                    regular = Typeface.create(font, 450, false);
+                    regular = Typeface.create(font, 400, false);
                     semibold = Typeface.create(font, 700, false);
                 } else {
                     regular = Typeface.create(font, Typeface.NORMAL);
