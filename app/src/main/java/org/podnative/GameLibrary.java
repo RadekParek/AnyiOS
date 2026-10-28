@@ -480,9 +480,7 @@ final class GameLibrary {
                 }
                 notice = imported + " of " + visited.size() + " selected files imported; " + failed
                     + " failed." + failures;
-                if (error)
-                    notice += " Some Converter analyses need attention; open their reports.";
-                error = error || failed > 0;
+                error = failed > 0;
             } catch (CancellationException e) {
                 notice = "Batch cancelled. " + imported + " completed entries were kept.";
             } finally {
@@ -528,9 +526,7 @@ final class GameLibrary {
                 notice = sources.isEmpty()
                     ? "No IPA files found. For an extracted .app bundle, use Import extracted app folder."
                     : imported + " separate entries imported; " + failed + " failed." + failures;
-                if (error)
-                    notice += " Some Converter analyses need attention; open their reports.";
-                error = error || failed > 0;
+                error = failed > 0;
             } catch (CancellationException e) {
                 notice = "Batch cancelled. " + imported + " completed entries were kept.";
             } catch (Exception e) {
@@ -682,42 +678,8 @@ final class GameLibrary {
             Diagnostics.record("LIBRARY_IMPORT",
                 result.kind + " / " + result.architecture + " / " + result.status);
 
-            // We still hold the shared job lease from begin(). Analyze the one
-            // already-published private source; do not reacquire the lease,
-            // duplicate the IPA, or auto-build an APK as a side effect.
-            try {
-                progress = "Analyzing in Converter…";
-                changed();
-                JSONObject analysis =
-                    new dev.radek.conventor.Library(context).analyzeImportedSource(
-                        published, (percent, message) -> {
-                            checkCancelled();
-                            long now = android.os.SystemClock.elapsedRealtime();
-                            if (now - lastProgress >= 300 || percent == 100) {
-                                lastProgress = now;
-                                progress = "Converter analysis · " + percent + "%\n" + message;
-                                changed();
-                            }
-                        });
-                if ("FAILED".equals(analysis.optString("state"))) {
-                    notice +=
-                        " Converter analysis failed: " + analysis.optString("error", "see report");
-                    error = true;
-                } else {
-                    notice += " Analysis is available in Converter.";
-                }
-            } catch (CancellationException cancelledAnalysis) {
-                notice += " Converter analysis was cancelled; the imported game was kept.";
-            } catch (Exception | LinkageError analysisError) {
-                Diagnostics.record("CONVERTER_ANALYSIS", analysisError.toString());
-                notice += " Converter analysis could not finish; the imported game was kept. "
-                    + (analysisError.getMessage() == null ? analysisError.toString()
-                                                          : analysisError.getMessage());
-                error = true;
-            } catch (OutOfMemoryError memoryError) {
-                notice += " Not enough memory for Converter analysis; the imported game was kept.";
-                error = true;
-            }
+            // Publishing an Emulator import never starts Converter analysis.
+            // The shared source can be analyzed explicitly from its Converter details.
             return published;
         } finally {
             if (pending != null)

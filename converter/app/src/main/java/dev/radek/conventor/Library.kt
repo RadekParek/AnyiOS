@@ -37,6 +37,25 @@ class Library(private val context: Context) {
         // cache is keyed by directory name and invalidated by file modification
         // time, so saved reports are picked up on the next render.
         private val reportCache = HashMap<String, Pair<Long, JSONObject>>()
+        private val metadataCache = HashMap<String, Triple<Long, Long, JSONObject>>()
+
+        @Synchronized
+        private fun cachedMetadata(dir: File): JSONObject? {
+            val metadataFile = File(dir, "game.json")
+            val modified = metadataFile.lastModified()
+            val length = metadataFile.length()
+            val cached = metadataCache[dir.name]
+            if (cached != null && cached.first == modified && cached.second == length) return cached.third
+            return try {
+                require(length in 1L..(1024L * 1024)) { "Invalid library metadata size" }
+                val parsed = JSONObject(metadataFile.readText())
+                metadataCache[dir.name] = Triple(modified, length, parsed)
+                parsed
+            } catch (_: Exception) {
+                metadataCache.remove(dir.name)
+                null
+            }
+        }
 
         @Synchronized
         private fun cachedReport(dir: File): JSONObject? {
@@ -60,24 +79,36 @@ class Library(private val context: Context) {
         @Synchronized
         private fun pruneCache(keep: Set<String>) {
             if (reportCache.size > keep.size) reportCache.keys.retainAll(keep)
+            if (metadataCache.size > keep.size) metadataCache.keys.retainAll(keep)
         }
     }
 
     private fun formatBytes(value: Long) = "%.1f MiB".format(java.util.Locale.ROOT, value / 1048576.0)
+
+    /** Display the shared library name without changing the saved analysis report. */
+    fun metadata(dir: File): JSONObject? = cachedMetadata(dir)
+    fun displayTitle(dir: File, report: JSONObject): String =
+        metadata(dir)?.optString("title")?.takeIf { it.isNotBlank() }
+            ?: report.optJSONObject("application")?.optString("name")?.takeIf { it.isNotBlank() }
+            ?: "Untitled game"
+
     fun entries(): List<Pair<File, JSONObject>> {
         val dirs = root.listFiles().orEmpty().filter { it.isDirectory && it.name.matches(Regex("game-[0-9a-f-]{36}")) }
         val seen = HashSet<String>(dirs.size)
-        val result = dirs.mapNotNull { dir ->
+        val keyed = dirs.mapNotNull { dir ->
             seen += dir.name
-            (cachedReport(dir) ?: sharedReport(dir))?.let { dir to it }
-        }.sortedByDescending { it.first.name }
+            (cachedReport(dir) ?: sharedReport(dir))?.let { report ->
+                Triple(dir, report, displayTitle(dir, report).lowercase(java.util.Locale.ROOT))
+            }
+        }
         pruneCache(seen)
-        return result
+        // Match the Emulator's title order rather than sorting by random UUID.
+        return keyed.sortedWith(compareBy({ it.third }, { it.first.name })).map { it.first to it.second }
     }
 
     /** Emulator-only entries remain visible even before analysis, without copying. */
     fun sharedReport(dir: File): JSONObject? = runCatching {
-        val meta = JSONObject(File(dir, "game.json").readText())
+        val meta = cachedMetadata(dir) ?: error("missing shared metadata")
         JSONObject().put("state", "SHARED_SOURCE")
             .put("application", JSONObject().put("name", meta.optString("title", "Imported app"))
                 .put("bundleId", meta.optString("bundleId")).put("version", meta.optString("version")))
@@ -87,28 +118,21 @@ class Library(private val context: Context) {
 
     fun analyzeShared(dir: File, progress: (Int, String) -> Unit): Pair<File, JSONObject> {
         val kind = JSONObject(File(dir, "game.json").readText()).optString("kind")
-        return if (kind == "Executable") dir to analyzeExecutable(dir, SharedAnalysisProgress(progress), automatic = false)
+        return if (kind == "Executable") dir to analyzeExecutable(dir, SharedAnalysisProgress(progress))
         else import(Uri.EMPTY, dir, progress = progress)
-    }
-
-    /** Called while Emulator already owns SharedCatalog; never acquire it again. */
-    fun analyzeImportedSource(dir: File, progress: SharedAnalysisProgress): JSONObject {
-        val kind = JSONObject(File(dir, "game.json").readText()).optString("kind")
-        return if (kind == "Executable") analyzeExecutable(dir, progress, automatic = true)
-        else import(Uri.EMPTY, dir, autoBuildProven = false, automaticAnalysis = true) { percent, message -> progress.update(percent, message) }.second
     }
 
     fun interface SharedAnalysisProgress { fun update(percent: Int, message: String) }
 
     /** An executable-only import has no bundle/resources, but can still be inspected. */
-    private fun analyzeExecutable(dir: File, progress: SharedAnalysisProgress, automatic: Boolean): JSONObject {
+    private fun analyzeExecutable(dir: File, progress: SharedAnalysisProgress): JSONObject {
         require(dir.canonicalFile.parentFile == root.canonicalFile && dir.isDirectory) { "invalid shared entry" }
         val metadata = JSONObject(File(dir, "game.json").readText())
         val source = File(dir, "source.bin")
         val report = JSONObject().put("schemaVersion", 1).put("authorizationConfirmed", true)
         try {
             require(source.isFile) { "Executable is missing" }
-            AnalysisMemory.check(source.length(), automatic)
+            AnalysisMemory.check(source.length())
             progress.update(0, "Hashing the imported executable")
             val digest = MessageDigest.getInstance("SHA-256")
             source.inputStream().use { input ->
@@ -274,7 +298,7 @@ class Library(private val context: Context) {
     }
 
     fun import(uri: Uri, existing: File? = null, autoBuildProven: Boolean = true,
-        automaticAnalysis: Boolean = false, progress: (Int, String) -> Unit): Pair<File, JSONObject> {
+        progress: (Int, String) -> Unit): Pair<File, JSONObject> {
         val sharedMeta = existing?.let { runCatching { JSONObject(File(it, "game.json").readText()) }.getOrNull() }
         val folderSource = sharedMeta?.optString("kind") == "Folder"
         val (originalName, expectedSourceBytes) = if (existing == null) sourceDetails(uri) else
@@ -430,7 +454,7 @@ class Library(private val context: Context) {
             updateProgress(44, "ANALYZING", "Launcher icon recovered; preparing bounded native analysis")
             val binary = File(app, executable)
             require(binary.isFile) { "Executable named by Info.plist is missing" }
-            AnalysisMemory.check(binary.length(), automaticAnalysis)
+            AnalysisMemory.check(binary.length())
             log(ConversionState.ANALYZING, "Parsing Mach-O load commands, symbols, fixups and dependencies", 33)
             val binaryBytes = binary.readBytes()
             val macho = JSONObject(NativeBridge.analyzeCompact(binaryBytes))
@@ -605,7 +629,7 @@ class Library(private val context: Context) {
             for (file in embeddedFiles) {
                 val relative = file.relativeTo(app).path
                 val embedded = try {
-                    AnalysisMemory.check(file.length(), automaticAnalysis)
+                    AnalysisMemory.check(file.length())
                     JSONObject(NativeBridge.analyzeCompact(file.readBytes()))
                 } catch (error: OutOfMemoryError) {
                     throw error

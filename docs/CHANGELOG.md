@@ -1,5 +1,57 @@
 # Changelog
 
+## 2026-10-28 — Manual Converter analysis and shared library refresh
+
+### Removed / rewired
+- Removed the automatic Converter analysis that ran after Emulator imports,
+  along with its automatic-only progress/error notices and heap preflight.
+  Emulator still inspects the source's normal launch metadata. No existing
+  reports, game sources, or generated outputs are deleted. Open an imported
+  game in Converter and choose **Analyze shared source** to analyze it; IPA,
+  folder and executable analysis remain available. Choosing an IPA directly
+  in Converter still starts its explicitly requested import/analysis, including
+  its existing narrowly proven single-routine auto-build behavior.
+- The 256 MiB native analyzer executable-size guard remains in place before
+  manual analysis allocates the executable. Manual analysis is still subject
+  to device memory; its prior behavior has not been made more restrictive.
+
+### Added / changed
+- Converter now presents the same shared games as adaptive artwork tiles,
+  ordered by their shared library names. Tapping a tile opens that game's own
+  details, existing reports and build actions. Unanalyzed games show their
+  source metadata and an explicit analysis action. The grid loads 60 entries
+  at a time, preserves scroll when expanded or refreshed, and retains an open
+  shared-source detail across activity recreation. Artwork is decoded off the
+  UI thread at a bounded size, with a 16 MiB cache and stale queued views
+  skipped rather than retaining old screens.
+- Both modules have a visible **All modules** button on every module screen;
+  Android Back from either library also returns to the Emulator/Converter
+  picker. Navigation clears intervening module activities without cancelling
+  the shared background job or touching game files. An older Converter activity
+  cannot disconnect the current activity's job-progress listener when destroyed.
+- Refreshed the picker and both modules with a common palette, translucent
+  glass-inspired gradients/highlights, outline-vector fallback art instead of
+  decorative glyphs, and responsive grid sizing for narrow screens and large
+  text. Short page and press transitions respect Android's animation settings;
+  cards use static gradients rather than expensive live backdrop blur.
+- Bundled the Manrope variable font (Google Fonts repository, commit
+  `b31870aff700ab7a1d74fa0c6887d95beb9e0037`, font SHA-256
+  `3ae11c49db0455a3cc33e37d380f20fdb8c7f8b41dc07625c177e3d87a9d6ae6`).
+  The font family selects its regular and bold weight axes explicitly. Its SIL
+  Open Font License is shipped in `assets/typography/manrope-ofl.txt` and
+  exposed in the app's notices; Android's system font is a fallback.
+
+### Validation and limitations
+- Added import/report-preservation, manual-analysis, responsive grid, tile,
+  pagination, activity-recreation and picker-navigation regressions. Local
+  Kotlin and Java compilation used Android 35 stubs and stubbed APK-signing
+  dependencies; local pure-JVM size/guard and artwork sizing tests (4) and
+  shared-catalog tests with a fake Android context (7) pass. Full Android/host
+  CI is tracked with the pull request. A physical device has not been used to
+  verify rendering, typography, transitions, navigation stacks or game play;
+  smoothness and exact glass appearance therefore remain unverified. The
+  actual Ninjago IPA remains unavailable and its failure is not confirmed fixed.
+
 ## 2026-10-28 — Shared analysis, display profile, package identity and polish
 
 ### Added

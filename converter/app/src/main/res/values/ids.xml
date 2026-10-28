@@ -1,0 +1,4 @@
+<resources>
+    <item name="module_picker_button" type="id" />
+    <item name="converter_game_grid" type="id" />
+</resources>

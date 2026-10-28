@@ -4,20 +4,20 @@ import android.app.Activity;
 import android.content.Intent;
 import android.content.res.ColorStateList;
 import android.graphics.Color;
-import android.graphics.Typeface;
 import android.graphics.drawable.GradientDrawable;
-import android.graphics.drawable.RippleDrawable;
 import android.os.Bundle;
 import android.view.Gravity;
 import android.view.View;
+import android.view.WindowInsets;
 import android.widget.ImageView;
 import android.widget.LinearLayout;
 import android.widget.ScrollView;
 import android.widget.TextView;
+import dev.radek.conventor.SharedTheme;
 
 /** The umbrella launcher; neither module receives a second source-file store. */
 public final class ModuleActivity extends Activity {
-    private int background, panel, ink, muted, accent;
+    private int background, ink, muted, accent;
     private int dp(int value) {
         return Math.round(value * getResources().getDisplayMetrics().density);
     }
@@ -32,7 +32,6 @@ public final class ModuleActivity extends Activity {
         boolean light =
             getSharedPreferences("radek_settings", MODE_PRIVATE).getBoolean("light_theme", false);
         background = Color.parseColor(light ? "#F5F7FA" : "#0B101D");
-        panel = Color.parseColor(light ? "#FFFFFF" : "#141D2F");
         ink = Color.parseColor(light ? "#16202E" : "#FFFFFF");
         muted = Color.parseColor(light ? "#5C6877" : "#A0B2C7");
         accent = dev.radek.conventor.SharedTheme.accent(this);
@@ -43,9 +42,17 @@ public final class ModuleActivity extends Activity {
                 : 0);
         ScrollView scroll = new ScrollView(this);
         scroll.setFillViewport(true);
-        GradientDrawable canvas = new GradientDrawable(GradientDrawable.Orientation.TOP_BOTTOM,
-            new int[] {background, Color.parseColor(light ? "#E9F0F5" : "#101B2B")});
-        scroll.setBackground(canvas);
+        scroll.setBackground(SharedTheme.canvas(this));
+        scroll.setOnApplyWindowInsetsListener((view, insets) -> {
+            if (android.os.Build.VERSION.SDK_INT >= 30) {
+                android.graphics.Insets bars = insets.getInsets(
+                    WindowInsets.Type.systemBars() | WindowInsets.Type.displayCutout());
+                view.setPadding(bars.left, bars.top, bars.right, bars.bottom);
+            } else
+                view.setPadding(insets.getSystemWindowInsetLeft(), insets.getSystemWindowInsetTop(),
+                    insets.getSystemWindowInsetRight(), insets.getSystemWindowInsetBottom());
+            return insets;
+        });
         LinearLayout body = new LinearLayout(this);
         body.setOrientation(LinearLayout.VERTICAL);
         body.setPadding(dp(24), dp(38), dp(24), dp(32));
@@ -86,14 +93,15 @@ public final class ModuleActivity extends Activity {
             13, muted, false);
         label(body, "AnyiOS " + BuildConfig.VERSION_NAME, 12, muted, false);
         setContentView(scroll);
+        scroll.requestApplyInsets();
+        SharedTheme.reveal(body);
     }
     private TextView label(LinearLayout parent, String value, int size, int color, boolean bold) {
         TextView view = new TextView(this);
         view.setText(value);
         view.setTextSize(size);
         view.setTextColor(color);
-        view.setTypeface(
-            Typeface.create(bold ? "sans-serif-medium" : "sans-serif", Typeface.NORMAL));
+        view.setTypeface(SharedTheme.typeface(this, bold));
         view.setPadding(0, dp(8), 0, dp(8));
         parent.addView(view);
         return view;
@@ -103,11 +111,8 @@ public final class ModuleActivity extends Activity {
         LinearLayout card = new LinearLayout(this);
         card.setOrientation(LinearLayout.VERTICAL);
         card.setPadding(dp(22), dp(18), dp(22), dp(20));
-        GradientDrawable shape =
-            new GradientDrawable(GradientDrawable.Orientation.TL_BR, new int[] {panel, background});
-        shape.setCornerRadius(dp(22));
-        shape.setStroke(dp(1), 0x505ce3b5);
-        card.setBackground(new RippleDrawable(ColorStateList.valueOf(0x305ce3b5), shape, null));
+        card.setBackground(SharedTheme.glassRipple(this, 22));
+        SharedTheme.pressFeedback(card);
         card.setFocusable(true);
         card.setClickable(true);
         card.setContentDescription("Open " + title);
@@ -133,27 +138,18 @@ public final class ModuleActivity extends Activity {
         name.setText(title);
         name.setTextSize(25);
         name.setTextColor(ink);
-        name.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
+        name.setTypeface(SharedTheme.typeface(this, true));
         LinearLayout.LayoutParams nameParams = new LinearLayout.LayoutParams(0, -2, 1);
         nameParams.leftMargin = dp(14);
         heading.addView(name, nameParams);
-        TextView arrow = new TextView(this);
-        arrow.setText("↗");
-        arrow.setTextSize(23);
-        arrow.setTextColor(accent);
-        heading.addView(arrow);
+        TextView open = new TextView(this);
+        open.setText("Open");
+        open.setTextSize(13);
+        open.setTextColor(accent);
+        open.setTypeface(SharedTheme.typeface(this, true));
+        heading.addView(open);
         card.addView(heading);
         label(card, subtitle, 14, muted, false);
         card.setOnClickListener(v -> startActivity(new Intent(this, activity)));
-        if (android.animation.ValueAnimator.areAnimatorsEnabled()) {
-            card.setAlpha(0);
-            card.setTranslationY(dp(14));
-            card.animate()
-                .alpha(1)
-                .translationY(0)
-                .setStartDelay(index * 80L)
-                .setDuration(280)
-                .start();
-        }
     }
 }

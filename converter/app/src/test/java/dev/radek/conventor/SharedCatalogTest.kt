@@ -36,6 +36,30 @@ class SharedCatalogTest {
         } finally { entry.deleteRecursively() }
     }
 
+    @Test fun sharedNamesDriveGridOrderingWithoutRewritingSavedReports() {
+        val library = Library(RuntimeEnvironment.getApplication())
+        val zulu = File(library.root, "game-${UUID.randomUUID()}").apply { mkdirs() }
+        val alpha = File(library.root, "game-${UUID.randomUUID()}").apply { mkdirs() }
+        try {
+            File(zulu, "game.json").writeText(JSONObject().put("title", "Zulu renamed").put("kind", "IPA").toString())
+            File(alpha, "game.json").writeText(JSONObject().put("title", "Alpha renamed").put("kind", "IPA").toString())
+            val reportFile = File(alpha, "report.json")
+            val original = JSONObject().put("state", "READY")
+                .put("application", JSONObject().put("name", "Original report title"))
+                .put("source", JSONObject().put("kind", "IPA"))
+                .put("marker", "keep")
+                .toString()
+            reportFile.writeText(original)
+            val entries = library.entries().filter { it.first == zulu || it.first == alpha }
+            assertEquals(listOf(alpha, zulu), entries.map { it.first })
+            assertEquals("Alpha renamed", library.displayTitle(entries[0].first, entries[0].second))
+            assertEquals("Original report title", entries[0].second.getJSONObject("application").getString("name"))
+            assertEquals(original, reportFile.readText())
+            library.recoverInterrupted()
+            assertEquals(original, reportFile.readText())
+        } finally { alpha.deleteRecursively(); zulu.deleteRecursively() }
+    }
+
     @Test fun jobsInDifferentModulesCannotOwnTheCatalogTogether() {
         SharedCatalog.end()
         try {
@@ -67,7 +91,7 @@ class SharedCatalogTest {
         } finally { SharedCatalog.end(); entry.deleteRecursively() }
     }
 
-    @Test fun cancelledAutomaticAnalysisKeepsItsPublishedSourceAndLease() {
+    @Test fun cancelledManualAnalysisKeepsItsPublishedSourceAndLease() {
         val library = Library(RuntimeEnvironment.getApplication())
         val entry = File(library.root, "game-${UUID.randomUUID()}").apply { mkdirs() }
         try {
@@ -76,7 +100,7 @@ class SharedCatalogTest {
             File(entry, "game.json").writeText(JSONObject().put("kind", "IPA").put("originalName", "game.ipa").toString())
             assertTrue(SharedCatalog.tryBegin())
             assertThrows(java.util.concurrent.CancellationException::class.java) {
-                library.analyzeImportedSource(entry) { _, _ -> throw java.util.concurrent.CancellationException() }
+                library.analyzeShared(entry) { _, _ -> throw java.util.concurrent.CancellationException() }
             }
             assertTrue(SharedCatalog.isBusy()) // caller still owns the lease
             assertArrayEquals(bytes, File(entry, "source.bin").readBytes())
@@ -94,7 +118,7 @@ class SharedCatalogTest {
             val bundle = File(folder, "bundle").apply { mkdirs() }
             File(bundle, "Info.plist").writeText("not a valid plist")
             File(folder, "game.json").writeText(JSONObject().put("kind", "Folder").put("originalName", "Game.app").toString())
-            val folderReport = library.analyzeImportedSource(folder) { _, _ -> }
+            val folderReport = library.analyzeShared(folder) { _, _ -> }.second
             assertEquals("FOLDER", folderReport.getJSONObject("source").getString("kind"))
             assertEquals("not a valid plist", File(bundle, "Info.plist").readText())
             assertFalse(File(folder, "source.bin").exists())
