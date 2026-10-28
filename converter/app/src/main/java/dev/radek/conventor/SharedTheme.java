@@ -67,15 +67,15 @@ public final class SharedTheme {
     public static Drawable canvas(Context context) {
         boolean light = light(context);
         int base = Color.parseColor(light ? "#F5F7FA" : "#0B101D");
-        int middle = mix(base, accent(context), light ? 0.035f : 0.075f);
-        int bottom = Color.parseColor(light ? "#EAF0F5" : "#111C2B");
+        int middle = mix(base, accent(context), light ? 0.045f : 0.085f);
+        int bottom = Color.parseColor(light ? "#E8EFF5" : "#121D30");
         return new GradientDrawable(
             GradientDrawable.Orientation.TL_BR, new int[] {base, middle, bottom});
     }
     public static GradientDrawable glass(Context context, int radiusDp) {
         boolean light = light(context);
         int base = Color.parseColor(light ? "#FFFFFF" : "#182437");
-        int top = mix(base, Color.WHITE, light ? 0.02f : 0.08f);
+        int top = mix(base, Color.WHITE, light ? 0.025f : 0.10f);
         int bottom = mix(base, accent(context), light ? 0.035f : 0.045f);
         GradientDrawable surface = new GradientDrawable(GradientDrawable.Orientation.TL_BR,
             new int[] {alpha(top, light ? 242 : 235), alpha(base, light ? 232 : 226),
@@ -143,8 +143,8 @@ public final class SharedTheme {
         view.animate()
             .alpha(1f)
             .translationY(0f)
-            .setDuration(200)
-            .setInterpolator(new DecelerateInterpolator())
+            .setDuration(230)
+            .setInterpolator(new DecelerateInterpolator(1.4f))
             .start();
     }
     /** State feedback does not intercept touch, keyboard or accessibility clicks. */
@@ -155,11 +155,13 @@ public final class SharedTheme {
         AnimatorSet pressed = new AnimatorSet();
         pressed.playTogether(ObjectAnimator.ofFloat(view, View.SCALE_X, 0.98f),
             ObjectAnimator.ofFloat(view, View.SCALE_Y, 0.98f));
-        pressed.setDuration(90);
+        pressed.setDuration(110);
+        pressed.setInterpolator(new DecelerateInterpolator());
         AnimatorSet released = new AnimatorSet();
         released.playTogether(ObjectAnimator.ofFloat(view, View.SCALE_X, 1f),
             ObjectAnimator.ofFloat(view, View.SCALE_Y, 1f));
-        released.setDuration(130);
+        released.setDuration(180);
+        released.setInterpolator(new DecelerateInterpolator(1.5f));
         states.addState(
             new int[] {android.R.attr.state_pressed, android.R.attr.state_enabled}, pressed);
         states.addState(new int[] {}, released);

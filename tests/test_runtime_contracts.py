@@ -77,6 +77,22 @@ class RuntimeContractTests(unittest.TestCase):
             )
             self.assertIn('conversion.remove("expansionObb")', source)
 
+    def test_scale_up_transition_is_only_on_emulator_launch_and_respects_reduced_motion(
+        self,
+    ):
+        emulator = read(ROOT / "app/src/main/java/org/podnative/MainActivity.java")
+        launch = emulator.split("private void launchAnyiOSEMU(", 1)[1].split(
+            "private void showPreparationError(", 1
+        )[0]
+        self.assertIn("ValueAnimator.areAnimatorsEnabled()", launch)
+        self.assertIn("ActivityOptions.makeScaleUpAnimation", launch)
+        self.assertIn("anchor.isAttachedToWindow()", launch)
+        self.assertIn("overridePendingTransition(0, 0)", launch)
+        for name in ("StandaloneLauncherActivity.java", "StandaloneGameActivity.java"):
+            self.assertNotIn(
+                "makeScaleUpAnimation", read(TEMPLATE / "java/org/podnative" / name)
+            )
+
     def test_only_standalone_uses_quiet_error_policy(self):
         options = read(TEMPLATE / "java/org/podnative/StandaloneOptions.java")
         activity = read(TEMPLATE / "java/org/podnative/StandaloneGameActivity.java")

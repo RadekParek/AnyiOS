@@ -198,7 +198,7 @@ bool GuestAddressSpace::writeAcross(GuestAddress address, const void *source, st
         const auto chunk = std::min(available, remaining);
         std::memcpy(region->bytes.data() + offset, cursor, chunk);
         if (markHostWrite)
-            markDirty(current, chunk);
+            markRegionDirty(*region, current, chunk);
         cursor += chunk;
         remaining -= chunk;
         current = static_cast<GuestAddress>(current + chunk);
@@ -229,7 +229,7 @@ bool GuestAddressSpace::write(GuestAddress address, const void *source, std::siz
         return false;
     const auto offset = static_cast<std::size_t>(address - region->view.base);
     std::memcpy(region->bytes.data() + offset, source, size);
-    markDirty(address, size);
+    markRegionDirty(*region, address, size);
     return true;
 }
 
@@ -250,18 +250,25 @@ void GuestAddressSpace::markDirty(GuestAddress address, std::size_t size) {
     if (size == 0)
         return;
     auto *region = findRegion(address, size);
-    if (!region)
+    if (region)
+        markRegionDirty(*region, address, size);
+}
+
+// The caller already checked this region and its bounds. Reuse it instead of
+// looking it up in the ordered map a second time on every host-to-guest write.
+void GuestAddressSpace::markRegionDirty(Region &region, GuestAddress address, std::size_t size) {
+    if (size == 0)
         return;
-    const auto offset = static_cast<std::size_t>(address - region->view.base);
-    if (offset >= region->bytes.size() || size > region->bytes.size() - offset)
+    const auto offset = static_cast<std::size_t>(address - region.view.base);
+    if (offset >= region.bytes.size() || size > region.bytes.size() - offset)
         return;
     const auto firstPage = offset / kDirtyPageBytes;
     const auto lastPage = (offset + size - 1) / kDirtyPageBytes;
-    if (region->dirtyPages.size() < lastPage + 1)
-        region->dirtyPages.resize(lastPage + 1, 0);
+    if (region.dirtyPages.size() < lastPage + 1)
+        region.dirtyPages.resize(lastPage + 1, 0);
     for (auto page = firstPage; page <= lastPage; ++page)
-        region->dirtyPages[page / 64] |= std::uint64_t{1} << (page % 64);
-    region->dirty = true;
+        region.dirtyPages[page / 64] |= std::uint64_t{1} << (page % 64);
+    region.dirty = true;
 }
 
 void GuestAddressSpace::clearDirty() {
@@ -303,7 +310,7 @@ bool GuestAddressSpace::initialize(GuestAddress address, const void *source, std
         return false;
     const auto offset = static_cast<std::size_t>(address - region->view.base);
     std::memcpy(region->bytes.data() + offset, source, size);
-    markDirty(address, size);
+    markRegionDirty(*region, address, size);
     return true;
 }
 
@@ -315,7 +322,7 @@ void *GuestAddressSpace::guestToHost(GuestAddress address, std::size_t size,
     // A writable host view may be written in place, so the pages are queued for
     // the engine even though the shim might only read through this pointer.
     if (hasPermission(required, MemoryPermission::Write))
-        markDirty(address, size);
+        markRegionDirty(*region, address, size);
     return region->bytes.data() + static_cast<std::size_t>(address - region->view.base);
 }
 

@@ -30,5 +30,30 @@ class SourcePolicyTest {
             assertFalse(SourcePolicy.canRetryFailedAnalysis(withArtifact))
         }
         assertFalse(SourcePolicy.canRetryFailedAnalysis(JSONObject().put("state", "PARTIAL")))
+        val blocked = JSONObject().put("state", "BLOCKED")
+            .put("dependencies", JSONObject().put("failedImageCount", 1))
+        assertTrue(SourcePolicy.canRetryFailedAnalysis(blocked))
+        assertFalse(SourcePolicy.canRetryFailedAnalysis(JSONObject(blocked.toString()).put("anyioseConversion", JSONObject())))
+        assertFalse(SourcePolicy.canRetryFailedAnalysis(JSONObject().put("state", "BLOCKED")))
+    }
+
+    @Test fun retryBacksUpExactReportAndDoesNotRemoveSourceOrExistingArtifacts() {
+        val context = org.robolectric.RuntimeEnvironment.getApplication()
+        val library = Library(context)
+        val entry = java.io.File(library.root, "game-${java.util.UUID.randomUUID()}").apply { mkdirs() }
+        try {
+            java.io.File(entry, "game.json").writeText(JSONObject().put("kind", "Folder").toString())
+            val source = java.io.File(entry, "bundle").apply { mkdirs() }
+            java.io.File(source, "marker.txt").writeText("source remains")
+            val oldReport = """{"state":"BLOCKED","dependencies":{"failedImageCount":1},"marker":"previous"}"""
+            java.io.File(entry, "report.json").writeText(oldReport)
+            val artifact = java.io.File(entry, "untracked-output.apk").apply { writeText("artifact remains") }
+            library.analyzeShared(entry) { _, _ -> }
+            val backups = java.io.File(entry, "analysis-history").listFiles().orEmpty()
+            assertEquals(1, backups.size)
+            assertEquals(oldReport, backups.single().readText())
+            assertEquals("source remains", java.io.File(source, "marker.txt").readText())
+            assertEquals("artifact remains", artifact.readText())
+        } finally { entry.deleteRecursively() }
     }
 }

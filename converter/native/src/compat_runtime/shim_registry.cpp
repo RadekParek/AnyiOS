@@ -120,8 +120,10 @@ GuestCalloutResult ShimRegistry::invokeCallout(GuestAddress address,
     }
     gLiveCalloutCount.fetch_add(1, std::memory_order_relaxed);
     const auto now = steadyNanos();
-    std::int64_t expectedFirst = 0;
-    gFirstCalloutNanos.compare_exchange_strong(expectedFirst, now, std::memory_order_acq_rel);
+    if (gFirstCalloutNanos.load(std::memory_order_relaxed) == 0) {
+        std::int64_t expectedFirst = 0;
+        gFirstCalloutNanos.compare_exchange_strong(expectedFirst, now, std::memory_order_acq_rel);
+    }
     gLastCalloutNanos.store(now, std::memory_order_release);
     gLiveLastCallout.store(&binding->darwinSymbol, std::memory_order_release);
     if (binding->invokeException) {

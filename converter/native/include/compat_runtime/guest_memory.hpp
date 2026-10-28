@@ -97,6 +97,7 @@ class GuestAddressSpace {
 
     Region *findRegion(GuestAddress address, std::size_t size);
     const Region *findRegion(GuestAddress address, std::size_t size) const;
+    void markRegionDirty(Region &region, GuestAddress address, std::size_t size);
     // Slow path for an access that starts in one region and ends in an adjacent
     // one: contiguous guest memory is one address range to the guest, so the
     // access is split at region boundaries (with per-region permission checks)

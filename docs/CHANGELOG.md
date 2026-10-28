@@ -1,5 +1,53 @@
 # Changelog
 
+## 2026-10-28 — 4× classic profile, diagnostics and launch polish
+
+### Fixed and rewired
+- The existing **480 × 320 points (3:2)** Semi-Emulated profile now requests
+  4× rather than 3×. A full landscape drawable is requested at 1920 × 1280,
+  or 1280 × 1920 in portrait. Rebuild and reinstall an existing standalone APK
+  for the changed per-game setting to take effect. Memory and GPU costs rise;
+  game-owned texture targets remain at their own size.
+- AnyiOSEMU now tracks framebuffer scale state per EAGL context. Viewport and
+  scissor requests use the same scaling policy, and are reapplied when draw
+  bindings or color attachments change. Deleted/reused framebuffer and texture
+  names no longer carry stale scale classifications. Normal 1× calls retain
+  their previous direct path; read/draw targets are tracked separately.
+- Converter no longer treats a structurally valid Java `.class` resource as a
+  Mach-O image solely because both start with `CAFEBABE`. Other recognized
+  Mach-O/FAT files, including malformed ones, still go to the decoder and can
+  block with a real error. The details screen now shows the failing image path
+  and reason. Artifact-free failed analyses and blocked analyses with embedded
+  decode failures can be retried from their shared source; the old report is
+  copied into `analysis-history` before retry, and retry does not auto-build.
+
+### Changed and added
+- Added breathing room around the Emulator Settings heading, refined the
+  shared static glass/gradient palette and motion timing, and used glass for
+  Emulator sheets. The Emulator library launch requests an Android scale-up
+  transition from the game tile, only when animations are enabled and an anchor
+  exists. It falls back safely otherwise. Standalone Semi-Emulated APK launch
+  is unchanged and does not use this transition.
+- Reduced repeated guest-memory region searches on host writes and switched
+  the Native diagnostic runtime's shim-callout address lookup to a hash table;
+  timing statistics and permission/dirty-page behavior are retained. This
+  affects the Native diagnostic translation/Dynarmic callback path, not the
+  separate AnyiOSEMU engine's JIT configuration.
+
+### Validation and limitations
+- Added framebuffer-state, Java-class/Mach-O recognition, retry-policy/history
+  and guest-memory dirty-page regressions. A local x86-64 synthetic benchmark
+  of 600,000 operations across 1,024 regions/callouts measured median host
+  writes of 86.1 ms before vs 50.5 ms after, and callout dispatch of 62.8 ms
+  before vs 30.4 ms after (seven samples each, GCC 12 `-O3`). These are
+  microbenchmarks of the diagnostic runtime, not game FPS or Android results.
+- No affected IPA/report/log was provided, so the Java-class collision is a
+  plausible fix for one cause, not a confirmed diagnosis of the reported
+  embedded-image error. Real image decoding failures still need their reported
+  path and reason. No physical device or affected game has validated graphics,
+  transitions, game speed or performance. Upstream iOS TestApp requires its
+  separate historical SDK and was not run locally.
+
 ## 2026-10-28 — Manual Converter analysis and shared library refresh
 
 ### Removed / rewired
