@@ -4,6 +4,7 @@
 #include <cstring>
 #include <limits>
 #include <stdexcept>
+#include <utility>
 
 namespace radek::compat_runtime {
 namespace {
@@ -28,29 +29,92 @@ GuestAddressSpace::GuestAddressSpace(std::size_t memoryLimit) : memoryLimit_(mem
         throw std::invalid_argument("guest memory limit must fit the 32-bit address space");
 }
 
+// Caches are local to one address-space instance: copied or moved maps must
+// never inherit a pointer into the original map.
+GuestAddressSpace::GuestAddressSpace(const GuestAddressSpace &other)
+    : regions_(other.regions_), memoryLimit_(other.memoryLimit_), mappedBytes_(other.mappedBytes_),
+      nextDynamicAddress_(other.nextDynamicAddress_), heapReady_(other.heapReady_),
+      heapBase_(other.heapBase_), heapSize_(other.heapSize_), heapCursor_(other.heapCursor_) {}
+
+GuestAddressSpace &GuestAddressSpace::operator=(const GuestAddressSpace &other) {
+    if (this == &other)
+        return *this;
+    // Copy first so an allocation failure leaves this address space intact.
+    auto copiedRegions = other.regions_;
+    lastRegion_.store(nullptr, std::memory_order_relaxed);
+    previousRegion_.store(nullptr, std::memory_order_relaxed);
+    regions_ = std::move(copiedRegions);
+    memoryLimit_ = other.memoryLimit_;
+    mappedBytes_ = other.mappedBytes_;
+    nextDynamicAddress_ = other.nextDynamicAddress_;
+    heapReady_ = other.heapReady_;
+    heapBase_ = other.heapBase_;
+    heapSize_ = other.heapSize_;
+    heapCursor_ = other.heapCursor_;
+    return *this;
+}
+
+GuestAddressSpace::GuestAddressSpace(GuestAddressSpace &&other) noexcept
+    : regions_(std::move(other.regions_)), memoryLimit_(other.memoryLimit_),
+      mappedBytes_(other.mappedBytes_), nextDynamicAddress_(other.nextDynamicAddress_),
+      heapReady_(other.heapReady_), heapBase_(other.heapBase_), heapSize_(other.heapSize_),
+      heapCursor_(other.heapCursor_) {
+    other.lastRegion_.store(nullptr, std::memory_order_relaxed);
+    other.previousRegion_.store(nullptr, std::memory_order_relaxed);
+}
+
+GuestAddressSpace &GuestAddressSpace::operator=(GuestAddressSpace &&other) noexcept {
+    if (this == &other)
+        return *this;
+    lastRegion_.store(nullptr, std::memory_order_relaxed);
+    previousRegion_.store(nullptr, std::memory_order_relaxed);
+    other.lastRegion_.store(nullptr, std::memory_order_relaxed);
+    other.previousRegion_.store(nullptr, std::memory_order_relaxed);
+    regions_ = std::move(other.regions_);
+    memoryLimit_ = other.memoryLimit_;
+    mappedBytes_ = other.mappedBytes_;
+    nextDynamicAddress_ = other.nextDynamicAddress_;
+    heapReady_ = other.heapReady_;
+    heapBase_ = other.heapBase_;
+    heapSize_ = other.heapSize_;
+    heapCursor_ = other.heapCursor_;
+    return *this;
+}
+
 GuestAddressSpace::Region *GuestAddressSpace::findRegion(GuestAddress address, std::size_t size) {
-    auto it = regions_.upper_bound(address);
-    if (it == regions_.begin())
-        return nullptr;
-    --it;
-    const std::uint64_t start = it->second.view.base;
-    const std::uint64_t end = start + it->second.view.size;
-    const std::uint64_t accessStart = address;
-    const std::uint64_t accessEnd = accessStart + size;
-    return accessStart >= start && accessEnd >= accessStart && accessEnd <= end ? &it->second : nullptr;
+    return const_cast<Region *>(static_cast<const GuestAddressSpace *>(this)->findRegion(address, size));
 }
 
 const GuestAddressSpace::Region *GuestAddressSpace::findRegion(GuestAddress address,
                                                                std::size_t size) const {
+    const std::uint64_t accessStart = address;
+    const std::uint64_t accessEnd = accessStart + size;
+    if (accessEnd < accessStart)
+        return nullptr;
+    // Two slots retain the common stack/data interleave without swapping on
+    // every callback. A miss still uses the authoritative ordered map.
+    for (const auto *cached : {lastRegion_.load(std::memory_order_relaxed),
+                               previousRegion_.load(std::memory_order_relaxed)}) {
+        if (cached) {
+            const std::uint64_t start = cached->view.base;
+            const std::uint64_t end = start + cached->view.size;
+            // At a zero-size boundary, use the map so a mapping starting
+            // there wins over the preceding mapping, just as it did before.
+            if (accessStart >= start && accessStart < end && accessEnd <= end)
+                return cached;
+        }
+    }
     auto it = regions_.upper_bound(address);
     if (it == regions_.begin())
         return nullptr;
     --it;
     const std::uint64_t start = it->second.view.base;
     const std::uint64_t end = start + it->second.view.size;
-    const std::uint64_t accessStart = address;
-    const std::uint64_t accessEnd = accessStart + size;
-    return accessStart >= start && accessEnd >= accessStart && accessEnd <= end ? &it->second : nullptr;
+    if (accessStart < start || accessEnd > end)
+        return nullptr;
+    previousRegion_.store(lastRegion_.load(std::memory_order_relaxed), std::memory_order_relaxed);
+    lastRegion_.store(&it->second, std::memory_order_relaxed);
+    return &it->second;
 }
 
 GuestAddress GuestAddressSpace::mapAt(GuestAddress base, std::size_t size,
@@ -126,6 +190,10 @@ void GuestAddressSpace::unmap(GuestAddress base) {
     if (heapReady_ && base == heapBase_)
         heapReady_ = false;
     mappedBytes_ -= found->second.view.size;
+    if (lastRegion_.load(std::memory_order_relaxed) == &found->second)
+        lastRegion_.store(nullptr, std::memory_order_relaxed);
+    if (previousRegion_.load(std::memory_order_relaxed) == &found->second)
+        previousRegion_.store(nullptr, std::memory_order_relaxed);
     regions_.erase(found);
 }
 

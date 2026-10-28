@@ -217,6 +217,55 @@ int main() {
             CHECK(reason.find("null class-name") != std::string::npos);
         }
 
+        // AdSupport's bounded Objective-C call chain exposes no host ID.
+        // Source: https://developer.apple.com/app-store/user-privacy-and-data-use/
+        {
+            CpuRegisterState manager;
+            std::string reason;
+            const auto managerClass = fixture.classData("_OBJC_CLASS_$_ASIdentifierManager");
+            CHECK(fixture.send(managerClass, "sharedManager", manager, reason) == GuestCalloutResult::Returned);
+            CHECK(manager.r[0] != 0);
+            const auto managerAddress = manager.r[0];
+            CpuRegisterState second;
+            CHECK(fixture.send(managerClass, "sharedManager", second, reason) == GuestCalloutResult::Returned);
+            CHECK(second.r[0] == managerAddress);
+            CpuRegisterState tracking;
+            CHECK(fixture.send(managerAddress, "isAdvertisingTrackingEnabled", tracking, reason) == GuestCalloutResult::Returned);
+            CHECK(tracking.r[0] == 0);
+            CpuRegisterState identifier;
+            CHECK(fixture.send(managerAddress, "advertisingIdentifier", identifier, reason) == GuestCalloutResult::Returned);
+            const auto uuid = identifier.r[0];
+            CHECK(uuid != 0);
+            CpuRegisterState kind;
+            kind.r[2] = fixture.classData("_OBJC_CLASS_$_NSUUID");
+            CHECK(fixture.send(uuid, "isKindOfClass:", kind, reason) == GuestCalloutResult::Returned);
+            CHECK(kind.r[0] == 1);
+            CpuRegisterState string;
+            CHECK(fixture.send(uuid, "UUIDString", string, reason) == GuestCalloutResult::Returned);
+            CpuRegisterState utf8;
+            CHECK(fixture.send(string.r[0], "UTF8String", utf8, reason) == GuestCalloutResult::Returned);
+            std::array<char, 37> text{};
+            CHECK(fixture.memory.read(utf8.r[0], text.data(), text.size()));
+            CHECK(std::string(text.data()) == "00000000-0000-0000-0000-000000000000");
+            std::array<std::uint8_t, 16> bytes;
+            bytes.fill(0xff);
+            const auto destination = kDataBase + 0x400;
+            CHECK(fixture.memory.write(destination, bytes.data(), bytes.size()));
+            CpuRegisterState getBytes;
+            getBytes.r[2] = destination;
+            CHECK(fixture.send(uuid, "getUUIDBytes:", getBytes, reason) == GuestCalloutResult::Returned);
+            CHECK(fixture.memory.read(destination, bytes.data(), bytes.size()));
+            for (auto value : bytes) CHECK(value == 0);
+            CpuRegisterState badDestination;
+            badDestination.r[2] = 0xdeadbeefu;
+            reason.clear();
+            CHECK(fixture.send(uuid, "getUUIDBytes:", badDestination, reason) == GuestCalloutResult::Failed);
+            CHECK(reason.find("not writable") != std::string::npos);
+            CpuRegisterState unimplemented;
+            reason.clear();
+            CHECK(fixture.send(uuid, "notImplemented", unimplemented, reason) == GuestCalloutResult::Failed);
+        }
+
         // Background thread detach + explicitly bounded diagnostic service.
         const auto delegate = [&]() {
             // `+[UIApplication sharedApplication] -delegate` returns the address
@@ -370,6 +419,25 @@ int main() {
             const auto finished = fixture.objc.lifecycleOutcome(fixture.memory);
             CHECK(!finished.runLoopRunning);
             CHECK(finished.runLoopExited);
+        }
+        // Native is fixed-function ES1 only. Reject an ES2 request instead of
+        // returning a misleading ES1 context; ES1 initialization still works.
+        {
+            Fixture fixture;
+            const auto klass = fixture.classData("_OBJC_CLASS_$_EAGLContext");
+            CpuRegisterState alloc;
+            std::string reason;
+            CHECK(fixture.send(klass, "alloc", alloc, reason) == GuestCalloutResult::Returned);
+            const auto context = alloc.r[0];
+            CHECK(context != 0);
+            CpuRegisterState es2;
+            es2.r[2] = 2;
+            CHECK(fixture.send(context, "initWithAPI:", es2, reason) == GuestCalloutResult::Returned);
+            CHECK(es2.r[0] == 0);
+            CpuRegisterState es1;
+            es1.r[2] = 1;
+            CHECK(fixture.send(context, "initWithAPI:", es1, reason) == GuestCalloutResult::Returned);
+            CHECK(es1.r[0] == context);
         }
         std::printf("compat-runtime lifecycle tests passed\n");
         return 0;

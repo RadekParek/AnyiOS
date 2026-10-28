@@ -2,6 +2,7 @@
 
 #include "compat_runtime/guest_state.hpp"
 
+#include <atomic>
 #include <cstddef>
 #include <cstdint>
 #include <functional>
@@ -87,6 +88,13 @@ class GuestAddressSpace {
     };
 
     std::map<GuestAddress, Region> regions_;
+    // Most CPU callbacks repeatedly access one code, stack, or data mapping.
+    // Map nodes stay stable on insertion. The pointer is cleared before erase,
+    // and the live region's bounds/permissions are still checked on every use.
+    // Atomic access preserves concurrent const-read safety; as before, mapping
+    // mutations must not race guest reads or writes.
+    mutable std::atomic<const Region *> lastRegion_{nullptr};
+    mutable std::atomic<const Region *> previousRegion_{nullptr};
     std::size_t memoryLimit_;
     std::size_t mappedBytes_ = 0;
     GuestAddress nextDynamicAddress_ = 0x10000000;
@@ -109,6 +117,10 @@ class GuestAddressSpace {
 
   public:
     explicit GuestAddressSpace(std::size_t memoryLimit = kGuestMemoryLimitUnlimited);
+    GuestAddressSpace(const GuestAddressSpace &other);
+    GuestAddressSpace &operator=(const GuestAddressSpace &other);
+    GuestAddressSpace(GuestAddressSpace &&other) noexcept;
+    GuestAddressSpace &operator=(GuestAddressSpace &&other) noexcept;
 
     GuestAddress mapAt(GuestAddress base, std::size_t size, MemoryPermission permissions,
                        std::string name);

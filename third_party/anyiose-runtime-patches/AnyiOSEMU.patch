@@ -4922,7 +4922,7 @@ index a851662a83fd6924498c8cc51748ba12eb2e3fc8..b16c297defce07fd340e79b79d7d2abd
              // RBSIZE-DIAG: log renderbuffer storage dimensions each time so a
              // mid-run resize (loading screen vs game scene) is visible.
 diff --git a/src/frameworks/opengles/gles_guest.rs b/src/frameworks/opengles/gles_guest.rs
-index 1163b1139822e4d4f9afdd5d26f3bb8ec81f0343..46671cd6c14ab7dddc553f629551fc5bc1b89684 100644
+index 1163b1139822e4d4f9afdd5d26f3bb8ec81f0343..19857fafc9abab0896cccacb92c33462dacb633d 100644
 --- a/src/frameworks/opengles/gles_guest.rs
 +++ b/src/frameworks/opengles/gles_guest.rs
 @@ -425,6 +425,28 @@ fn glGetFloatv(env: &mut Environment, pname: GLenum, params: MutPtr<GLfloat>) {
@@ -5246,7 +5246,84 @@ index 1163b1139822e4d4f9afdd5d26f3bb8ec81f0343..46671cd6c14ab7dddc553f629551fc5b
      })
  }
  fn glDeleteRenderbuffersOES(env: &mut Environment, n: GLsizei, renderbuffers: ConstPtr<GLuint>) {
-@@ -6850,7 +6912,24 @@ fn glBlitFramebuffer(
+@@ -5895,6 +5957,11 @@ unsafe fn inject_driver_reported_varyings(
+     swap_in_patched_vertex_shader(gles, program, vertex_shader, &vertex_src, &missing)
+ }
+ 
++// GLES specifies signed GLsizei lengths; never truncate a large host buffer.
++fn shader_source_length(bytes: &[u8]) -> Option<GLint> {
++    GLint::try_from(bytes.len()).ok()
++}
++
+ fn glShaderSource(
+     env: &mut Environment,
+     shader: GLuint,
+@@ -5928,11 +5995,8 @@ fn glShaderSource(
+                 Some(l)
+             }
+         };
+-        let bytes_vec: Vec<u8> = if let Some(len) = len_opt {
+-            let slice = env
+-                .mem
+-                .bytes_at(str_ptr.cast(), len.try_into().unwrap_or(0));
+-            slice.to_vec()
++        let bytes = if let Some(len) = len_opt {
++            env.mem.bytes_at(str_ptr.cast(), len.try_into().unwrap_or(0))
+         } else {
+             // GLSL shader sources can legitimately exceed the default 64KB
+             // `cstr_at` safety cap (e.g. Unreal Engine's generated shaders in
+@@ -5940,11 +6004,9 @@ fn glShaderSource(
+             // which then fails to compile with errors like
+             // "Unterminated #if/#ifdef/#ifndef". Allow up to 16 MB here.
+             const MAX_SHADER_SRC_LEN: u32 = 16 * 1024 * 1024;
+-            env.mem
+-                .cstr_at_with_max_len(str_ptr, MAX_SHADER_SRC_LEN)
+-                .to_vec()
++            env.mem.cstr_at_with_max_len(str_ptr, MAX_SHADER_SRC_LEN)
+         };
+-        raw_source.extend_from_slice(&bytes_vec);
++        raw_source.extend_from_slice(bytes);
+     }
+     // Normalize shader text before sending it to the driver:
+     // 1. Fix up preprocessor-directive whitespace (see doc comment on
+@@ -5965,21 +6027,24 @@ fn glShaderSource(
+     let src = hoist_shader_extension_directives(&src);
+     let bytes_vec = strip_captain_tomato_shader_precision(&src).into_bytes();
+ 
+-    let cs = std::ffi::CString::new(bytes_vec).unwrap_or_default();
+-    let ptr = cs.as_ptr();
+-    // Remember what we submitted so `fix_fragment_only_varyings` can rewrite
+-    // the vertex shader at link time without depending on optional backend
+-    // entry points (GetShaderSource / GetAttachedShaders are unimplemented
+-    // on some backends, e.g. GLES2Native's GetAttachedShaders panics).
+-    record_shader_source(
+-        shader,
+-        String::from_utf8_lossy(cs.as_bytes()).into_owned(),
+-    );
++    // Explicit GL lengths preserve source bytes even if a guest supplied an
++    // embedded NUL. CString::new(...).unwrap_or_default() previously replaced
++    // the *entire* shader with an empty string in that case. Let the driver
++    // validate the actual input instead. GLES 2 glShaderSource length rules:
++    // https://registry.khronos.org/OpenGL-Refpages/es2.0/xhtml/glShaderSource.xml
++    let Some(source_len) = shader_source_length(&bytes_vec) else {
++        log!("glShaderSource: normalized shader is too large for GLsizei");
++        return;
++    };
++    let ptr = bytes_vec.as_ptr().cast();
++    // Remember what we submitted so link-time varying repair does not depend
++    // on optional driver GetShaderSource/GetAttachedShaders entry points.
++    record_shader_source(shader, String::from_utf8_lossy(&bytes_vec).into_owned());
+     if crate::env_flag_cached!("TOUCHHLE_DUMP_SHADER_SOURCE") {
+-        let _ = std::fs::write(format!("shader_dump_{}.glsl", shader), cs.as_bytes());
++        let _ = std::fs::write(format!("shader_dump_{}.glsl", shader), &bytes_vec);
+     }
+     with_ctx_and_mem(env, |gles, _mem| unsafe {
+-        gles.ShaderSource(shader, 1, &ptr, std::ptr::null());
++        gles.ShaderSource(shader, 1, &ptr, &source_len);
+     });
+ }
+ fn glEnableVertexAttribArray(env: &mut Environment, index: GLuint) {
+@@ -6850,7 +6915,24 @@ fn glBlitFramebuffer(
      mask: GLbitfield,
      filter: GLenum,
  ) {
@@ -5272,7 +5349,7 @@ index 1163b1139822e4d4f9afdd5d26f3bb8ec81f0343..46671cd6c14ab7dddc553f629551fc5b
          gles.BlitFramebuffer(
              src_x0, src_y0, src_x1, src_y1, dst_x0, dst_y0, dst_x1, dst_y1, mask, filter,
          )
-@@ -6865,6 +6944,11 @@ fn glRenderbufferStorageMultisample(
+@@ -6865,6 +6947,11 @@ fn glRenderbufferStorageMultisample(
      width: GLsizei,
      height: GLsizei,
  ) {
@@ -5284,7 +5361,7 @@ index 1163b1139822e4d4f9afdd5d26f3bb8ec81f0343..46671cd6c14ab7dddc553f629551fc5b
      with_ctx_and_mem(env, |gles, _mem| unsafe {
          gles.RenderbufferStorageMultisample(target, samples, internalformat, width, height)
      });
-@@ -6878,8 +6962,24 @@ fn glFramebufferTextureLayer(
+@@ -6878,8 +6965,24 @@ fn glFramebufferTextureLayer(
      level: GLint,
      layer: GLint,
  ) {
@@ -5311,6 +5388,25 @@ index 1163b1139822e4d4f9afdd5d26f3bb8ec81f0343..46671cd6c14ab7dddc553f629551fc5b
      });
  }
  
+@@ -8857,6 +8960,18 @@ mod shader_preprocessor_normalization_tests {
+     }
+ }
+ 
++#[cfg(test)]
++mod shader_source_length_tests {
++    use super::shader_source_length;
++
++    #[test]
++    fn explicit_lengths_include_interior_nulls() {
++        let source = b"void main() {\0 }";
++        assert_eq!(shader_source_length(source), Some(source.len() as i32));
++        assert_eq!(shader_source_length(b""), Some(0));
++    }
++}
++
+ #[cfg(test)]
+ mod shader_extension_hoisting_tests {
+     use super::hoist_shader_extension_directives;
 diff --git a/src/frameworks/opengles/scale_framebuffer.rs b/src/frameworks/opengles/scale_framebuffer.rs
 new file mode 100644
 index 0000000000000000000000000000000000000000..c072e209285dd79d5558f44a00b823d26fb78af9
@@ -8179,7 +8275,7 @@ index 0000000000000000000000000000000000000000..b4c50f7031c2aeaa03102368578a0164
 +    }
 +}
 diff --git a/src/mem.rs b/src/mem.rs
-index a8ecd8191975407e912e426d97753bd918bbaf5c..0372a3738c4591e4a2da47691c168cc8575d2722 100644
+index a8ecd8191975407e912e426d97753bd918bbaf5c..c727ff87b808bf93fc24acc0376645c2ba4260d1 100644
 --- a/src/mem.rs
 +++ b/src/mem.rs
 @@ -595,7 +595,7 @@ impl Mem {
@@ -8253,7 +8349,33 @@ index a8ecd8191975407e912e426d97753bd918bbaf5c..0372a3738c4591e4a2da47691c168cc8
              std::backtrace::Backtrace::force_capture()
          );
      }
-@@ -1300,7 +1301,10 @@ impl Mem {
+@@ -1271,6 +1272,25 @@ impl Mem {
+     /// without an explicit length), where the default cap would silently
+     /// truncate the string and corrupt it.
+     pub fn cstr_at_with_max_len<const MUT: bool>(&self, ptr: Ptr<u8, MUT>, max_len: u32) -> &[u8] {
++        // For ordinary in-range pointers, scan one checked slice instead of
++        // repeating the full guest-memory lookup for every character. Do not
++        // use the fast path for PAGEZERO, a wrapping 32-bit pointer, or the
++        // zero-limit corner case: those retain the existing per-byte behavior.
++        // C strings end at their first NUL: https://pubs.opengroup.org/onlinepubs/9699919799/functions/strlen.html
++        if max_len != 0
++            && ptr.to_bits() >= self.null_segment_size
++            && ptr.to_bits().checked_add(max_len).is_some()
++        {
++            let bytes = self.bytes_at(ptr, max_len);
++            if let Some(len) = bytes.iter().position(|&byte| byte == b'\0') {
++                return &bytes[..len];
++            }
++            log!(
++                "Warning: cstr_at({:?}): hit {}B safety limit without finding null terminator; truncating.",
++                ptr, max_len
++            );
++            return bytes;
++        }
+         let mut len: u32 = 0;
+         while self.read(ptr + len) != b'\0' {
+             len += 1;
+@@ -1300,7 +1320,10 @@ impl Mem {
      /// POSIX paths and most guest C strings are byte strings, so callers that
      /// must accept arbitrary bytes (e.g. `open(2)`, which the kernel never
      /// validates as UTF-8) use this instead of [Self::cstr_at_utf8].
@@ -8265,7 +8387,35 @@ index a8ecd8191975407e912e426d97753bd918bbaf5c..0372a3738c4591e4a2da47691c168cc8
          match self.cstr_at_utf8(ptr) {
              Ok(s) => std::borrow::Cow::Borrowed(s),
              Err(bytes) => String::from_utf8_lossy(bytes),
-@@ -1523,10 +1527,7 @@ mod mem_tests {
+@@ -1512,6 +1535,27 @@ mod mem_tests {
+         );
+     }
+ 
++    #[test]
++    fn cstr_scan_keeps_termination_limits_and_wrapped_reads() {
++        let mut mem = Mem::new();
++        mem.set_null_segment_size(super::PAGE_SIZE);
++        let p: MutPtr<u8> = Ptr::from_bits(super::PAGE_SIZE + 64);
++        mem.bytes_at_mut(p, 8).copy_from_slice(b"abc\0tail");
++        assert_eq!(mem.cstr_at_with_max_len(p, 8), b"abc");
++        assert_eq!(mem.cstr_at_with_max_len(p, 3), b"abc");
++        assert_eq!(mem.cstr_at_with_max_len(p, 1), b"a");
++        // Preserve the legacy zero-limit behavior: it checks one byte.
++        assert_eq!(mem.cstr_at_with_max_len(p, 0), b"a");
++        assert_eq!(mem.cstr_at_with_max_len(p + 3, 8), b"");
++        // Wrapping pointers still use per-byte access, including the PAGEZERO
++        // stub, rather than scanning linearly into the extra allocation tail.
++        let top: MutPtr<u8> = Ptr::from_bits(u32::MAX);
++        mem.write(top, b'x');
++        let zero: MutPtr<u8> = Ptr::from_bits(0);
++        mem.write(zero, 0);
++        assert_eq!(mem.cstr_at_with_max_len(top, 2), b"x");
++    }
++
+     #[test]
+     fn cstr_at_utf8_lossy_keeps_non_utf8_paths_usable() {
+         // Unity's shader cache opens paths whose name ends in uninitialised
+@@ -1523,10 +1567,7 @@ mod mem_tests {
              .copy_from_slice(&[b'/', b'a', 0xA5, b'b', 0xAA, 0]);
  
          assert!(mem.cstr_at_utf8(p).is_err());

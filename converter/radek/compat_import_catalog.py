@@ -28,6 +28,8 @@ CONCRETE_DARWIN_COMPAT_PROVIDERS: dict[str, str] = {
     "_UIApplicationMain": "uikit.application-main",
 
     # Objective-C class/metaclass data and dispatch/runtime data.
+    "_OBJC_CLASS_$_ASIdentifierManager": "objc.class.ASIdentifierManager",
+    "_OBJC_CLASS_$_NSUUID": "objc.class.NSUUID",
     "_OBJC_CLASS_$_CAEAGLLayer": "objc.class.CAEAGLLayer",
     "_OBJC_CLASS_$_EAGLContext": "objc.class.EAGLContext",
     "_OBJC_CLASS_$_NSAutoreleasePool": "objc.class.NSAutoreleasePool",
@@ -158,9 +160,9 @@ CONCRETE_DARWIN_COMPAT_PROVIDERS: dict[str, str] = {
 
 CONCRETE_DARWIN_COMPAT_IMPORT_COUNT = len(CONCRETE_DARWIN_COMPAT_PROVIDERS)
 
-if CONCRETE_DARWIN_COMPAT_IMPORT_COUNT != 124:  # pragma: no cover - authoring guard
+if CONCRETE_DARWIN_COMPAT_IMPORT_COUNT != 126:  # pragma: no cover - authoring guard
     raise AssertionError(
-        "the non-NDK Darwin provider inventory must contain exactly 124 imports, "
+        "the non-NDK Darwin provider inventory must contain exactly 126 imports, "
         f"got {CONCRETE_DARWIN_COMPAT_IMPORT_COUNT}"
     )
 

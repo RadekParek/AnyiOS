@@ -21,9 +21,19 @@ struct Reader {
     const std::vector<uint8_t> &b;
     size_t base, size;
     bool be = false;
-    void check(uint64_t p, uint64_t n) const {
+    void check(uint64_t p, uint64_t n, const std::string &what = "data") const {
         if (p > size || n > size - p)
-            throw std::runtime_error("Mach-O range outside slice");
+            throw std::runtime_error("Mach-O range outside slice (" + what + ": offset " +
+                                     std::to_string(p) + ", length " + std::to_string(n) +
+                                     ", slice size " + std::to_string(size) +
+                                     ", slice file offset " + std::to_string(base) + ")");
+    }
+    // Mach-O offsets for empty file-backed tables/segments are unused. Some
+    // older link/strip tools leave them past EOF. Do not apply this to cursor
+    // validation or strings: only callers that access no bytes may skip it.
+    void checkTable(uint64_t p, uint64_t n, const std::string &what) const {
+        if (n != 0)
+            check(p, n, what);
     }
     uint64_t u(size_t p, size_t n) const {
         check(p, n);
@@ -139,7 +149,7 @@ std::string arch(uint64_t c, uint64_t s) {
     return "unsupported";
 }
 Json relocations(Reader &r, size_t off, size_t n, bool includeDetails) {
-    r.check(off, uint64_t(n) * 8);
+    r.checkTable(off, uint64_t(n) * 8, "relocations");
     if (!includeDetails)
         return array();
     if (n > 1000000)
@@ -175,13 +185,13 @@ Json thin(Reader r, bool includeSymbolDetails) {
         throw std::runtime_error("not a Mach-O slice");
     r.be = magic == 0xcefaedfe || magic == 0xcffaedfe;
     size_t hdr = wide ? 32 : 28;
-    r.check(0, hdr);
+    r.check(0, hdr, "Mach-O header");
     auto cpu = r.u(4, 4), sub = r.u(8, 4), nc = r.u(16, 4), sz = r.u(20, 4);
     if ((cpu == 12 && wide) || (cpu == 0x100000c && !wide))
         throw std::runtime_error("CPU/header width mismatch");
     if (nc > 65536 || sz < nc * 8)
         throw std::runtime_error("invalid load command count");
-    r.check(hdr, sz);
+    r.check(hdr, sz, "load commands");
     Json j = object();
     j["architecture"] = arch(cpu, sub);
     j["cpuType"] = cpu;
@@ -270,7 +280,7 @@ Json thin(Reader r, bool includeSymbolDetails) {
             }
             s["vmSize"] = r.u(p + (s64 ? 32 : 28), s64 ? 8 : 4);
             auto fo = r.u(p + (s64 ? 40 : 32), s64 ? 8 : 4), fs = r.u(p + (s64 ? 48 : 36), s64 ? 8 : 4);
-            r.check(fo, fs);
+            r.checkTable(fo, fs, "segment " + s["name"].value);
             if (fs > r.u(p + (s64 ? 32 : 28), s64 ? 8 : 4))
                 throw std::runtime_error("segment file size exceeds VM range");
             s["fileOffset"] = fo;
@@ -293,7 +303,7 @@ Json thin(Reader r, bool includeSymbolDetails) {
                 if (va < segva || va - segva > vmsize || size > vmsize - (va - segva))
                     throw std::runtime_error("section outside segment VM range");
                 if (type != 1 && type != 12 && type != 18) {
-                    r.check(off, size);
+                    r.checkTable(off, size, "section " + name);
                     if (size && (off < fo || off - fo > fs || size > fs - (off - fo)))
                         throw std::runtime_error("section outside segment file range");
                 }
@@ -333,8 +343,8 @@ Json thin(Reader r, bool includeSymbolDetails) {
             // nsyms is bounded only by the actual slice's symbol-table byte
             // range (validated below); no policy cap. Keep the multiplication
             // in uint64_t before the range check (nsyms is a 32-bit field).
-            r.check(symoff, uint64_t(nsyms) * symbolEntrySize);
-            r.check(stroff, strsize);
+            r.checkTable(symoff, uint64_t(nsyms) * symbolEntrySize, "LC_SYMTAB symbols");
+            r.checkTable(stroff, strsize, "LC_SYMTAB strings");
             j["symbolCount"] = uint64_t(nsyms);
             Json table = object();
             table["offset"] = uint64_t(symoff);
@@ -367,15 +377,15 @@ Json thin(Reader r, bool includeSymbolDetails) {
             for (size_t x = 0; x < 18; x++)
                 d[names[x]] = r.u(p + 8 + x * 4, 4);
             const auto indirectOffset = r.u(p + 56, 4), indirectCount = r.u(p + 60, 4);
-            r.check(indirectOffset, indirectCount * 4);
+            r.checkTable(indirectOffset, indirectCount * 4, "LC_DYSYMTAB indirect symbols");
             const auto externalRelocationOffset = r.u(p + 64, 4), externalRelocationCount = r.u(p + 68, 4);
             const auto localRelocationOffset = r.u(p + 72, 4), localRelocationCount = r.u(p + 76, 4);
             if (includeSymbolDetails) {
                 d["externalRelocations"] = relocations(r, externalRelocationOffset, externalRelocationCount, true);
                 d["localRelocations"] = relocations(r, localRelocationOffset, localRelocationCount, true);
             } else {
-                r.check(externalRelocationOffset, externalRelocationCount * 8);
-                r.check(localRelocationOffset, localRelocationCount * 8);
+                r.checkTable(externalRelocationOffset, externalRelocationCount * 8, "LC_DYSYMTAB external relocations");
+                r.checkTable(localRelocationOffset, localRelocationCount * 8, "LC_DYSYMTAB local relocations");
             }
             // The indirect symbol table maps __la_symbol_ptr/__nl_symbol_ptr/__got slots to
             // symtab entries. Exporting it lets the host recovery layer resolve stub targets.
@@ -414,7 +424,7 @@ Json thin(Reader r, bool includeSymbolDetails) {
         } else if (cmd == 0x21 || cmd == 0x2c) {
             need(cmd == 0x21 ? 20 : 24);
             auto off = r.u(p + 8, 4), size = r.u(p + 12, 4);
-            r.check(off, size);
+            r.checkTable(off, size, "LC_ENCRYPTION_INFO");
             Json e = object();
             e["offset"] = off;
             e["size"] = size;
@@ -425,7 +435,7 @@ Json thin(Reader r, bool includeSymbolDetails) {
         } else if (cmd == 0x80000028) {
             need(24);
             auto off = r.u(p + 8, 8);
-            r.check(off, 1);
+            r.check(off, 1, "LC_MAIN entry");
             j["entryOffset"] = off;
             j["stackSize"] = r.u(p + 16, 8);
         } else if (cmd == 0x1b) {
@@ -472,7 +482,7 @@ Json thin(Reader r, bool includeSymbolDetails) {
             const char *names[] = {"rebase", "bind", "weakBind", "lazyBind", "exportTrie"};
             for (size_t x = 0; x < 5; x++) {
                 size_t off = r.u(p + 8 + x * 8, 4), n = r.u(p + 12 + x * 8, 4);
-                r.check(off, n);
+                r.checkTable(off, n, std::string("LC_DYLD_INFO ") + names[x]);
                 Json l = object();
                 l["kind"] = names[x];
                 l["offset"] = uint64_t(off);
@@ -488,7 +498,7 @@ Json thin(Reader r, bool includeSymbolDetails) {
                    cmd == 0x80000034) {
             need(16);
             size_t off = r.u(p + 8, 4), n = r.u(p + 12, 4);
-            r.check(off, n);
+            r.checkTable(off, n, "linkedit command " + std::to_string(cmd));
             Json l = object();
             l["command"] = cmd;
             l["offset"] = uint64_t(off);
@@ -909,13 +919,13 @@ Json analyze(const std::vector<uint8_t> &data, bool includeSymbolDetails) {
         size_t stride = wide ? 32 : 20;
         if (n == 0 || n > 64)
             throw std::runtime_error("invalid FAT slice count");
-        r.check(8, n * stride);
+        r.check(8, n * stride, "FAT architecture table");
         std::vector<std::pair<uint64_t, uint64_t>> ranges;
         for (size_t i = 0; i < n; i++) {
             size_t p = 8 + i * stride;
             auto off = r.u(p + 8, wide ? 8 : 4), size = r.u(p + (wide ? 16 : 12), wide ? 8 : 4),
                  align = r.u(p + (wide ? 24 : 16), 4);
-            r.check(off, size);
+            r.check(off, size, "FAT slice " + std::to_string(i));
             if (off < 8 + n * stride || !size || align > 31 || off % (uint64_t(1) << align))
                 throw std::runtime_error("invalid FAT alignment/range");
             for (auto [a, b] : ranges)

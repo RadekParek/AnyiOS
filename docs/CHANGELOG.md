@@ -1,5 +1,47 @@
 # Changelog
 
+## 2026-10-28 — Legacy Mach-O ranges, clearer reports and rendering safeguards
+
+### Fixed / changed
+- Empty file-backed Mach-O segments and empty symbol, relocation, dyld and
+  encryption ranges no longer fail solely because a legacy linker left a stale
+  unused offset. Nonempty ranges remain bounds-checked; errors now include the
+  range and FAT slice context. Synthetic ARMv6 thin and FAT cases pass, but the
+  specific Ninjago IPA/report was not available, so its error is not proven fixed.
+- Converter game details now separate completed/packaged work, available providers
+  that are not proven game-linked, and remaining problems. Host-reported ELF
+  symbols/dependencies are explicitly distinguished from the device's hash and
+  header checks. Removed host-command, attach-host-APK, open-installed-app and
+  build-preview controls from game details; prior previews, logs and full reports
+  remain accessible under More details. Force-convert explanations are shorter.
+  Large provider inventories are capped in the human-readable summary with an
+  explicit notice; the full machine-readable inventory remains available, and
+  detailed import formatting is deferred until the report is opened or exported.
+- Corrected the Native GLES guest float-argument ABI. The Native bridge is ES 1
+  only: it now rejects an ES 2/3 context rather than masquerading an ES 1 context
+  as ES 2, and no longer uses an ES 2 EGL config as a fixed-function substitute.
+
+### Added / rewired
+- Added a bounded Native guest `ASIdentifierManager` and all-zero IDFA object.
+  Tracking reports disabled; no Android advertising identifier is accessed. This
+  is not an ad service, a complete NSUUID implementation or proof a game linked it.
+- AnyiOSEMU's existing ES 2 → native GLES 2 path now forwards explicitly sized
+  shader source including embedded NULs instead of silently replacing the entire
+  shader with an empty string, and avoids one per-chunk copy. This does not add
+  an ES 2 path to the separate Native guest or an EGL renderer to portable C.
+- Added a two-region, permission-checked lookup cache for Native guest memory
+  callbacks and a bounded C-string scan fast path for AnyiOSEMU. No Dynarmic
+  fastmem or floating-point accuracy flags were changed. Local host microbenchmarks
+  showed faster repeated reads/scans; this is not a device or frame-rate benchmark.
+
+### Validation / limits
+- Synthetic tests cover empty/nonempty ARMv6 ranges, privacy-preserving AdSupport,
+  memory remapping/copy/move and GLES ARM argument forwarding with a mock driver.
+  No GPU frame, real-game execution or physical device was tested. A focused Rust
+  memory harness was run; the engine's full TestApp was not run. CADisplayLink's
+  guest Objective-C ABI, full Core Animation, arbitrary callsite rewrites and
+  portable-C rendering remain incomplete.
+
 ## 2026-10-28 — Safer large imports, issue-focused reports and 2× display profiles
 
 ### Fixed / changed

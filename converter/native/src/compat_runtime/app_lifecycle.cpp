@@ -1599,6 +1599,10 @@ bool ShimAdapter::lifecycleSelector(CpuRegisterState &registers, GuestAddressSpa
                 recordLifecycleEvent(lifecycle, "+[UIAccelerometer sharedAccelerometer]");
                 return finish(accelerometer);
             }
+            if (selectorName == "sharedManager" && className == "ASIdentifierManager") {
+                return finish(lifecycleFrameworkObject(memory, "ASIdentifierManager",
+                                                       lifecycle.advertisingManager));
+            }
             if (selectorName == "mainBundle" && className == kBundleClass) {
                 const auto bundle = lifecycleFrameworkObject(memory, kBundleClass, lifecycle.bundle);
                 recordLifecycleEvent(lifecycle, "+[NSBundle mainBundle]");
@@ -1638,6 +1642,36 @@ bool ShimAdapter::lifecycleSelector(CpuRegisterState &registers, GuestAddressSpa
 
         if (!receiverObject)
             return false;
+
+        // AdSupport deliberately has no access to an Android advertising ID.
+        // Apple specifies an all-zero IDFA when tracking is not authorized:
+        // https://developer.apple.com/app-store/user-privacy-and-data-use/
+        // This is a bounded guest ABI, not ad service or consent integration.
+        if (receiverIsKindOf(receiverObject, "ASIdentifierManager")) {
+            if (selectorName == "isAdvertisingTrackingEnabled")
+                return finish(0);
+            if (selectorName == "advertisingIdentifier")
+                return finish(lifecycleFrameworkObject(memory, "RadekZeroIDFA",
+                                                       lifecycle.zeroAdvertisingIdentifier));
+            return false;
+        }
+        if (receiverIsKindOf(receiverObject, "RadekZeroIDFA")) {
+            if (selectorName == "UUIDString" || selectorName == "description")
+                return finish(createGuestString(memory, "00000000-0000-0000-0000-000000000000", true));
+            if (selectorName == "getUUIDBytes:") {
+                const std::array<std::uint8_t, 16> bytes{};
+                if (!memory.write(registers.r[2], bytes.data(), bytes.size()))
+                    throw std::runtime_error("NSUUID getUUIDBytes: destination is not writable");
+                return finish(0);
+            }
+            if (selectorName == "copy" || selectorName == "copyWithZone:") {
+                retain(receiverObject);
+                return finish(receiverAddress);
+            }
+            if (selectorName == "isEqual:")
+                return finish(registers.r[2] == receiverAddress ? 1 : 0);
+            return false;
+        }
 
         // ---- view messages (UIView, UIWindow, CAEAGLLayer) -----------------
         if (lifecycleViewMessage(registers, memory, selectorName, receiverAddress, receiverObject,
@@ -1780,6 +1814,14 @@ bool ShimAdapter::lifecycleSelector(CpuRegisterState &registers, GuestAddressSpa
         // ---- EAGLContext ---------------------------------------------------
         if (receiverIsKindOf(receiverObject, "EAGLContext")) {
             if (selectorName == "initWithAPI:") {
+                // The Native guest bridge implements ES 1 only. Never report
+                // an ES 2/3 context while actually creating an ES 1 context.
+                // Semi-Emulated AnyiOSEMU has a separate ES 2/3 backend.
+                if (registers.r[2] != 1) {
+                    recordLifecycleEvent(lifecycle,
+                        "-[EAGLContext initWithAPI:] -> requested API is not supported by Native");
+                    return finish(0);
+                }
                 lifecycle.currentContext = receiverAddress;
                 recordLifecycleEvent(lifecycle, "-[EAGLContext initWithAPI:]");
                 return finish(receiverAddress);

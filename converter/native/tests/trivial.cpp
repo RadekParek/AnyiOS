@@ -310,6 +310,38 @@ void testTextRelocationsRejectConversion() {
     assert(relocated.fields.at("reason").value.find("relocations in the proven __text section") != std::string::npos);
 }
 
+void testEmptyDyldTablesAndNonemptyRanges() {
+    auto image = imageWithBindImport();
+    // The fixture's dylib-command size can vary with the dependency name;
+    // locate LC_DYLD_INFO after the two preceding load commands instead.
+    const auto le32 = [&image](size_t pos) {
+        return static_cast<uint32_t>(image[pos]) | (static_cast<uint32_t>(image[pos + 1]) << 8) |
+               (static_cast<uint32_t>(image[pos + 2]) << 16) | (static_cast<uint32_t>(image[pos + 3]) << 24);
+    };
+    const size_t command = 32 + le32(32 + 4) + le32(32 + le32(32 + 4) + 4);
+    // Retain the nonempty bind stream, but leave the unused rebase offset stale.
+    writeLe32(image, command + 8, 0xfffffff0u);
+    writeLe32(image, command + 12, 0);
+    for (bool detailed : {false, true}) {
+        const auto parsed = radek::analyze(image, detailed);
+        const auto &slice = parsed.fields.at("slices").items.front();
+        assert(slice.fields.at("imports").items.size() == 1);
+        assert(slice.fields.at("bindDecodingComplete").value == "true");
+    }
+    writeLe32(image, command + 12, 1);
+    for (bool detailed : {false, true}) {
+        bool rejected = false;
+        try {
+            (void)radek::analyze(image, detailed);
+        } catch (const std::runtime_error &error) {
+            const std::string message = error.what();
+            rejected = message.find("LC_DYLD_INFO rebase") != std::string::npos &&
+                       message.find("length 1") != std::string::npos;
+        }
+        assert(rejected);
+    }
+}
+
 void testCompactImportInventoryHasNoCountCap() {
     // Import inventories are no longer capped: every unique observed import is
     // retained so downstream association sees the complete table, and the
@@ -361,6 +393,7 @@ int main() {
     testEmptyInputRejected();
     testRecompileTrivialRejectsGarbage();
     testTextRelocationsRejectConversion();
+    testEmptyDyldTablesAndNonemptyRanges();
     testCompactImportInventoryHasNoCountCap();
     testCompactImportInventoryRetainsDylibOrdinal();
     testSymbolTablesAboveFormerLimitAreParsed();

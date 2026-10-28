@@ -83,6 +83,8 @@ class ShimAdapter {
         GuestAddress keyWindow = 0;
         GuestAddress screen = 0;
         GuestAddress accelerometer = 0;
+        GuestAddress advertisingManager = 0;
+        GuestAddress zeroAdvertisingIdentifier = 0;
         GuestAddress bundle = 0;
         GuestAddress mainThread = 0;
         GuestAddress backgroundThread = 0;

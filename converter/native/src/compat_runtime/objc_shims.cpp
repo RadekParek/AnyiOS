@@ -249,9 +249,12 @@ ShimAdapter::ShimAdapter() {
     for (const auto *name : {
              "NSString", "NSArray", "NSDictionary", "NSNumber", "NSURL", "NSBundle", "NSThread",
              "UIWindow", "UIView", "UIScreen", "UIAccelerometer", "CAEAGLLayer",
-             "EAGLContext", "NSTimer"}) {
+             "EAGLContext", "NSTimer", "ASIdentifierManager", "NSUUID"}) {
         classes_.emplace(name, runtime_.registerClass(name, rootClass_));
     }
+    // Only the privacy-preserving IDFA object is implemented, not arbitrary
+    // NSUUID creation or a real Android advertising identifier.
+    classes_.emplace("RadekZeroIDFA", runtime_.registerClass("RadekZeroIDFA", classes_.at("NSUUID")));
     // The lifecycle adapters wire the delegate through the singleton's first
     // instance slot, so UIApplication declares it explicitly.
     classes_.emplace("UIApplication",
@@ -1744,6 +1747,13 @@ bool ShimAdapter::dispatch(CpuRegisterState &registers, GuestAddressSpace &memor
                     responds = responds || knownName == "count" ||
                                knownName == "objectAtIndex:" ||
                                knownName == "firstObject" || knownName == "lastObject";
+                if (receiverObject->isa && receiverObject->isa->name == "ASIdentifierManager")
+                    responds = responds || knownName == "advertisingIdentifier" ||
+                               knownName == "isAdvertisingTrackingEnabled";
+                if (receiverObject->isa && receiverObject->isa->name == "RadekZeroIDFA")
+                    responds = responds || knownName == "UUIDString" ||
+                               knownName == "getUUIDBytes:" || knownName == "copy" ||
+                               knownName == "copyWithZone:";
                 if (autoreleasePools_.count(receiverAddress) != 0 && knownName == "drain")
                     responds = true;
                 for (auto *current = receiverObject->isa; current && !responds;

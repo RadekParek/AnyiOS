@@ -113,7 +113,7 @@ class ConverterUiTest {
         assertEquals(report, reportFile.readText())
     }
 
-    @Test fun reportShowsUnresolvedIssuesButNotCompletedProgressOrResolvedImports() {
+    @Test fun reportSeparatesCompletedWorkAvailableProvidersAndIssues() {
         val game = entry("Issues game")
         val mapping = JSONObject().put("distinctImportSymbols", 2).put("classificationStatus", "COMPLETE")
             .put("symbols", org.json.JSONArray()
@@ -123,6 +123,7 @@ class ConverterUiTest {
             .put("source", JSONObject().put("kind", "IPA"))
             .put("application", JSONObject().put("name", "Issues game"))
             .put("apiMapping", mapping)
+            .put("dependencies", JSONObject().put("analyzedImageCount", 1))
             .put("analysisProgress", JSONObject().put("percent", 100).put("message", "Analysis marker completed"))
             .put("portProgress", JSONObject().put("percent", 100).put("basis", "Completed port marker"))
         val original = report.toString()
@@ -131,12 +132,18 @@ class ConverterUiTest {
         tile(activity, "Issues game").performClick()
         assertNotNull(text(activity, "Real error"))
         assertNotNull(text(activity, "1 imported API(s) still need work or verification."))
-        assertNotNull(text(activity, "View outstanding issues"))
-        assertNotNull(text(activity, "View full machine-readable report"))
+        assertNotNull(text(activity, "View compatibility report"))
+        assertNotNull(text(activity, "More details"))
+        assertNotNull(text(activity, "Analyzed 1 Mach-O image(s); 0 could not be decoded."))
+        assertNull(text(activity, "Copy host analysis command"))
+        assertNull(text(activity, "Copy host NDK/CMake relink command"))
+        assertNull(text(activity, "Attach complete host-converted APK"))
+        assertNull(text(activity, "Open installed Native runtime"))
+        assertNull(text(activity, "Build preview shell"))
         val visible = all(activity.window.decorView).filterIsInstance<TextView>().joinToString("\n") { it.text.toString() }
         assertFalse(visible.contains("Analysis marker completed"))
         assertFalse(visible.contains("Completed port marker"))
-        assertFalse(visible.contains("_done"))
+        assertTrue(visible.contains("_done: Android export found on this device; game linkage unverified"))
         assertEquals(original, File(game, "report.json").readText())
     }
 

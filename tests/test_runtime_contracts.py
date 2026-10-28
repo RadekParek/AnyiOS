@@ -18,6 +18,13 @@ def read(path):
 
 
 class RuntimeContractTests(unittest.TestCase):
+    def test_previous_reviewed_engine_patch_can_be_upgraded(self):
+        script = read(ROOT / "scripts/prepare-anyiose-runtime.sh")
+        self.assertIn(
+            "f5d7d9c61b5115864c3f0c27a4be3e4ff3338506b3cae65f896736c36bd3b814",
+            script,
+        )
+
     def test_standalone_launcher_is_transparent_and_extracts_off_thread(self):
         manifest = ET.parse(TEMPLATE / "AndroidManifest.xml").getroot()
         application = manifest.find("application")
