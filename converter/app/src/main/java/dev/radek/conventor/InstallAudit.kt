@@ -165,9 +165,9 @@ internal object InstallAudit {
         val installedFingerprint = signatureFingerprint(installed)
         val builtFingerprint = signatureFingerprint(parsed)
         if (installedFingerprint != null && builtFingerprint != null && installedFingerprint != builtFingerprint) {
-            warnings += "$expectedPackage is already installed with a different signing key; uninstall it before installing this build"
+            warnings += "$expectedPackage is already installed with a different signing key. Android will refuse this update; uninstalling the existing app may delete its data, so back it up first."
         } else {
-            warnings += "$expectedPackage is already installed; Android will update it in place"
+            warnings += "$expectedPackage is already installed; Android may update or replace it in place. Back up its data first."
         }
         return warnings
     }

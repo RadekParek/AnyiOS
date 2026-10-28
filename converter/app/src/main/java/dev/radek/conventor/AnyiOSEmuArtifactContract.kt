@@ -11,6 +11,9 @@ internal object AnyiOSEmuArtifactContract {
     fun packageName(sourceHash: String, certificateHash: String): String =
         "dev.anyiose.game.p${sourceHash.take(20)}${certificateHash.take(8)}"
 
+    fun packageName(bundleId: String, sourceHash: String, certificateHash: String): String =
+        ArtifactNames.androidPackageName(bundleId, sourceHash, certificateHash)
+
     fun validate(report: JSONObject, dir: File, requestedName: String): File {
         val result = report.optJSONObject("anyioseConversion") ?: error("No AnyiOSEMU APK recorded")
         require(result.optString("status") == "GENERATED" && result.optString("contract") == CONTRACT)
@@ -22,8 +25,12 @@ internal object AnyiOSEmuArtifactContract {
         val sourceHash = report.optJSONObject("source")?.optString("sha256").orEmpty()
         val signer = result.optString("certificateSha256")
         require(sourceHash.matches(Regex("[0-9a-f]{64}")) && signer.matches(Regex("[0-9a-f]{64}")))
-        require(report.optJSONObject("application")?.optString("sha256") == sourceHash &&
-            result.optString("sourceSha256") == sourceHash && result.optString("package") == packageName(sourceHash, signer))
+        val app = report.optJSONObject("application")
+        val expectedPackage = packageName(app?.optString("bundleId").orEmpty(), sourceHash, signer)
+        // Previously generated standalone APKs used an independent hash ID;
+        // they remain valid and shareable after the package policy changes.
+        require(app?.optString("sha256") == sourceHash && result.optString("sourceSha256") == sourceHash &&
+            result.optString("package") in setOf(expectedPackage, packageName(sourceHash, signer)))
         val root = dir.canonicalFile
         val file = File(root, name).canonicalFile
         require(file.parentFile == root && file.isFile)

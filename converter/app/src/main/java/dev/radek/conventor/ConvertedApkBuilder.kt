@@ -97,8 +97,7 @@ internal class ConvertedApkBuilder(private val context: Context) {
             require(apps.size == 1) { "expected exactly one Payload/*.app" }
             val appDir = apps.single()
             val plist = Plist.read(File(appDir, "Info.plist").readBytes())
-            val executableName = plist["CFBundleExecutable"] as? String ?: error("CFBundleExecutable missing")
-            require(SafeZip.validateName(executableName) == executableName && '/' !in executableName)
+            val executableName = SafeZip.bundleExecutable(plist["CFBundleExecutable"])
             val binary = File(appDir, executableName)
             require(binary.isFile && binary.length() in 1..(256L * 1024 * 1024)) { "executable missing or exceeds the on-device 256 MiB limit" }
 
@@ -208,12 +207,11 @@ internal class ConvertedApkBuilder(private val context: Context) {
                 "converted template icon resource path is invalid"
             }
 
-            // The package id carries the signing certificate's hash, exactly like
-            // the preview shell. Android rejects an update whose certificates
-            // changed; binding the id to the key means a regenerated identity
-            // produces a fresh package instead of the installer's opaque
-            // "app not installed" SIGNATURE_MISMATCH.
-            val packageName = "dev.radek.converted.p${sourceHash.take(20)}${certificateHash.take(8)}"
+            // The actual Android package must match the bundle ID for Android's
+            // standard OBB directory. Invalid IDs use a signer-bound fallback;
+            // installation preflight warns about existing package conflicts.
+            val packageName = ArtifactNames.androidPackageName(app.optString("bundleId"), sourceHash, certificateHash)
+            require(packageName != context.packageName) { "The game bundle ID conflicts with AnyiOS itself; refusing to replace the host app" }
             require(packageName.length <= 127)
             val manifest = BinaryXmlManifest.customize(templateManifest, packageName, appName)
             val resources = ResourceTablePackagePatcher.customize(templateResources, packageName)
@@ -513,10 +511,11 @@ internal class ConvertedApkBuilder(private val context: Context) {
             val expansionError = OptionalExpansionPublisher.publish(
                 dir,
                 obbName,
+                "bounded",
                 { destination -> ResourceExpansionArchive.write(destination, resourceEntries) },
                 { artifact ->
                     conversion.put("expansionObb", JSONObject()
-                        .put("name", artifact.name)
+                        .put("storage", "bounded").put("name", artifact.name)
                         .put("bytes", artifact.bytes)
                         .put("sha256", artifact.sha256)
                         .put("required", false)

@@ -33,7 +33,10 @@ object SafeZip {
 
     /** Strict form: used for names that must already be canonical. */
     fun validateName(name: String): String {
-        require(name.isNotEmpty() && !name.startsWith('/') && '\\' !in name && ':' !in name && '\u0000' !in name) { "unsafe ZIP path" }
+        // A colon is a valid iOS/Android filename character, including in
+        // CFBundleExecutable. Only a leading Windows drive path is unsafe.
+        val drivePath = name.length >= 3 && name[0].isLetter() && name[1] == ':' && name[2] == '/'
+        require(name.isNotEmpty() && !name.startsWith('/') && '\\' !in name && !drivePath && '\u0000' !in name) { "unsafe ZIP path" }
         val parts = name.trimEnd('/').split('/')
         require(parts.none { it == ".." || it == "." || it.isEmpty() }) { "unsafe ZIP path" }
         require(parts.size <= MAX_NAME_COMPONENTS) { "unsafe ZIP path: more than $MAX_NAME_COMPONENTS path components" }
@@ -54,7 +57,7 @@ object SafeZip {
      */
     fun memberName(name: String): String {
         require(name.isNotEmpty() && '\u0000' !in name) { "unsafe ZIP path" }
-        var candidate = name.replace('\\', '/').replace(':', '_')
+        var candidate = name.replace('\\', '/')
         while (candidate.startsWith("/")) candidate = candidate.substring(1)
         val parts = candidate.split('/').filter { it.isNotEmpty() && it != "." }
         require(parts.isNotEmpty() && parts.none { it == ".." }) { "unsafe ZIP path" }
@@ -62,9 +65,28 @@ object SafeZip {
         require(parts.all { it.toByteArray().size <= MAX_COMPONENT_BYTES }) {
             "unsafe ZIP path: path component exceeds $MAX_COMPONENT_BYTES bytes"
         }
-        val joined = parts.joinToString("/")
+        var joined = parts.joinToString("/")
+        // Preserve legitimate colons in executables and resources, but keep
+        // Windows drive prefixes relative and unambiguous on all hosts.
+        if (joined.length >= 3 && joined[0].isLetter() && joined[1] == ':' && joined[2] == '/') {
+            joined = joined[0] + "_" + joined.substring(2)
+        }
         require(joined.toByteArray().size <= MAX_NAME_BYTES) { "unsafe ZIP path: path exceeds $MAX_NAME_BYTES bytes" }
         return joined
+    }
+
+    /** CFBundleExecutable is a single filename, not a relative or absolute path. */
+    fun bundleExecutable(value: Any?): String {
+        val name = value as? String ?: throw IllegalArgumentException("Info.plist CFBundleExecutable is missing or is not a string")
+        require(name.isNotBlank() && '/' !in name && '\\' !in name) {
+            "Info.plist CFBundleExecutable must be a single safe filename, not a path"
+        }
+        try {
+            require(validateName(name) == name)
+        } catch (error: IllegalArgumentException) {
+            throw IllegalArgumentException("Info.plist CFBundleExecutable is not a safe filename: ${error.message}", error)
+        }
+        return name
     }
 
     /** True when the two names differ only by case (ZIP is case-insensitive on iOS). */

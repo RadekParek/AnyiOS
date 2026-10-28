@@ -13,9 +13,13 @@ internal object OptionalExpansionPublisher {
     data class Artifact(val name: String, val bytes: Long, val sha256: String)
 
     /** Null means success; otherwise a short diagnostic suitable for a report. */
+    fun publish(directory: File, name: String, write: (File) -> Unit, record: (Artifact) -> Unit): String? =
+        publish(directory, name, "", write, record)
+
     fun publish(
         directory: File,
         name: String,
+        storage: String,
         write: (File) -> Unit,
         record: (Artifact) -> Unit,
     ): String? {
@@ -29,8 +33,15 @@ internal object OptionalExpansionPublisher {
             require(name.matches(Regex("main\\.[1-9][0-9]*\\.[A-Za-z0-9_.]+\\.obb"))) {
                 "invalid expansion name"
             }
-            val root = directory.canonicalFile
-            require(root.isDirectory) { "expansion directory is unavailable" }
+            val entry = directory.canonicalFile
+            require(entry.isDirectory) { "expansion directory is unavailable" }
+            require(storage in setOf("", "native", "bounded")) { "invalid expansion storage" }
+            val root = if (storage.isEmpty()) entry else File(entry, "expansion-$storage").also {
+                require(!java.nio.file.Files.isSymbolicLink(it.toPath()) && it.canonicalFile.parentFile == entry) {
+                    "unsafe expansion storage"
+                }
+                require(it.isDirectory || it.mkdir()) { "cannot create expansion storage" }
+            }.canonicalFile
             target = File(root, name)
             pending = File(root, ".$name.optional-pending")
             backup = File(root, ".$name.optional-backup")

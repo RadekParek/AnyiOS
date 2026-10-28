@@ -22,17 +22,24 @@ class ResultProvider : ContentProvider() {
         require(entryDirectory.path.startsWith(root.path + File.separator) && entryDirectory.isDirectory)
         val report = JSONObject(File(entryDirectory, "report.json").readText())
         val requestedName = parts[1]
-        val anyioseObb = report.optJSONObject("anyioseConversion")?.optJSONObject("expansionObb")?.optString("name")
-        if (!anyioseObb.isNullOrBlank() && requestedName == anyioseObb) {
-            return AnyiOSEmuArtifactContract.validateExpansion(report, entryDirectory, requestedName)
+        // Different runtime variants can legitimately have the same Android
+        // OBB filename. An explicit kind prevents sharing the wrong payload.
+        val expansions = linkedMapOf<String, () -> File>()
+        fun record(kind: String, section: String, validate: () -> File) {
+            if (report.optJSONObject(section)?.optJSONObject("expansionObb")?.optString("name") == requestedName) {
+                expansions[kind] = validate
+            }
         }
-        val nativeObb = report.optJSONObject("gameRuntimeConversion")?.optJSONObject("expansionObb")?.optString("name")
-        if (!nativeObb.isNullOrBlank() && requestedName == nativeObb) {
-            return GameRuntimeArtifactContract.validateExpansion(report, entryDirectory, requestedName)
-        }
-        val convertedObb = report.optJSONObject("deviceConversion")?.optJSONObject("expansionObb")?.optString("name")
-        if (!convertedObb.isNullOrBlank() && requestedName == convertedObb) {
-            return CompleteGameExpansionContract.validate(report, entryDirectory, requestedName)
+        record("anyiose", "anyioseConversion") { AnyiOSEmuArtifactContract.validateExpansion(report, entryDirectory, requestedName) }
+        record("native", "gameRuntimeConversion") { GameRuntimeArtifactContract.validateExpansion(report, entryDirectory, requestedName) }
+        record("bounded", "deviceConversion") { CompleteGameExpansionContract.validate(report, entryDirectory, requestedName) }
+        val requestedKind = uri.getQueryParameter("kind")
+        if (expansions.isNotEmpty() || requestedKind != null) {
+            val kind = requestedKind ?: run {
+                require(expansions.size == 1) { "Ambiguous expansion name; select its runtime" }
+                expansions.keys.single()
+            }
+            return (expansions[kind] ?: error("No expansion for that runtime"))()
         }
         if (requestedName == ArtifactNames.placeholderApkFileName(report)) {
             return PlaceholderArtifactContract.validate(report, entryDirectory, requestedName)

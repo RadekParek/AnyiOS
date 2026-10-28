@@ -18,13 +18,23 @@ class ConvertSettingsTest {
             val one = root.resolve("one").apply { mkdir() }
             val two = root.resolve("two").apply { mkdir() }
             assertEquals(ConvertSettings(), ConvertSettings.load(one))
-            val changed = ConvertSettings(classic43 = true, offline = true, performance = true, orientation = "landscape")
+            val changed = ConvertSettings(classic320 = true, offline = true, performance = true, orientation = "-90")
             ConvertSettings.save(one, changed)
             assertEquals(changed, ConvertSettings.load(one))
             assertEquals(ConvertSettings(), ConvertSettings.load(two))
             ConvertSettings.save(one, ConvertSettings())
             assertEquals(ConvertSettings(), ConvertSettings.load(one))
         } finally { root.deleteRecursively() }
+    }
+    @Test fun migratesOldSettingsWithoutLosingOptIns() {
+        val old = JSONObject().put("classic43", true).put("offline", true)
+            .put("performance", true).put("orientation", "landscape")
+        assertEquals(ConvertSettings(true, true, true, "-90"), ConvertSettings.fromJson(old))
+        assertEquals("portrait", ConvertSettings.fromJson(JSONObject().put("orientation", "portrait")).orientation)
+        for (value in listOf("default", "-90", "90", "180")) {
+            assertEquals(value, ConvertSettings.fromJson(JSONObject().put("orientation", value)).orientation)
+        }
+        assertEquals(false, ConvertSettings.fromJson(JSONObject().put("classic43", true).put("classic320", false)).classic320)
     }
     @Test fun invalidSettingsFailClosedRatherThanSilentlyEnablingNetwork() {
         assertThrows(IllegalArgumentException::class.java) { ConvertSettings.fromJson(JSONObject().put("offline", "true")) }

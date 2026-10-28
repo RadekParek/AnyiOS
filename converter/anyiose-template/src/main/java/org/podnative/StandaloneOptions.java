@@ -13,16 +13,20 @@ final class StandaloneOptions {
     }
 
     static String[] forGame(String dataPath, String sourcePath, float cap,
-            boolean classic43, boolean offline, boolean performance, String orientation) {
+            boolean classic320, boolean offline, boolean performance, String orientation) {
         ArrayList<String> args = new ArrayList<>();
         Collections.addAll(args, "--anyiose-data-dir=" + dataPath, sourcePath,
             offline ? "--no-network-access" : "--allow-network-access", "--device-family=auto",
             "--fps-limit=" + String.format(Locale.ROOT, "%.3f", cap), "--boost-display-link",
             "--no-error-popup", "--anyiose-silent-fatal", "--no-gles-native", "--no-force-composition");
-        if (classic43) Collections.addAll(args, "--screen-size=768x1024", "--scale-hack=2");
+        // AnyiOSEMU normalizes this to 320x480 for portrait; landscape is
+        // 480x320 points. The render-scale request is 3x in either orientation.
+        if (classic320) Collections.addAll(args, "--screen-size=480x320", "--scale-hack=3");
         if (performance) Collections.addAll(args, "--perf-hints", "--affinity=big");
         if ("portrait".equals(orientation)) args.add("--anyiose-initial-portrait");
-        if ("landscape".equals(orientation)) args.add("--landscape-left");
+        if ("-90".equals(orientation) || "landscape".equals(orientation)) args.add("--landscape-left");
+        if ("90".equals(orientation)) args.add("--landscape-right");
+        if ("180".equals(orientation)) args.add("--upside-down");
         return args.toArray(new String[0]);
     }
 

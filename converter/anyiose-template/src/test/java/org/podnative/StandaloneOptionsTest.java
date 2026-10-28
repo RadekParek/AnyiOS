@@ -22,9 +22,9 @@ public class StandaloneOptionsTest {
 
     @Test public void optInSettingsReachTheGuestWithoutChangingOtherDefaults() {
         List<String> arguments = Arrays.asList(StandaloneOptions.forGame("/data", "/game", 90,
-                true, true, true, "landscape"));
-        assertTrue(arguments.contains("--screen-size=768x1024"));
-        assertTrue(arguments.contains("--scale-hack=2"));
+                true, true, true, "-90"));
+        assertTrue(arguments.contains("--screen-size=480x320"));
+        assertTrue(arguments.contains("--scale-hack=3"));
         assertTrue(arguments.contains("--no-network-access"));
         assertFalse(arguments.contains("--allow-network-access"));
         assertTrue(arguments.contains("--perf-hints"));
@@ -38,11 +38,24 @@ public class StandaloneOptionsTest {
                 false, false, false, "portrait"));
         assertTrue(portrait.contains("--anyiose-initial-portrait"));
         assertFalse(portrait.contains("--landscape-left"));
-        assertFalse(portrait.contains("--screen-size=768x1024"));
+        assertFalse(portrait.contains("--screen-size=480x320"));
         List<String> unknown = Arrays.asList(StandaloneOptions.forGame("/data", "/game", 60,
                 false, false, false, "invalid"));
         assertFalse(unknown.contains("--landscape-left"));
         assertFalse(unknown.contains("--anyiose-initial-portrait"));
+    }
+
+    @Test public void degreeChoicesSelectCoherentGuestOrientation() {
+        List<String> minus = Arrays.asList(StandaloneOptions.forGame("/data", "/game", 60,
+                false, false, false, "-90"));
+        List<String> plus = Arrays.asList(StandaloneOptions.forGame("/data", "/game", 60,
+                false, false, false, "90"));
+        List<String> half = Arrays.asList(StandaloneOptions.forGame("/data", "/game", 60,
+                false, false, false, "180"));
+        assertTrue(minus.contains("--landscape-left"));
+        assertTrue(plus.contains("--landscape-right"));
+        assertTrue(half.contains("--upside-down"));
+        assertFalse(plus.contains("--present-rotate=90")); // Do not rotate pixels independently of touches.
     }
 
     @Test public void missingPayloadAlsoUsesTheQuietHostPolicy() {

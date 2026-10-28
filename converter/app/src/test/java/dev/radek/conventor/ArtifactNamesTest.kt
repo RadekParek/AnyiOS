@@ -11,6 +11,20 @@ import org.robolectric.annotation.Config
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [28], manifest = Config.NONE)
 class ArtifactNamesTest {
+    @Test fun exactBundleIdsBecomeAndroidPackagesAndInvalidIdsUseSafeFallback() {
+        val hash = "a".repeat(64)
+        val signer = "b".repeat(64)
+        val exact = "com.lego.riseofthesnakes"
+        assertEquals(exact, ArtifactNames.androidPackageName(exact, hash, signer))
+        assertEquals("main.1.$exact.obb", ArtifactNames.obbFileName(exact, 1))
+        for (invalid in listOf("", "com..game", "com.game-name", "com.1game", "com.gáme", "single", "com.game/../x")) {
+            val fallback = ArtifactNames.androidPackageName(invalid, hash, signer)
+            assertEquals("dev.radek.gameruntime.p${hash.take(20)}${signer.take(8)}", fallback)
+        }
+        // Existing native APKs retain the old sanitizing result for validation.
+        assertEquals("com.game.name", ArtifactNames.legacyAndroidPackageName("com.game-name", hash, signer))
+    }
+
     @Test fun outputNameUsesSanitizedPickedIpaBasename() {
         val report = JSONObject().put("source", JSONObject().put("originalName", "../My Game.ipa"))
         assertEquals("My Game.apk", ArtifactNames.apkFileName(report))

@@ -38,7 +38,11 @@ internal object GameRuntimeArtifactContract {
             report.optJSONObject("application")?.optString("bundleId").orEmpty(),
             sourceHash,
             certificateHash)
-        require(conversion.optString("package") == expectedPackage) { "game-runtime package id does not match its IPA and signer" }
+        val legacyPackage = ArtifactNames.legacyAndroidPackageName(
+            report.optJSONObject("application")?.optString("bundleId").orEmpty(), sourceHash, certificateHash)
+        require(conversion.optString("package") in setOf(expectedPackage, legacyPackage)) {
+            "game-runtime package id does not match its IPA and signer"
+        }
         val expectedDigest = conversion.optString("sha256")
         require(expectedDigest.matches(Regex("[0-9a-f]{64}"))) { "game-runtime APK digest is missing" }
 
@@ -61,8 +65,8 @@ internal object GameRuntimeArtifactContract {
         val digest = expansion.optString("sha256")
         require(digest.matches(Regex("[0-9a-f]{64}")))
         val root = directory.canonicalFile
-        val file = File(root, name).canonicalFile
-        require(file.parentFile == root && file.isFile && file.length() == expansion.optLong("bytes", -1) &&
+        val file = ArtifactNames.expansionFile(root, name, expansion.optString("storage"), "native")
+        require(file.isFile && file.length() == expansion.optLong("bytes", -1) &&
             sha256(file) == digest) { "The expansion payload is missing or has changed" }
         return file
     }

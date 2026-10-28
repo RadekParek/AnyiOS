@@ -47,11 +47,12 @@ final class StandaloneGameStorage {
                 if (!obbDirectory.isDirectory() && !obbDirectory.mkdirs() && !obbDirectory.isDirectory())
                     throw new IOException("Cannot create the app's OBB directory");
                 File expansion = new File(obbDirectory, obbName(packageName));
-                if (!validFile(expansion, expectedBytes, expectedSha256)) {
-                    // Only copy a verified private file; never execute code from
-                    // mutable shared storage. Failure leaves the game playable.
+                if (!expansion.exists() && !Files.isSymbolicLink(expansion.toPath())) {
+                    // The bundle ID can also belong to another installed app or
+                    // runtime variant. Never replace an existing OBB: it may be
+                    // their data. The signed, private IPA remains authoritative.
                     writeVerified(expansion, expectedBytes, expectedSha256,
-                            () -> new FileInputStream(privateGame));
+                            () -> new FileInputStream(privateGame), false);
                 }
             } catch (IOException | RuntimeException unavailable) {
                 // Shared storage can be absent, read-only, full or restricted.
@@ -67,6 +68,11 @@ final class StandaloneGameStorage {
 
     private static void writeVerified(File target, long expectedBytes, String expectedSha256,
             AssetSource source) throws Exception {
+        writeVerified(target, expectedBytes, expectedSha256, source, true);
+    }
+
+    private static void writeVerified(File target, long expectedBytes, String expectedSha256,
+            AssetSource source, boolean replace) throws Exception {
         File parent = target.getParentFile();
         if (parent == null || (!parent.isDirectory() && !parent.mkdirs() && !parent.isDirectory()))
             throw new IOException("Game storage directory is unavailable");
@@ -96,11 +102,17 @@ final class StandaloneGameStorage {
             }
             if (total != expectedBytes || !hex(digest.digest()).equals(expectedSha256))
                 throw new IOException("Game payload failed its integrity check");
-            try {
-                Files.move(pending.toPath(), target.toPath(), StandardCopyOption.ATOMIC_MOVE,
-                        StandardCopyOption.REPLACE_EXISTING);
-            } catch (AtomicMoveNotSupportedException unsupported) {
-                Files.move(pending.toPath(), target.toPath(), StandardCopyOption.REPLACE_EXISTING);
+            if (!replace) {
+                // No REPLACE_EXISTING (nor ATOMIC_MOVE, whose replacement
+                // semantics vary by provider): a competing file wins safely.
+                Files.move(pending.toPath(), target.toPath());
+            } else {
+                try {
+                    Files.move(pending.toPath(), target.toPath(), StandardCopyOption.ATOMIC_MOVE,
+                            StandardCopyOption.REPLACE_EXISTING);
+                } catch (AtomicMoveNotSupportedException unsupported) {
+                    Files.move(pending.toPath(), target.toPath(), StandardCopyOption.REPLACE_EXISTING);
+                }
             }
         } finally {
             pending.delete();
