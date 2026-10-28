@@ -9,19 +9,26 @@ final class StandaloneOptions {
     private StandaloneOptions() {}
 
     static String[] forGame(String dataPath, String sourcePath, float cap) {
-        return forGame(dataPath, sourcePath, cap, false, false, false, "default");
+        return forGame(dataPath, sourcePath, cap, false, false, false, false, "default");
+    }
+
+    // Preserve callers using the original single-profile signature.
+    static String[] forGame(String dataPath, String sourcePath, float cap,
+            boolean classic320, boolean offline, boolean performance, String orientation) {
+        return forGame(dataPath, sourcePath, cap, classic320, false, offline, performance, orientation);
     }
 
     static String[] forGame(String dataPath, String sourcePath, float cap,
-            boolean classic320, boolean offline, boolean performance, String orientation) {
+            boolean classic320, boolean classic1024, boolean offline, boolean performance, String orientation) {
         ArrayList<String> args = new ArrayList<>();
         Collections.addAll(args, "--anyiose-data-dir=" + dataPath, sourcePath,
             offline ? "--no-network-access" : "--allow-network-access", "--device-family=auto",
             "--fps-limit=" + String.format(Locale.ROOT, "%.3f", cap), "--boost-display-link",
             "--no-error-popup", "--anyiose-silent-fatal", "--no-gles-native", "--no-force-composition");
-        // AnyiOSEMU normalizes this to 320x480 for portrait; landscape is
-        // 480x320 points. Request 4x internal rendering in either orientation.
-        if (classic320) Collections.addAll(args, "--screen-size=480x320", "--scale-hack=4");
+        // AnyiOSEMU normalizes these landscape sizes to portrait and keeps
+        // points/guest queries separate from the 2x backing renderbuffer.
+        if (classic320) Collections.addAll(args, "--screen-size=480x320", "--scale-hack=2");
+        else if (classic1024) Collections.addAll(args, "--screen-size=1024x768", "--scale-hack=2");
         if (performance) Collections.addAll(args, "--perf-hints", "--affinity=big");
         if ("portrait".equals(orientation)) args.add("--anyiose-initial-portrait");
         if ("-90".equals(orientation) || "landscape".equals(orientation)) args.add("--landscape-left");

@@ -36,6 +36,22 @@ class ConvertSettingsTest {
         }
         assertEquals(false, ConvertSettings.fromJson(JSONObject().put("classic43", true).put("classic320", false)).classic320)
     }
+    @Test fun tabletProfileRoundTripsAndProfilesAreExclusive() {
+        val root = Files.createTempDirectory("convert-tablet").toFile()
+        try {
+            val tablet = ConvertSettings(classic1024 = true)
+            ConvertSettings.save(root, tablet)
+            assertEquals(tablet, ConvertSettings.load(root))
+            assertEquals(false, ConvertSettings.load(root).classic320)
+            assertThrows(IllegalArgumentException::class.java) { ConvertSettings(classic320 = true, classic1024 = true) }
+            assertThrows(IllegalArgumentException::class.java) {
+                ConvertSettings.fromJson(JSONObject().put("classic320", true).put("classic1024", true))
+            }
+            assertThrows(IllegalArgumentException::class.java) {
+                ConvertSettings.fromJson(JSONObject().put("classic1024", "true"))
+            }
+        } finally { root.deleteRecursively() }
+    }
     @Test fun invalidSettingsFailClosedRatherThanSilentlyEnablingNetwork() {
         assertThrows(IllegalArgumentException::class.java) { ConvertSettings.fromJson(JSONObject().put("offline", "true")) }
         assertThrows(IllegalArgumentException::class.java) { ConvertSettings.fromJson(JSONObject().put("orientation", "invalid")) }

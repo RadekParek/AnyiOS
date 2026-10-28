@@ -11,6 +11,22 @@ An **offline IPA inspection and bounded native-reconstruction workbench** for au
 - **Native runtime** is the previous diagnostic game-runtime boot attempt, not the strict static single-routine converter. Its guest runner has no Android EGL/GLES renderer and does not establish gameplay.
 - **Semi-Emulated** embeds the IPA, AnyiOSEMU, SDL, ANGLE and notices in a signed one-game APK. Its private transparent launcher verifies the IPA off the UI thread without a preparation screen, starts the game automatically at the available display resolution/refresh, and requests maximum-FPS display-link callbacks by default; that experimental promotion can accelerate game logic. Emulator error dialogs are suppressed for this host; Android may still show system UI for early failures or ANRs, and quiet fatal native exits forgo system tombstones. The installed result does not depend on AnyiOS. This is emulation, not native recompilation, and compatibility and FPS require device testing. The emulator currently executes ARM32 slices only; ARM64-only and encrypted/unverified sources are rejected.
 
+### Display profiles and compatibility issues
+
+Semi-Emulated settings optionally select one of **480 × 320 (3:2) at 2×** or
+**1024 × 768 (4:3) at 2×**. These sizes are guest points; the requested backing
+buffer also depends on the layer content scale, hardware limits and game rendering
+path. Texture-backed targets are not automatically enlarged. Rebuild/reinstall a
+standalone APK after changing its snapshotted settings. Existing `classic43`
+preferences retain their 3:2 meaning.
+
+Converter details and exports prioritize unresolved issues; verified entries and
+completed progress are hidden. Full `report.json` and logs remain available, and previous analyses are retained. An empty issue list is not evidence of linking or gameplay.
+ZIP imports still reject unsafe paths, links, invalid checksums, ZIP64 and bombs;
+the archive-wide allowance for expansion above 250:1 is 256 MiB, with a maximum
+non-ZIP64 member size of 4,294,967,294 bytes. Truly larger or more compressible
+inputs can still be rejected with a member-specific reason.
+
 ### Android expansion files
 
 A new Semi-Emulated result remains a self-contained APK. Its launcher verifies a
@@ -30,6 +46,28 @@ CLI output includes the sidecar alongside the APK when creation succeeds. These
 optional files are not Google Play expansion delivery and do not shrink the
 APK. Android's picker may prohibit `Android/obb`; no bypass is attempted.
 Existing conversions remain installable without an OBB.
+
+### Optional host NDK/CMake relinking
+
+From the `converter` directory, install the host Android NDK (for example NDK
+27.2.12479018), CMake 3.22+ and the optional Capstone package used for ARM
+translation. Set `ANDROID_NDK_HOME` to the installed NDK. The ordinary host
+analysis keeps using direct NDK clang unless `--android-linker cmake` is selected:
+
+```sh
+python3 -m radek analyze /path/to/authorized.ipa --authorized --output workspace/analysis-result --android-linker cmake
+# If a portable-C translation was generated, repeat the host link without re-analysis:
+python3 -m radek relink workspace/analysis-result/bytecode-translation --authorized --backend cmake --target-abi arm64-v8a
+```
+
+The report records failures and ELF verification; relink exits successfully only
+when an ARM64 `translated-game-runtime-input.zip` was prepared for import. ARMv7
+can be verified as a standalone ELF, but its handoff is not accepted by the
+current ARM64-only Android importer. Copy the host-generated ZIP into Converter
+and select **Import Native portable-C handoff ZIP**. The existing device-side checks
+are still applied before packaging. This workflow relinks *generated C*, not
+arbitrary Mach-O or proprietary frameworks, and does not provide an EGL/GLES
+renderer or establish gameplay.
 
 ## Offline reconstruction
 

@@ -113,6 +113,33 @@ class ConverterUiTest {
         assertEquals(report, reportFile.readText())
     }
 
+    @Test fun reportShowsUnresolvedIssuesButNotCompletedProgressOrResolvedImports() {
+        val game = entry("Issues game")
+        val mapping = JSONObject().put("distinctImportSymbols", 2).put("classificationStatus", "COMPLETE")
+            .put("symbols", org.json.JSONArray()
+                .put(JSONObject().put("sourceSymbol", "_done").put("classification", "BIONIC_SYMBOL_CANDIDATE").put("verifiedOnDevice", true))
+                .put(JSONObject().put("sourceSymbol", "_missing").put("classification", "UNMAPPED")))
+        val report = JSONObject().put("state", "BLOCKED").put("error", "Real error")
+            .put("source", JSONObject().put("kind", "IPA"))
+            .put("application", JSONObject().put("name", "Issues game"))
+            .put("apiMapping", mapping)
+            .put("analysisProgress", JSONObject().put("percent", 100).put("message", "Analysis marker completed"))
+            .put("portProgress", JSONObject().put("percent", 100).put("basis", "Completed port marker"))
+        val original = report.toString()
+        File(game, "report.json").writeText(original)
+        val activity = start()
+        tile(activity, "Issues game").performClick()
+        assertNotNull(text(activity, "Real error"))
+        assertNotNull(text(activity, "1 imported API(s) still need work or verification."))
+        assertNotNull(text(activity, "View outstanding issues"))
+        assertNotNull(text(activity, "View full machine-readable report"))
+        val visible = all(activity.window.decorView).filterIsInstance<TextView>().joinToString("\n") { it.text.toString() }
+        assertFalse(visible.contains("Analysis marker completed"))
+        assertFalse(visible.contains("Completed port marker"))
+        assertFalse(visible.contains("_done"))
+        assertEquals(original, File(game, "report.json").readText())
+    }
+
     @Test fun destroyingOlderConverterDoesNotDisconnectTheCurrentJobListener() {
         start()
         val older = requireNotNull(controller)

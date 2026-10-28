@@ -6,16 +6,42 @@ import java.util.zip.ZipFile
 
 /** Rejects symlinks, ZIP64, encrypted members, duplicate paths and ZIP bombs. */
 object SafeZip {
-    /**
-     * There is no fixed archive size limit. 512 MiB was an arbitrary number that
-     * stopped real games from ever being analyzed, so an archive is now bounded
-     * only by the device's own free storage plus the per-member guards below
-     * (expansion ratio, member count, encrypted and ZIP64 members), which exist
-     * to stop ZIP bombs rather than to police how large a game may be.
-     */
-    internal const val MAX_FILE = 1024L * 1024 * 1024
-    /** Deflate expansion ceiling per member; the importer and the read-back check share it. */
+    /** Largest non-ZIP64 member (0xffffffff is the ZIP64 sentinel). */
+    internal const val MAX_FILE = 0xffff_fffeL
     internal const val MAX_EXPANSION_RATIO = 250
+    /** Archive-wide budget for bytes above the ordinary 250:1 limit. */
+    internal const val HIGH_COMPRESSION_ALLOWANCE = 256L * 1024 * 1024
+
+    /**
+     * Real assets can legitimately compress beyond 250:1 (for example sparse
+     * textures). Allow a bounded amount above that ratio across the *whole*
+     * archive rather than rejecting each tiny member. A large bomb or many
+     * smaller members cannot multiply this allowance. All output is also
+     * bounded by member size, declared size, CRC and available storage.
+     */
+    internal class ExpansionBudget(
+        private val maxFile: Long = MAX_FILE,
+        private val ratio: Long = MAX_EXPANSION_RATIO.toLong(),
+        private val allowance: Long = HIGH_COMPRESSION_ALLOWANCE,
+    ) {
+        private var excess = 0L
+        init { require(maxFile >= 0 && ratio > 0 && allowance >= 0) }
+
+        fun admit(name: String, size: Long, compressed: Long) {
+            require(size >= 0 && compressed >= 0) { "ZIP member '$name' has an unknown size" }
+            require(size <= maxFile) { "ZIP member '$name' exceeds the ${formatMib(maxFile)} MiB member-size limit" }
+            // APK readback may see ZIP64 metadata; do not let multiplication wrap.
+            val basis = maxOf(1L, compressed)
+            val ordinary = if (basis > Long.MAX_VALUE / ratio) Long.MAX_VALUE else basis * ratio
+            val additional = (size - ordinary).coerceAtLeast(0L)
+            require(additional <= allowance - excess) {
+                "ZIP expansion safety limit at '$name': ${formatMib(size)} MiB expanded from " +
+                    "${formatMib(compressed)} MiB compressed; the archive's " +
+                    "${formatMib(allowance)} MiB high-compression allowance is exhausted"
+            }
+            excess += additional
+        }
+    }
     /** Largest entry count a non-ZIP64 archive can declare (see [centralDirectory]). */
     private const val MAX_ENTRIES = 65534
     private const val MIN_FREE_HEADROOM = 64L * 1024 * 1024
@@ -129,15 +155,13 @@ object SafeZip {
             require(f.filePointer == offset + size)
         }
     }
-    /**
-     * The only archive-level bound that remains: the device must have room for
-     * the archive plus everything it expands to.
-     */
+    /** Reserve additional free space, including a fixed safety margin. */
     fun requireStorage(destination: File, requiredBytes: Long) {
         var directory: File? = destination
         while (directory != null && !directory.isDirectory) directory = directory.parentFile
         val usable = try { directory?.usableSpace ?: Long.MAX_VALUE } catch (_: Exception) { Long.MAX_VALUE }
-        require(usable >= requiredBytes + MIN_FREE_HEADROOM) {
+        require(requiredBytes >= 0 && requiredBytes <= Long.MAX_VALUE - MIN_FREE_HEADROOM &&
+            usable >= requiredBytes + MIN_FREE_HEADROOM) {
             "not enough free storage: ${formatMib(requiredBytes)} MiB needed, ${formatMib(maxOf(0L, usable))} MiB free"
         }
     }
@@ -152,20 +176,27 @@ object SafeZip {
     ) {
         require(!destination.exists()) { "workspace already exists" }
         centralDirectory(source)
-        requireStorage(destination, source.length())
+        requireStorage(destination, 0)
         require(destination.mkdirs())
         try {
             ZipFile(source).use { zip ->
                 val entries = zip.entries().toList()
                 require(entries.size <= MAX_ENTRIES) { "ZIP entry limit" }
-                val uncompressedTotal = entries.sumOf { it.size }
-                requireStorage(destination, uncompressedTotal + source.length())
                 val names = mutableSetOf<String>()
-                var extractedBytes = 0L
-                entries.forEachIndexed { index, entry ->
+                val budget = ExpansionBudget()
+                val validated = entries.map { entry ->
                     val name = memberName(entry.name)
                     require(names.add(name.lowercase(java.util.Locale.ROOT))) { "duplicate/case-colliding ZIP path" }
-                    require(entry.size in 0..MAX_FILE && entry.compressedSize >= 0 && entry.size <= maxOf(1L, entry.compressedSize) * MAX_EXPANSION_RATIO) { "ZIP expansion limit" }
+                    budget.admit(name, entry.size, entry.compressedSize)
+                    require(!entry.isDirectory || entry.size == 0L) { "ZIP directory '$name' contains data" }
+                    entry to name
+                }
+                val uncompressedTotal = entries.sumOf { it.size }
+                // source already occupies disk space; usableSpace is the space
+                // *remaining*, so charging for it again rejects large valid IPAs.
+                requireStorage(destination, uncompressedTotal)
+                var extractedBytes = 0L
+                validated.forEachIndexed { index, (entry, name) ->
                     val target = File(destination, name)
                     require(target.canonicalPath.startsWith(destination.canonicalPath + File.separator))
                     if (entry.isDirectory) {

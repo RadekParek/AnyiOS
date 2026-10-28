@@ -400,12 +400,17 @@ class Library(private val context: Context) {
             context.contentResolver.openInputStream(uri).use { input ->
                 requireNotNull(input) { "cannot open selected document" }
                 source.outputStream().use { output ->
-                    val buffer = ByteArray(65536); var total = 0L
+                    val buffer = ByteArray(65536); var total = 0L; var storageCheckedAt = -1048576L
                     while (true) {
                         val n = input.read(buffer); if (n < 0) break
                         total += n
-                        // No fixed size cap: stop only when the device runs out of room.
-                        if (total < 65536 || total % 1048576L == 0L) SafeZip.requireStorage(dir, total)
+                        // Existing bytes are already reflected in usableSpace. Reserve only
+                        // the remaining expected bytes (or one buffer for unknown sizes).
+                        if (total - storageCheckedAt >= 1048576L) {
+                            val remaining = expectedSourceBytes?.let { (it - total).coerceAtLeast(0L) } ?: 0L
+                            SafeZip.requireStorage(dir, maxOf(65536L, Math.addExact(remaining, n.toLong())))
+                            storageCheckedAt = total
+                        }
                         digest.update(buffer, 0, n); output.write(buffer, 0, n)
                         val copyPercent = expectedSourceBytes?.takeIf { it > 0 }?.let { (total * 5L / it).toInt() } ?: 2
                         updateProgress(copyPercent.coerceAtMost(5), "IMPORTING", "Copying authorized IPA · ${formatBytes(total)}")

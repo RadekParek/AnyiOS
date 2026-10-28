@@ -181,7 +181,11 @@ def parse_all(image: macho.Image) -> tuple[dict, list, list]:
     order; a label inside a previous LSDA's extent is an inner label, not a
     new table. Anything unparseable is reported, never skipped.
     """
-    section = image.section_named("__DATA", "__gcc_except_tab")
+    section = image.optional_section("__DATA", "__gcc_except_tab")
+    if section is None:
+        if any(not symbol.is_stab and symbol.name.startswith("GCC_except_table") for symbol in image.symbols):
+            raise macho.MachOError("exception table symbols exist but __gcc_except_tab is missing")
+        return {}, [], []
     labels = sorted(
         symbol.value for symbol in image.symbols
         if not symbol.is_stab and symbol.name.startswith("GCC_except_table")

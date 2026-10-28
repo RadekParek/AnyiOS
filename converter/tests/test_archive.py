@@ -5,6 +5,7 @@ import tempfile
 import unittest
 import zipfile
 from pathlib import Path
+from unittest import mock
 from radek.archive import *
 from .fixtures import ipa
 
@@ -69,6 +70,11 @@ class ArchiveTests(unittest.TestCase):
             extract_ipa(source, self.root / "case")
         self.assertFalse((self.root / "case").exists())
 
+    def test_expanded_size_positional_argument_remains_compatible(self):
+        limits = Limits(1000, 5, 20, 1234)
+        self.assertEqual(limits.expanded_bytes, 1234)
+        self.assertEqual(limits.high_compression_bytes, 256 * 1024 * 1024)
+
     def test_no_fixed_archive_size_limit(self):
         """An IPA is bounded by free storage, not by a number picked in advance."""
         source = ipa(self.root / "test.ipa")
@@ -91,12 +97,45 @@ class ArchiveTests(unittest.TestCase):
         with self.assertRaises(InputError):
             extract_ipa(source, self.root / "dest", Limits(file_bytes=100))
 
-    def test_bomb(self):
+    def test_highly_compressible_resource_is_accepted(self):
+        source = self.root / "compressible.ipa"
+        data = bytes(1_000_000)
+        with zipfile.ZipFile(source, "w", compression=zipfile.ZIP_DEFLATED) as z:
+            z.writestr("asset", data)
+        self.assertLess(source.stat().st_size * Limits().ratio, len(data))
+        extract_ipa(source, self.root / "out")
+        self.assertEqual((self.root / "out/asset").read_bytes(), data)
+
+    def test_bomb_and_many_small_bombs_still_rejected(self):
         source = self.root / "bomb.ipa"
         with zipfile.ZipFile(source, "w", compression=zipfile.ZIP_DEFLATED) as z:
-            z.writestr("big", bytes(1000000))
-        with self.assertRaises(InputError):
-            extract_ipa(source, self.root / "bomb")
+            z.writestr("first", bytes(500_000))
+            z.writestr("second", bytes(500_000))
+        destination = self.root / "bomb"
+        with self.assertRaisesRegex(InputError, "expansion safety limit.*second"):
+            extract_ipa(source, destination, Limits(high_compression_bytes=600_000))
+        self.assertFalse(destination.exists())
+
+    def test_preflight_reserves_uncompressed_bytes_not_the_already_stored_ipa(self):
+        source = self.root / "large-stored.ipa"
+        with zipfile.ZipFile(source, "w", compression=zipfile.ZIP_STORED) as z:
+            z.writestr("asset", bytes(1000))
+        needs = []
+        with mock.patch("radek.archive.require_free_space", side_effect=lambda _path, needed: needs.append(needed)):
+            extract_ipa(source, self.root / "out")
+        self.assertEqual(needs, [0, 1000])
+
+    def test_crc_mismatch_removes_output(self):
+        source = self.root / "crc.ipa"
+        with zipfile.ZipFile(source, "w", compression=zipfile.ZIP_STORED) as z:
+            z.writestr("asset", b"hello")
+        data = bytearray(source.read_bytes())
+        data[data.index(b"hello")] ^= 1
+        source.write_bytes(data)
+        destination = self.root / "out"
+        with self.assertRaises(zipfile.BadZipFile):
+            extract_ipa(source, destination)
+        self.assertFalse(destination.exists())
 
     def test_malformed_archive(self):
         source = self.root / "bad.ipa"

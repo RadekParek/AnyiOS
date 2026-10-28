@@ -43,13 +43,14 @@ fn classic_offline_and_orientation_arguments_apply_to_actual_options() {
     let mut o = options::Options::default();
     assert!(!o.force_initial_orientation);
     assert_eq!(o.host_screen_size, None);
+    assert!(!o.explicit_screen_size);
     assert_eq!(o.scale_hack.get(), 1);
     assert!(o.parse_argument("--allow-network-access").unwrap());
     assert!(o.network_access);
     for arg in [
         "--device-family=auto",
         "--screen-size=480x320",
-        "--scale-hack=4",
+        "--scale-hack=2",
         "--no-network-access",
         "--perf-hints",
         "--affinity=big",
@@ -58,7 +59,8 @@ fn classic_offline_and_orientation_arguments_apply_to_actual_options() {
         assert!(o.parse_argument(arg).unwrap(), "{arg}");
     }
     assert_eq!(o.host_screen_size, Some((480, 320)));
-    assert_eq!(o.scale_hack.get(), 4);
+    assert!(o.explicit_screen_size);
+    assert_eq!(o.scale_hack.get(), 2);
     assert!(!o.network_access && o.perf_hints && o.force_initial_orientation);
     assert_eq!(o.initial_orientation, window::DeviceOrientation::Portrait);
     assert_eq!(o.affinity.as_deref(), Some("big"));
@@ -67,4 +69,15 @@ fn classic_offline_and_orientation_arguments_apply_to_actual_options() {
         o.initial_orientation,
         window::DeviceOrientation::LandscapeLeft
     );
+}
+
+#[test]
+fn tablet_profile_overrides_auto_geometry_and_uses_two_times_scale() {
+    let mut o = options::Options::default();
+    for arg in ["--device-family=auto", "--screen-size=1024x768", "--scale-hack=2"] {
+        assert!(o.parse_argument(arg).unwrap());
+    }
+    assert_eq!(o.host_screen_size, Some((1024, 768)));
+    assert!(o.explicit_screen_size);
+    assert_eq!(o.scale_hack.get(), 2);
 }

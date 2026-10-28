@@ -44,6 +44,13 @@ class NdkDiscoveryTests(unittest.TestCase):
             with mock.patch.object(Path, "home", return_value=home):
                 self.assertEqual(_ndk_roots({}), [])
 
+    def test_invalid_configured_ndk_remains_actionable(self):
+        clang, sysroot, reason = find_android_clang({"ANDROID_NDK_HOME": "/missing/ndk"})
+        self.assertIsNone(clang)
+        self.assertIsNone(sysroot)
+        self.assertIn("configured NDK/SDK", reason)
+        self.assertIn("ANDROID_NDK_HOME", reason)
+
     def test_missing_ndk_reason_says_where_to_configure_it(self):
         clang, sysroot, reason = find_android_clang({})
         self.assertIsNone(clang)

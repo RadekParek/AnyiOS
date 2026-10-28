@@ -15,6 +15,7 @@ import json
 import os
 import platform
 import re
+import shutil
 import struct
 import subprocess
 import zipfile
@@ -145,11 +146,13 @@ def find_android_clang(environ: dict[str, str] | None = None) -> tuple[Path | No
             sysroot = toolchain / "sysroot"
             if clang.is_file() and sysroot.is_dir():
                 return clang, sysroot, ""
-    roots = _ndk_roots(environ)
-    if roots:
-        return None, None, "Android NDK was configured but its LLVM clang/sysroot was not found"
+    env = os.environ if environ is None else environ
+    configured = any(env.get(key) for key in (
+        "ANDROID_NDK_HOME", "ANDROID_NDK_ROOT", "NDK_HOME", "ANDROID_SDK_ROOT", "ANDROID_HOME"
+    )) or (environ is None and bool(_local_properties_roots()))
+    prefix = "configured NDK/SDK paths have no usable LLVM clang/sysroot" if configured else "no Android NDK was found"
     return None, None, (
-        "no Android NDK was found. Set ANDROID_NDK_HOME, put ndk.dir=<path> in local.properties, "
+        f"{prefix}. Set ANDROID_NDK_HOME, put ndk.dir=<path> in local.properties, "
         "or install an NDK under <SDK>/ndk/<version> (searched ANDROID_SDK_ROOT/ANDROID_HOME and "
         "the default SDK locations)"
     )
@@ -184,6 +187,7 @@ def _link_failure(status: str, target_abi: str, reason: str) -> dict:
     return {
         "status": status,
         "attempted": False,
+        "ndkLinkVerified": False,
         "targetAbi": target_abi,
         "linkedTranslatedFunctionCount": 0,
         "translatedFunctionCount": 0,
@@ -380,15 +384,127 @@ def verify_android_translation(
     }
 
 
+def _link_generated_with_cmake(
+    destination: Path,
+    target_abi: str,
+    clang: Path,
+    translation_report: dict,
+    environ: dict[str, str] | None,
+    timeout: int,
+) -> dict:
+    """Configure/build the same translated runner with the real NDK CMake toolchain.
+
+    The build is isolated per NDK/CMake/ABI fingerprint and only a freshly
+    verified output is atomically published. No shell or generated game code is
+    executed by this step; the compiler consumes the authorized C inputs.
+    """
+    env = dict(os.environ)
+    if environ is not None:
+        env.update(environ)
+    requested_cmake = env.get("ANYIOS_CMAKE", "cmake")
+    cmake = shutil.which(requested_cmake, path=env.get("PATH"))
+    if not cmake:
+        return _link_failure("BLOCKED_NO_CMAKE", target_abi,
+                             "CMake was not found; install CMake 3.22+ or set ANYIOS_CMAKE")
+    toolchain = next((parent / "build/cmake/android.toolchain.cmake" for parent in clang.parents
+                      if (parent / "build/cmake/android.toolchain.cmake").is_file()), None)
+    if toolchain is None:
+        return _link_failure("BLOCKED_NO_NDK_CMAKE_TOOLCHAIN", target_abi,
+                             "The selected Android NDK has no build/cmake/android.toolchain.cmake")
+    project = Path(__file__).with_name("cmake") / "CMakeLists.txt"
+    if not project.is_file():
+        return _link_failure("BLOCKED_CMAKE_PROJECT_MISSING", target_abi,
+                             "The reviewed AnyiOS translated-game CMake project is missing")
+    destination = destination.resolve()
+    runtime = Path(__file__).with_name("rt").resolve()
+    toolchain = toolchain.resolve()
+    project = project.resolve()
+    clang = clang.resolve()
+    cmake = str(Path(cmake).resolve())
+    link_dir = destination / "android-link" / target_abi
+    link_dir.mkdir(parents=True, exist_ok=True)
+    # A CMake cache must never be silently reused with another NDK, compiler,
+    # CMake binary, project, or ABI. CMake handles source/header incremental
+    # rebuilds within this isolated directory.
+    fingerprint = _sha_text("\0".join((
+        str(toolchain), _file_sha256(toolchain), str(clang), str(clang.stat().st_size),
+        str(clang.stat().st_mtime_ns), cmake, str(Path(cmake).stat().st_mtime_ns),
+        _file_sha256(project), target_abi,
+    )))[:20]
+    build_dir = link_dir / ("cmake-build-" + fingerprint)
+    output_dir = build_dir / "output"
+    output_dir.mkdir(parents=True, exist_ok=True)
+    _, api_level = _SUPPORTED_ABIS[target_abi]
+    commands = [
+        [cmake, "-S", str(project.parent), "-B", str(build_dir),
+         f"-DCMAKE_TOOLCHAIN_FILE={toolchain}", f"-DANDROID_ABI={target_abi}",
+         f"-DANDROID_PLATFORM=android-{api_level}", "-DANDROID_STL=none",
+         "-DCMAKE_BUILD_TYPE=Release", f"-DANYIOS_TRANSLATION_DIR={destination}",
+         f"-DANYIOS_RUNTIME_DIR={runtime}", f"-DANYIOS_OUTPUT_DIR={output_dir}"],
+        [cmake, "--build", str(build_dir), "--config", "Release", "--target", "translated_game"],
+    ]
+    output = ""
+    for index, command in enumerate(commands):
+        try:
+            completed = subprocess.run(command, cwd=destination, env=env, stdout=subprocess.PIPE,
+                                       stderr=subprocess.STDOUT, text=True, timeout=timeout, check=False)
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            failure = _link_failure("BLOCKED_ANDROID_LINK_FAILED", target_abi,
+                                    f"Android NDK CMake {'configuration' if index == 0 else 'build'} failed: {exc}")
+            failure["attempted"] = True
+            return failure
+        output += (completed.stdout or "")
+        if completed.returncode != 0:
+            failure = _link_failure("BLOCKED_ANDROID_LINK_FAILED", target_abi,
+                                    f"Android NDK CMake {'configuration' if index == 0 else 'build'} failed")
+            failure.update(attempted=True, linkerExitCode=completed.returncode, linkerOutputTail=output[-12000:])
+            return failure
+    built = output_dir / "libtranslated_game.so"
+    if not built.is_file():
+        failure = _link_failure("BLOCKED_ANDROID_LINK_FAILED", target_abi,
+                                "CMake succeeded but did not produce libtranslated_game.so")
+        failure.update(attempted=True, linkerOutputTail=output[-12000:])
+        return failure
+    try:
+        verified = verify_android_translation(built.read_bytes(), translation_report, target_abi)
+    except (OSError, ValueError, TypeError) as exc:
+        verified = _link_failure("BLOCKED_ANDROID_ELF_VALIDATION", target_abi,
+                                 f"Android CMake output could not be verified: {exc}")
+    verified["attempted"] = True
+    if verified["status"] != "VERIFIED_ANDROID_SHARED_LIBRARY":
+        rejected = link_dir / "libtranslated_game.unverified.so"
+        shutil.copyfile(built, rejected)
+        verified["unverifiedArtifact"] = str(rejected.relative_to(destination))
+        verified["linkerOutputTail"] = output[-12000:]
+        return verified
+    artifact = link_dir / "libtranslated_game.so"
+    temporary = link_dir / "libtranslated_game.so.tmp"
+    try:
+        shutil.copyfile(built, temporary)
+        os.replace(temporary, artifact)
+    finally:
+        temporary.unlink(missing_ok=True)
+    verified.update(
+        artifact=str(artifact.relative_to(destination)), linker=str(clang),
+        ndkLinkVerified=True, linkBackend="CMAKE_ANDROID_NDK", cmake=cmake,
+        ndkCmakeToolchain=str(toolchain), cmakeBuildDirectory=str(build_dir.relative_to(destination)),
+        linkerOutputTail=output[-4000:],
+    )
+    return verified
+
+
 def link_generated_translation(
     output_dir: str | Path,
     target_abi: str = "arm64-v8a",
     *,
     environ: dict[str, str] | None = None,
     timeout: int = _LINK_TIMEOUT_SECONDS,
+    backend: str = "clang",
 ) -> dict:
-    """Link generated portable C with Android NDK clang and verify the result."""
-    destination = Path(output_dir)
+    """Link generated portable C with NDK clang or CMake and verify the result."""
+    destination = Path(output_dir).resolve()
+    if backend not in ("clang", "cmake"):
+        return _link_failure("BLOCKED_UNSUPPORTED_LINK_BACKEND", target_abi, "choose clang or cmake")
     if target_abi == "auto":
         target_abi = "arm64-v8a"
     if target_abi not in _SUPPORTED_ABIS:
@@ -438,6 +554,9 @@ def link_generated_translation(
             target_abi,
             f"portable-C translation report cannot be read: {exc}",
         )
+
+    if backend == "cmake":
+        return _link_generated_with_cmake(destination, target_abi, clang, translation_report, environ, timeout)
 
     triple, api_level = _SUPPORTED_ABIS[target_abi]
     target = f"{triple}{api_level}"
@@ -609,6 +728,7 @@ def link_generated_translation(
     verified["commandTarget"] = target
     verified["linker"] = str(clang)
     verified["ndkLinkVerified"] = True
+    verified["linkBackend"] = "DIRECT_NDK_CLANG"
     verified["incremental"] = {
         "compiledUnits": compiled_units,
         "reusedUnits": reused_units,
@@ -637,6 +757,11 @@ def prepare_translated_game_runtime_input(
     }
     if target_abi not in _SUPPORTED_ABIS:
         return {**failure, "reason": "translated game package input uses an unsupported Android ABI"}
+    if target_abi != "arm64-v8a":
+        return {**failure, "reason": (
+            "The Android game-runtime importer currently accepts arm64-v8a handoffs only; "
+            "an ARMv7 ELF can still be verified as a standalone library."
+        )}
     required_flags = (
         android_link_report.get("status") == "VERIFIED_ANDROID_SHARED_LIBRARY",
         android_link_report.get("targetAbi") == target_abi,
@@ -780,8 +905,7 @@ def prepare_translated_game_runtime_input(
     except (OSError, zipfile.BadZipFile, RuntimeError) as exc:
         temporary_payload.unlink(missing_ok=True)
         temporary_input.unlink(missing_ok=True)
-        payload_path.unlink(missing_ok=True)
-        input_path.unlink(missing_ok=True)
+        # Do not remove the last verified handoff when a new attempt fails.
         return {**failure, "reason": f"translated game-runtime package input could not be written: {exc}"}
 
     return {
