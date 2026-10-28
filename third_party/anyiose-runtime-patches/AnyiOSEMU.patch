@@ -4863,10 +4863,97 @@ index a851662a83fd6924498c8cc51748ba12eb2e3fc8..1a246b100a6dbe662e84baaee4d22e19
              element_array_buffer: Some(0),
              fog_enabled: false,
 diff --git a/src/frameworks/opengles/gles_guest.rs b/src/frameworks/opengles/gles_guest.rs
-index 1163b1139822e4d4f9afdd5d26f3bb8ec81f0343..e4761bdc95c24788177f064153ac2369942ed323 100644
+index 1163b1139822e4d4f9afdd5d26f3bb8ec81f0343..81ada50b4a32ee50f062f710f547d26b5796f732 100644
 --- a/src/frameworks/opengles/gles_guest.rs
 +++ b/src/frameworks/opengles/gles_guest.rs
-@@ -724,6 +724,19 @@ fn glSampleCoveragex(env: &mut Environment, value: GLclampx, invert: GLboolean)
+@@ -425,6 +425,28 @@ fn glGetFloatv(env: &mut Environment, pname: GLenum, params: MutPtr<GLfloat>) {
+     if params.is_null() {
+         return;
+     }
++    let factor = env.options.scale_hack.get() as GLsizei;
++    if factor != 1
++        && matches!(pname, 0x0ba2 | 0x0c10)
++        && env
++            .framework_state
++            .opengles
++            .current_ctx_for_thread(env.current_thread)
++            .is_some()
++    {
++        with_ctx_mem_and_shadow(env, |gles, mem, shadow| unsafe {
++            let params = mem.ptr_at_mut(params, 16);
++            gles.GetFloatv(pname, params);
++            let divisor = shadow.scale_framebuffer.query_divisor(pname, factor) as GLfloat;
++            if divisor != 1.0 {
++                for index in 0..4 {
++                    let value = params.add(index).read_unaligned() / divisor;
++                    params.add(index).write_unaligned(value);
++                }
++            }
++        });
++        return;
++    }
+     if env
+         .framework_state
+         .opengles
+@@ -443,6 +465,28 @@ fn glGetIntegerv(env: &mut Environment, pname: GLenum, params: MutPtr<GLint>) {
+     if params.is_null() {
+         return;
+     }
++    let factor = env.options.scale_hack.get() as GLsizei;
++    if factor != 1
++        && matches!(pname, 0x0ba2 | 0x0c10)
++        && env
++            .framework_state
++            .opengles
++            .current_ctx_for_thread(env.current_thread)
++            .is_some()
++    {
++        with_ctx_mem_and_shadow(env, |gles, mem, shadow| unsafe {
++            let params = mem.ptr_at_mut(params, 16);
++            gles.GetIntegerv(pname, params);
++            let divisor = shadow.scale_framebuffer.query_divisor(pname, factor);
++            if divisor != 1 {
++                for index in 0..4 {
++                    let value = params.add(index).read_unaligned() / divisor;
++                    params.add(index).write_unaligned(value);
++                }
++            }
++        });
++        return;
++    }
+     match pname {
+         gles11::NUM_COMPRESSED_TEXTURE_FORMATS => {
+             env.mem
+@@ -484,6 +528,28 @@ fn glGetFixedv(env: &mut Environment, pname: GLenum, params: MutPtr<GLfixed>) {
+     if params.is_null() {
+         return;
+     }
++    let factor = env.options.scale_hack.get() as GLsizei;
++    if factor != 1
++        && matches!(pname, 0x0ba2 | 0x0c10)
++        && env
++            .framework_state
++            .opengles
++            .current_ctx_for_thread(env.current_thread)
++            .is_some()
++    {
++        with_ctx_mem_and_shadow(env, |gles, mem, shadow| unsafe {
++            let params = mem.ptr_at_mut(params, 16);
++            gles.GetFixedv(pname, params);
++            let divisor = shadow.scale_framebuffer.query_divisor(pname, factor);
++            if divisor != 1 {
++                for index in 0..4 {
++                    let value = params.add(index).read_unaligned() / divisor;
++                    params.add(index).write_unaligned(value);
++                }
++            }
++        });
++        return;
++    }
+     if env
+         .framework_state
+         .opengles
+@@ -724,6 +790,19 @@ fn glSampleCoveragex(env: &mut Environment, value: GLclampx, invert: GLboolean)
  fn glShadeModel(env: &mut Environment, mode: GLenum) {
      with_ctx_and_mem(env, |gles, _mem| unsafe { gles.ShadeModel(mode) })
  }
@@ -4886,7 +4973,7 @@ index 1163b1139822e4d4f9afdd5d26f3bb8ec81f0343..e4761bdc95c24788177f064153ac2369
  fn glScissor(env: &mut Environment, x: GLint, y: GLint, width: GLsizei, height: GLsizei) {
      {
          use std::sync::atomic::{AtomicBool, Ordering};
-@@ -739,10 +752,16 @@ fn glScissor(env: &mut Environment, x: GLint, y: GLint, width: GLsizei, height:
+@@ -739,10 +818,16 @@ fn glScissor(env: &mut Environment, x: GLint, y: GLint, width: GLsizei, height:
          }
      }
      let factor = env.options.scale_hack.get() as GLsizei;
@@ -4907,7 +4994,7 @@ index 1163b1139822e4d4f9afdd5d26f3bb8ec81f0343..e4761bdc95c24788177f064153ac2369
      })
  }
  fn glViewport(env: &mut Environment, x: GLint, y: GLint, width: GLsizei, height: GLsizei) {
-@@ -811,33 +830,15 @@ fn glViewport(env: &mut Environment, x: GLint, y: GLint, width: GLsizei, height:
+@@ -811,33 +896,15 @@ fn glViewport(env: &mut Environment, x: GLint, y: GLint, width: GLsizei, height:
          }
      }
      let factor = env.options.scale_hack.get() as GLsizei;
@@ -4950,7 +5037,7 @@ index 1163b1139822e4d4f9afdd5d26f3bb8ec81f0343..e4761bdc95c24788177f064153ac2369
      })
  }
  fn glLineWidth(env: &mut Environment, val: GLfloat) {
-@@ -2712,6 +2713,7 @@ fn glGenTextures(env: &mut Environment, n: GLsizei, textures: MutPtr<GLuint>) {
+@@ -2712,6 +2779,7 @@ fn glGenTextures(env: &mut Environment, n: GLsizei, textures: MutPtr<GLuint>) {
      })
  }
  fn glDeleteTextures(env: &mut Environment, n: GLsizei, textures: ConstPtr<GLuint>) {
@@ -4958,7 +5045,7 @@ index 1163b1139822e4d4f9afdd5d26f3bb8ec81f0343..e4761bdc95c24788177f064153ac2369
      with_ctx_mem_and_shadow(env, |gles, mem, shadow| {
          let n_usize: GuestUSize = n.try_into().unwrap();
          // Copy the names out with unaligned reads: the guest array needn't be
-@@ -2719,9 +2721,12 @@ fn glDeleteTextures(env: &mut Environment, n: GLsizei, textures: ConstPtr<GLuint
+@@ -2719,9 +2787,12 @@ fn glDeleteTextures(env: &mut Environment, n: GLsizei, textures: ConstPtr<GLuint
          // over it would be undefined behaviour.
          let deleted: Vec<GLuint> = (0..n_usize).map(|i| mem.read(textures + i)).collect();
          unsafe { gles.DeleteTextures(n, deleted.as_ptr()) };
@@ -4971,7 +5058,7 @@ index 1163b1139822e4d4f9afdd5d26f3bb8ec81f0343..e4761bdc95c24788177f064153ac2369
      })
  }
  fn glActiveTexture(env: &mut Environment, texture: GLenum) {
-@@ -3509,32 +3514,15 @@ fn glIsRenderbufferOES(env: &mut Environment, renderbuffer: GLuint) -> GLboolean
+@@ -3509,32 +3580,15 @@ fn glIsRenderbufferOES(env: &mut Environment, renderbuffer: GLuint) -> GLboolean
      })
  }
  fn glBindFramebufferOES(env: &mut Environment, target: GLenum, framebuffer: GLuint) {
@@ -5011,7 +5098,7 @@ index 1163b1139822e4d4f9afdd5d26f3bb8ec81f0343..e4761bdc95c24788177f064153ac2369
          }
      })
  }
-@@ -3563,16 +3551,15 @@ fn glFramebufferRenderbufferOES(
+@@ -3563,16 +3617,15 @@ fn glFramebufferRenderbufferOES(
      renderbuffertarget: GLenum,
      renderbuffer: GLuint,
  ) {
@@ -5036,7 +5123,7 @@ index 1163b1139822e4d4f9afdd5d26f3bb8ec81f0343..e4761bdc95c24788177f064153ac2369
          // When an iOS app attaches its drawable color renderbuffer to an FBO,
          // it commonly forgets to also attach a depth renderbuffer. On real iOS
          // GPUs / desktop GL the missing depth attachment is treated leniently,
-@@ -3651,14 +3638,17 @@ fn glFramebufferTexture2DOES(
+@@ -3651,14 +3704,15 @@ fn glFramebufferTexture2DOES(
      texture: GLuint,
      level: i32,
  ) {
@@ -5051,10 +5138,8 @@ index 1163b1139822e4d4f9afdd5d26f3bb8ec81f0343..e4761bdc95c24788177f064153ac2369
 +    let factor = env.options.scale_hack.get() as GLsizei;
 +    with_ctx_mem_and_shadow(env, |gles, _mem, shadow| unsafe {
 +        gles.FramebufferTexture2DOES(target, attachment, textarget, texture, level);
-+        let valid_texture_target = textarget == gles11::TEXTURE_2D
-+            || (TEXTURE_CUBE_MAP_POSITIVE_X..=TEXTURE_CUBE_MAP_NEGATIVE_Z).contains(&textarget);
 +        if factor != 1 && attachment == gles11::COLOR_ATTACHMENT0_OES
-+            && valid_texture_target && level >= 0
++            && super::scale_framebuffer::valid_texture_attachment(texture, textarget, level, gles.is_es3())
 +            && shadow.scale_framebuffer.attach_texture(target, texture)
 +        {
 +            reapply_scaled_rectangles(gles, shadow, factor);
@@ -5062,7 +5147,7 @@ index 1163b1139822e4d4f9afdd5d26f3bb8ec81f0343..e4761bdc95c24788177f064153ac2369
      })
  }
  fn glGetFramebufferAttachmentParameterivOES(
-@@ -3694,10 +3684,18 @@ fn glCheckFramebufferStatusOES(env: &mut Environment, target: GLenum) -> GLenum
+@@ -3694,10 +3748,18 @@ fn glCheckFramebufferStatusOES(env: &mut Environment, target: GLenum) -> GLenum
      })
  }
  fn glDeleteFramebuffersOES(env: &mut Environment, n: GLsizei, framebuffers: ConstPtr<GLuint>) {
@@ -5084,12 +5169,77 @@ index 1163b1139822e4d4f9afdd5d26f3bb8ec81f0343..e4761bdc95c24788177f064153ac2369
      })
  }
  fn glDeleteRenderbuffersOES(env: &mut Environment, n: GLsizei, renderbuffers: ConstPtr<GLuint>) {
+@@ -6850,7 +6912,24 @@ fn glBlitFramebuffer(
+     mask: GLbitfield,
+     filter: GLenum,
+ ) {
+-    with_ctx_and_mem(env, |gles, _mem| unsafe {
++    let factor = env.options.scale_hack.get() as GLsizei;
++    if factor == 1 {
++        with_ctx_and_mem(env, |gles, _mem| unsafe {
++            gles.BlitFramebuffer(
++                src_x0, src_y0, src_x1, src_y1, dst_x0, dst_y0, dst_x1, dst_y1, mask, filter,
++            )
++        });
++        return;
++    }
++    // ES 3 blits use independent read and draw framebuffer coordinates:
++    // https://docs.gl/es3/glBlitFramebuffer
++    with_ctx_mem_and_shadow(env, |gles, _mem, shadow| unsafe {
++        let (src_x0, src_y0, src_x1, src_y1) = shadow
++            .scale_framebuffer
++            .scaled_read((src_x0, src_y0, src_x1, src_y1), factor);
++        let (dst_x0, dst_y0, dst_x1, dst_y1) = shadow
++            .scale_framebuffer
++            .scaled((dst_x0, dst_y0, dst_x1, dst_y1), factor);
+         gles.BlitFramebuffer(
+             src_x0, src_y0, src_x1, src_y1, dst_x0, dst_y0, dst_x1, dst_y1, mask, filter,
+         )
+@@ -6865,6 +6944,11 @@ fn glRenderbufferStorageMultisample(
+     width: GLsizei,
+     height: GLsizei,
+ ) {
++    // Like the APPLE multisample path and ordinary renderbuffers, core ES 3
++    // storage must match the scale-hacked drawable to resolve the whole image.
++    let factor = env.options.scale_hack.get() as GLsizei;
++    let width = width.saturating_mul(factor);
++    let height = height.saturating_mul(factor);
+     with_ctx_and_mem(env, |gles, _mem| unsafe {
+         gles.RenderbufferStorageMultisample(target, samples, internalformat, width, height)
+     });
+@@ -6878,8 +6962,24 @@ fn glFramebufferTextureLayer(
+     level: GLint,
+     layer: GLint,
+ ) {
+-    with_ctx_and_mem(env, |gles, _mem| unsafe {
+-        gles.FramebufferTextureLayer(target, attachment, texture, level, layer)
++    let factor = env.options.scale_hack.get() as GLsizei;
++    if factor == 1 {
++        with_ctx_and_mem(env, |gles, _mem| unsafe {
++            gles.FramebufferTextureLayer(target, attachment, texture, level, layer)
++        });
++        return;
++    }
++    // Zero detaches; for a non-zero texture, layer and level must be valid.
++    // https://docs.gl/es3/glFramebufferTextureLayer
++    with_ctx_mem_and_shadow(env, |gles, _mem, shadow| unsafe {
++        gles.FramebufferTextureLayer(target, attachment, texture, level, layer);
++        if gles.is_es3()
++            && attachment == gles11::COLOR_ATTACHMENT0_OES
++            && (texture == 0 || (level >= 0 && layer >= 0))
++            && shadow.scale_framebuffer.attach_texture(target, texture)
++        {
++            reapply_scaled_rectangles(gles, shadow, factor);
++        }
+     });
+ }
+ 
 diff --git a/src/frameworks/opengles/scale_framebuffer.rs b/src/frameworks/opengles/scale_framebuffer.rs
 new file mode 100644
-index 0000000000000000000000000000000000000000..024319e690953718434c074d174651f417850b2a
+index 0000000000000000000000000000000000000000..91d22bf1133959589d2f5177ad1a92f8ad082683
 --- /dev/null
 +++ b/src/frameworks/opengles/scale_framebuffer.rs
-@@ -0,0 +1,187 @@
+@@ -0,0 +1,274 @@
 +/*
 + * This Source Code Form is subject to the terms of the Mozilla Public
 + * License, v. 2.0. If a copy of the MPL was not distributed with this
@@ -5105,6 +5255,17 @@ index 0000000000000000000000000000000000000000..024319e690953718434c074d174651f4
 +use std::collections::HashMap;
 +
 +pub(super) type Rect = (i32, i32, i32, i32);
++
++/// OpenGL ES ignores textarget and level when detaching texture zero.
++/// GLES 1/2 require level zero for an attached texture; GLES 3 permits mip levels.
++/// https://docs.gl/es2/glFramebufferTexture2D
++/// https://docs.gl/es3/glFramebufferTexture2D
++pub(super) fn valid_texture_attachment(texture: u32, target: u32, level: i32, es3: bool) -> bool {
++    texture == 0
++        || ((target == 0x0de1 || (0x8515..=0x851a).contains(&target))
++            && level >= 0
++            && (es3 || level == 0))
++}
 +
 +#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 +enum TextureAttachment {
@@ -5125,24 +5286,62 @@ index 0000000000000000000000000000000000000000..024319e690953718434c074d174651f4
 +}
 +
 +impl FramebufferScaleState {
-+    pub(super) fn scaled(&self, rect: Rect, factor: i32) -> Rect {
-+        let f = if self.textures.contains_key(&self.draw_framebuffer) {
++    fn scaled_for_framebuffer(&self, framebuffer: u32, rect: Rect, factor: i32) -> Rect {
++        let f = if self.textures.contains_key(&framebuffer) {
 +            1
 +        } else {
 +            factor
 +        };
 +        // Avoid a host overflow/panic on pathological guest coordinates.
-+        (rect.0.saturating_mul(f), rect.1.saturating_mul(f),
-+         rect.2.saturating_mul(f), rect.3.saturating_mul(f))
++        (
++            rect.0.saturating_mul(f),
++            rect.1.saturating_mul(f),
++            rect.2.saturating_mul(f),
++            rect.3.saturating_mul(f),
++        )
++    }
++
++    pub(super) fn scaled(&self, rect: Rect, factor: i32) -> Rect {
++        self.scaled_for_framebuffer(self.draw_framebuffer, rect, factor)
++    }
++
++    pub(super) fn scaled_read(&self, rect: Rect, factor: i32) -> Rect {
++        self.scaled_for_framebuffer(self.read_framebuffer, rect, factor)
++    }
++
++    /// Only divide driver query results if this context has a tracked guest
++    /// request. Before the guest's first call, the driver's initial size is
++    /// implementation-defined and may not have been multiplied by us.
++    pub(super) fn query_divisor(&self, pname: u32, factor: i32) -> i32 {
++        let known = match pname {
++            0x0ba2 => self.viewport.is_some(), // GL_VIEWPORT
++            0x0c10 => self.scissor.is_some(),  // GL_SCISSOR_BOX
++            _ => false,
++        };
++        if known {
++            self.scaled((1, 0, 0, 0), factor).0
++        } else {
++            1
++        }
 +    }
 +
 +    // FRAMEBUFFER changes both bindings; ES 3 / APPLE multisample can
 +    // change READ_FRAMEBUFFER and DRAW_FRAMEBUFFER independently.
 +    pub(super) fn bind(&mut self, target: u32, framebuffer: u32) -> bool {
 +        match target {
-+            0x8d40 => { self.draw_framebuffer = framebuffer; self.read_framebuffer = framebuffer; true }
-+            0x8ca9 => { self.draw_framebuffer = framebuffer; true }
-+            0x8ca8 => { self.read_framebuffer = framebuffer; false }
++            0x8d40 => {
++                self.draw_framebuffer = framebuffer;
++                self.read_framebuffer = framebuffer;
++                true
++            }
++            0x8ca9 => {
++                self.draw_framebuffer = framebuffer;
++                true
++            }
++            0x8ca8 => {
++                self.read_framebuffer = framebuffer;
++                false
++            }
 +            _ => false,
 +        }
 +    }
@@ -5156,19 +5355,28 @@ index 0000000000000000000000000000000000000000..024319e690953718434c074d174651f4
 +    }
 +
 +    pub(super) fn attach_texture(&mut self, target: u32, texture: u32) -> bool {
-+        let Some(framebuffer) = self.framebuffer_for_target(target) else { return false };
-+        if framebuffer == 0 { return false; }
++        let Some(framebuffer) = self.framebuffer_for_target(target) else {
++            return false;
++        };
++        if framebuffer == 0 {
++            return false;
++        }
 +        if texture == 0 {
 +            self.textures.remove(&framebuffer);
 +        } else {
-+            self.textures.insert(framebuffer, TextureAttachment::Named(texture));
++            self.textures
++                .insert(framebuffer, TextureAttachment::Named(texture));
 +        }
 +        framebuffer == self.draw_framebuffer
 +    }
 +
 +    pub(super) fn attach_renderbuffer(&mut self, target: u32) -> bool {
-+        let Some(framebuffer) = self.framebuffer_for_target(target) else { return false };
-+        if framebuffer == 0 { return false; }
++        let Some(framebuffer) = self.framebuffer_for_target(target) else {
++            return false;
++        };
++        if framebuffer == 0 {
++            return false;
++        }
 +        self.textures.remove(&framebuffer);
 +        framebuffer == self.draw_framebuffer
 +    }
@@ -5178,7 +5386,9 @@ index 0000000000000000000000000000000000000000..024319e690953718434c074d174651f4
 +            return false;
 +        }
 +        self.textures.remove(&framebuffer);
-+        if self.read_framebuffer == framebuffer { self.read_framebuffer = 0; }
++        if self.read_framebuffer == framebuffer {
++            self.read_framebuffer = 0;
++        }
 +        if self.draw_framebuffer == framebuffer {
 +            self.draw_framebuffer = 0;
 +            true
@@ -5250,6 +5460,32 @@ index 0000000000000000000000000000000000000000..024319e690953718434c074d174651f4
 +    }
 +
 +    #[test]
++    fn queries_only_unscale_tracked_rectangles_on_scaled_targets() {
++        let mut state = FramebufferScaleState::default();
++        assert_eq!(state.query_divisor(0x0ba2, 4), 1);
++        state.viewport = Some((0, 0, 480, 320));
++        assert_eq!(state.query_divisor(0x0ba2, 4), 4);
++        assert_eq!(state.query_divisor(0x0c10, 4), 1);
++        state.scissor = Some((0, 0, 100, 90));
++        assert_eq!(state.query_divisor(0x0c10, 4), 4);
++        state.bind(0x8d40, 7);
++        state.attach_texture(0x8d40, 9);
++        assert_eq!(state.query_divisor(0x0ba2, 4), 1);
++        assert_eq!(state.query_divisor(0x0c10, 4), 1);
++        assert_eq!(state.query_divisor(0xffff, 4), 1);
++    }
++
++    #[test]
++    fn texture_detach_ignores_target_and_level_but_real_attachments_are_validated() {
++        assert!(valid_texture_attachment(0, 0, -1, false));
++        assert!(valid_texture_attachment(3, 0x0de1, 0, false));
++        assert!(!valid_texture_attachment(3, 0, 0, false));
++        assert!(!valid_texture_attachment(3, 0x0de1, 1, false));
++        assert!(valid_texture_attachment(3, 0x0de1, 1, true));
++        assert!(!valid_texture_attachment(3, 0x0de1, -1, true));
++    }
++
++    #[test]
 +    fn read_target_does_not_change_draw_target_scaling() {
 +        let mut state = FramebufferScaleState::default();
 +        let rect = (0, 0, 10, 20);
@@ -5258,6 +5494,7 @@ index 0000000000000000000000000000000000000000..024319e690953718434c074d174651f4
 +        assert!(!state.bind(0x8ca8, 9));
 +        state.attach_renderbuffer(0x8ca8);
 +        assert_eq!(state.scaled(rect, 4), rect);
++        assert_eq!(state.scaled_read(rect, 4), (0, 0, 40, 80));
 +        assert!(!state.bind(0xdead, 0));
 +        assert_eq!(state.scaled(rect, 4), rect);
 +        assert!(state.bind(0x8ca9, 9));

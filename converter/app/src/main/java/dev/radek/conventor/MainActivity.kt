@@ -1254,7 +1254,7 @@ class MainActivity : Activity() {
         }
         explanation("These per-game choices are built into new Semi-Emulated APKs only. Rebuild and reinstall to apply changes. Native diagnostic and other APKs do not use them.")
         val classic = toggle("Classic 3:2 · 480 × 320 points · 4× render scale", saved.classic320)
-        explanation("Requests up to 1920 × 1280 in landscape or 1280 × 1920 in portrait. Scale hacking depends on the game and its rendering path; game-owned textures may remain at their original size. 4× uses more memory and GPU time.")
+        explanation("A full 480 × 320 drawable requests 1920 × 1280 in landscape or 1280 × 1920 in portrait. Layer content scale and hardware limits affect allocation; game-owned textures may stay at their original size. 4× uses more memory and GPU time.")
         val offline = toggle("Force network access off", saved.offline)
         explanation("The generated APK does not request Android's Internet permission; the emulator's guest network APIs are disabled too.")
         val performance = toggle("Request maximum performance", saved.performance)

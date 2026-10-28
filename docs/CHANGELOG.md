@@ -9,10 +9,14 @@
   for the changed per-game setting to take effect. Memory and GPU costs rise;
   game-owned texture targets remain at their own size.
 - AnyiOSEMU now tracks framebuffer scale state per EAGL context. Viewport and
-  scissor requests use the same scaling policy, and are reapplied when draw
-  bindings or color attachments change. Deleted/reused framebuffer and texture
-  names no longer carry stale scale classifications. Normal 1× calls retain
-  their previous direct path; read/draw targets are tracked separately.
+  scissor requests use the same scaling policy, are reapplied when draw
+  bindings or color attachments change, and their GL queries return guest-space
+  values for tracked requests. Deleted/reused framebuffer and texture
+  names no longer carry stale scale classifications. The ES 3 multisample
+  renderbuffer path is scaled, layered texture attachments are tracked, and
+  blit source/destination coordinates follow their respective targets. Normal
+  1× calls retain their previous direct path. Mixed-size multisample resolves,
+  pixel readback and game-specific rendering paths still require device testing.
 - Converter no longer treats a structurally valid Java `.class` resource as a
   Mach-O image solely because both start with `CAFEBABE`. Other recognized
   Mach-O/FAT files, including malformed ones, still go to the decoder and can
@@ -36,7 +40,9 @@
 
 ### Validation and limitations
 - Added framebuffer-state, Java-class/Mach-O recognition, retry-policy/history
-  and guest-memory dirty-page regressions. A local x86-64 synthetic benchmark
+  and guest-memory dirty-page regressions. Host Debug CTest passed 17/17 both
+  without Dynarmic and with the pinned Dynarmic A32 backend required by its
+  CPU tests. A local x86-64 synthetic benchmark
   of 600,000 operations across 1,024 regions/callouts measured median host
   writes of 86.1 ms before vs 50.5 ms after, and callout dispatch of 62.8 ms
   before vs 30.4 ms after (seven samples each, GCC 12 `-O3`). These are

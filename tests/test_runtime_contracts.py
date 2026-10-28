@@ -93,6 +93,26 @@ class RuntimeContractTests(unittest.TestCase):
                 "makeScaleUpAnimation", read(TEMPLATE / "java/org/podnative" / name)
             )
 
+    def test_scale_hack_is_wired_to_context_queries_and_multisample_targets(self):
+        path = ENGINE / "src/frameworks/opengles/gles_guest.rs"
+        if not path.is_file():
+            self.skipTest("pinned engine is not initialized in the host-only suite")
+        source = read(path)
+        for name in ("glGetIntegerv", "glGetFloatv", "glGetFixedv"):
+            body = source.split(f"fn {name}(", 1)[1].split("\nfn ", 1)[0]
+            self.assertIn("query_divisor", body)
+        blit = source.split("fn glBlitFramebuffer(", 1)[1].split("\nfn ", 1)[0]
+        self.assertIn("scaled_read", blit)
+        self.assertIn(".scaled((dst_x0, dst_y0, dst_x1, dst_y1), factor)", blit)
+        msaa = source.split("fn glRenderbufferStorageMultisample(", 1)[1].split(
+            "\nfn ", 1
+        )[0]
+        self.assertIn("width.saturating_mul(factor)", msaa)
+        layered = source.split("fn glFramebufferTextureLayer(", 1)[1].split("\nfn ", 1)[
+            0
+        ]
+        self.assertIn("scale_framebuffer.attach_texture", layered)
+
     def test_only_standalone_uses_quiet_error_policy(self):
         options = read(TEMPLATE / "java/org/podnative/StandaloneOptions.java")
         activity = read(TEMPLATE / "java/org/podnative/StandaloneGameActivity.java")
