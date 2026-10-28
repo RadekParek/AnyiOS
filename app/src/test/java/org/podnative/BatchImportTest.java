@@ -163,7 +163,8 @@ public class BatchImportTest {
             // but every imported source must receive its own Converter report.
             File reportFile = new File(game.directory, "report.json");
             assertTrue(reportFile.isFile());
-            JSONObject report = new JSONObject(Files.readString(reportFile.toPath()));
+            JSONObject report = new JSONObject(
+                new String(Files.readAllBytes(reportFile.toPath()), StandardCharsets.UTF_8));
             assertEquals("FAILED", report.getString("state"));
             assertEquals("IPA", report.getJSONObject("source").getString("kind"));
             assertTrue(report.getString("error").contains("CFBundleIdentifier"));
