@@ -4,10 +4,11 @@
 
 ### Fixed and rewired
 - The existing **480 × 320 points (3:2)** Semi-Emulated profile now requests
-  4× rather than 3×. A full landscape drawable is requested at 1920 × 1280,
-  or 1280 × 1920 in portrait. Rebuild and reinstall an existing standalone APK
-  for the changed per-game setting to take effect. Memory and GPU costs rise;
-  game-owned texture targets remain at their own size.
+  4× rather than 3×. At layer content scale 1, a full landscape drawable is
+  requested at 1920 × 1280, or 1280 × 1920 in portrait; content scale and
+  hardware limits affect actual allocation. Rebuild and reinstall an existing
+  standalone APK for the changed per-game setting to take effect. Memory and
+  GPU costs rise; game-owned texture targets remain at their own size.
 - AnyiOSEMU now tracks framebuffer scale state per EAGL context. Viewport and
   scissor requests use the same scaling policy, are reapplied when draw
   bindings or color attachments change, and their GL queries return guest-space
@@ -45,8 +46,12 @@
   CPU tests. A local x86-64 synthetic benchmark
   of 600,000 operations across 1,024 regions/callouts measured median host
   writes of 86.1 ms before vs 50.5 ms after, and callout dispatch of 62.8 ms
-  before vs 30.4 ms after (seven samples each, GCC 12 `-O3`). These are
-  microbenchmarks of the diagnostic runtime, not game FPS or Android results.
+  before vs 30.4 ms after (seven samples each, GCC 12 `-O3`). A separate
+  pinned-Dynarmic Debug A32 workload ran 100,000 guest calls to one shim,
+  writing across 1,024 regions with 1,024 callouts registered. Across 21
+  alternating-order samples including JIT creation, the median was 301.4 ms
+  before vs 290.2 ms after (`-O3` host helpers). These are synthetic diagnostic
+  runtime results, not game FPS, primary AnyiOSEMU or Android results.
 - No affected IPA/report/log was provided, so the Java-class collision is a
   plausible fix for one cause, not a confirmed diagnosis of the reported
   embedded-image error. Real image decoding failures still need their reported
