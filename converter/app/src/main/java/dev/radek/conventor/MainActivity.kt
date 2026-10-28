@@ -792,6 +792,8 @@ class MainActivity : Activity() {
             }
             text(report.optString("nextBlocker"), 14f, muted)
             if (report.optString("sharedSourceKind") in setOf("IPA", "Folder", "Executable")) {
+                if (report.optString("sharedSourceKind") == "IPA")
+                    text("Explicit analysis may also build an APK only for a narrowly proven single-routine IPA.", 12f, muted)
                 button("Analyze shared source", true) { startSharedAnalysis(dir) }.isEnabled = !SharedCatalog.isBusy()
             } else text("This source type cannot currently be analyzed here. It remains available in Emulator.", 14f, muted)
             button("Delete shared entry") { confirmDelete(dir) }

@@ -41,7 +41,7 @@ class ConverterUiTest {
     }
 
     private fun entry(title: String): File {
-        val root = File(RuntimeEnvironment.getApplication<Application>().filesDir, "games").apply { mkdirs() }
+        val root = File(RuntimeEnvironment.getApplication().filesDir, "games").apply { mkdirs() }
         return File(root, "game-${UUID.randomUUID()}").apply {
             mkdirs()
             File(this, "source.bin").writeText("original source")
