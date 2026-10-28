@@ -115,7 +115,7 @@ internal object CompatibilityIssues {
         dependencies?.optJSONArray("analysisErrors")?.let { errors ->
             for (i in 0 until errors.length()) {
                 val item = errors.optJSONObject(i) ?: continue
-                add("Image ${item.optString("path", "unknown")}: ${item.optString("reason", "decode failed")}")
+                add(ImageDiagnostics.format(item))
             }
         }
         val names = HashSet<String>()

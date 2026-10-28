@@ -39,6 +39,20 @@ class CompatibilityIssuesTest {
         assertTrue(text.contains("do not prove game linkage or gameplay"))
     }
 
+    @Test fun firstEmbeddedFailureIsActionableWithoutDuplicateDetails() {
+        val error = JSONObject().put("path", "Backup_armv6")
+            .put("reason", "FAT slice 1 is 1441472 bytes past the file")
+        val message = ImageDiagnostics.format(error)
+        val report = JSONObject().put("nextBlocker", message)
+            .put("dependencies", JSONObject().put("failedImageCount", 1)
+                .put("analysisErrors", JSONArray().put(error)))
+        val summary = CompatibilityIssues.summarize(report)
+        assertEquals(listOf(message), summary.problems)
+        assertTrue(summary.format().contains("1441472 bytes past the file"))
+        assertNull(ImageDiagnostics.firstFailure(JSONArray().put(JSONObject.NULL)))
+        assertEquals("Image unknown: the Mach-O image could not be decoded", ImageDiagnostics.format(JSONObject()))
+    }
+
     @Test fun hostReportsNeverBecomeDeviceInspectedSymbols() {
         val link = JSONObject().put("status", "VERIFIED_ANDROID_APK_LIBRARY")
             .put("apkProduced", true).put("linkedIntoGame", true).put("allVerificationsPassed", true)

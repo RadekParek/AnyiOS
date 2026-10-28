@@ -30,7 +30,13 @@ class AnyiOSEmuArtifactTest {
         }
         val unverified = analysis(slice("armv7"))
         unverified.getJSONObject("dependencies").put("failedImageCount", 1)
-        assertThrows(IllegalArgumentException::class.java) { AnyiOSEmuApkBuilder.requireSupportedSource(unverified) }
+            .put("analysisErrors", JSONArray().put(JSONObject()
+                .put("path", "Backup_armv6")
+                .put("reason", "FAT slice 1 declares 1441472 bytes past the file")))
+        val failure = assertThrows(IllegalArgumentException::class.java) {
+            AnyiOSEmuApkBuilder.requireSupportedSource(unverified)
+        }
+        assertEquals("Image Backup_armv6: FAT slice 1 declares 1441472 bytes past the file", failure.message)
         val embedded = analysis(slice("armv7"))
         embedded.getJSONObject("dependencies").getJSONArray("nodes").put(
             JSONObject().put("analysis", JSONObject().put("slices", JSONArray().put(slice("armv7", true)))))

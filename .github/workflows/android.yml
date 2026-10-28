@@ -32,3 +32,49 @@ jobs:
     name: PC builds (Linux and Windows x86-64)
     if: ${{ github.event_name != 'workflow_dispatch' || inputs.android_only != true }}
     uses: ./.github/workflows/runtime.yml
+  engine-tests:
+    name: AnyiOSEMU unit and guest tests
+    if: ${{ github.event_name != 'workflow_dispatch' || inputs.android_only != true }}
+    runs-on: macos-15-intel
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v5
+      - name: Prepare pinned AnyiOSEMU sources
+        run: scripts/prepare-anyiose-runtime.sh
+      - name: Cache pinned Boost headers
+        uses: actions/cache@v4
+        with:
+          path: third_party/anyiose-engine/vendor/boost
+          key: ${{ runner.os }}-engine-boost-${{ hashFiles('third_party/anyiose-runtime-boost-version.txt') }}
+      - name: Prepare Boost headers
+        run: scripts/prepare-anyiose-runtime-boost.sh
+      - name: Cache engine Rust build
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: third_party/anyiose-engine -> target
+      - name: Cache guest compiler
+        id: guest-compiler
+        uses: actions/cache@v4
+        with:
+          path: third_party/anyiose-engine/tests/llvm
+          key: llvm-12.0.0-macos-x86_64-testapp
+      - name: Install LLVM 12 guest compiler
+        if: ${{ steps.guest-compiler.outputs.cache-hit != 'true' }}
+        working-directory: third_party/anyiose-engine/tests
+        run: |
+          curl --fail --location --retry 3 -o llvm.tar.xz \
+            'https://github.com/llvm/llvm-project/releases/download/llvmorg-12.0.0/clang+llvm-12.0.0-x86_64-apple-darwin.tar.xz'
+          mkdir -p llvm
+          tar -xf llvm.tar.xz --strip-components=1 -C llvm
+          rm llvm.tar.xz
+      - name: Install guest SDK
+        working-directory: third_party/anyiose-engine/tests
+        run: |
+          curl --fail --location --retry 3 -o sdk.tar.gz \
+            'https://github.com/touchHLE/common-3.0-sdk/releases/download/v0.3.7/common-3.0.sdk-macOS-universal.tar.gz'
+          echo '16cedbc008841b8367037e36826385947d8a9aa4125b825707f7923bad834498  sdk.tar.gz' | shasum -a 256 -c
+          tar -xzf sdk.tar.gz
+          rm sdk.tar.gz
+      - name: Run full Cargo suite including guest TestApp
+        working-directory: third_party/anyiose-engine
+        run: cargo test --locked --target x86_64-apple-darwin

@@ -48,6 +48,39 @@ class MachOTests(unittest.TestCase):
                     result = self.parse(fat([macho(), macho(cpu=12, subtype=9)], wide, little))
                     self.assertEqual([s["architecture"] for s in result["slices"]], ["arm64", "armv7"])
 
+    def test_incomplete_fat_slice_reports_missing_bytes_and_stays_blocked(self):
+        # A complete armv6 member does not verify the incomplete armv7 member.
+        # These numbers reproduce the reported range without assuming anything
+        # about the actual game's FAT table or its encryption state.
+        for wide in (False, True):
+            for little in (False, True):
+                with self.subTest(wide=wide, little=little):
+                    data = bytearray(fat([macho(cpu=12, subtype=6), macho(cpu=12, subtype=9)], wide, little))
+                    data.extend(bytes(5242880 - len(data)))
+                    endian = "<" if little else ">"
+                    second = 8 + (32 if wide else 20)
+                    fmt = "QQ" if wide else "II"
+                    struct.pack_into(endian + fmt, data, second + 8, 3338240, 3346112)
+                    with self.assertRaises(InputError) as error:
+                        self.parse(bytes(data))
+                    message = str(error.exception)
+                    self.assertIn("FAT slice 1", message)
+                    self.assertIn("offset 3338240", message)
+                    self.assertIn("length 3346112", message)
+                    self.assertIn("file size 5242880", message)
+                    self.assertIn("end at 6684352", message)
+                    self.assertIn("1441472 bytes past the file", message)
+                    self.assertIn("missing bytes cannot be verified", message)
+
+    def test_fat64_overflow_diagnostic_does_not_wrap(self):
+        for little in (False, True):
+            with self.subTest(little=little):
+                data = bytearray(fat([macho()], wide=True, little=little))
+                struct.pack_into(("<" if little else ">") + "QQ", data, 16, (1 << 64) - 2, 8)
+                with self.assertRaises(InputError) as error:
+                    self.parse(bytes(data))
+                self.assertIn("range that overflows 64-bit offsets", str(error.exception))
+
     def test_arm64e(self):
         self.assertTrue(self.parse(macho(subtype=2))["slices"][0]["pacRequired"])
 

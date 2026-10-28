@@ -1,5 +1,48 @@
 # Changelog
 
+## 2026-10-28 — Screen insets, numeric dictionary keys and FAT diagnostics
+
+### Added / wired
+- AnyiOSEMU now implements `UIScreen.overscanCompensation` with the documented
+  Scale default. The single emulated screen does not overscan, so changing the
+  preference does not shrink its bounds or rendering; its compensation insets
+  are zero. Its one available mode is also reported as its preferred mode.
+- Added a shared 32-bit `UIEdgeInsets` ABI, wired to UIScreen, UIScrollView,
+  UIButton and UICollectionViewFlowLayout. Getters now return the 16-byte
+  structure through the guest's indirect-return pointer and setters preserve
+  all four fields. UIButton's archived inset values retain their prior order.
+- Added a once-per-warning-kind, bounded guest stack trace to the existing
+  nil-isa and non-string dictionary KVC diagnostics. Warning limits reset for
+  each guest launch instead of hiding later games' first warnings. Non-string
+  KVC still logs the first occurrences and forwards the mutation as before; KVC requires a
+  string key, and the source of the reported invalid key is not established.
+
+### Fixed / changed
+- NSNumber values that compare equal across integer, float and double storage
+  now hash consistently, including NaN and large integer edge cases. Hashing
+  preserves integer precision instead of forcing adjacent 64-bit values into
+  the same rounded-double bucket. Replacing a dictionary value now releases the unused copied or
+  retained replacement key.
+- FAT/FAT64 out-of-range errors report the affected slice, declared end and
+  number of bytes past the input, or an overflow diagnostic. Converter shows the
+  first image path and reason in the blocker and standalone packaging error,
+  without duplicating that reason in the issue list. No archive, FAT bounds,
+  encryption or source-verification checks were relaxed.
+- Removed misleading claims that every embedded candidate was linked and that
+  a non-string KVC key's origin or exception behavior was known.
+
+### Validation / limits
+- Added numeric equality/hash property cases, inset argument/return checks,
+  guest TestApp cases for screen/collection inset ABI and dictionary key
+  lifetimes, and truncated/overflowing FAT fixtures in both byte orders.
+  CI is configured to run the full AnyiOSEMU Cargo suite including TestApp.
+- The reported Ninjago image declares 1,441,472 bytes beyond its available
+  5 MiB; a complete valid source or additional evidence is needed to determine
+  whether it can be recovered or safely replaced. It remains blocked rather
+  than treating missing bytes as verified. The reported `0x3` receiver and
+  non-string KVC warning have no established root cause; these general fixes
+  are not proof that Skybound runs. No real game or Android device was tested.
+
 ## 2026-10-28 — Native GLES2, frame-clock bridge and last-blocker view
 
 ### Added / wired

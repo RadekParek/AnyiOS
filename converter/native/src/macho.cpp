@@ -925,7 +925,24 @@ Json analyze(const std::vector<uint8_t> &data, bool includeSymbolDetails) {
             size_t p = 8 + i * stride;
             auto off = r.u(p + 8, wide ? 8 : 4), size = r.u(p + (wide ? 16 : 12), wide ? 8 : 4),
                  align = r.u(p + (wide ? 24 : 16), 4);
-            r.check(off, size, "FAT slice " + std::to_string(i));
+            // Do not treat a usable earlier slice as proof about an absent
+            // later slice: its encryption/dependency metadata is unverified.
+            // Explain the range without overflowing on malformed FAT64 input.
+            if (off > r.size || size > r.size - off) {
+                std::string range = "FAT slice " + std::to_string(i) + " (offset " +
+                                    std::to_string(off) + ", length " + std::to_string(size) +
+                                    ", file size " + std::to_string(r.size) + ")";
+                if (size <= std::numeric_limits<uint64_t>::max() - off) {
+                    const uint64_t end = off + size;
+                    range += " declares an end at " + std::to_string(end) + ", " +
+                             std::to_string(end - r.size) + " bytes past the file";
+                } else {
+                    range += " has a range that overflows 64-bit offsets";
+                }
+                throw std::runtime_error(range +
+                    "; image may be truncated or its FAT header invalid. "
+                    "Obtain a complete, valid and unencrypted source; missing bytes cannot be verified.");
+            }
             if (off < 8 + n * stride || !size || align > 31 || off % (uint64_t(1) << align))
                 throw std::runtime_error("invalid FAT alignment/range");
             for (auto [a, b] : ranges)

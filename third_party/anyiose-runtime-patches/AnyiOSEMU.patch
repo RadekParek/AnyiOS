@@ -1451,10 +1451,20 @@ index 4bd153de8794d4a985c1059d5e7da31f439d0a6f..832e91943f6750dbcba747228a3a9262
 +    }
 +}
 diff --git a/src/environment.rs b/src/environment.rs
-index 0d50bc9c2dbabcb3c605800919ca8140dd84f8e0..de4357bd19b2d75d144b477f887a7d14056874fa 100644
+index 0d50bc9c2dbabcb3c605800919ca8140dd84f8e0..c033e7b2d63dc725718e16b11faa64f64b5c69f6 100644
 --- a/src/environment.rs
 +++ b/src/environment.rs
-@@ -342,7 +342,7 @@ struct BinaryDependencyNode {
+@@ -171,6 +171,9 @@ pub struct Environment {
+     pub cpu: NullableBox<cpu::Cpu>,
+     pub current_thread: ThreadId,
+     pub threads: Vec<Thread>,
++    /// Bounded warning counters are per guest, not shared across game launches.
++    pub(crate) nil_isa_warning_count: u8,
++    pub(crate) nonstring_kvc_warning_count: u8,
+     pub libc_state: NullableBox<libc::State>,
+     pub framework_state: NullableBox<frameworks::State>,
+     pub mutex_state: NullableBox<mutex::MutexState>,
+@@ -342,7 +345,7 @@ struct BinaryDependencyNode {
      dependencies: Vec<String>,
  }
  
@@ -1463,7 +1473,7 @@ index 0d50bc9c2dbabcb3c605800919ca8140dd84f8e0..de4357bd19b2d75d144b477f887a7d14
      let (directory, name) = path.rsplit_once('/').unwrap_or(("", path));
      let canonical_name = match name {
          "libstdc++.6.dylib" => "libstdc++.6.0.9.dylib",
-@@ -515,7 +515,9 @@ impl Environment {
+@@ -515,7 +518,9 @@ impl Environment {
          let portrait_supported = bundle
              .supported_interface_orientations()
              .contains(&"UIInterfaceOrientationPortrait");
@@ -1474,7 +1484,7 @@ index 0d50bc9c2dbabcb3c605800919ca8140dd84f8e0..de4357bd19b2d75d144b477f887a7d14
          {
              if let Some(&non_portrait_orientation) = bundle
                  .supported_interface_orientations()
-@@ -794,7 +796,11 @@ impl Environment {
+@@ -794,7 +799,11 @@ impl Environment {
                  let implemented_in_host = crate::dyld::DYLIB_LIST
                      .iter()
                      .any(|d| d.path == dylib || d.aliases.contains(&dylib));
@@ -1487,7 +1497,7 @@ index 0d50bc9c2dbabcb3c605800919ca8140dd84f8e0..de4357bd19b2d75d144b477f887a7d14
                  if !implemented_in_host && !is_swift {
                      log!(
                          "Warning: app binary depends on unimplemented or missing dylib \"{}\"",
-@@ -994,9 +1000,7 @@ impl Environment {
+@@ -994,9 +1003,7 @@ impl Environment {
                          }
  
                          if env.guest_termination_requested.is_some() {
@@ -1498,7 +1508,34 @@ index 0d50bc9c2dbabcb3c605800919ca8140dd84f8e0..de4357bd19b2d75d144b477f887a7d14
                          } else if !exited_via_pthread {
                              panic!("Main function exited unexpectedly!");
                          }
-@@ -1366,20 +1370,20 @@ impl Environment {
+@@ -1035,6 +1042,8 @@ impl Environment {
+             dyld: NullableBox::new(dyld),
+             cpu: NullableBox::new(cpu),
+             current_thread: 0,
++            nil_isa_warning_count: 0,
++            nonstring_kvc_warning_count: 0,
+             threads: vec![main_thread],
+             libc_state: Default::default(),
+             mutex_state: Default::default(),
+@@ -1223,6 +1232,8 @@ impl Environment {
+             dyld: NullableBox::new(dyld),
+             cpu: NullableBox::new(cpu),
+             current_thread: 0,
++            nil_isa_warning_count: 0,
++            nonstring_kvc_warning_count: 0,
+             threads: vec![main_thread],
+             libc_state: Default::default(),
+             mutex_state: Default::default(),
+@@ -1295,6 +1306,8 @@ impl Environment {
+             dyld: NullableBox::null(),
+             cpu: NullableBox::null(),
+             current_thread: 0,
++            nil_isa_warning_count: 0,
++            nonstring_kvc_warning_count: 0,
+             threads: Vec::new(),
+             libc_state: NullableBox::null(),
+             framework_state: NullableBox::null(),
+@@ -1366,20 +1379,20 @@ impl Environment {
          }
      }
  
@@ -1528,7 +1565,7 @@ index 0d50bc9c2dbabcb3c605800919ca8140dd84f8e0..de4357bd19b2d75d144b477f887a7d14
      }
  
      pub fn stack_for_longjmp(&self, mut lr: u32, fp: u32) -> Vec<u32> {
-@@ -1554,7 +1558,9 @@ impl Environment {
+@@ -1554,7 +1567,9 @@ impl Environment {
                  break;
              }
  
@@ -1539,7 +1576,7 @@ index 0d50bc9c2dbabcb3c605800919ca8140dd84f8e0..de4357bd19b2d75d144b477f887a7d14
              let previous_fp: u32 = self.mem.read(mem::ConstPtr::<u32>::from_bits(fp));
              if lr == return_to_host_routine_addr {
                  echo_no_panic!("{:2}. [host function]", i);
-@@ -1599,7 +1605,7 @@ impl Environment {
+@@ -1599,7 +1614,7 @@ impl Environment {
          let thread_routine =
              Coroutine::with_stack(thread_stack, move |yielder, mut env: Environment| {
                  log_dbg!(
@@ -1548,7 +1585,7 @@ index 0d50bc9c2dbabcb3c605800919ca8140dd84f8e0..de4357bd19b2d75d144b477f887a7d14
                      start_routine.addr_with_thumb_bit()
                  );
                  let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-@@ -1917,7 +1923,11 @@ impl Environment {
+@@ -1917,7 +1932,11 @@ impl Environment {
              }
  
              #[cfg(not(any(target_os = "android", target_os = "ios")))]
@@ -1561,7 +1598,7 @@ index 0d50bc9c2dbabcb3c605800919ca8140dd84f8e0..de4357bd19b2d75d144b477f887a7d14
                  self.threads[self.current_thread].host_context = Some(curr_host_context);
                  return Some(GuestTermination::ReturnToPicker);
              }
-@@ -1957,16 +1967,14 @@ impl Environment {
+@@ -1957,16 +1976,14 @@ impl Environment {
                  let imminent_wakeup = self.threads.iter().any(|thread| {
                      let deadline = match thread.blocked_by {
                          ThreadBlock::Sleeping(due) => Some(due),
@@ -1582,7 +1619,7 @@ index 0d50bc9c2dbabcb3c605800919ca8140dd84f8e0..de4357bd19b2d75d144b477f887a7d14
              }
              // Game trainer (Cheat Engine-style memory search/patch + on-screen
              // UI). Disabled by default; skip it unless `--trainer` is enabled.
-@@ -2293,10 +2301,7 @@ impl Environment {
+@@ -2293,10 +2310,7 @@ impl Environment {
      }
  
      /// Mark a synthetic frame installed for a host-to-guest call.
@@ -1594,7 +1631,7 @@ index 0d50bc9c2dbabcb3c605800919ca8140dd84f8e0..de4357bd19b2d75d144b477f887a7d14
          let frame = (self.current_thread, frame_pointer);
          self.host_to_guest_stack_frames.push(frame);
          frame
-@@ -2614,9 +2619,7 @@ impl Environment {
+@@ -2614,9 +2628,7 @@ impl Environment {
                  }
                  let info = section.dyld_indirect_symbol_info.as_ref()?;
                  let index = (addr - section.addr) / info.entry_size;
@@ -1605,7 +1642,7 @@ index 0d50bc9c2dbabcb3c605800919ca8140dd84f8e0..de4357bd19b2d75d144b477f887a7d14
              })
          })
      }
-@@ -2890,9 +2893,7 @@ impl Environment {
+@@ -2890,9 +2902,7 @@ impl Environment {
                  // exact `fault_pc` instead.
                  let pc = legacy_pc;
                  let lr = self.cpu.regs()[cpu::Cpu::LR];
@@ -1616,7 +1653,7 @@ index 0d50bc9c2dbabcb3c605800919ca8140dd84f8e0..de4357bd19b2d75d144b477f887a7d14
                      static TRACE_COUNT: std::sync::atomic::AtomicUsize =
                          std::sync::atomic::AtomicUsize::new(0);
                      if pc >= 0x700000
-@@ -3137,10 +3138,7 @@ impl Environment {
+@@ -3137,10 +3147,7 @@ impl Environment {
                  // flood the log.
                  const MAX_UNDECODABLE_SITE_DIAGNOSTICS: usize = 8;
                  if let GuestTrapKind::UndecodableInstruction { encoding } = trap_kind {
@@ -1628,7 +1665,7 @@ index 0d50bc9c2dbabcb3c605800919ca8140dd84f8e0..de4357bd19b2d75d144b477f887a7d14
                      *site_count = site_count.saturating_add(1);
                      let site_count = *site_count;
                      let distinct_sites = self.cpu_skipped_instruction_sites.len();
-@@ -3233,7 +3231,8 @@ impl Environment {
+@@ -3233,7 +3240,8 @@ impl Environment {
                  // stable LR) are unaffected.
                  const LR_BYPASS_LIMIT: u32 = 4096;
                  let lr_count = if self.cpu_error_bypass_last_lr == Some(lr) {
@@ -1638,7 +1675,7 @@ index 0d50bc9c2dbabcb3c605800919ca8140dd84f8e0..de4357bd19b2d75d144b477f887a7d14
                      self.cpu_error_bypass_lr_count
                  } else {
                      self.cpu_error_bypass_last_lr = Some(lr);
-@@ -3384,7 +3383,9 @@ impl Environment {
+@@ -3384,7 +3392,9 @@ impl Environment {
                      };
                      let recovery_description = match recovery {
                          GuestTrapRecovery::ReturnToLr => {
@@ -1649,7 +1686,7 @@ index 0d50bc9c2dbabcb3c605800919ca8140dd84f8e0..de4357bd19b2d75d144b477f887a7d14
                          }
                          GuestTrapRecovery::UnwindFrame { frame, reason } => format!(
                              "Unwinding the frame record at r7={:#x} (saved r7={:#x}, \
-@@ -4244,7 +4245,7 @@ impl Environment {
+@@ -4244,7 +4254,7 @@ impl Environment {
          unsafe impl Send for WindowWrapper<'_> {}
  
          const NO_WINDOW_MSG: &str =
@@ -1658,7 +1695,7 @@ index 0d50bc9c2dbabcb3c605800919ca8140dd84f8e0..de4357bd19b2d75d144b477f887a7d14
               headless mode (no window). This function is only for code paths that \
               need a real window (e.g. OpenGL ES, text input, dialogs); headless-safe \
               callers must check env.window.is_none() first and skip the window-only \
-@@ -4424,11 +4425,7 @@ mod guest_trap_call_site_tests {
+@@ -4424,11 +4434,7 @@ mod guest_trap_call_site_tests {
          impl Fn(u32) -> Option<u16> + '_,
          impl Fn(u32) -> Option<u32> + '_,
      ) {
@@ -1671,7 +1708,7 @@ index 0d50bc9c2dbabcb3c605800919ca8140dd84f8e0..de4357bd19b2d75d144b477f887a7d14
          let read_u32 = move |addr: u32| {
              let lo = code.iter().find(|(a, _)| *a == addr).map(|(_, v)| *v)?;
              let hi = code
-@@ -4445,17 +4442,26 @@ mod guest_trap_call_site_tests {
+@@ -4445,17 +4451,26 @@ mod guest_trap_call_site_tests {
          // 0x8000: f000 f802  bl 0x8008
          let code = [(0x8000, 0xf000), (0x8002, 0xf802)];
          let (r16, r32) = readers(&code);
@@ -1701,7 +1738,7 @@ index 0d50bc9c2dbabcb3c605800919ca8140dd84f8e0..de4357bd19b2d75d144b477f887a7d14
      }
  
      #[test]
-@@ -4463,7 +4469,10 @@ mod guest_trap_call_site_tests {
+@@ -4463,7 +4478,10 @@ mod guest_trap_call_site_tests {
          // 0x8002: f000 e800  blx 0x8004 (Align(PC, 4) + 0)
          let code = [(0x8002, 0xf000), (0x8004, 0xe800)];
          let (r16, r32) = readers(&code);
@@ -1713,7 +1750,7 @@ index 0d50bc9c2dbabcb3c605800919ca8140dd84f8e0..de4357bd19b2d75d144b477f887a7d14
      }
  
      #[test]
-@@ -4490,17 +4499,26 @@ mod guest_trap_call_site_tests {
+@@ -4490,17 +4508,26 @@ mod guest_trap_call_site_tests {
          // 0x1000: eb000000  bl 0x1008
          let code = [(0x1000, 0x0000), (0x1002, 0xeb00)];
          let (r16, r32) = readers(&code);
@@ -1743,7 +1780,7 @@ index 0d50bc9c2dbabcb3c605800919ca8140dd84f8e0..de4357bd19b2d75d144b477f887a7d14
  
          // 0x1000: e12fff33  blx r3
          let code = [(0x1000, 0xff33), (0x1002, 0xe12f)];
-@@ -4513,17 +4531,29 @@ mod guest_trap_call_site_tests {
+@@ -4513,17 +4540,29 @@ mod guest_trap_call_site_tests {
          // Asphalt 8 shape: `bl` at 0x1e3c2 (LR=0x1e3c7), trap at 0x1e432 in
          // the same function. A call to anything outside (0x1e3c2, 0x1e432]
          // can't have produced a return address for the trapping function.
@@ -1779,7 +1816,7 @@ index 0d50bc9c2dbabcb3c605800919ca8140dd84f8e0..de4357bd19b2d75d144b477f887a7d14
      }
  }
  
-@@ -4715,9 +4745,7 @@ mod dylib_sorting_tests {
+@@ -4715,9 +4754,7 @@ mod dylib_sorting_tests {
                  "/usr/lib/libstdc++.6.dylib" | "/usr/lib/libstdc++.6.0.9.dylib" => {
                      Some(vec!["/usr/lib/libgcc_s.1.dylib".to_owned()])
                  }
@@ -4600,6 +4637,68 @@ index 2b61b70aa995cee6c90c9103ddcf4a4f446b5c94..01f05659f88fadc50bfbba5c98adf132
      let cstr = env.mem.alloc_and_write_cstr(s.as_bytes());
      msg_class![env; NSString stringWithUTF8String:cstr]
  }
+diff --git a/src/frameworks/foundation/ns_dictionary.rs b/src/frameworks/foundation/ns_dictionary.rs
+index c095cace2970c8d6ef5838649e3fbafd55796eb9..7a2e6faa2bb01a54b4007b46d817bdb35c531590 100644
+--- a/src/frameworks/foundation/ns_dictionary.rs
++++ b/src/frameworks/foundation/ns_dictionary.rs
+@@ -80,6 +80,9 @@ impl DictionaryHostObject {
+             if candidate_key == key || msg![env; candidate_key isEqual:key] {
+                 release(env, *existing_value);
+                 *existing_value = value;
++                // The original stored key remains in the dictionary. Balance
++                // the new key's copy/retain, even if it is the same object.
++                release(env, key);
+                 return;
+             }
+         }
+@@ -1611,22 +1614,35 @@ pub const CLASSES: ClassExports = objc_classes! {
+ 
+ - (())setValue:(id)value
+         forKey:(id)key { // NSString *
+-    // Apple raises NSInvalidArgumentException for non-string keys in KVC.
+-    // We log and continue: crashing the emulator would be worse than a
+-    // slightly-off dictionary mutation.
++    // KVC requires a string key. Keep the existing compatibility forwarding
++    // for other keys, but don't infer which guest or host operation made one.
++    // https://developer.apple.com/documentation/foundation/nsmutabledictionary/setvalue(_:forkey:)
+     if key != nil {
+         let nsstring_class = env.objc.get_known_class("NSString", &mut env.mem);
+         let key_class: Class = msg![env; key class];
+         if !env.objc.class_is_subclass_of(key_class, nsstring_class) {
+-            // Include the actual class name: ad-SDK code (e.g. PlayHaven) that
+-            // passes non-string keys on a real device passes strings, so the
+-            // class name tells us which earlier call produced a wrong object.
+-            log!(
+-                "Warning: -[NSMutableDictionary setValue:forKey:] called \
+-                 with non-string key {:?} (class {}); continuing anyway.",
+-                key,
+-                env.objc.get_class_name(key_class)
+-            );
++            const KVC_LOG_LIMIT: u8 = 8;
++            let count = env.nonstring_kvc_warning_count;
++            env.nonstring_kvc_warning_count = count.saturating_add(1);
++            if count < KVC_LOG_LIMIT {
++                log!(
++                    "Warning: -[NSMutableDictionary setValue:forKey:] called \
++                     with non-string key {:?} (class {}); continuing anyway. \
++                     Cause unknown; thread={} PC={:#x} LR={:#x} [{}/{}]",
++                    key,
++                    env.objc.get_class_name(key_class),
++                    env.current_thread,
++                    env.cpu.regs()[crate::cpu::Cpu::PC],
++                    env.cpu.regs()[crate::cpu::Cpu::LR],
++                    count + 1,
++                    KVC_LOG_LIMIT,
++                );
++                if count == 0 {
++                    env.stack_trace_current();
++                }
++            } else if count == KVC_LOG_LIMIT {
++                log!("Warning: further non-string dictionary KVC warnings suppressed; cause remains unknown.");
++            }
+         }
+     }
+     if value == nil {
 diff --git a/src/frameworks/foundation/ns_file_manager.rs b/src/frameworks/foundation/ns_file_manager.rs
 index 882e5c1d04183e76676778a7a402ec541d29dad1..c450b4b4b5f52adc4da197d4ebd498ecb0a244be 100644
 --- a/src/frameworks/foundation/ns_file_manager.rs
@@ -4668,6 +4767,435 @@ index 7af4d55a864390b6682934ddc7726468a0fd9bb0..e12926b18ec4f760705ef72796d9140d
                              .to_string(),
                      })
                  } else if length == 0 {
+diff --git a/src/frameworks/foundation/ns_value.rs b/src/frameworks/foundation/ns_value.rs
+index d0521de0aa8cc9017ce168afb7831ba72ee4c4ee..e3dd3fb1747464bd61c238db5345b1b995fe9cd8 100644
+--- a/src/frameworks/foundation/ns_value.rs
++++ b/src/frameworks/foundation/ns_value.rs
+@@ -39,7 +39,6 @@ use crate::objc::{
+     HostObject, NSZonePtr, SEL,
+ };
+ use crate::Environment;
+-use std::cmp::Ordering;
+ 
+ #[derive(Debug)]
+ pub(super) enum NSValueHostObject {
+@@ -62,82 +61,8 @@ impl Default for NSValueHostObject {
+ }
+ impl HostObject for NSValueHostObject {}
+ 
+-macro_rules! impl_AsValue {
+-    ($method_name:tt, $typ:tt) => {
+-        pub fn $method_name(&self) -> $typ {
+-            match self {
+-                // Cast to u8 is needed for float conversions
+-                NSNumberHostObject::Bool(x) => *x as u8 as _,
+-                NSNumberHostObject::UnsignedLongLong(x) => *x as _,
+-                NSNumberHostObject::UnsignedInt(x) => *x as _,
+-                NSNumberHostObject::Int(x) => *x as _,
+-                NSNumberHostObject::LongLong(x) => *x as _,
+-                NSNumberHostObject::Float(x) => *x as _,
+-                NSNumberHostObject::Double(x) => *x as _,
+-                NSNumberHostObject::Short(x) => *x as _,
+-                NSNumberHostObject::UnsignedShort(x) => *x as _,
+-                NSNumberHostObject::Char(x) => *x as _,
+-            }
+-        }
+-    };
+-}
+-
+-#[derive(Debug)]
+-pub(super) enum NSNumberHostObject {
+-    Bool(bool),
+-    UnsignedLongLong(u64),
+-    UnsignedInt(u32),
+-    Int(i32), // Also covers Integer and Long since this is a 32-bit platform.
+-    LongLong(i64),
+-    Float(f32),
+-    Double(f64),
+-    Short(i16),
+-    UnsignedShort(u16),
+-    Char(i8),
+-}
+-impl Default for NSNumberHostObject {
+-    // Used only as the phantom-fallback value when the objc runtime is asked
+-    // to `borrow`/`borrow_mut` a missing/wrong-typed object. Choosing
+-    // `Int(0)` matches the bridged Cocoa convention that a fresh NSNumber
+-    // with no specified type behaves like a zero integer.
+-    fn default() -> Self {
+-        NSNumberHostObject::Int(0)
+-    }
+-}
+-impl HostObject for NSNumberHostObject {}
+-
+-impl NSNumberHostObject {
+-    fn as_bool(&self) -> bool {
+-        match self {
+-            NSNumberHostObject::Bool(x) => *x,
+-            NSNumberHostObject::UnsignedLongLong(x) => *x != 0,
+-            NSNumberHostObject::UnsignedInt(x) => *x != 0,
+-            NSNumberHostObject::Int(x) => *x != 0,
+-            NSNumberHostObject::LongLong(x) => *x != 0,
+-            NSNumberHostObject::Float(x) => *x != 0.0,
+-            NSNumberHostObject::Double(x) => *x != 0.0,
+-            NSNumberHostObject::Short(x) => *x != 0,
+-            NSNumberHostObject::UnsignedShort(x) => *x != 0,
+-            NSNumberHostObject::Char(x) => *x != 0,
+-        }
+-    }
+-    fn is_float(&self) -> bool {
+-        matches!(
+-            self,
+-            NSNumberHostObject::Float(_) | NSNumberHostObject::Double(_)
+-        )
+-    }
+-    impl_AsValue!(as_int, i32);
+-    impl_AsValue!(as_long_long, i64);
+-    impl_AsValue!(as_unsigned_long_long, u64);
+-    impl_AsValue!(as_unsigned_int, u32);
+-    impl_AsValue!(as_float, f32);
+-    impl_AsValue!(as_double, f64);
+-    impl_AsValue!(as_short, i16);
+-    impl_AsValue!(as_unsigned_short, u16);
+-    impl_AsValue!(as_char, i8);
+-    impl_AsValue!(as_i128, i128);
+-}
++mod number;
++pub(super) use number::NSNumberHostObject;
+ 
+ /// Decode a scalar value described by a single-character ObjC type encoding.
+ /// Mirrors the mapping used by NSNumber's `-initWithBytes:objCType:`.
+@@ -1271,23 +1196,8 @@ pub const CLASSES: ClassExports = objc_classes! {
+ }
+ 
+ - (NSUInteger)hash {
+-    // The only requirement for [obj hash] is that values that compare equal
+-    // (via [obj isEqual] have the same hash. Hashing the underlying
+-    // bits works here.
+-    let value =
+-    match env.objc.borrow(this) {
+-        NSNumberHostObject::Bool(value) => *value as u64,
+-        NSNumberHostObject::UnsignedLongLong(value) => *value,
+-        NSNumberHostObject::UnsignedInt(value) => *value as u64,
+-        NSNumberHostObject::Int(value) => *value as u64,
+-        NSNumberHostObject::LongLong(value) => *value as u64,
+-        NSNumberHostObject::Float(value) => value.to_bits() as u64,
+-        NSNumberHostObject::Double(value) => value.to_bits(),
+-        NSNumberHostObject::Short(value) => *value as u64,
+-        NSNumberHostObject::UnsignedShort(value) => *value as u64,
+-        NSNumberHostObject::Char(value) => *value as u64,
+-    };
+-    super::hash_helper(&value)
++    let key = env.objc.borrow::<NSNumberHostObject>(this).hash_key();
++    super::hash_helper(&key)
+ }
+ 
+ - (bool)isEqual:(id)other {
+@@ -1309,42 +1219,7 @@ pub const CLASSES: ClassExports = objc_classes! {
+ - (NSComparisonResult)compare:(id)other { // NSNumber *
+     let num = env.objc.borrow::<NSNumberHostObject>(this);
+     let other_num = env.objc.borrow::<NSNumberHostObject>(other);
+-    let ordering = match (num.is_float(), other_num.is_float()) {
+-        (false, false) => num.as_i128().cmp(&other_num.as_i128()),
+-        // In case of having a float, we promote to double for comparison.
+-        // This follows the same total ordering as Foundation's
+-        // CFNumberCompare (CoreFoundation `CFNumber.c`): NaN compares equal
+-        // to NaN; a lone NaN is greater than a negative value and less than a
+-        // positive value; and signed zero is respected (-0.0 < +0.0).
+-        _ => {
+-            let d1 = num.as_double();
+-            let d2 = other_num.as_double();
+-            // `copysign(1.0, x)` yields ±1.0 from the sign bit even for NaN
+-            // and signed zero, matching CFNumberCompare's `s1`/`s2`.
+-            let s1 = 1.0_f64.copysign(d1);
+-            let s2 = 1.0_f64.copysign(d2);
+-            if d1.is_nan() && d2.is_nan() {
+-                Ordering::Equal
+-            } else if d1.is_nan() {
+-                if s2 < 0.0 { Ordering::Greater } else { Ordering::Less }
+-            } else if d2.is_nan() {
+-                if s1 < 0.0 { Ordering::Less } else { Ordering::Greater }
+-            } else if s1 < s2 {
+-                Ordering::Less
+-            } else if s2 < s1 {
+-                Ordering::Greater
+-            } else if d1 < d2 {
+-                Ordering::Less
+-            } else if d2 < d1 {
+-                Ordering::Greater
+-            } else {
+-                // Equal as doubles: break exact ties using the full-precision
+-                // integer representation (covers large integers that lose
+-                // precision when promoted to f64).
+-                num.as_i128().cmp(&other_num.as_i128())
+-            }
+-        },
+-    };
++    let ordering = num.compare(other_num);
+     from_rust_ordering(ordering)
+ }
+ 
+diff --git a/src/frameworks/foundation/ns_value/number.rs b/src/frameworks/foundation/ns_value/number.rs
+new file mode 100644
+index 0000000000000000000000000000000000000000..9e32997d622068d47ace2c6c2419baa549dd99e2
+--- /dev/null
++++ b/src/frameworks/foundation/ns_value/number.rs
+@@ -0,0 +1,256 @@
++/*
++ * This Source Code Form is subject to the terms of the Mozilla Public
++ * License, v. 2.0. If a copy of the MPL was not distributed with this
++ * file, You can obtain one at https://mozilla.org/MPL/2.0/.
++ */
++//! Representation and comparison used by NSNumber.
++
++use crate::objc::HostObject;
++use std::cmp::Ordering;
++
++macro_rules! impl_AsValue {
++    ($method_name:tt, $typ:tt) => {
++        pub fn $method_name(&self) -> $typ {
++            match self {
++                // Cast to u8 is needed for float conversions
++                NSNumberHostObject::Bool(x) => *x as u8 as _,
++                NSNumberHostObject::UnsignedLongLong(x) => *x as _,
++                NSNumberHostObject::UnsignedInt(x) => *x as _,
++                NSNumberHostObject::Int(x) => *x as _,
++                NSNumberHostObject::LongLong(x) => *x as _,
++                NSNumberHostObject::Float(x) => *x as _,
++                NSNumberHostObject::Double(x) => *x as _,
++                NSNumberHostObject::Short(x) => *x as _,
++                NSNumberHostObject::UnsignedShort(x) => *x as _,
++                NSNumberHostObject::Char(x) => *x as _,
++            }
++        }
++    };
++}
++
++#[derive(Debug)]
++pub enum NSNumberHostObject {
++    Bool(bool),
++    UnsignedLongLong(u64),
++    UnsignedInt(u32),
++    Int(i32), // Also covers Integer and Long since this is a 32-bit platform.
++    LongLong(i64),
++    Float(f32),
++    Double(f64),
++    Short(i16),
++    UnsignedShort(u16),
++    Char(i8),
++}
++impl Default for NSNumberHostObject {
++    // Used only as the phantom-fallback value when the objc runtime is asked
++    // to `borrow`/`borrow_mut` a missing/wrong-typed object. Choosing
++    // `Int(0)` matches the bridged Cocoa convention that a fresh NSNumber
++    // with no specified type behaves like a zero integer.
++    fn default() -> Self {
++        NSNumberHostObject::Int(0)
++    }
++}
++impl HostObject for NSNumberHostObject {}
++
++#[derive(Debug, PartialEq, Eq, Hash)]
++pub(super) enum NumberHashKey {
++    Integer(i128),
++    Floating(u64),
++    NaN,
++}
++
++impl NSNumberHostObject {
++    pub(super) fn as_bool(&self) -> bool {
++        match self {
++            NSNumberHostObject::Bool(x) => *x,
++            NSNumberHostObject::UnsignedLongLong(x) => *x != 0,
++            NSNumberHostObject::UnsignedInt(x) => *x != 0,
++            NSNumberHostObject::Int(x) => *x != 0,
++            NSNumberHostObject::LongLong(x) => *x != 0,
++            NSNumberHostObject::Float(x) => *x != 0.0,
++            NSNumberHostObject::Double(x) => *x != 0.0,
++            NSNumberHostObject::Short(x) => *x != 0,
++            NSNumberHostObject::UnsignedShort(x) => *x != 0,
++            NSNumberHostObject::Char(x) => *x != 0,
++        }
++    }
++    pub(super) fn is_float(&self) -> bool {
++        matches!(
++            self,
++            NSNumberHostObject::Float(_) | NSNumberHostObject::Double(_)
++        )
++    }
++    impl_AsValue!(as_int, i32);
++    impl_AsValue!(as_long_long, i64);
++    impl_AsValue!(as_unsigned_long_long, u64);
++    impl_AsValue!(as_unsigned_int, u32);
++    impl_AsValue!(as_float, f32);
++    impl_AsValue!(as_double, f64);
++    impl_AsValue!(as_short, i16);
++    impl_AsValue!(as_unsigned_short, u16);
++    impl_AsValue!(as_char, i8);
++    impl_AsValue!(as_i128, i128);
++
++    /// Canonicalize representations that compare equal, without collapsing
++    /// nearby large integer keys into the same rounded f64 hash bucket.
++    /// CFNumberCompare treats all NaNs as equal and distinguishes signed zero;
++    /// sharing a hash for +/-0 is harmless even though they compare differently.
++    /// https://developer.apple.com/documentation/objectivec/nsobjectprotocol/hash
++    pub(super) fn hash_key(&self) -> NumberHashKey {
++        if !self.is_float() {
++            return NumberHashKey::Integer(self.as_i128());
++        }
++        let value = self.as_double();
++        if value.is_nan() {
++            NumberHashKey::NaN
++        } else if value.is_finite()
++            && value == value.trunc()
++            && value >= i64::MIN as f64
++            // u64::MAX rounds up to 2^64 as f64, so the bound is exclusive.
++            && value < u64::MAX as f64
++        {
++            NumberHashKey::Integer(value as i128)
++        } else {
++            NumberHashKey::Floating(value.to_bits())
++        }
++    }
++
++    pub(super) fn compare(&self, other: &Self) -> Ordering {
++        match (self.is_float(), other.is_float()) {
++            (false, false) => self.as_i128().cmp(&other.as_i128()),
++            // Keep the existing CFNumberCompare ordering: all NaNs compare
++            // equal, a lone NaN lies between negative and positive values,
++            // and -0.0 is distinct from +0.0. Integer ties remain exact.
++            _ => {
++                let d1 = self.as_double();
++                let d2 = other.as_double();
++                let s1 = 1.0_f64.copysign(d1);
++                let s2 = 1.0_f64.copysign(d2);
++                if d1.is_nan() && d2.is_nan() {
++                    Ordering::Equal
++                } else if d1.is_nan() {
++                    if s2 < 0.0 {
++                        Ordering::Greater
++                    } else {
++                        Ordering::Less
++                    }
++                } else if d2.is_nan() {
++                    if s1 < 0.0 {
++                        Ordering::Less
++                    } else {
++                        Ordering::Greater
++                    }
++                } else if s1 < s2 {
++                    Ordering::Less
++                } else if s2 < s1 {
++                    Ordering::Greater
++                } else if d1 < d2 {
++                    Ordering::Less
++                } else if d2 < d1 {
++                    Ordering::Greater
++                } else {
++                    self.as_i128().cmp(&other.as_i128())
++                }
++            }
++        }
++    }
++}
++
++#[cfg(test)]
++mod tests {
++    use super::NSNumberHostObject as N;
++    use std::cmp::Ordering;
++
++    #[test]
++    fn equal_values_in_all_representations_share_hash_keys() {
++        let values = [
++            N::Bool(true),
++            N::UnsignedLongLong(1),
++            N::UnsignedInt(1),
++            N::Int(1),
++            N::LongLong(1),
++            N::Float(1.0),
++            N::Double(1.0),
++            N::Short(1),
++            N::UnsignedShort(1),
++            N::Char(1),
++            N::Int(-17),
++            N::LongLong(-17),
++            N::Float(-17.0),
++            N::Double(-17.0),
++            N::Float(0.5),
++            N::Double(0.5),
++            N::Int(0),
++            N::Float(0.0),
++            N::Double(0.0),
++            N::Float(-0.0),
++            N::Double(-0.0),
++            N::Float(f32::INFINITY),
++            N::Double(f64::INFINITY),
++            N::Float(f32::NEG_INFINITY),
++            N::Double(f64::NEG_INFINITY),
++            N::Float(f32::from_bits(0xffc0_0001)),
++            N::Double(f64::from_bits(0x7ff8_0000_0000_0001)),
++            N::Double(f64::from_bits(0xfff8_0000_0000_0002)),
++            N::UnsignedLongLong(1u64 << 53),
++            N::Double((1u64 << 53) as f64),
++            N::UnsignedLongLong((1u64 << 53) + 1),
++            N::LongLong(i64::MIN),
++            N::Double(i64::MIN as f64),
++            N::UnsignedLongLong(1u64 << 63),
++            N::Double((1u64 << 63) as f64),
++            N::UnsignedLongLong(u64::MAX),
++            N::Double(u64::MAX as f64),
++        ];
++        for a in &values {
++            for b in &values {
++                if a.compare(b) == Ordering::Equal {
++                    assert_eq!(a.hash_key(), b.hash_key(), "{a:?} vs {b:?}");
++                }
++            }
++        }
++        assert_ne!(N::Float(-0.0).compare(&N::Int(0)), Ordering::Equal);
++        assert_eq!(
++            N::Float(f32::NAN).compare(&N::Double(f64::NAN)),
++            Ordering::Equal
++        );
++    }
++
++    #[test]
++    fn large_integer_keys_remain_distinct_and_exact() {
++        let a = N::UnsignedLongLong(1u64 << 53);
++        let b = N::UnsignedLongLong((1u64 << 53) + 1);
++        assert_ne!(a.hash_key(), b.hash_key());
++        assert_eq!(a.compare(&b), Ordering::Less);
++        assert_eq!(
++            b.compare(&N::Double((1u64 << 53) as f64)),
++            Ordering::Greater
++        );
++    }
++
++    #[test]
++    fn deterministic_numeric_pairs_preserve_the_hash_contract() {
++        let mut bits = 0x1234_5678_9abc_def0u64;
++        for _ in 0..10_000 {
++            bits ^= bits << 13;
++            bits ^= bits >> 7;
++            bits ^= bits << 17;
++            let values = [
++                N::UnsignedLongLong(bits),
++                N::LongLong(bits as i64),
++                N::Double(bits as f64),
++                N::Double((bits as i64) as f64),
++                N::Float(f32::from_bits(bits as u32)),
++                N::Double(f32::from_bits(bits as u32) as f64),
++                N::Double(f64::from_bits(bits)),
++            ];
++            for a in &values {
++                for b in &values {
++                    if a.compare(b) == Ordering::Equal {
++                        assert_eq!(a.hash_key(), b.hash_key(), "{a:?} vs {b:?}");
++                    }
++                }
++            }
++        }
++    }
++}
 diff --git a/src/frameworks/foundation/url_loading.rs b/src/frameworks/foundation/url_loading.rs
 index 21b0e0c09fabb62e97ee6565ed461b09acd53067..9a9bb84bad40b1f2a8234d7fd02b2e2ceafc19bc 100644
 --- a/src/frameworks/foundation/url_loading.rs
@@ -5993,7 +6521,7 @@ index 3253a5d59aa1a7cb48dffdb25057fd212a7f94c7..5d86b80213f619482ac3ed44482c82e7
 +    assert!(!host.changed_for_timer(timer, 0));
 +}
 diff --git a/src/frameworks/uikit.rs b/src/frameworks/uikit.rs
-index 9f6b71116cdb0a99157e39ffb83363b33f9bae9e..9d29d7b1a09365d6edf3084534c215cd0e88c04f 100644
+index 9f6b71116cdb0a99157e39ffb83363b33f9bae9e..989889af14c6dc5cde2f5997555225e2ed5ad1d9 100644
 --- a/src/frameworks/uikit.rs
 +++ b/src/frameworks/uikit.rs
 @@ -21,9 +21,7 @@ fn UIAccessibilityIsGuidedAccessEnabled(_env: &mut Environment) -> bool {
@@ -6007,7 +6535,7 @@ index 9f6b71116cdb0a99157e39ffb83363b33f9bae9e..9d29d7b1a09365d6edf3084534c215cd
  
  pub mod ns_paragraph_style;
  pub mod ui_accelerometer;
-@@ -32,12 +30,12 @@ pub mod ui_activity;
+@@ -32,12 +30,13 @@ pub mod ui_activity;
  pub mod ui_activity_indicator_view;
  pub mod ui_alert_controller;
  pub mod ui_application;
@@ -6016,12 +6544,13 @@ index 9f6b71116cdb0a99157e39ffb83363b33f9bae9e..9d29d7b1a09365d6edf3084534c215cd
  pub mod ui_custom_object;
  pub mod ui_device;
  pub mod ui_document;
++pub mod ui_edge_insets;
  pub mod ui_event;
 -pub mod ui_bezier_path;
  pub mod ui_font;
  pub mod ui_geometry;
  pub mod ui_gesture_recognizer;
-@@ -1024,6 +1022,7 @@ pub struct State {
+@@ -1024,6 +1023,7 @@ pub struct State {
      ui_geometry: ui_geometry::State,
      ui_graphics: ui_graphics::State,
      ui_image: ui_image::State,
@@ -6029,7 +6558,7 @@ index 9f6b71116cdb0a99157e39ffb83363b33f9bae9e..9d29d7b1a09365d6edf3084534c215cd
      ui_keyboard: ui_keyboard::State,
      ui_launch_delegate: ui_launch_delegate::State,
      ui_screen: ui_screen::State,
-@@ -1069,7 +1068,9 @@ pub(crate) fn handle_events_with_result(env: &mut Environment) -> (Option<Instan
+@@ -1069,7 +1069,9 @@ pub(crate) fn handle_events_with_result(env: &mut Environment) -> (Option<Instan
              Event::CloseWindow => {
                  if !env.is_app_picker && cfg!(not(any(target_os = "android", target_os = "ios"))) {
                      echo!("Game window closed; returning to the app picker.");
@@ -6040,7 +6569,7 @@ index 9f6b71116cdb0a99157e39ffb83363b33f9bae9e..9d29d7b1a09365d6edf3084534c215cd
                      break;
                  } else {
                      echo!("User closed the app picker window, exiting.");
-@@ -1135,7 +1136,9 @@ pub(crate) fn handle_events_with_result(env: &mut Environment) -> (Option<Instan
+@@ -1135,7 +1137,9 @@ pub(crate) fn handle_events_with_result(env: &mut Environment) -> (Option<Instan
                      if env.objc.class_is_subclass_of(class, ui_text_field_class) {
                          match text_event {
                              TextInputEvent::Text(text) => {
@@ -6051,7 +6580,7 @@ index 9f6b71116cdb0a99157e39ffb83363b33f9bae9e..9d29d7b1a09365d6edf3084534c215cd
                              }
                              TextInputEvent::Backspace => {
                                  ui_view::ui_control::ui_text_field::handle_backspace(env, responder)
-@@ -1145,17 +1148,24 @@ pub(crate) fn handle_events_with_result(env: &mut Environment) -> (Option<Instan
+@@ -1145,17 +1149,24 @@ pub(crate) fn handle_events_with_result(env: &mut Environment) -> (Option<Instan
                              }
                          }
                      } else {
@@ -6080,7 +6609,7 @@ index 9f6b71116cdb0a99157e39ffb83363b33f9bae9e..9d29d7b1a09365d6edf3084534c215cd
                                  }
                              }
                          } else {
-@@ -1190,7 +1200,9 @@ pub(crate) fn handle_events_with_result(env: &mut Environment) -> (Option<Instan
+@@ -1190,7 +1201,9 @@ pub(crate) fn handle_events_with_result(env: &mut Environment) -> (Option<Instan
  mod accessibility_export_tests {
      #[test]
      fn guided_access_query_is_exported_as_a_function() {
@@ -6091,6 +6620,92 @@ index 9f6b71116cdb0a99157e39ffb83363b33f9bae9e..9d29d7b1a09365d6edf3084534c215cd
              .flat_map(|table| table.iter())
              .filter(|(name, _)| *name == "_UIAccessibilityIsGuidedAccessEnabled")
              .collect();
+diff --git a/src/frameworks/uikit/ui_edge_insets.rs b/src/frameworks/uikit/ui_edge_insets.rs
+new file mode 100644
+index 0000000000000000000000000000000000000000..9bee28ba72ce4e0d3d36a2798ba8ccf73a016a23
+--- /dev/null
++++ b/src/frameworks/uikit/ui_edge_insets.rs
+@@ -0,0 +1,80 @@
++/*
++ * This Source Code Form is subject to the terms of the Mozilla Public
++ * License, v. 2.0. If a copy of the MPL was not distributed with this
++ * file, You can obtain one at https://mozilla.org/MPL/2.0/.
++ */
++//! The four-CGFloat UIKit inset type, in the 32-bit guest ABI.
++
++use crate::abi::{impl_GuestRet_for_large_struct, GuestArg};
++use crate::frameworks::core_graphics::CGFloat;
++use crate::mem::SafeRead;
++
++#[derive(Copy, Clone, Debug, Default, PartialEq)]
++#[repr(C, packed)]
++pub struct UIEdgeInsets {
++    pub top: CGFloat,
++    pub left: CGFloat,
++    pub bottom: CGFloat,
++    pub right: CGFloat,
++}
++unsafe impl SafeRead for UIEdgeInsets {}
++
++// Apple's ARM ABI returns aggregates larger than four bytes via an implicit
++// pointer; methods returning these insets must use objc_msgSend_stret.
++// https://developer.apple.com/library/archive/documentation/Xcode/Conceptual/iPhoneOSABIReference/Articles/ARMv6FunctionCallingConventions.html
++impl_GuestRet_for_large_struct!(UIEdgeInsets);
++impl GuestArg for UIEdgeInsets {
++    const REG_COUNT: usize = 4;
++
++    fn from_regs(regs: &[u32]) -> Self {
++        Self {
++            top: GuestArg::from_regs(&regs[0..1]),
++            left: GuestArg::from_regs(&regs[1..2]),
++            bottom: GuestArg::from_regs(&regs[2..3]),
++            right: GuestArg::from_regs(&regs[3..4]),
++        }
++    }
++
++    fn to_regs(self, regs: &mut [u32]) {
++        self.top.to_regs(&mut regs[0..1]);
++        self.left.to_regs(&mut regs[1..2]);
++        self.bottom.to_regs(&mut regs[2..3]);
++        self.right.to_regs(&mut regs[3..4]);
++    }
++}
++
++#[cfg(test)]
++mod tests {
++    use super::UIEdgeInsets;
++    use crate::abi::{GuestArg, GuestRet};
++    use crate::mem::Mem;
++
++    #[test]
++    fn guest_insets_use_four_argument_words_and_indirect_return() {
++        let insets = UIEdgeInsets {
++            top: 1.0,
++            left: -2.5,
++            bottom: 3.25,
++            right: 4.0,
++        };
++        assert_eq!(<UIEdgeInsets as GuestArg>::REG_COUNT, 4);
++        assert_eq!(<UIEdgeInsets as GuestRet>::SIZE_IN_MEM, Some(16));
++        let mut words = [0u32; 4];
++        insets.to_regs(&mut words);
++        assert_eq!(
++            words,
++            [
++                1.0f32.to_bits(),
++                (-2.5f32).to_bits(),
++                3.25f32.to_bits(),
++                4.0f32.to_bits()
++            ]
++        );
++        assert_eq!(UIEdgeInsets::from_regs(&words), insets);
++
++        let mut mem = Mem::new();
++        let result = mem.alloc(16);
++        insets.to_mem(result, &mut mem);
++        assert_eq!(UIEdgeInsets::from_mem(result.cast_const(), &mem), insets);
++    }
++}
 diff --git a/src/frameworks/uikit/ui_image_picker_controller.rs b/src/frameworks/uikit/ui_image_picker_controller.rs
 index 85a066f4bcb5d313af5637ac052485d27901e6df..98ad0be1ac687ea4feadfadbcc26493fa780c561 100644
 --- a/src/frameworks/uikit/ui_image_picker_controller.rs
@@ -6201,10 +6816,29 @@ index 36c2a8b688da0e744e5f35bf48b169e9183215e1..50fa9f62a2edc5e02079f63e7e0edccc
 +    }
 +}
 diff --git a/src/frameworks/uikit/ui_screen.rs b/src/frameworks/uikit/ui_screen.rs
-index b7cea11a0902e86221aa616edb56fba4b9353f24..ae45c71a0068892e7abd54b64442c112095d6d16 100644
+index b7cea11a0902e86221aa616edb56fba4b9353f24..928f1d92e1a660547fdf97db6726981d4088982e 100644
 --- a/src/frameworks/uikit/ui_screen.rs
 +++ b/src/frameworks/uikit/ui_screen.rs
-@@ -182,6 +182,10 @@ pub const CLASSES: ClassExports = objc_classes! {
+@@ -7,6 +7,7 @@
+ 
+ use crate::frameworks::core_graphics::{CGFloat, CGPoint, CGRect, CGSize};
+ use crate::frameworks::foundation::NSInteger;
++use crate::frameworks::uikit::ui_edge_insets::UIEdgeInsets;
+ use crate::objc::{
+     autorelease, id, msg, msg_class, nil, objc_classes, ClassExports, HostObject,
+     TrivialHostObject, SEL,
+@@ -15,7 +16,9 @@ use crate::objc::{
+ #[derive(Default)]
+ pub struct State {
+     main_screen: Option<id>,
+-    current_mode: Option<id>,
++    /// The single emulated screen's setting; no external/overscanning display
++    /// is currently modeled. UIKit defaults to UIScreenOverscanCompensationScale.
++    overscan_compensation: NSInteger,
+     /// `-brightness`, clamped to the documented 0.0-1.0 range.
+     brightness: CGFloat,
+     /// `-wantsSoftwareDimming`.
+@@ -182,6 +185,10 @@ pub const CLASSES: ClassExports = objc_classes! {
      msg_class![env; NSArray arrayWithObject:main]
  }
  
@@ -6215,6 +6849,310 @@ index b7cea11a0902e86221aa616edb56fba4b9353f24..ae45c71a0068892e7abd54b64442c112
  // MARK: - Retain / release (singleton — no-ops)
  
  - (id)retain      { this }
+@@ -307,7 +314,9 @@ pub const CLASSES: ClassExports = objc_classes! {
+ }
+ 
+ - (id)preferredMode {
+-    nil
++    // This screen exposes exactly one fixed mode, so it is also preferred.
++    // https://developer.apple.com/documentation/uikit/uiscreen/preferredmode
++    msg![env; this currentMode]
+ }
+ 
+ - (id)availableModes {
+@@ -327,10 +336,19 @@ pub const CLASSES: ClassExports = objc_classes! {
+     log_dbg!("[UIScreen setCurrentMode:] ignored; we emulate a single fixed display mode.");
+ }
+ 
+-- (CGFloat)overscanCompensationInsets {
+-    // UIEdgeInsetsZero as four floats would need a custom return type.
+-    // Return 0.0 as a stand-in; the real return type is UIEdgeInsets.
+-    0.0
++// iOS defaults to Scale (0). With no external or overscanning display, the
++// preference is observable but does not alter geometry or rendering.
++// https://developer.apple.com/library/archive/documentation/WindowsViews/Conceptual/WindowAndScreenGuide/UsingExternalDisplay/UsingExternalDisplay.html
++- (NSInteger)overscanCompensation {
++    env.framework_state.uikit.ui_screen.overscan_compensation
++}
++
++- (())setOverscanCompensation:(NSInteger)value {
++    env.framework_state.uikit.ui_screen.overscan_compensation = value;
++}
++
++- (UIEdgeInsets)overscanCompensationInsets {
++    UIEdgeInsets::default()
+ }
+ 
+ // MARK: - Mirroring (iOS 4.3+)
+@@ -425,9 +443,14 @@ pub const CLASSES: ClassExports = objc_classes! {
+ 
+ #[cfg(test)]
+ mod tests {
+-    use super::screen_size_for_orientation;
++    use super::{screen_size_for_orientation, State};
+     use crate::window::{DeviceFamily, DeviceOrientation};
+ 
++    #[test]
++    fn single_screen_defaults_to_scale_compensation() {
++        assert_eq!(State::default().overscan_compensation, 0);
++    }
++
+     #[test]
+     fn iphone_5_screen_bounds_follow_landscape_orientation() {
+         for device_family in [DeviceFamily::iPhone5, DeviceFamily::iPhone5c] {
+diff --git a/src/frameworks/uikit/ui_view/ui_collection_view.rs b/src/frameworks/uikit/ui_view/ui_collection_view.rs
+index 647e50e6a7d191f5ad44dc3fd9daeb0317d96538..d81e50ea210fd4b573d10dd819c7c62820bb60b8 100644
+--- a/src/frameworks/uikit/ui_view/ui_collection_view.rs
++++ b/src/frameworks/uikit/ui_view/ui_collection_view.rs
+@@ -22,6 +22,7 @@
+ 
+ use crate::frameworks::core_graphics::{CGFloat, CGPoint, CGRect, CGSize};
+ use crate::frameworks::foundation::{NSInteger, NSUInteger};
++use crate::frameworks::uikit::ui_edge_insets::UIEdgeInsets;
+ use crate::frameworks::uikit::ui_view::ui_scroll_view::UIScrollViewHostObject;
+ use crate::objc::{
+     id, impl_HostObject_with_superclass, msg, msg_class, msg_super, nil, objc_classes, release,
+@@ -462,22 +463,22 @@ pub const CLASSES: ClassExports = objc_classes! {
+         .footer_reference_size = size;
+ }
+ 
+-// Section insets are passed as UIEdgeInsets (four CGFloats). We use a CGRect
+-// hack since UIEdgeInsets is not a registered GuestArg type in this project.
+-- (CGRect)sectionInset {
++- (UIEdgeInsets)sectionInset {
+     let host = env.objc.borrow::<UICollectionViewFlowLayoutHostObject>(this);
+-    CGRect {
+-        origin: CGPoint { x: host.section_inset_top, y: host.section_inset_left },
+-        size: CGSize { width: host.section_inset_bottom, height: host.section_inset_right },
++    UIEdgeInsets {
++        top: host.section_inset_top,
++        left: host.section_inset_left,
++        bottom: host.section_inset_bottom,
++        right: host.section_inset_right,
+     }
+ }
+ 
+-- (())setSectionInset:(CGRect)insets {
++- (())setSectionInset:(UIEdgeInsets)insets {
+     let host = env.objc.borrow_mut::<UICollectionViewFlowLayoutHostObject>(this);
+-    host.section_inset_top = insets.origin.x;
+-    host.section_inset_left = insets.origin.y;
+-    host.section_inset_bottom = insets.size.width;
+-    host.section_inset_right = insets.size.height;
++    host.section_inset_top = insets.top;
++    host.section_inset_left = insets.left;
++    host.section_inset_bottom = insets.bottom;
++    host.section_inset_right = insets.right;
+ }
+ 
+ @end
+diff --git a/src/frameworks/uikit/ui_view/ui_control/ui_button.rs b/src/frameworks/uikit/ui_view/ui_control/ui_button.rs
+index 55ec09e064be133ab97851036e577f4cc3c4969a..f8e3051a455c73df08683c17643c544cd8a7cd02 100644
+--- a/src/frameworks/uikit/ui_view/ui_control/ui_button.rs
++++ b/src/frameworks/uikit/ui_view/ui_control/ui_button.rs
+@@ -10,10 +10,10 @@ use super::{UIControlState, UIControlStateNormal};
+ use crate::frameworks::core_graphics::{CGFloat, CGPoint, CGRect, CGSize};
+ use crate::frameworks::foundation::ns_string::{from_rust_string, get_static_str, to_rust_string};
+ use crate::frameworks::foundation::{NSInteger, NSUInteger};
++use crate::frameworks::uikit::ui_edge_insets::UIEdgeInsets;
+ use crate::frameworks::uikit::ui_font::{
+     UITextAlignmentCenter, UITextAlignmentLeft, UITextAlignmentRight,
+ };
+-use crate::mem::SafeRead;
+ use crate::objc::{
+     autorelease, id, impl_HostObject_with_superclass, msg, msg_class, msg_super, nil, objc_classes,
+     release, retain, ClassExports, HostObject, NSZonePtr,
+@@ -43,18 +43,6 @@ const UIControlContentVerticalAlignmentTop: UIControlContentVerticalAlignment =
+ const UIControlContentVerticalAlignmentBottom: UIControlContentVerticalAlignment = 2;
+ const UIControlContentVerticalAlignmentFill: UIControlContentVerticalAlignment = 3;
+ 
+-// MARK: - Edge insets
+-
+-#[derive(Copy, Clone, Debug, Default)]
+-#[repr(C, packed)]
+-pub struct UIEdgeInsets {
+-    pub top: CGFloat,
+-    pub left: CGFloat,
+-    pub bottom: CGFloat,
+-    pub right: CGFloat,
+-}
+-unsafe impl SafeRead for UIEdgeInsets {}
+-
+ // MARK: - Host objects
+ 
+ #[derive(Default)]
+@@ -153,6 +141,16 @@ fn update(env: &mut Environment, this: id) {
+     () = msg![env; this layoutSubviews];
+ }
+ 
++// Interface Builder archives these four values in the same order as a CGRect.
++fn insets_from_archived_rect(rect: CGRect) -> UIEdgeInsets {
++    UIEdgeInsets {
++        top: rect.origin.x,
++        left: rect.origin.y,
++        bottom: rect.size.width,
++        right: rect.size.height,
++    }
++}
++
+ fn inset_rect(rect: CGRect, insets: UIEdgeInsets) -> CGRect {
+     CGRect {
+         origin: CGPoint {
+@@ -382,17 +380,20 @@ pub const CLASSES: ClassExports = objc_classes! {
+     }
+     let key = get_static_str(env, "UIContentEdgeInsets");
+     if msg![env; coder containsValueForKey:key] {
+-        let insets: CGRect = msg![env; coder decodeCGRectForKey:key];
++        let rect: CGRect = msg![env; coder decodeCGRectForKey:key];
++        let insets = insets_from_archived_rect(rect);
+         () = msg![env; this setContentEdgeInsets:insets];
+     }
+     let key = get_static_str(env, "UITitleEdgeInsets");
+     if msg![env; coder containsValueForKey:key] {
+-        let insets: CGRect = msg![env; coder decodeCGRectForKey:key];
++        let rect: CGRect = msg![env; coder decodeCGRectForKey:key];
++        let insets = insets_from_archived_rect(rect);
+         () = msg![env; this setTitleEdgeInsets:insets];
+     }
+     let key = get_static_str(env, "UIImageEdgeInsets");
+     if msg![env; coder containsValueForKey:key] {
+-        let insets: CGRect = msg![env; coder decodeCGRectForKey:key];
++        let rect: CGRect = msg![env; coder decodeCGRectForKey:key];
++        let insets = insets_from_archived_rect(rect);
+         () = msg![env; this setImageEdgeInsets:insets];
+     }
+ 
+@@ -576,59 +577,28 @@ pub const CLASSES: ClassExports = objc_classes! {
+     () = msg![env; this layoutSubviews];
+ }
+ 
+-// MARK: - Edge insets (Hacked to use CGRect for GuestArg/GuestRet
+-// compatibility)
++// MARK: - Edge insets
+ 
+-- (CGRect)contentEdgeInsets {
+-    let insets = env.objc.borrow::<UIButtonHostObject>(this).content_edge_insets;
+-    CGRect {
+-        origin: CGPoint { x: insets.top, y: insets.left },
+-        size: CGSize { width: insets.bottom, height: insets.right },
+-    }
++- (UIEdgeInsets)contentEdgeInsets {
++    env.objc.borrow::<UIButtonHostObject>(this).content_edge_insets
+ }
+-- (())setContentEdgeInsets:(CGRect)rect {
+-    let insets = UIEdgeInsets {
+-        top: rect.origin.x,
+-        left: rect.origin.y,
+-        bottom: rect.size.width,
+-        right: rect.size.height,
+-    };
++- (())setContentEdgeInsets:(UIEdgeInsets)insets {
+     env.objc.borrow_mut::<UIButtonHostObject>(this).content_edge_insets = insets;
+     () = msg![env; this layoutSubviews];
+ }
+ 
+-- (CGRect)titleEdgeInsets {
+-    let insets = env.objc.borrow::<UIButtonHostObject>(this).title_edge_insets;
+-    CGRect {
+-        origin: CGPoint { x: insets.top, y: insets.left },
+-        size: CGSize { width: insets.bottom, height: insets.right },
+-    }
++- (UIEdgeInsets)titleEdgeInsets {
++    env.objc.borrow::<UIButtonHostObject>(this).title_edge_insets
+ }
+-- (())setTitleEdgeInsets:(CGRect)rect {
+-    let insets = UIEdgeInsets {
+-        top: rect.origin.x,
+-        left: rect.origin.y,
+-        bottom: rect.size.width,
+-        right: rect.size.height,
+-    };
++- (())setTitleEdgeInsets:(UIEdgeInsets)insets {
+     env.objc.borrow_mut::<UIButtonHostObject>(this).title_edge_insets = insets;
+     () = msg![env; this layoutSubviews];
+ }
+ 
+-- (CGRect)imageEdgeInsets {
+-    let insets = env.objc.borrow::<UIButtonHostObject>(this).image_edge_insets;
+-    CGRect {
+-        origin: CGPoint { x: insets.top, y: insets.left },
+-        size: CGSize { width: insets.bottom, height: insets.right },
+-    }
++- (UIEdgeInsets)imageEdgeInsets {
++    env.objc.borrow::<UIButtonHostObject>(this).image_edge_insets
+ }
+-- (())setImageEdgeInsets:(CGRect)rect {
+-    let insets = UIEdgeInsets {
+-        top: rect.origin.x,
+-        left: rect.origin.y,
+-        bottom: rect.size.width,
+-        right: rect.size.height,
+-    };
++- (())setImageEdgeInsets:(UIEdgeInsets)insets {
+     env.objc.borrow_mut::<UIButtonHostObject>(this).image_edge_insets = insets;
+     () = msg![env; this layoutSubviews];
+ }
+diff --git a/src/frameworks/uikit/ui_view/ui_scroll_view.rs b/src/frameworks/uikit/ui_view/ui_scroll_view.rs
+index 5a5c83c2f7640df7c4379bb80fd8de0cb77f80be..6adc1122908687455116fe6f3fc97a0c05b1b058 100644
+--- a/src/frameworks/uikit/ui_view/ui_scroll_view.rs
++++ b/src/frameworks/uikit/ui_view/ui_scroll_view.rs
+@@ -9,10 +9,9 @@
+ 
+ pub mod ui_text_view;
+ 
+-use crate::abi::{GuestArg, GuestRet};
+ use crate::frameworks::core_graphics::{CGFloat, CGPoint, CGRect, CGSize};
+ use crate::frameworks::foundation::NSInteger;
+-use crate::mem::SafeRead;
++use crate::frameworks::uikit::ui_edge_insets::UIEdgeInsets;
+ use crate::objc::{
+     id, impl_HostObject_with_superclass, msg, nil, objc_classes, ClassExports, NSZonePtr, SEL,
+ };
+@@ -54,34 +53,6 @@ pub struct UIScrollViewHostObject {
+ }
+ impl_HostObject_with_superclass!(UIScrollViewHostObject);
+ 
+-#[derive(Copy, Clone, Debug, Default)]
+-#[repr(C, packed)]
+-struct UIEdgeInsets {
+-    top: CGFloat,
+-    left: CGFloat,
+-    bottom: CGFloat,
+-    right: CGFloat,
+-}
+-unsafe impl SafeRead for UIEdgeInsets {}
+-impl GuestRet for UIEdgeInsets {}
+-impl GuestArg for UIEdgeInsets {
+-    const REG_COUNT: usize = 4;
+-    fn from_regs(regs: &[u32]) -> Self {
+-        UIEdgeInsets {
+-            top: GuestArg::from_regs(&regs[0..1]),
+-            left: GuestArg::from_regs(&regs[1..2]),
+-            bottom: GuestArg::from_regs(&regs[2..3]),
+-            right: GuestArg::from_regs(&regs[3..4]),
+-        }
+-    }
+-    fn to_regs(self, regs: &mut [u32]) {
+-        GuestArg::to_regs(self.top, &mut regs[0..1]);
+-        GuestArg::to_regs(self.left, &mut regs[1..2]);
+-        GuestArg::to_regs(self.bottom, &mut regs[2..3]);
+-        GuestArg::to_regs(self.right, &mut regs[3..4]);
+-    }
+-}
+-
+ impl Default for UIScrollViewHostObject {
+     fn default() -> Self {
+         UIScrollViewHostObject {
+@@ -160,8 +131,7 @@ pub const CLASSES: ClassExports = objc_classes! {
+     env.objc.borrow_mut::<UIScrollViewHostObject>(this).content_size = size;
+ }
+ 
+-// UIEdgeInsets passed as four floats (top, left, bottom, right) on the stack.
+-// We store them individually to avoid needing a SafeRead impl here.
++// The shared UIEdgeInsets type handles both argument and struct-return ABI.
+ 
+ - (UIEdgeInsets)contentInset {
+     env.objc.borrow::<UIScrollViewHostObject>(this).content_inset
 diff --git a/src/frameworks/uikit/ui_view/ui_web_view.rs b/src/frameworks/uikit/ui_view/ui_web_view.rs
 index 9d0896aabe7d493e63da0ee4a814c0822efd8d5b..15a1f8475f7b582502e3270b362eb37ba4beeed8 100644
 --- a/src/frameworks/uikit/ui_view/ui_web_view.rs
@@ -8463,7 +9401,7 @@ index 483ec5cc9439c9293b15a97206d14e2824c8794b..263c8ef0cee99ca72558e8f6977058ed
          version,
          actions,
 diff --git a/src/objc/messages.rs b/src/objc/messages.rs
-index 9254d26280ed82ac0995ca51ce2b48f99bcc76c6..6ab8443b7d9713ebf3196013b17390e0a76762a0 100644
+index 9254d26280ed82ac0995ca51ce2b48f99bcc76c6..e4f0e0dd09b890f9fb6889031eb72a9cce6dfc72 100644
 --- a/src/objc/messages.rs
 +++ b/src/objc/messages.rs
 @@ -122,7 +122,6 @@ fn trace_cocos_menu(env: &mut Environment, menu: id, touch: id) {
@@ -8589,22 +9527,48 @@ index 9254d26280ed82ac0995ca51ce2b48f99bcc76c6..6ab8443b7d9713ebf3196013b17390e0
          }
          if SEEN
              .lock()
-@@ -407,18 +468,19 @@ fn objc_msgSend_inner(
-         let count = NIL_ISA_COUNT.fetch_add(1, Ordering::Relaxed);
+@@ -393,32 +454,36 @@ fn objc_msgSend_inner(
+     }
+ 
+     let orig_class = super2.unwrap_or_else(|| ObjC::read_isa(receiver, &env.mem));
+-    // Graceful exit if isa is nil — this typically means the object was
+-    // already deallocated (use-after-free in guest code) or was never
+-    // properly allocated. Per Apple's Objective-C runtime behavior,
+-    // messaging a deallocated object is undefined behavior, but we handle
+-    // it gracefully by returning nil/0 instead of crashing.
++    // A non-nil receiver with a nil isa may be an invalid guest pointer or
++    // an emulator defect; the cause is unknown here. Preserve the existing
++    // compatibility fallback of returning nil/0 and report the evidence.
+     if orig_class == nil {
+         // Rate-limit these warnings to avoid flooding the log when the
+         // guest app has a use-after-free bug that triggers repeatedly.
+-        use std::sync::atomic::{AtomicUsize, Ordering};
+-        static NIL_ISA_COUNT: AtomicUsize = AtomicUsize::new(0);
+-        const NIL_ISA_LOG_LIMIT: usize = 8;
+-        let count = NIL_ISA_COUNT.fetch_add(1, Ordering::Relaxed);
++        const NIL_ISA_LOG_LIMIT: u8 = 8;
++        let count = env.nil_isa_warning_count;
++        env.nil_isa_warning_count = count.saturating_add(1);
          if count < NIL_ISA_LOG_LIMIT {
              log!(
 -                "Warning: receiver {:?} has nil isa! Ignoring message \"{}\". \
 -                 (This usually means the object was already freed — use-after-free \
 -                 in guest code.) [{}/{}]",
 +                "Warning: receiver {:?} has nil isa for \"{}\"; compatibility fallback returns zero. \
-+                 Cause unknown (invalid guest pointer or emulator bug); PC={:#x} LR={:#x} [{}/{}]",
++                 Cause unknown (invalid guest pointer or emulator bug); thread={} PC={:#x} LR={:#x} [{}/{}]",
                  receiver,
                  selector.as_str(&env.mem),
++                env.current_thread,
 +                env.cpu.regs()[crate::cpu::Cpu::PC],
 +                env.cpu.regs()[crate::cpu::Cpu::LR],
                  count + 1,
                  NIL_ISA_LOG_LIMIT,
              );
++            // One bounded, best-effort guest frame walk gives the caller's
++            // context without hiding the warning or flooding a game's log.
++            if count == 0 {
++                env.stack_trace_current();
++            }
          } else if count == NIL_ISA_LOG_LIMIT {
              log!(
                  "Warning: suppressing further nil-isa warnings ({} already logged). \
@@ -8613,7 +9577,7 @@ index 9254d26280ed82ac0995ca51ce2b48f99bcc76c6..6ab8443b7d9713ebf3196013b17390e0
                  NIL_ISA_LOG_LIMIT,
              );
          }
-@@ -1069,7 +1131,10 @@ Type mismatch when sending message {} to {:?}!
+@@ -1069,7 +1134,10 @@ Type mismatch when sending message {} to {:?}!
          } else {
              let sel_name = selector.as_str(&env.mem).to_owned();
              let class_name = env.objc.try_get_class_name(class).map(|s| s.to_owned());
@@ -8625,7 +9589,7 @@ index 9254d26280ed82ac0995ca51ce2b48f99bcc76c6..6ab8443b7d9713ebf3196013b17390e0
              let type_name = host_object.type_name();
              log!(
                  "Item {class:?} ({:?}) in superclass chain of object {receiver:?}'s class {orig_class:?} ({:?}) has an unexpected host object type ({}). Selector: \"{}\". Behaving as if message was sent to nil.",
-@@ -2526,11 +2591,8 @@ pub(super) fn objc_enumerationMutation(env: &mut Environment, obj: id) {
+@@ -2526,11 +2594,8 @@ pub(super) fn objc_enumerationMutation(env: &mut Environment, obj: id) {
      let seen = guard.get_or_insert_with(Default::default);
      if seen.insert(class) {
          let name = env.objc.get_class_name(class).to_owned();
@@ -9565,6 +10529,218 @@ index 0000000000000000000000000000000000000000..c82cebf9d37c4194394d0ea5ebeefffa
 +        assert_eq!(sample([0.0; 6], 1), Some(((0.0, 0.0, 0.0), 0.000001)));
 +    }
 +}
+diff --git a/tests/TestApp_source/FoundationNumberDictionaryTests.m b/tests/TestApp_source/FoundationNumberDictionaryTests.m
+new file mode 100644
+index 0000000000000000000000000000000000000000..b5894304c2ee8110386a09cd8f2b36731d2ca674
+--- /dev/null
++++ b/tests/TestApp_source/FoundationNumberDictionaryTests.m
+@@ -0,0 +1,98 @@
++/*
++ * This Source Code Form is subject to the terms of the Mozilla Public
++ * License, v. 2.0. If a copy of the MPL was not distributed with this
++ * file, You can obtain one at https://mozilla.org/MPL/2.0/.
++ */
++#ifdef DEFINE_ME_WHEN_BUILDING_ON_MACOS
++#import <Foundation/Foundation.h>
++#else
++#import "system_headers.h"
++typedef struct _NSZone NSZone;
++@interface NSMutableDictionary : NSDictionary
++- (void)setObject:(id)object forKey:(id)key;
++- (void)setValue:(id)value forKey:(id)key;
++@end
++@interface NSNumber (NumberDictionaryTests)
+++ (NSNumber *)numberWithInt:(int)value;
+++ (NSNumber *)numberWithDouble:(double)value;
++- (BOOL)isEqualToNumber:(NSNumber *)other;
++- (NSUInteger)hash;
++@end
++#endif
++
++// Equal objects must have equal hashes, regardless of their numeric storage:
++// https://developer.apple.com/documentation/objectivec/nsobjectprotocol/hash
++int test_NSNumber_dictionary_equal_numeric_keys(void) {
++  NSAutoreleasePool *pool = [[NSAutoreleasePool alloc] init];
++  NSMutableDictionary *dict = [[NSMutableDictionary alloc] init];
++  NSNumber *integer = [NSNumber numberWithInt:-17];
++  NSNumber *single = [NSNumber numberWithFloat:-17.0f];
++  NSNumber *dbl = [NSNumber numberWithDouble:-17.0];
++  NSObject *first = [[NSObject alloc] init];
++  NSObject *second = [[NSObject alloc] init];
++  int result = 0;
++  if (![integer isEqualToNumber:single] || ![single isEqualToNumber:dbl] ||
++      [integer hash] != [single hash] || [single hash] != [dbl hash])
++    result = -1;
++  [dict setObject:first forKey:integer];
++  if (!result && [dict objectForKey:single] != first) result = -2;
++  [dict setObject:second forKey:dbl];
++  if (!result && ([dict count] != 1 || [dict objectForKey:integer] != second))
++    result = -3;
++  // Documented KVC with a string key sets then removes an entry on nil.
++  // Numeric keys use setObject:forKey: above, not non-string KVC.
++  // https://developer.apple.com/documentation/foundation/nsmutabledictionary/setvalue(_:forkey:)
++  [dict setValue:first forKey:@"key"];
++  [dict setValue:nil forKey:@"key"];
++  if (!result && ([dict count] != 1 || [dict objectForKey:@"key"] != nil))
++    result = -4;
++  [dict release];
++  [first release];
++  [second release];
++  [pool drain];
++  return result;
++}
++
++static int dictionary_test_keys_freed;
++@interface DictionaryTestKey : NSObject {
++@public
++  int identity;
++}
++- (id)copyWithZone:(NSZone *)zone;
++@end
++@implementation DictionaryTestKey
++- (id)copyWithZone:(NSZone *)zone {
++  (void)zone;
++  return [self retain];
++}
++- (NSUInteger)hash { return 23; }
++- (BOOL)isEqual:(id)other {
++  return other != nil && ((DictionaryTestKey *)other)->identity == identity;
++}
++- (void)dealloc {
++  dictionary_test_keys_freed++;
++  [super dealloc];
++}
++@end
++
++int test_NSDictionary_replacement_releases_unused_copied_key(void) {
++  NSAutoreleasePool *pool = [[NSAutoreleasePool alloc] init];
++  NSMutableDictionary *dict = [[NSMutableDictionary alloc] init];
++  DictionaryTestKey *a = [[DictionaryTestKey alloc] init];
++  DictionaryTestKey *b = [[DictionaryTestKey alloc] init];
++  NSObject *value = [[NSObject alloc] init];
++  dictionary_test_keys_freed = 0;
++  a->identity = b->identity = 7;
++  [dict setObject:value forKey:a];
++  [dict setObject:value forKey:a]; // same object, copied twice
++  [dict setObject:value forKey:b]; // distinct but equal object
++  int result = [dict count] == 1 ? 0 : -1;
++  [a release];
++  [b release];
++  if (!result && dictionary_test_keys_freed != 1) result = -2;
++  [dict release];
++  if (!result && dictionary_test_keys_freed != 2) result = -3;
++  [value release];
++  [pool drain];
++  return result;
++}
+diff --git a/tests/TestApp_source/ScreenInsetsTests.m b/tests/TestApp_source/ScreenInsetsTests.m
+new file mode 100644
+index 0000000000000000000000000000000000000000..1a85d6d958c60f60410ce878c8e14c06ffb4eb45
+--- /dev/null
++++ b/tests/TestApp_source/ScreenInsetsTests.m
+@@ -0,0 +1,66 @@
++/*
++ * This Source Code Form is subject to the terms of the Mozilla Public
++ * License, v. 2.0. If a copy of the MPL was not distributed with this
++ * file, You can obtain one at https://mozilla.org/MPL/2.0/.
++ */
++#include "system_headers.h"
++
++// The test SDK predates these UIKit declarations. On 32-bit iOS, CGFloat is
++// float and the four-float result is returned through objc_msgSend_stret.
++typedef struct {
++  CGFloat top, left, bottom, right;
++} TestEdgeInsets;
++@interface UIScreen (ScreenInsetsTests)
++- (NSInteger)overscanCompensation;
++- (void)setOverscanCompensation:(NSInteger)value;
++- (TestEdgeInsets)overscanCompensationInsets;
++@end
++@interface UICollectionViewFlowLayout : NSObject
++- (void)setSectionInset:(TestEdgeInsets)value;
++- (TestEdgeInsets)sectionInset;
++@end
++
++// Only the device screen is emulated. UIKit's default is Scale and an
++// overscan-free screen has zero insets for each supported setting:
++// https://developer.apple.com/library/archive/documentation/WindowsViews/Conceptual/WindowAndScreenGuide/UsingExternalDisplay/UsingExternalDisplay.html
++int test_UIScreen_overscan_insets_and_abi(void) {
++  NSAutoreleasePool *pool = [[NSAutoreleasePool alloc] init];
++  UIScreen *screen = [UIScreen mainScreen];
++  int result = 0;
++  if (screen == nil || ![screen respondsToSelector:@selector(overscanCompensation)] ||
++      ![screen respondsToSelector:@selector(setOverscanCompensation:)] ||
++      ![screen respondsToSelector:@selector(overscanCompensationInsets)]) {
++    [pool drain];
++    return -1;
++  }
++  NSInteger old = [screen overscanCompensation];
++  if (old != 0) result = -2;
++  for (NSInteger mode = 0; mode <= 2; mode++) {
++    [screen setOverscanCompensation:mode];
++    if (!result && [screen overscanCompensation] != mode) result = -3;
++    struct {
++      unsigned before;
++      TestEdgeInsets insets;
++      unsigned after;
++    } guarded = {0x12345678u, {9, 9, 9, 9}, 0x87654321u};
++    guarded.insets = [screen overscanCompensationInsets];
++    if (!result && (guarded.before != 0x12345678u || guarded.after != 0x87654321u ||
++                    guarded.insets.top != 0 || guarded.insets.left != 0 ||
++                    guarded.insets.bottom != 0 || guarded.insets.right != 0))
++      result = -4;
++  }
++  [screen setOverscanCompensation:old];
++
++  // A nonzero value also exercises all four argument words (split across
++  // registers/stack) and a struct return on a second UIKit class.
++  UICollectionViewFlowLayout *layout = [[UICollectionViewFlowLayout alloc] init];
++  TestEdgeInsets expected = {1, -2.5f, 3.25f, 4};
++  [layout setSectionInset:expected];
++  TestEdgeInsets actual = [layout sectionInset];
++  if (!result && (actual.top != expected.top || actual.left != expected.left ||
++                  actual.bottom != expected.bottom || actual.right != expected.right))
++    result = -5;
++  [layout release];
++  [pool drain];
++  return result;
++}
+diff --git a/tests/TestApp_source/cli_tests.m b/tests/TestApp_source/cli_tests.m
+index c9903cc6652788d9d4b8bfb3ca87660828019918..304b1379f2d3379c5c45600d7aa9cb2c73736732 100644
+--- a/tests/TestApp_source/cli_tests.m
++++ b/tests/TestApp_source/cli_tests.m
+@@ -74,6 +74,9 @@ int test_NSHashTable_copy_is_independent(void);
+ int test_NSHashTable_copy_owns_members(void);
+ int test_NSHashTable_copy_empty(void);
+ int test_NSData_base64_data(void);
++int test_NSNumber_dictionary_equal_numeric_keys(void);
++int test_NSDictionary_replacement_releases_unused_copied_key(void);
++int test_UIScreen_overscan_insets_and_abi(void);
+ 
+ static int perform_selector_on_main_thread_calls;
+ 
+@@ -7655,6 +7658,9 @@ struct {
+     FUNC_DEF(test_NSHashTable_copy_owns_members),
+     FUNC_DEF(test_NSHashTable_copy_empty),
+     FUNC_DEF(test_NSData_base64_data),
++    FUNC_DEF(test_NSNumber_dictionary_equal_numeric_keys),
++    FUNC_DEF(test_NSDictionary_replacement_releases_unused_copied_key),
++    FUNC_DEF(test_UIScreen_overscan_insets_and_abi),
+     FUNC_DEF(test_NSBundle_subbundleCacheRetainsAutoreleasedBundle),
+ };
+ // clang-format on
+diff --git a/tests/TestApp_source/system_headers.h b/tests/TestApp_source/system_headers.h
+index 14b402e74364ad219fc0c32b0416fe023b1a0cd4..609aa72e9491545767eaebf5d6d41b9093a4829e 100644
+--- a/tests/TestApp_source/system_headers.h
++++ b/tests/TestApp_source/system_headers.h
+@@ -16,6 +16,7 @@
+ #include <CoreFoundation/CFURL.h>
+ #include <stdbool.h>
+ #include <stddef.h>
++#include <stdint.h>
+ 
+ // Objective-C runtime
+ 
 diff --git a/touchHLE_apps/README.txt b/touchHLE_apps/README.txt
 index 5fb5bfeb73d920cf4ea240f6d0242c7463a7fc1e..49c58e51d1e6e8e12e58ade05ec75ce93bfd1fc8 100644
 --- a/touchHLE_apps/README.txt

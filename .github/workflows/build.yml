@@ -149,6 +149,10 @@ jobs:
           python3 -m unittest discover -s tests -p 'test_patch_upgrade.py'
           rustc --edition=2021 --test tests/runtime_geometry.rs -o .local/runtime-geometry-test
           .local/runtime-geometry-test
+          rustc --edition=2021 --test tests/runtime_insets.rs -o .local/runtime-insets-test
+          .local/runtime-insets-test
+          rustc --edition=2021 --test tests/runtime_number.rs -o .local/runtime-number-test
+          .local/runtime-number-test
           rustc --edition=2021 --test tests/runtime_scale.rs -o .local/runtime-scale-test
           .local/runtime-scale-test
           rustc --edition=2021 --test tests/runtime_magnetometer.rs -o .local/runtime-magnetometer-test
