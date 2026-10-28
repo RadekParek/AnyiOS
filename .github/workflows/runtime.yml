@@ -71,6 +71,16 @@ jobs:
         run: |
           set -o pipefail
           scripts/test-converter.sh 2>&1 | tee .local/logs/converter-tests.log
+      - name: Native guest graphics and frame-clock regressions
+        if: ${{ !((github.event_name == 'pull_request' && contains(github.event.pull_request.title, '[AnyiOSEMU]')) || (github.event_name == 'push' && contains(github.event.head_commit.message, '[AnyiOSEMU]'))) }}
+        run: |
+          set -o pipefail
+          cmake -S converter/native -B .local/native-graphics-tests \
+            -DCMAKE_BUILD_TYPE=Debug -DRADEK_BUILD_COMPAT_RUNTIME=ON -DRADEK_FETCH_DYNARMIC=OFF
+          cmake --build .local/native-graphics-tests --parallel 4 --target \
+            compat-runtime-gles-abi-tests compat-runtime-gles2-abi-tests compat-runtime-lifecycle-tests
+          ctest --test-dir .local/native-graphics-tests --output-on-failure \
+            -R 'compat-runtime-(gles-abi|gles2-abi|lifecycle)'
       - name: Formatting and script lint
         run: |
           set -o pipefail

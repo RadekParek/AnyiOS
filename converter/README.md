@@ -4,11 +4,11 @@
 
 An **offline IPA inspection and bounded native-reconstruction workbench** for authorized inputs. It includes an Android importer/analyzer, a C++ Mach-O parser, and Python reconstruction tools.
 
-> **One bounded subset converts for real; everything else stays honestly unbuilt.** When an IPA's whole executable is statically proven to be exactly one closed-integer ARM entry routine (MOV-immediate, MOVK, register MOV, immediate ADD/SUB, RET) with no imports, dependencies, fixups or runtime metadata, both the host CLI and the on-device app convert it end to end into a signed, installable APK (`complete-game-v1`) — on Android this happens automatically during import, no extra button needed: the statically recompiled entry is packaged as `libconverted.so` and runs through JNI when the launcher opens, showing the message recovered from the IPA. The three-instruction `tests/data/hello-test.ipa` displays `hello test succesfull`; `tests/data/simple.ipa` adds a deterministic 128-operation ARM64 routine and also converts through the same path. Outside that proven subset nothing is statically recompiled: the host can still lower the entry routine into a standalone shared object and report compatibility registries, and on the `convert` path it packages those artifacts into a signed, explicitly labelled **experimental shell** APK (`experimental-shell-v1`) that states on screen that no game code is statically recompiled. In the Android app, **Force convert → Native runtime** builds the existing separate `game-runtime-v1` boot-attempt APK containing the original ARM executable, bundle, and guest runtime (including its shared Dynarmic dependency). A separately generated portable-C handoff can also be imported; the on-device builder revalidates the ARM64 ELF, Android dependencies, all translated-function exports, JNI entry point, executable binding, and payload hashes before packaging and selecting it at boot. That translated runner is not connected to Android EGL/GLES, so pixels and gameplay remain unverified. The compatibility guest-CPU runner has no artificial instruction-count or wall-clock cutoff and may stay alive in its render loop; both paths stop only at a real runtime boundary or setup failure. The launcher keeps a black game viewport visible while it runs and leaves diagnostics open if it stops; this is not the complete-game static recompilation contract. A source-free preview shell remains an explicit fallback. The host-only `--diagnostic-probe` flag uses a finite time window so CI can inspect an infinite-looping guest without changing the APK behavior. Device gameplay remains dependent on the implemented framework/input surface and is not claimed merely from a boot trace.
+> **One bounded subset converts for real; everything else stays honestly unbuilt.** When an IPA's whole executable is statically proven to be exactly one closed-integer ARM entry routine (MOV-immediate, MOVK, register MOV, immediate ADD/SUB, RET) with no imports, dependencies, fixups or runtime metadata, both the host CLI and the on-device app convert it end to end into a signed, installable APK (`complete-game-v1`) — on Android this can happen after explicit IPA analysis, not automatically during import: the statically recompiled entry is packaged as `libconverted.so` and runs through JNI when the launcher opens, showing the message recovered from the IPA. The three-instruction `tests/data/hello-test.ipa` displays `hello test succesfull`; `tests/data/simple.ipa` adds a deterministic 128-operation ARM64 routine and also converts through the same path. Outside that proven subset nothing is statically recompiled: the host can still lower the entry routine into a standalone shared object and report compatibility registries, and on the `convert` path it packages those artifacts into a signed, explicitly labelled **experimental shell** APK (`experimental-shell-v1`) that states on screen that no game code is statically recompiled. In the Android app, **Force convert → Native runtime** builds the existing separate `game-runtime-v1` boot-attempt APK containing the original ARM executable, bundle, and guest runtime (including statically linked Dynarmic). A separately generated portable-C handoff can also be imported; the on-device builder rechecks the ARM64 ELF header, executable/payload hashes, and consistency of host-reported dependency/export/JNI evidence before packaging and selecting it at boot; it does not independently inspect those ELF symbols or dependencies. That translated runner is not connected to Android EGL/GLES, so pixels and gameplay remain unverified. The compatibility guest-CPU runner has no artificial instruction-count or wall-clock cutoff and may stay alive in its render loop; both paths stop only at a real runtime boundary or setup failure. The launcher keeps a black game viewport visible while it runs and leaves diagnostics open if it stops; this is not the complete-game static recompilation contract. A separate preview-shell builder contract remains, but the former game-detail control was removed. The host-only `--diagnostic-probe` flag uses a finite time window so CI can inspect an infinite-looping guest without changing the APK behavior. Device gameplay remains dependent on the implemented framework/input surface and is not claimed merely from a boot trace.
 
 ## Force convert runtime choices
 
-- **Native runtime** is the previous diagnostic game-runtime boot attempt, not the strict static single-routine converter. Its guest runner has no Android EGL/GLES renderer and does not establish gameplay.
+- **Native runtime** is the diagnostic ARM32 guest boot attempt, not the strict static single-routine converter. Its guest-CPU path has partial Android EGL/GLES1/GLES2 and framework bridges; the optional translated portable-C runner has no connected EGL renderer. Neither establishes gameplay.
 - **Semi-Emulated** embeds the IPA, AnyiOSEMU, SDL, ANGLE and notices in a signed one-game APK. Its private transparent launcher verifies the IPA off the UI thread without a preparation screen, starts the game automatically at the available display resolution/refresh, and requests maximum-FPS display-link callbacks by default; that experimental promotion can accelerate game logic. Emulator error dialogs are suppressed for this host; Android may still show system UI for early failures or ANRs, and quiet fatal native exits forgo system tombstones. The installed result does not depend on AnyiOS. This is emulation, not native recompilation, and compatibility and FPS require device testing. The emulator currently executes ARM32 slices only; ARM64-only and encrypted/unverified sources are rejected.
 
 ### Display profiles and compatibility issues
@@ -201,9 +201,9 @@ candidate, `libcompat_runtime_v1.so` guest-adapter catalog entry, compiled `libi
 implementation export, or reviewed semantic target) and therefore reaches 100% for a fully triaged
 IPA. The *same-name NDK candidate subset* is the strict count of symbols whose exact name exists in
 the reviewed Android catalog; it is divided by all distinct imports and excludes Darwin spellings
-and guest-runtime adapters. The provider-catalog count is another, separate measure: in the checked-in
-Angry Birds v1.0 fixture, `181/254` are strict same-name candidates and `73/254` have non-same-name
-guest-runtime adapter catalog entries. Those 73 are not static NDK links, per-image fixup results, or
+and guest-runtime adapters. The provider-catalog count is another, separate measure: in an earlier
+Angry Birds v1.0 fixture audit, `181/254` were strict same-name candidates and `73/254` were non-same-name
+guest-runtime adapter catalog entries; the expanded catalog can change those counts. Those entries are not static NDK links, per-image fixup results, or
 proof of full API semantics. The eight compiler-runtime/unwind candidates are reported on their own
 axis, and all eight happen to have guest-adapter catalog entries in this fixture; that is not a static
 NDK compiler-rt/libunwind link or proof those imports were bound for a loaded image. At runtime, the
@@ -218,9 +218,10 @@ provider or adapter is identified. Each dependency edge reports imports associat
 ordinal, with association completeness and separate counts for device-verified exports,
 host-tested implementation bodies, stub-only handlers, and imports with none of those facts. These
 counts always keep callsites linked, runtime calls observed, and recompiled bytes linked at zero.
-Foundation, UIKit, CoreGraphics, audio/media, networking, and other framework mappings without ABI
-adapters are candidates only. CoreFoundation is a limited C subset; QuartzCore has only the C time /
-frame-callback slice, not Apple Objective-C classes or game integration.
+Foundation, UIKit, CoreGraphics, audio/media, networking and other framework mappings are partial
+or candidates, not complete framework implementations. The bounded static/portable-C path has
+limited C CoreFoundation and a C frame-callback service. The separate Native guest has partial
+Objective-C CADisplayLink, CALayer and NSRunLoop adapters; none proves game linkage or playback.
 
 `libioscompat.so` contains host-tested
 C/time/POSIX compatibility functions and a limited CoreFoundation C object/collection/run-loop
@@ -233,7 +234,8 @@ still claims no per-callsite API replacement.
 
 A native C frame-callback service is driven by Android `Choreographer` in the bounded launcher's
 lifecycle. It is not the Objective-C `CADisplayLink` class/selector ABI, and no game callsite uses
-it yet. The `libgcc_s.1.dylib` mapping is not a drop-in `libgcc_s.so` alias: some ARM32 arithmetic
+it yet. The separate Native guest uses its own partial Objective-C display-link/run-loop adapter
+and Android clock signal; guest callbacks run on its guest thread. The `libgcc_s.1.dylib` mapping is not a drop-in `libgcc_s.so` alias: some ARM32 arithmetic
 helpers and unwind boundaries have guest-runtime adapters, while static NDK compiler-rt/libunwind
 linking and full SjLj/personality/landing-pad semantics remain separate and unclaimed. GNU
 `libstdc++.6.dylib` is also only a candidate: LLVM
@@ -248,10 +250,9 @@ then resolve to an explicit stub handler instead of nothing. The on-device triag
 toward verified implementations or generated API implementations. The host likewise generates a per-IPA
 registry source in which every observed import is classified exactly as `verified` or
 `stubbed-unimplemented`. Symbol-triage percentages describe categorization, not static recompilation
-coverage. Foundation has no Foundation/Objective-C ABI adapter; UIKit, CoreGraphics, audio, input,
-game lifecycle and general resource APIs remain candidate targets or unsupported when required.
-CoreFoundation support is only the tested C object/collection/run-loop subset above; the full
-CoreFoundation ABI remains unsupported.
+coverage. The bounded static path does not provide a general Objective-C ABI; Native has only a
+limited Objective-C/lifecycle adapter, not full Foundation, UIKit, CoreGraphics, audio or input.
+The full CoreFoundation and QuartzCore ABIs remain unsupported.
 
 ## Build and test
 

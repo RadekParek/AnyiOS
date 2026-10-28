@@ -360,7 +360,9 @@ class SplashScreenLauncherTests(unittest.TestCase):
         self.assertIn("SPLASHES.dat", gameboot_java)
         self.assertIn("latestGameSurface", gameboot_java)
         self.assertIn("Color.BLACK", gameboot_java)
-        self.assertIn("publishGameSurface(latestGameSurface)", gameboot_java)
+        self.assertIn("republishLatestSurface()", gameboot_java)
+        self.assertIn("synchronized (surfacePublicationLock)", gameboot_java)
+        self.assertIn("setGameSurface(latestGameSurface)", gameboot_java)
 
         placeholder_java = (
             REPO_ROOT

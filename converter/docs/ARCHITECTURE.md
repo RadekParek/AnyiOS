@@ -26,8 +26,12 @@
   contains tested libc/POSIX and limited CoreFoundation object/collection/run-loop C APIs; it is not
   the full Foundation/CoreFoundation or Objective-C ABI.
 - `native/src/cad_display_link_compat.cpp` and `converted-template/.../FrameClockBridge.java`:
-  lifecycle-scoped Choreographer-to-C-callback dispatch for the native frame-link service. It is
-  not an Objective-C `CADisplayLink` class/selector bridge and is not connected to IPA callsites.
+  lifecycle-scoped Choreographer-to-C-callback dispatch for the bounded static path. It is not an
+  Objective-C bridge and is not connected to IPA callsites. The separate Native guest implements a
+  partial CADisplayLink/NSRunLoop selector adapter and JNI/Choreographer signal; callbacks execute
+  on its guest run loop, not the UI thread. Run-loop modes and full Core Animation remain incomplete.
+- `native/src/compat_runtime/gles_shims.cpp`: partial ARM32 GLES1/GLES2 forwarding and shared
+  EAGL/window ownership for the Native guest. The portable-C runner has no connected EGL backend.
 - `native/src/ioscompat_registry.cpp`: the libioscompat dynamic resolution registry. Individual
   tested compatibility exports are seeded; unmapped Darwin imports are registered at runtime
   (`radek_compat_register_stub`, JNI `compatRegisterStub`) onto individually counted stub
@@ -98,12 +102,12 @@ inventory and API triage.
 - `READY`: entered only when the bounded complete-conversion gate proves the executable is exactly
   one closed-integer routine and a signed `complete-game-v1` APK was built and statically validated.
 
-Proven IPAs are converted automatically during import — the signed APK whose statically recompiled entry runs
-through JNI is built and attached with no user action, leaving the entry in `READY`. The red **Force
+Import does not automatically analyze a game. After explicit IPA analysis, a proven bounded-subset
+IPA can have a signed APK built and attached automatically, leaving the entry in `READY`. The red **Force
 convert to .apk** action never overrides these states: for proven IPAs it simply rebuilds the
 converted APK; everything else gets a separately named, signed `game-runtime-v1` boot-attempt APK
 that packs the selected ARM executable, bundle, `libcompat_runtime_v1.so`, and required `statically linked dynarmic`.
-The default compatibility guest-CPU path has no artificial instruction/time budget on the device. It stops at a documented runtime boundary — the first unimplemented import it touches, a guest exception, memory/execution fault, unavailable backend, or setup failure — while the diagnostic activity remains open; it does not claim playability. An optional, independently linked and hash-bound portable-C handoff can be imported and selected by the game-runtime boot path after ELF/dependency/export/JNI/payload checks. Its JNI runner is not connected to EGL/GLES, so pixels/gameplay are unverified; Android build/device validation remains outstanding. A source-free preview shell is available as an explicit fallback. Its
+The default compatibility guest-CPU path has no artificial instruction/time budget on the device. It stops at a documented runtime boundary — the first unimplemented import it touches, a guest exception, memory/execution fault, unavailable backend, or setup failure — while the diagnostic activity remains open; it does not claim playability. An optional, independently linked and hash-bound portable-C handoff can be imported and selected by the game-runtime boot path after ELF/dependency/export/JNI/payload checks. Its JNI runner is not connected to EGL/GLES, so pixels/gameplay are unverified; Android build/device validation remains outstanding. A source-free preview shell remains a separate builder contract; its former game-detail control is removed. Its
 launcher displays that the shell started and that no statically recompiled executable is included;
 it does not display converter branding or static-analysis details. The artifact metadata
 (`placeholder-info.json` retains the preview summary, and the report keeps
@@ -136,8 +140,8 @@ linker has something to bind, and so accidental invocation is counted instead of
 placeholder/experimental status from artifact metadata is prohibited—the metadata keeps emitted
 artifacts honest without showing static-analysis details on the launcher.
 
-Future graphics providers should separate API command/state capture from an Android GLES backend;
-Metal requires shader/type static recompilation plus an appropriate Android rendering backend. Neither
-exists, so unsupported APIs remain blocked rather than bound to no-ops. Framework providers should
+The Native guest's partial GLES forwarder separates guest-memory/state handling from the Android
+GLES driver; it is not a complete graphics implementation. Metal requires shader/type static
+recompilation plus an appropriate Android rendering backend, which is not implemented. Framework providers should
 be introduced behind a versioned ABI symbol registry and tests of observable behavior, not by
 accepting symbol names alone.

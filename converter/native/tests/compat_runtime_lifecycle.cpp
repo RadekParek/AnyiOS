@@ -18,9 +18,13 @@
 // No Dynarmic: every assertion is about adapter state and callout results, which
 // is exactly what the boot runner consumes.
 #include "compat_runtime/objc_shims.hpp"
+#include "compat_runtime/gles_shims.hpp"
 #include "compat_runtime/shim_registry.hpp"
 
 #include <cstdint>
+#include <chrono>
+#include <cmath>
+#include <thread>
 #include <cstdio>
 #include <cstring>
 #include <stdexcept>
@@ -420,8 +424,159 @@ int main() {
             CHECK(!finished.runLoopRunning);
             CHECK(finished.runLoopExited);
         }
-        // Native is fixed-function ES1 only. Reject an ES2 request instead of
-        // returning a misleading ES1 context; ES1 initialization still works.
+        // CADisplayLink's Android clock only signals the guest thread. Guest
+        // selectors, retained link/target lifetime, pause and rate gating all
+        // remain on the same run-loop continuation as other guest callbacks.
+        {
+            fixture.objc.setMainThreadServiceLimit(fixture.memory, 0);
+            objc::setDisplayClockRunning(true);
+            const auto linkClass = fixture.classData("_OBJC_CLASS_$_CADisplayLink");
+            const auto loopClass = fixture.classData("_OBJC_CLASS_$_NSRunLoop");
+            CpuRegisterState currentLoop;
+            std::string reason;
+            CHECK(fixture.send(loopClass, "currentRunLoop", currentLoop, reason) == GuestCalloutResult::Returned);
+            const auto loopObject = currentLoop.r[0];
+            CHECK(loopObject != 0);
+            CpuRegisterState create;
+            create.r[2] = delegate;
+            create.r[3] = fixture.selectorAddress("mainloop");
+            CHECK(fixture.send(linkClass, "displayLinkWithTarget:selector:", create, reason) == GuestCalloutResult::Returned);
+            const auto link = create.r[0];
+            CHECK(link != 0);
+            CpuRegisterState paused; paused.r[2] = 1;
+            CHECK(fixture.send(link, "setPaused:", paused, reason) == GuestCalloutResult::Returned);
+            CpuRegisterState add; add.r[2] = loopObject;
+            CHECK(fixture.send(link, "addToRunLoop:forMode:", add, reason) == GuestCalloutResult::Returned);
+            CHECK(!objc::displayClockNeeded());
+            CpuRegisterState resume; resume.r[2] = 0;
+            CHECK(fixture.send(link, "setPaused:", resume, reason) == GuestCalloutResult::Returned);
+            CHECK(objc::displayClockNeeded());
+            CpuRegisterState interval; interval.r[2] = 2;
+            CHECK(fixture.send(link, "setFrameInterval:", interval, reason) == GuestCalloutResult::Returned);
+            CHECK(objc::postTouchToActiveGuest(1, 2, "touchesMoved"));
+            CHECK(objc::postDisplayFrame(1'000'000'000, 16'666'667));
+            std::thread secondFrame([] {
+                std::this_thread::sleep_for(std::chrono::milliseconds(5));
+                objc::postDisplayFrame(1'016'666'667, 16'666'667);
+            });
+            CpuRegisterState loop;
+            loop.r[13] = kStackBase + 0x800;
+            loop.r[14] = 0x44556677;
+            std::string loopReason;
+            const auto firstResult = fixture.registry.invokeCallout(fixture.callout("_CFRunLoopRun"), loop,
+                                                                     fixture.memory, loopReason);
+            secondFrame.join();
+            CHECK(firstResult == GuestCalloutResult::Transferred);
+            CHECK((loop.r[15] & ~GuestAddress{1}) == kMainLoopImplementation);
+            CHECK(loop.r[0] == delegate && loop.r[2] == link);
+            CpuRegisterState timestamp;
+            CHECK(fixture.send(link, "timestamp", timestamp, reason) == GuestCalloutResult::Returned);
+            std::uint64_t bits = (static_cast<std::uint64_t>(timestamp.r[1]) << 32) | timestamp.r[0];
+            double seconds = 0;
+            std::memcpy(&seconds, &bits, sizeof(seconds));
+            CHECK(std::fabs(seconds - 1.016666667) < 1e-9);
+            CpuRegisterState duration;
+            CHECK(fixture.send(link, "duration", duration, reason) == GuestCalloutResult::Returned);
+            bits = (static_cast<std::uint64_t>(duration.r[1]) << 32) | duration.r[0];
+            std::memcpy(&seconds, &bits, sizeof(seconds));
+            CHECK(std::fabs(seconds - 0.016666667) < 1e-9);
+            CpuRegisterState stop; stop.r[2] = 1;
+            CHECK(fixture.send(link, "setPaused:", stop, reason) == GuestCalloutResult::Returned);
+            CHECK(!objc::displayClockNeeded());
+            CHECK(!objc::postDisplayFrame(1'033'333'334, 16'666'667));
+            CpuRegisterState everyFrame; everyFrame.r[2] = 1;
+            CHECK(fixture.send(link, "setFrameInterval:", everyFrame, reason) == GuestCalloutResult::Returned);
+            CpuRegisterState preferred; preferred.r[2] = 30;
+            CHECK(fixture.send(link, "setPreferredFramesPerSecond:", preferred, reason) == GuestCalloutResult::Returned);
+            CpuRegisterState restart; restart.r[2] = 0;
+            CHECK(fixture.send(link, "setPaused:", restart, reason) == GuestCalloutResult::Returned);
+            CHECK(objc::postDisplayFrame(1'033'333'333, 16'666'666));
+            std::thread rateFrame([] {
+                std::this_thread::sleep_for(std::chrono::milliseconds(5));
+                objc::postDisplayFrame(1'049'999'999, 16'666'666); // 2 ns short of 1/30 s
+                std::this_thread::sleep_for(std::chrono::milliseconds(10));
+                objc::postDisplayFrame(1'066'666'665, 16'666'666); // safety wakeup for a failing gate
+            });
+            CpuRegisterState next = loop;
+            std::string nextReason;
+            const auto nextResult = fixture.registry.invokeCallout(fixture.callout("_radek_lifecycle_continuation"),
+                                                                    next, fixture.memory, nextReason);
+            rateFrame.join();
+            CHECK(nextResult == GuestCalloutResult::Transferred && next.r[2] == link);
+            CpuRegisterState gatedTimestamp;
+            CHECK(fixture.send(link, "timestamp", gatedTimestamp, reason) == GuestCalloutResult::Returned);
+            bits = (static_cast<std::uint64_t>(gatedTimestamp.r[1]) << 32) | gatedTimestamp.r[0];
+            std::memcpy(&seconds, &bits, sizeof(seconds));
+            CHECK(std::fabs(seconds - 1.049999999) < 1e-9);
+            CpuRegisterState release;
+            CHECK(fixture.send(link, "release", release, reason) == GuestCalloutResult::Returned);
+            CpuRegisterState invalidate;
+            CHECK(fixture.send(link, "invalidate", invalidate, reason) == GuestCalloutResult::Returned);
+            CHECK(!objc::displayClockNeeded());
+            CpuRegisterState exiting = next;
+            std::string exitReason;
+            CHECK(fixture.registry.invokeCallout(fixture.callout("_radek_lifecycle_continuation"),
+                                                 exiting, fixture.memory, exitReason) == GuestCalloutResult::Returned);
+            CHECK(exiting.r[14] == 0x44556677);
+            // Factory results are autoreleased, but a scheduled run loop owns
+            // its link until invalidation, even after the caller's pool drains.
+            CpuRegisterState push;
+            CHECK(fixture.registry.invokeCallout(fixture.callout("_objc_autoreleasePoolPush"),
+                                                 push, fixture.memory, reason) == GuestCalloutResult::Returned);
+            const auto pool = push.r[0];
+            CpuRegisterState pooledCreate; pooledCreate.r[2] = delegate;
+            pooledCreate.r[3] = fixture.selectorAddress("mainloop");
+            CHECK(fixture.send(linkClass, "displayLinkWithTarget:selector:", pooledCreate, reason) == GuestCalloutResult::Returned);
+            const auto pooledLink = pooledCreate.r[0]; CHECK(pooledLink != 0);
+            CpuRegisterState pooledAdd; pooledAdd.r[2] = loopObject;
+            CHECK(fixture.send(pooledLink, "addToRunLoop:forMode:", pooledAdd, reason) == GuestCalloutResult::Returned);
+            CpuRegisterState pop; pop.r[0] = pool;
+            CHECK(fixture.registry.invokeCallout(fixture.callout("_objc_autoreleasePoolPop"),
+                                                 pop, fixture.memory, reason) == GuestCalloutResult::Returned);
+            CHECK(fixture.memory.contains(pooledLink, 4, MemoryPermission::Read));
+            CpuRegisterState pooledInvalidate;
+            CHECK(fixture.send(pooledLink, "invalidate", pooledInvalidate, reason) == GuestCalloutResult::Returned);
+            CHECK(!fixture.memory.contains(pooledLink, 4, MemoryPermission::Read));
+            // Android-attached timers use monotonic time instead of running
+            // virtual 1/60-second intervals as fast as the CPU can execute.
+            // Backgrounding suspends callbacks and resuming wakes the loop.
+            objc::prepareDisplayClock(true);
+            const auto timerClass = fixture.classData("_OBJC_CLASS_$_NSTimer");
+            const auto timerSelector = fixture.selectorAddress("mainloop");
+            const double timerDelay = 0.025;
+            std::uint64_t timerBits = 0; std::memcpy(&timerBits, &timerDelay, sizeof(timerBits));
+            CpuRegisterState timer; timer.r[13] = kStackBase + 0x800;
+            timer.r[2] = static_cast<std::uint32_t>(timerBits);
+            timer.r[3] = static_cast<std::uint32_t>(timerBits >> 32);
+            const std::array<std::uint32_t, 4> timerArgs{delegate, timerSelector, 0, 0};
+            CHECK(fixture.memory.write(timer.r[13], timerArgs.data(), sizeof(timerArgs)));
+            CHECK(fixture.send(timerClass, "scheduledTimerWithTimeInterval:target:selector:userInfo:repeats:",
+                               timer, reason) == GuestCalloutResult::Returned);
+            objc::setDisplayClockRunning(false);
+            std::thread resumeClock([] {
+                std::this_thread::sleep_for(std::chrono::milliseconds(35));
+                objc::setDisplayClockRunning(true);
+            });
+            CpuRegisterState timedLoop; timedLoop.r[13] = kStackBase + 0x800; timedLoop.r[14] = 0x55667788;
+            const auto started = std::chrono::steady_clock::now();
+            std::string timedReason;
+            const auto timedResult = fixture.registry.invokeCallout(fixture.callout("_CFRunLoopRun"),
+                                                                      timedLoop, fixture.memory, timedReason);
+            const auto waited = std::chrono::steady_clock::now() - started;
+            resumeClock.join();
+            CHECK(timedResult == GuestCalloutResult::Transferred);
+            CHECK(waited >= std::chrono::milliseconds(25));
+            CHECK((timedLoop.r[15] & ~GuestAddress{1}) == kMainLoopImplementation);
+            CpuRegisterState timedExit = timedLoop;
+            CHECK(fixture.registry.invokeCallout(fixture.callout("_radek_lifecycle_continuation"),
+                                                 timedExit, fixture.memory, timedReason) == GuestCalloutResult::Returned);
+            CHECK(timedExit.r[14] == 0x55667788);
+            fixture.objc.lifecycleHooks().finishRuntime(fixture.memory);
+            CHECK(!objc::postTouchToActiveGuest(1, 2, "touchesBegan"));
+            objc::setDisplayClockRunning(false);
+        }
+        // ES3 remains unsupported. ES2 initialization depends on a real GLES2
+        // library; context creation and drawable wiring are exercised with mocks.
         {
             Fixture fixture;
             const auto klass = fixture.classData("_OBJC_CLASS_$_EAGLContext");
@@ -433,11 +588,17 @@ int main() {
             CpuRegisterState es2;
             es2.r[2] = 2;
             CHECK(fixture.send(context, "initWithAPI:", es2, reason) == GuestCalloutResult::Returned);
-            CHECK(es2.r[0] == 0);
+            CHECK(es2.r[0] == (gles::forwarderFor(fixture.memory).supportsApi(2) ? context : 0));
+            CpuRegisterState es3;
+            es3.r[2] = 3;
+            CHECK(fixture.send(context, "initWithAPI:", es3, reason) == GuestCalloutResult::Returned);
+            CHECK(es3.r[0] == 0);
             CpuRegisterState es1;
             es1.r[2] = 1;
             CHECK(fixture.send(context, "initWithAPI:", es1, reason) == GuestCalloutResult::Returned);
             CHECK(es1.r[0] == context);
+            CpuRegisterState release;
+            CHECK(fixture.send(context, "release", release, reason) == GuestCalloutResult::Returned);
         }
         std::printf("compat-runtime lifecycle tests passed\n");
         return 0;

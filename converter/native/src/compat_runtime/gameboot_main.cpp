@@ -125,6 +125,7 @@ int main(int argc, char **argv) {
             });
         compilerRuntime.registerBindings(shims);
         cxxAbi.registerBindings(shims);
+        objcShims.setGlesForwarder(&glesForwarder);
         glesForwarder.registerBindings(shims);
         darwinShims.registerBindings(shims);
         ndkShims.registerBindings(shims);
@@ -268,16 +269,15 @@ int main(int argc, char **argv) {
         // GL observability: which driver was found, whether its draws are handed to
         // the real GLES implementation, and every call the runtime had to refuse.
         {
-            // GL imports are bound to this per-attempt forwarder, while the
-            // EAGL compatibility object owns the drawable forwarder keyed by
-            // the guest address space. Keep those observations separate: a
-            // guest call entering a no-driver host must not be mistaken for a
-            // driver-forwarded call or a presented frame.
-            const auto *drawableContext = radek::compat_runtime::gles::lastForwarder();
+            // EAGL and GL imports share this per-attempt forwarder. A guest
+            // call is still distinct from a driver-forwarded call or frame.
+            const auto *drawableContext = &glesForwarder;
             const auto driver = glesForwarder.driver();
             radek::Json gles = radek::Json::object();
             gles["hostGlesDefines"] = static_cast<std::uint64_t>(1);
-            gles["driverGlesLibraryLoaded"] = driver.glesLoaded;
+            gles["driverGlesLibraryLoaded"] = driver.glesLoaded || driver.gles2Loaded;
+            gles["driverGles1LibraryLoaded"] = driver.glesLoaded;
+            gles["driverGles2LibraryLoaded"] = driver.gles2Loaded;
             gles["driverEglLibraryLoaded"] = driver.eglLoaded;
             gles["driverDetail"] = driver.detail;
             gles["drawableReady"] = drawableContext != nullptr && drawableContext->drawableReady();
@@ -294,10 +294,6 @@ int main(int argc, char **argv) {
             radek::Json diagnostics = radek::Json::array();
             for (const auto &diagnostic : glesForwarder.diagnostics())
                 diagnostics.push(radek::Json(diagnostic));
-            if (drawableContext != nullptr && drawableContext != &glesForwarder) {
-                for (const auto &diagnostic : drawableContext->diagnostics())
-                    diagnostics.push(radek::Json(diagnostic));
-            }
             gles["diagnostics"] = std::move(diagnostics);
             gles["note"] =
                 "guestCallsObserved counts guest imports entering the compatibility layer; "

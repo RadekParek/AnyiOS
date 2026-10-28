@@ -211,6 +211,27 @@ if(RADEK_BUILD_COMPAT_RUNTIME)
             add_test(NAME compat-runtime-gles-abi COMMAND compat-runtime-gles-abi-tests)
             set_tests_properties(compat-runtime-gles-abi PROPERTIES
                 ENVIRONMENT "LD_LIBRARY_PATH=${CMAKE_CURRENT_BINARY_DIR}/gles-mock:$ENV{LD_LIBRARY_PATH}")
+
+            # Recording EGL/GLES2 drivers validate context version, ARM ABI,
+            # shader lengths and shared EAGL/FBO state without claiming pixels.
+            add_library(compat-runtime-gles2-mock SHARED tests/compat_runtime_gles2_mock.cpp)
+            set_target_properties(compat-runtime-gles2-mock PROPERTIES
+                OUTPUT_NAME GLESv2 VERSION 2 SOVERSION 2
+                LIBRARY_OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/gles-mock")
+            add_library(compat-runtime-egl-mock SHARED tests/compat_runtime_egl_mock.cpp)
+            add_dependencies(compat-runtime-gles-abi-tests compat-runtime-egl-mock)
+            set_target_properties(compat-runtime-egl-mock PROPERTIES
+                OUTPUT_NAME EGL VERSION 1 SOVERSION 1
+                LIBRARY_OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/gles-mock")
+            add_executable(compat-runtime-gles2-abi-tests tests/compat_runtime_gles2_abi.cpp)
+            target_include_directories(compat-runtime-gles2-abi-tests PRIVATE include)
+            target_compile_options(compat-runtime-gles2-abi-tests PRIVATE -Wall -Wextra -Werror)
+            target_link_libraries(compat-runtime-gles2-abi-tests PRIVATE compat_runtime_core ${CMAKE_DL_LIBS})
+            add_dependencies(compat-runtime-gles2-abi-tests compat-runtime-gles-mock
+                compat-runtime-gles2-mock compat-runtime-egl-mock)
+            add_test(NAME compat-runtime-gles2-abi COMMAND compat-runtime-gles2-abi-tests)
+            set_tests_properties(compat-runtime-gles2-abi PROPERTIES
+                ENVIRONMENT "LD_LIBRARY_PATH=${CMAKE_CURRENT_BINARY_DIR}/gles-mock:$ENV{LD_LIBRARY_PATH}")
         endif()
 
         add_executable(compat-runtime-darwin-compat-tests tests/darwin_compat.cpp)

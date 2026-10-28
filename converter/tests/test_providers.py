@@ -14,6 +14,7 @@ from radek import providers
 from radek.compat_import_catalog import (
     CONCRETE_DARWIN_COMPAT_IMPORT_COUNT,
     CONCRETE_DARWIN_COMPAT_PROVIDERS,
+    VERIFIED_SEMANTICS_PROVIDERS,
 )
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -185,8 +186,8 @@ class ProviderTests(unittest.TestCase):
 
     def test_guest_runtime_adapter_catalog_is_explicit_and_matches_kotlin(self):
         """Non-same-name imports have catalogued guest adapters, not fake NDK hits."""
-        self.assertEqual(CONCRETE_DARWIN_COMPAT_IMPORT_COUNT, 126)
-        self.assertEqual(len(CONCRETE_DARWIN_COMPAT_PROVIDERS), 126)
+        self.assertEqual(CONCRETE_DARWIN_COMPAT_IMPORT_COUNT, 135)
+        self.assertEqual(len(CONCRETE_DARWIN_COMPAT_PROVIDERS), 135)
         kotlin = (ROOT / "app/src/main/java/dev/radek/conventor/CompatImportProviders.kt").read_text(
             encoding="utf-8"
         )
@@ -195,6 +196,16 @@ class ProviderTests(unittest.TestCase):
         # templates; source-level parity restores it for comparison.
         pairs = {name.replace(r"\$", "$" ): provider for name, provider in pairs.items()}
         self.assertEqual(CONCRETE_DARWIN_COMPAT_PROVIDERS, pairs)
+        native = (ROOT / "native/include/compat_runtime/compat_import_catalog.hpp").read_text(encoding="utf-8")
+        entries = re.findall(r'\{"([^"]+)",\s*"([^"]+)",\s*(true|false)\}', native)
+        self.assertEqual({symbol: provider for symbol, provider, _ in entries}, pairs)
+        kotlin_verified = kotlin.split("val verifiedSemanticsProviders: Set<String> = setOf(", 1)[1].split("\n    )", 1)[0]
+        self.assertEqual(set(re.findall(r'"([^"]+)"', kotlin_verified)), VERIFIED_SEMANTICS_PROVIDERS)
+        self.assertEqual({provider for _, provider, verified in entries if verified == "true"}, VERIFIED_SEMANTICS_PROVIDERS)
+        for symbol in ("_OBJC_CLASS_$_CADisplayLink", "_OBJC_CLASS_$_CALayer",
+                       "_OBJC_CLASS_$_NSRunLoop", "_OBJC_CLASS_$_NSTimer", "_CFRunLoopRunInMode",
+                       "_OBJC_CLASS_$_EAGLContext", "_OBJC_CLASS_$_CAEAGLLayer"):
+            self.assertNotIn(CONCRETE_DARWIN_COMPAT_PROVIDERS[symbol], VERIFIED_SEMANTICS_PROVIDERS)
         for symbol, provider in CONCRETE_DARWIN_COMPAT_PROVIDERS.items():
             with self.subTest(symbol=symbol):
                 self.assertEqual(providers.CONCRETE_DARWIN_COMPAT_PROVIDERS[symbol], "libcompat_runtime_v1.so:" + provider)

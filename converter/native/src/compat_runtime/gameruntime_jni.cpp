@@ -44,30 +44,25 @@
 namespace {
 constexpr jsize kMaximumMainBinaryBytes = 256 * 1024 * 1024;
 
-// The native window acquired from the launcher's Surface. It is kept alive for
-// as long as the guest may create or swap an EGL surface; a replacement window
-// releases the previous one.
-ANativeWindow *gAttachedWindow = nullptr;
-
+// Surface callbacks and boot can publish concurrently. The graphics bridge
+// owns independent window references, so this JNI call can release its local
+// ANativeWindow_fromSurface reference immediately after publication.
 void attachSurface(JNIEnv *env, jobject surface) {
     ANativeWindow *window = surface != nullptr ? ANativeWindow_fromSurface(env, surface) : nullptr;
-    if (window == gAttachedWindow) {
-        if (window != nullptr)
-            ANativeWindow_release(window);
-        return;
+    try {
+        radek::compat_runtime::gles::setDefaultNativeWindow(window);
+        if (window != nullptr) {
+            const auto width = ANativeWindow_getWidth(window);
+            const auto height = ANativeWindow_getHeight(window);
+            if (width > 0 && height > 0)
+                radek::compat_runtime::objc::configureActiveGuestViewport(
+                    static_cast<std::uint32_t>(width), static_cast<std::uint32_t>(height));
+        }
+    } catch (...) {
+        if (window) ANativeWindow_release(window);
+        throw;
     }
-    radek::compat_runtime::gles::setDefaultNativeWindow(window);
-    if (gAttachedWindow != nullptr)
-        ANativeWindow_release(gAttachedWindow);
-    gAttachedWindow = window;
-    // Publish the real surface size to the guest. `-[UIScreen bounds]` and the
-    // EAGL drawable use it, so a landscape game is not handed a hardcoded
-    // portrait rectangle - a wrong or zero-sized drawable is a black screen.
-    if (window != nullptr) {
-        radek::compat_runtime::objc::configureActiveGuestViewport(
-            static_cast<std::uint32_t>(ANativeWindow_getWidth(window)),
-            static_cast<std::uint32_t>(ANativeWindow_getHeight(window)));
-    }
+    if (window) ANativeWindow_release(window);
 }
 
 // Bundle assets are read-only; guest user data is mounted to the dedicated
@@ -149,6 +144,7 @@ Java_dev_radek_gameruntime_GameBootActivity_setGameSurface(JNIEnv *env, jclass, 
 extern "C" JNIEXPORT void JNICALL
 Java_dev_radek_gameruntime_GameBootActivity_setViewportSize(JNIEnv *, jclass, jint width,
                                                             jint height) {
+    if (width <= 0 || height <= 0) return;
     try {
         radek::compat_runtime::objc::configureActiveGuestViewport(
             static_cast<std::uint32_t>(width), static_cast<std::uint32_t>(height));
@@ -173,6 +169,35 @@ Java_dev_radek_gameruntime_GameBootActivity_postTouchEvent(JNIEnv *, jclass, jin
     } catch (...) {
         return JNI_FALSE;
     }
+}
+
+// Choreographer remains on Android's UI thread; it only publishes a bounded
+// clock signal. The Objective-C callback itself always runs on the guest CPU.
+extern "C" JNIEXPORT void JNICALL
+Java_dev_radek_gameruntime_GameBootActivity_prepareDisplayClock(JNIEnv *, jclass, jboolean running) {
+    try { radek::compat_runtime::objc::prepareDisplayClock(running == JNI_TRUE); } catch (...) {}
+}
+
+extern "C" JNIEXPORT void JNICALL
+Java_dev_radek_gameruntime_GameBootActivity_setDisplayClockRunning(JNIEnv *, jclass, jboolean running) {
+    try { radek::compat_runtime::objc::setDisplayClockRunning(running == JNI_TRUE); } catch (...) {}
+}
+
+extern "C" JNIEXPORT jboolean JNICALL
+Java_dev_radek_gameruntime_GameBootActivity_needsDisplayFrame(JNIEnv *, jclass) {
+    try { return radek::compat_runtime::objc::displayClockNeeded() ? JNI_TRUE : JNI_FALSE; }
+    catch (...) { return JNI_FALSE; }
+}
+
+extern "C" JNIEXPORT jboolean JNICALL
+Java_dev_radek_gameruntime_GameBootActivity_postDisplayFrame(JNIEnv *, jclass, jlong timestamp, jlong interval) {
+    try { return radek::compat_runtime::objc::postDisplayFrame(timestamp, interval) ? JNI_TRUE : JNI_FALSE; }
+    catch (...) { return JNI_FALSE; }
+}
+
+extern "C" JNIEXPORT void JNICALL
+Java_dev_radek_gameruntime_GameBootActivity_stopGuestRunLoop(JNIEnv *, jclass) {
+    try { radek::compat_runtime::objc::stopActiveGuestRunLoop(); } catch (...) {}
 }
 
 extern "C" JNIEXPORT jstring JNICALL
@@ -254,8 +279,9 @@ Java_dev_radek_gameruntime_GameBootActivity_runGameBootAttempt(JNIEnv *env, jobj
             });
         compilerRuntime.registerBindings(shims);
         cxxAbi.registerBindings(shims);
-        // Guest OpenGL ES 1.1 calls go to the platform's EGL/GLES driver through
+        // Guest OpenGL ES 1 and partial ES 2 calls go to the platform's EGL/GLES driver through
         // the launcher's Surface; nothing is rasterized in this process.
+        objcShims.setGlesForwarder(&glesForwarder);
         glesForwarder.registerBindings(shims);
         darwinShims.registerBindings(shims);
         ndkShims.registerBindings(shims);
@@ -334,8 +360,10 @@ Java_dev_radek_gameruntime_GameBootActivity_runGameBootAttempt(JNIEnv *env, jobj
         {
             radek::Json gles = radek::Json::object();
             const auto driver = glesForwarder.driver();
-            const auto *drawableContext = radek::compat_runtime::gles::lastForwarder();
-            gles["driverGlesLibraryLoaded"] = driver.glesLoaded;
+            const auto *drawableContext = &glesForwarder;
+            gles["driverGlesLibraryLoaded"] = driver.glesLoaded || driver.gles2Loaded;
+            gles["driverGles1LibraryLoaded"] = driver.glesLoaded;
+            gles["driverGles2LibraryLoaded"] = driver.gles2Loaded;
             gles["driverEglLibraryLoaded"] = driver.eglLoaded;
             gles["driverDetail"] = driver.detail;
             gles["drawableReady"] = drawableContext != nullptr && drawableContext->drawableReady();
@@ -352,10 +380,6 @@ Java_dev_radek_gameruntime_GameBootActivity_runGameBootAttempt(JNIEnv *env, jobj
             radek::Json diagnostics = radek::Json::array();
             for (const auto &diagnostic : glesForwarder.diagnostics())
                 diagnostics.push(radek::Json(diagnostic));
-            if (drawableContext != nullptr && drawableContext != &glesForwarder) {
-                for (const auto &diagnostic : drawableContext->diagnostics())
-                    diagnostics.push(radek::Json(diagnostic));
-            }
             gles["diagnostics"] = std::move(diagnostics);
             gles["note"] =
                 "guestCallsObserved counts guest imports entering the compatibility layer; "

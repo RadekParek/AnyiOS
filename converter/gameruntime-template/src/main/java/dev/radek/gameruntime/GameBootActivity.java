@@ -20,8 +20,10 @@ import android.os.Build;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
+import android.os.SystemClock;
 import android.util.Log;
 import android.view.Gravity;
+import android.view.Choreographer;
 import android.view.MotionEvent;
 import android.view.Surface;
 import android.view.SurfaceHolder;
@@ -54,7 +56,6 @@ import java.util.Comparator;
 import java.util.List;
 import java.util.Locale;
 import java.util.concurrent.CountDownLatch;
-import java.util.concurrent.TimeUnit;
 import java.util.HashSet;
 import java.util.Set;
 import java.util.zip.CRC32;
@@ -114,7 +115,6 @@ public final class GameBootActivity extends Activity {
 
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
     private final CountDownLatch splashSequenceFinished = new CountDownLatch(1);
-    private final CountDownLatch gameSurfaceReady = new CountDownLatch(1);
     private final Object persistentLogLock = new Object();
     private File appDataRoot;
     private File appObbDirectory;
@@ -129,6 +129,7 @@ public final class GameBootActivity extends Activity {
     // Surface callbacks can run before System.loadLibrary completes. Retain the
     // latest holder surface so the runtime gets the real window as soon as its
     // JNI entry is available instead of silently staying on an offscreen pbuffer.
+    private final Object surfacePublicationLock = new Object();
     private volatile Surface latestGameSurface;
     private volatile int latestViewportWidth = 0;
     private volatile int latestViewportHeight = 0;
@@ -140,6 +141,14 @@ public final class GameBootActivity extends Activity {
     private volatile boolean bootFinished = false;
     private volatile boolean destroyed = false;
     private volatile boolean translatedPortableCMode = false;
+    private final Object displayClockLock = new Object();
+    private volatile boolean nativeDisplayClockLoaded = false;
+    private volatile boolean activityResumed = false;
+    // Accessed only on the UI thread. When no link is active we poll cheaply
+    // instead of making one JNI call on every display refresh.
+    private boolean displayFrameScheduled = false;
+    private int framesUntilRefreshRateQuery = 0;
+    private long displayIntervalNanos = 16_666_667L;
 
     private final Runnable splashAdvance = new Runnable() {
         @Override
@@ -175,6 +184,68 @@ public final class GameBootActivity extends Activity {
     private static native void setViewportSize(int width, int height);
     /** Queues a host touch for the guest run loop; returns false when idle. */
     private static native boolean postTouchEvent(int action, float x, float y);
+    private static native void prepareDisplayClock(boolean running);
+    private static native void setDisplayClockRunning(boolean running);
+    private static native boolean needsDisplayFrame();
+    private static native boolean postDisplayFrame(long timestampNanos, long intervalNanos);
+    private static native void stopGuestRunLoop();
+
+    private final Runnable displayClockPoll = new Runnable() {
+        @Override public void run() {
+            if (destroyed || bootFinished || !activityResumed || !nativeDisplayClockLoaded) return;
+            try {
+                if (needsDisplayFrame()) {
+                    if (!displayFrameScheduled) {
+                        displayFrameScheduled = true;
+                        Choreographer.getInstance().postFrameCallback(displayFrameCallback);
+                    }
+                } else {
+                    mainHandler.postDelayed(this, 250L);
+                }
+            } catch (Throwable ignored) {
+                // Unit tests and incompatible older native libraries do not
+                // provide the optional clock bridge.
+            }
+        }
+    };
+
+    private final Choreographer.FrameCallback displayFrameCallback = new Choreographer.FrameCallback() {
+        @Override public void doFrame(long frameTimeNanos) {
+            displayFrameScheduled = false;
+            if (destroyed || bootFinished || !activityResumed || !nativeDisplayClockLoaded) return;
+            try {
+                if (framesUntilRefreshRateQuery-- <= 0) {
+                    float hz = getWindowManager().getDefaultDisplay().getRefreshRate();
+                    displayIntervalNanos = hz > 0.0f && hz < 1000.0f
+                            ? (long) (1_000_000_000.0 / hz) : 16_666_667L;
+                    framesUntilRefreshRateQuery = 59;
+                }
+                if (postDisplayFrame(frameTimeNanos, displayIntervalNanos)) {
+                    displayFrameScheduled = true;
+                    Choreographer.getInstance().postFrameCallback(this);
+                } else {
+                    mainHandler.postDelayed(displayClockPoll, 250L);
+                }
+            } catch (Throwable ignored) {
+                // The guest remains bounded if a display or JNI call fails.
+            }
+        }
+    };
+
+    private void stopDisplayClockCallbacks() {
+        mainHandler.removeCallbacks(displayClockPoll);
+        if (displayFrameScheduled) {
+            Choreographer.getInstance().removeFrameCallback(displayFrameCallback);
+            displayFrameScheduled = false;
+        }
+    }
+
+    private void startDisplayClockCallbacks() {
+        stopDisplayClockCallbacks();
+        framesUntilRefreshRateQuery = 0;
+        if (!destroyed && !bootFinished && activityResumed && nativeDisplayClockLoaded)
+            mainHandler.post(displayClockPoll);
+    }
 
     /** Set when the renderer progress poll starts; used to time the first presented frame. */
     private long rendererPollStartMillis = 0L;
@@ -266,28 +337,36 @@ public final class GameBootActivity extends Activity {
     }
 
     private void publishGameSurface(Surface surface) {
-        latestGameSurface = surface;
-        if (surface != null && surface.isValid()) gameSurfaceReady.countDown();
-        try {
-            setGameSurface(surface);
-        } catch (Throwable ignored) {
-            // Surface creation commonly wins the race with System.loadLibrary.
-            // The boot thread retries latestGameSurface immediately after the
-            // runtime loads; unit tests also run safely without JNI.
+        synchronized (surfacePublicationLock) {
+            latestGameSurface = surface;
+            surfacePublicationLock.notifyAll();
+            try {
+                setGameSurface(surface);
+            } catch (Throwable ignored) {
+                // Surface callbacks may precede System.loadLibrary or a unit test may lack JNI.
+            }
         }
     }
 
-    /**
-     * Hands the real surface size to the guest. The boot thread re-publishes it
-     * after the runtime loads, because surfaceChanged can win that race.
-     */
+    /** Hand the latest surface size to the guest, serialized with surface publication. */
     private void publishViewportSize(int width, int height) {
-        latestViewportWidth = width;
-        latestViewportHeight = height;
-        try {
-            setViewportSize(width, height);
-        } catch (Throwable ignored) {
-            // Unit tests run without the native library.
+        synchronized (surfacePublicationLock) {
+            latestViewportWidth = width;
+            latestViewportHeight = height;
+            try { setViewportSize(width, height); } catch (Throwable ignored) {}
+        }
+    }
+
+    /** Called after library loading without overwriting a newer surface callback. */
+    private void republishLatestSurface() {
+        synchronized (surfacePublicationLock) {
+            try {
+                setGameSurface(latestGameSurface);
+                if (latestViewportWidth > 0 && latestViewportHeight > 0)
+                    setViewportSize(latestViewportWidth, latestViewportHeight);
+            } catch (Throwable ignored) {
+                // The regular surface callbacks retry after JNI becomes available.
+            }
         }
     }
 
@@ -636,7 +715,7 @@ public final class GameBootActivity extends Activity {
     private void showTerminalState(final String title, final String detail) {
         bootFinished = true;
         splashSequenceFinished.countDown();
-        gameSurfaceReady.countDown();
+        synchronized (surfacePublicationLock) { surfacePublicationLock.notifyAll(); }
         mainHandler.post(new Runnable() {
             @Override
             public void run() {
@@ -1329,12 +1408,20 @@ public final class GameBootActivity extends Activity {
                         // ARM32 execution backend; no separate CPU engine
                         // library needs to be loaded.
                         System.loadLibrary(RUNTIME_LIBRARY);
+                        synchronized (displayClockLock) {
+                            if (destroyed) return;
+                            // Mark the host clock as known before entering guest
+                            // code; never let Android accidentally use the
+                            // synthetic headless-test clock during startup.
+                            prepareDisplayClock(activityResumed);
+                            nativeDisplayClockLoaded = true;
+                        }
+                        mainHandler.post(new Runnable() {
+                            @Override public void run() { startDisplayClockCallbacks(); }
+                        });
                         // surfaceCreated/surfaceChanged can both have fired before
                         // the library was loaded. Re-publish before the EGL runtime starts.
-                        publishGameSurface(latestGameSurface);
-                        if (latestViewportWidth > 0 && latestViewportHeight > 0) {
-                            publishViewportSize(latestViewportWidth, latestViewportHeight);
-                        }
+                        republishLatestSurface();
                     }
                 } catch (Throwable error) {
                     appendLine("Runtime library failed to load: " + error);
@@ -1420,12 +1507,23 @@ public final class GameBootActivity extends Activity {
         try {
             splashSequenceFinished.await();
             if (destroyed || bootFinished) return false;
-            if (requireRenderingSurface && !gameSurfaceReady.await(10, TimeUnit.SECONDS)) {
-                appendLine("Android did not create a valid game surface within 10 seconds; guest rendering was not started.");
-                showTerminalState(
-                        "Game surface unavailable",
-                        "The guest was not started without a valid Android rendering surface.");
-                return false;
+            if (requireRenderingSurface) {
+                long deadline = SystemClock.elapsedRealtime() + 10_000L;
+                synchronized (surfacePublicationLock) {
+                    while (!destroyed && !bootFinished &&
+                            (latestGameSurface == null || !latestGameSurface.isValid())) {
+                        long remaining = deadline - SystemClock.elapsedRealtime();
+                        if (remaining <= 0) break;
+                        surfacePublicationLock.wait(remaining);
+                    }
+                    if (destroyed || bootFinished) return false;
+                    if (latestGameSurface == null || !latestGameSurface.isValid()) {
+                        appendLine("Android did not create a valid game surface within 10 seconds; guest rendering was not started.");
+                        showTerminalState("Game surface unavailable",
+                                "The guest was not started without a valid Android rendering surface.");
+                        return false;
+                    }
+                }
             }
             return !destroyed && !bootFinished;
         } catch (InterruptedException interrupted) {
@@ -2086,11 +2184,45 @@ public final class GameBootActivity extends Activity {
     }
 
     @Override
+    protected void onResume() {
+        super.onResume();
+        synchronized (displayClockLock) {
+            activityResumed = true;
+            if (nativeDisplayClockLoaded) {
+                try { setDisplayClockRunning(true); } catch (Throwable ignored) {}
+            }
+        }
+        startDisplayClockCallbacks();
+    }
+
+    @Override
+    protected void onPause() {
+        synchronized (displayClockLock) {
+            activityResumed = false;
+            if (nativeDisplayClockLoaded) {
+                try { setDisplayClockRunning(false); } catch (Throwable ignored) {}
+            }
+        }
+        stopDisplayClockCallbacks();
+        super.onPause();
+    }
+
+    @Override
     protected void onDestroy() {
-        destroyed = true;
+        synchronized (displayClockLock) {
+            destroyed = true;
+            activityResumed = false;
+            if (nativeDisplayClockLoaded) {
+                try {
+                    setDisplayClockRunning(false);
+                    stopGuestRunLoop();
+                } catch (Throwable ignored) {}
+            }
+        }
+        stopDisplayClockCallbacks();
         splashAnimationRunning = false;
         splashSequenceFinished.countDown();
-        gameSurfaceReady.countDown();
+        publishGameSurface(null);
         mainHandler.removeCallbacks(splashAdvance);
         mainHandler.removeCallbacks(rendererProgressPoll);
         super.onDestroy();

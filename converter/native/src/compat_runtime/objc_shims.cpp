@@ -40,6 +40,12 @@ struct GuestClass32 {
     std::uint32_t protocols = 0;
 };
 
+bool receiverIsKindOf(const Object *object, const char *name) {
+    for (auto *klass = object ? object->isa : nullptr; klass; klass = klass->superclass)
+        if (klass->name == name) return true;
+    return false;
+}
+
 void writeWord(GuestAddressSpace &memory, GuestAddress address, std::uint32_t value) {
     if (!memory.write(address, &value, sizeof(value)))
         throw std::runtime_error("Objective-C adapter could not write guest memory");
@@ -248,10 +254,11 @@ ShimAdapter::ShimAdapter() {
     classes_.emplace("NSAutoreleasePool", autoreleasePoolClass_);
     for (const auto *name : {
              "NSString", "NSArray", "NSDictionary", "NSNumber", "NSURL", "NSBundle", "NSThread",
-             "UIWindow", "UIView", "UIScreen", "UIAccelerometer", "CAEAGLLayer",
-             "EAGLContext", "NSTimer", "ASIdentifierManager", "NSUUID"}) {
+             "UIWindow", "UIView", "UIScreen", "UIAccelerometer", "CALayer",
+             "EAGLContext", "NSTimer", "NSRunLoop", "CADisplayLink", "ASIdentifierManager", "NSUUID"}) {
         classes_.emplace(name, runtime_.registerClass(name, rootClass_));
     }
+    classes_.emplace("CAEAGLLayer", runtime_.registerClass("CAEAGLLayer", classes_.at("CALayer")));
     // Only the privacy-preserving IDFA object is implemented, not arbitrary
     // NSUUID creation or a real Android advertising identifier.
     classes_.emplace("RadekZeroIDFA", runtime_.registerClass("RadekZeroIDFA", classes_.at("NSUUID")));
@@ -329,8 +336,6 @@ ShimAdapter::ShimAdapter() {
                            return reinterpret_cast<Value>(receiver.object ? receiver.object->isa : nullptr);
                        });
 }
-
-ShimAdapter::~ShimAdapter() = default;
 
 ShimAdapter::GuestState &ShimAdapter::guestState(GuestAddressSpace &memory) {
     const auto found = guestStates_.find(&memory);
@@ -1113,6 +1118,7 @@ void ShimAdapter::releaseObject(GuestAddressSpace &memory, Object *object) {
     const auto found = state.objectAddresses.find(object);
     if (found != state.objectAddresses.end() && finalRelease) {
         const auto address = found->second;
+        if (receiverIsKindOf(object, "CADisplayLink")) destroyDisplayLink(memory, address);
         state.objectAddresses.erase(found);
         state.objectsByAddress.erase(address);
         memory.unmap(address);
@@ -1174,11 +1180,11 @@ bool ShimAdapter::dispatchStret(CpuRegisterState &registers, GuestAddressSpace &
                     throw std::runtime_error("struct-return selector '" + selectorName +
                                              "' received an unknown guest receiver");
                 if (!(receiverObject->isa &&
-                      (receiverObject->isa->name == "UIScreen" ||
-                       receiverObject->isa->name == "UIView" ||
-                       receiverObject->isa->name == "UIWindow" ||
-                       receiverObject->isa->name == "CAEAGLLayer" ||
-                       receiverObject->isa->name == "UIApplication")))
+                      (receiverIsKindOf(receiverObject, "UIScreen") ||
+                       receiverIsKindOf(receiverObject, "UIView") ||
+                       receiverIsKindOf(receiverObject, "UIWindow") ||
+                       receiverIsKindOf(receiverObject, "CALayer") ||
+                       receiverIsKindOf(receiverObject, "UIApplication"))))
                     throw std::runtime_error("struct-return selector '" + selectorName +
                                              "' is only implemented for UIKit views");
                 // The window/screen rectangle defaults to the host viewport when
@@ -1747,6 +1753,15 @@ bool ShimAdapter::dispatch(CpuRegisterState &registers, GuestAddressSpace &memor
                     responds = responds || knownName == "count" ||
                                knownName == "objectAtIndex:" ||
                                knownName == "firstObject" || knownName == "lastObject";
+                if (receiverIsKindOf(receiverObject, "CADisplayLink"))
+                    responds = responds || knownName == "addToRunLoop:forMode:" ||
+                               knownName == "removeFromRunLoop:forMode:" || knownName == "invalidate" ||
+                               knownName == "setPaused:" || knownName == "isPaused" ||
+                               knownName == "frameInterval" || knownName == "setFrameInterval:" ||
+                               knownName == "preferredFramesPerSecond" ||
+                               knownName == "setPreferredFramesPerSecond:" ||
+                               knownName == "timestamp" || knownName == "duration" ||
+                               knownName == "targetTimestamp";
                 if (receiverObject->isa && receiverObject->isa->name == "ASIdentifierManager")
                     responds = responds || knownName == "advertisingIdentifier" ||
                                knownName == "isAdvertisingTrackingEnabled";
