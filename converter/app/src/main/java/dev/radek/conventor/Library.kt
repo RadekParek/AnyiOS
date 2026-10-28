@@ -87,27 +87,28 @@ class Library(private val context: Context) {
 
     fun analyzeShared(dir: File, progress: (Int, String) -> Unit): Pair<File, JSONObject> {
         val kind = JSONObject(File(dir, "game.json").readText()).optString("kind")
-        return if (kind == "Executable") dir to analyzeExecutable(dir, SharedAnalysisProgress(progress))
+        return if (kind == "Executable") dir to analyzeExecutable(dir, SharedAnalysisProgress(progress), automatic = false)
         else import(Uri.EMPTY, dir, progress = progress)
     }
 
     /** Called while Emulator already owns SharedCatalog; never acquire it again. */
     fun analyzeImportedSource(dir: File, progress: SharedAnalysisProgress): JSONObject {
         val kind = JSONObject(File(dir, "game.json").readText()).optString("kind")
-        return if (kind == "Executable") analyzeExecutable(dir, progress)
-        else import(Uri.EMPTY, dir, autoBuildProven = false) { percent, message -> progress.update(percent, message) }.second
+        return if (kind == "Executable") analyzeExecutable(dir, progress, automatic = true)
+        else import(Uri.EMPTY, dir, autoBuildProven = false, automaticAnalysis = true) { percent, message -> progress.update(percent, message) }.second
     }
 
     fun interface SharedAnalysisProgress { fun update(percent: Int, message: String) }
 
     /** An executable-only import has no bundle/resources, but can still be inspected. */
-    private fun analyzeExecutable(dir: File, progress: SharedAnalysisProgress): JSONObject {
+    private fun analyzeExecutable(dir: File, progress: SharedAnalysisProgress, automatic: Boolean): JSONObject {
         require(dir.canonicalFile.parentFile == root.canonicalFile && dir.isDirectory) { "invalid shared entry" }
         val metadata = JSONObject(File(dir, "game.json").readText())
         val source = File(dir, "source.bin")
         val report = JSONObject().put("schemaVersion", 1).put("authorizationConfirmed", true)
         try {
-            require(source.isFile && source.length() in 1..MAX_EXECUTABLE_BYTES) { "Executable is missing or too large" }
+            require(source.isFile) { "Executable is missing" }
+            AnalysisMemory.check(source.length(), automatic)
             progress.update(0, "Hashing the imported executable")
             val digest = MessageDigest.getInstance("SHA-256")
             source.inputStream().use { input ->
@@ -151,6 +152,8 @@ class Library(private val context: Context) {
             report.put("state", ConversionState.FAILED.name).put("error", error.message ?: error.javaClass.simpleName)
         } catch (error: LinkageError) {
             report.put("state", ConversionState.FAILED.name).put("error", "Native analyzer unavailable: ${error.message}")
+        } catch (_: OutOfMemoryError) {
+            report.put("state", ConversionState.FAILED.name).put("error", "Not enough memory for analysis; the imported source was kept")
         } finally {
             save(dir, report)
         }
@@ -270,7 +273,8 @@ class Library(private val context: Context) {
         return fallbackName to queried?.second
     }
 
-    fun import(uri: Uri, existing: File? = null, autoBuildProven: Boolean = true, progress: (Int, String) -> Unit): Pair<File, JSONObject> {
+    fun import(uri: Uri, existing: File? = null, autoBuildProven: Boolean = true,
+        automaticAnalysis: Boolean = false, progress: (Int, String) -> Unit): Pair<File, JSONObject> {
         val sharedMeta = existing?.let { runCatching { JSONObject(File(it, "game.json").readText()) }.getOrNull() }
         val folderSource = sharedMeta?.optString("kind") == "Folder"
         val (originalName, expectedSourceBytes) = if (existing == null) sourceDetails(uri) else
@@ -425,7 +429,8 @@ class Library(private val context: Context) {
             updateProgress(40, "ICON_RECOVERY", if (iconReport.optString("status") == "SUPPORTED") "Recovered the original game icon for the analysis library" else "No compatible icon could be decoded")
             updateProgress(44, "ANALYZING", "Launcher icon recovered; preparing bounded native analysis")
             val binary = File(app, executable)
-            require(binary.isFile && binary.length() <= MAX_EXECUTABLE_BYTES) { "Missing executable or exceeds the on-device ${MAX_EXECUTABLE_BYTES / (1024 * 1024)} MiB analysis limit; use the host analyzer for larger files" }
+            require(binary.isFile) { "Executable named by Info.plist is missing" }
+            AnalysisMemory.check(binary.length(), automaticAnalysis)
             log(ConversionState.ANALYZING, "Parsing Mach-O load commands, symbols, fixups and dependencies", 33)
             val binaryBytes = binary.readBytes()
             val macho = JSONObject(NativeBridge.analyzeCompact(binaryBytes))
@@ -600,13 +605,10 @@ class Library(private val context: Context) {
             for (file in embeddedFiles) {
                 val relative = file.relativeTo(app).path
                 val embedded = try {
-                    if (file.length() > MAX_EXECUTABLE_BYTES) {
-                        analysisErrors.put(JSONObject().put("path", relative)
-                            .put("reason", "embedded image exceeds the on-device ${MAX_EXECUTABLE_BYTES / (1024 * 1024)} MiB analysis limit"))
-                        null
-                    } else {
-                        JSONObject(NativeBridge.analyzeCompact(file.readBytes()))
-                    }
+                    AnalysisMemory.check(file.length(), automaticAnalysis)
+                    JSONObject(NativeBridge.analyzeCompact(file.readBytes()))
+                } catch (error: OutOfMemoryError) {
+                    throw error
                 } catch (error: Throwable) {
                     analysisErrors.put(JSONObject().put("path", relative)
                         .put("reason", error.message ?: error.javaClass.simpleName))
@@ -868,6 +870,12 @@ class Library(private val context: Context) {
         } catch (e: LinkageError) {
             report.put("error", "Native analyzer unavailable: ${e.message}")
             log(ConversionState.FAILED, "Native analyzer unavailable: ${e.message}", progressPercent)
+        } catch (_: OutOfMemoryError) {
+            val message = if (sourceReady) "Not enough memory for analysis; the imported source was kept"
+                else "Not enough memory to finish importing this source"
+            report.put("state", ConversionState.FAILED.name).put("error", message)
+            report.optJSONObject("analysisProgress")?.put("status", "FAILED")?.put("message", message)
+            save(dir, report)
         } finally {
             if (!sourceReady && existing == null) source.delete()
             File(dir, "extracted").deleteRecursively()
@@ -885,7 +893,6 @@ private val ICON_SUFFIXES = listOf(
 private const val ICON_MAX_BYTES = 16L * 1024 * 1024
 private const val ICON_TARGET = 512
 /** Device-memory guard for one Mach-O executable; not an archive policy limit. */
-private const val MAX_EXECUTABLE_BYTES = 1024L * 1024 * 1024
 
 /**
  * Resolve the best icon in a bundle and record every attempt.

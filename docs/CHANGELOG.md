@@ -27,7 +27,9 @@
   library, even when their Android filenames coincide. Share URIs select the
   correct runtime and validate source, package and digest. Folder and bare
   executable reports no longer offer IPA-only packaging; builders also reject
-  these source types while accepting legacy IPA reports.
+  these source types while accepting legacy IPA reports. On-device analysis
+  now applies the native analyzer's existing 256 MiB executable limit before
+  allocating instead of attempting to read up to 1 GiB first.
 - Converter ZIP extraction and executable validation preserve legitimate
   colon-containing filenames and give specific Info.plist diagnostics. Path
   traversal, links, normalized collisions, expansion and containment checks
@@ -46,6 +48,7 @@
 ### Validation and limitations
 - Local standalone storage/options tests (12), storage/ZIP tests (11),
   artifact/settings contracts (13), API mapper (21), source-policy (2),
+  analysis-memory (2),
   binary-plist/ZIP safety tests (11 selected), and shared-catalog tests (6)
   pass. The last used a fake Android context rather than Robolectric; several
   contract tests used JSON-java and a stub runner. Converter Kotlin and main

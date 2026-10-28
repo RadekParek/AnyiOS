@@ -714,6 +714,9 @@ final class GameLibrary {
                     + (analysisError.getMessage() == null ? analysisError.toString()
                                                           : analysisError.getMessage());
                 error = true;
+            } catch (OutOfMemoryError memoryError) {
+                notice += " Not enough memory for Converter analysis; the imported game was kept.";
+                error = true;
             }
             return published;
         } finally {
