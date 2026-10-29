@@ -89,6 +89,14 @@ mod abi {
     }
     pub trait GuestRet: std::fmt::Debug + Sized {
         const SIZE_IN_MEM: Option<GuestUSize> = None;
+        // These also exist on GuestArg in the engine. Keeping both methods in
+        // this stand-in catches ambiguous trait method calls in the real suite.
+        fn from_regs(_regs: &[u32]) -> Self {
+            panic!("unexpected register return")
+        }
+        fn to_regs(self, _regs: &mut [u32]) {
+            panic!("unexpected register return")
+        }
         fn from_mem(ptr: ConstVoidPtr, mem: &Mem) -> Self;
         fn to_mem(self, ptr: MutVoidPtr, mem: &mut Mem);
     }

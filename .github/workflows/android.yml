@@ -111,16 +111,27 @@ jobs:
             # original test failure or its exit status.
             python3 - <<'PY'
           import os
+          import re
           from pathlib import Path
 
           log = Path(os.environ['RUNNER_TEMP']) / 'anyiose-cargo-tests.log'
-          tail = log.read_text(errors='replace')[-18000:]
-          chunks = [tail[i:i + 3000] for i in range(0, len(tail), 3000)]
-          # GitHub caps an individual annotation at 4096 characters. Emit
-          # the last chunk first, then earlier context without truncation.
-          for number, chunk in enumerate(reversed(chunks), start=1):
+          text = log.read_text(errors='replace')
+          def annotate(title, chunk):
               escaped = chunk.replace('%', '%25').replace('\r', '%0D').replace('\n', '%0A')
-              print(f'::error title=AnyiOSEMU test failure (tail {number})::{escaped}')
+              print(f'::error title={title}::{escaped}')
+
+          # Compilation errors may precede hundreds of warnings, so report
+          # their locations independently of the final output. Keep the total
+          # number of annotations within GitHub's per-step limit.
+          errors = list(re.finditer(r'(?m)^error(?:\[E\d+\])?:', text))[:3]
+          for number, match in enumerate(errors, start=1):
+              annotate(f'AnyiOSEMU compiler error {number}', text[match.start():match.start() + 3000])
+          tail = text[-18000:]
+          chunks = [tail[i:i + 3000] for i in range(0, len(tail), 3000)]
+          # GitHub caps each annotation at 4096 characters. Emit the final
+          # chunk first, then the preceding context without truncation.
+          for number, chunk in enumerate(reversed(chunks), start=1):
+              annotate(f'AnyiOSEMU test failure (tail {number})', chunk)
           PY
           fi
           exit "$status"

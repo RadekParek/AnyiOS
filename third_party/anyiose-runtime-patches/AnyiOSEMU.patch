@@ -6622,7 +6622,7 @@ index 9f6b71116cdb0a99157e39ffb83363b33f9bae9e..989889af14c6dc5cde2f5997555225e2
              .collect();
 diff --git a/src/frameworks/uikit/ui_edge_insets.rs b/src/frameworks/uikit/ui_edge_insets.rs
 new file mode 100644
-index 0000000000000000000000000000000000000000..9bee28ba72ce4e0d3d36a2798ba8ccf73a016a23
+index 0000000000000000000000000000000000000000..e5b1859e8ac4a53f2c249f502d57a7069f82523c
 --- /dev/null
 +++ b/src/frameworks/uikit/ui_edge_insets.rs
 @@ -0,0 +1,80 @@
@@ -6688,7 +6688,7 @@ index 0000000000000000000000000000000000000000..9bee28ba72ce4e0d3d36a2798ba8ccf7
 +        assert_eq!(<UIEdgeInsets as GuestArg>::REG_COUNT, 4);
 +        assert_eq!(<UIEdgeInsets as GuestRet>::SIZE_IN_MEM, Some(16));
 +        let mut words = [0u32; 4];
-+        insets.to_regs(&mut words);
++        GuestArg::to_regs(insets, &mut words);
 +        assert_eq!(
 +            words,
 +            [
@@ -6698,7 +6698,7 @@ index 0000000000000000000000000000000000000000..9bee28ba72ce4e0d3d36a2798ba8ccf7
 +                4.0f32.to_bits()
 +            ]
 +        );
-+        assert_eq!(UIEdgeInsets::from_regs(&words), insets);
++        assert_eq!(<UIEdgeInsets as GuestArg>::from_regs(&words), insets);
 +
 +        let mut mem = Mem::new();
 +        let result = mem.alloc(16);
