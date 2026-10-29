@@ -41,21 +41,28 @@ jobs:
       - uses: actions/checkout@v5
       - name: Prepare pinned AnyiOSEMU sources
         run: scripts/prepare-anyiose-runtime.sh
-      - name: Cache pinned Boost headers
-        uses: actions/cache@v4
+      - name: Restore pinned Boost headers
+        id: engine-boost
+        uses: actions/cache/restore@v4
         with:
           path: third_party/anyiose-engine/vendor/boost
           key: ${{ runner.os }}-engine-boost-${{ hashFiles('third_party/anyiose-runtime-boost-version.txt') }}
       - name: Prepare Boost headers
         run: scripts/prepare-anyiose-runtime-boost.sh
+      - name: Save pinned Boost headers
+        if: ${{ steps.engine-boost.outputs.cache-hit != 'true' }}
+        uses: actions/cache/save@v4
+        with:
+          path: third_party/anyiose-engine/vendor/boost
+          key: ${{ steps.engine-boost.outputs.cache-primary-key }}
       - name: Cache engine Rust build
         uses: Swatinem/rust-cache@v2
         with:
           workspaces: third_party/anyiose-engine -> target
           cache-on-failure: true
-      - name: Cache guest compiler
+      - name: Restore guest compiler
         id: guest-compiler
-        uses: actions/cache@v4
+        uses: actions/cache/restore@v4
         with:
           path: third_party/anyiose-engine/tests/llvm
           key: llvm-12.0.0-macos-x86_64-testapp
@@ -68,6 +75,12 @@ jobs:
           mkdir -p llvm
           tar -xf llvm.tar.xz --strip-components=1 -C llvm
           rm llvm.tar.xz
+      - name: Save guest compiler
+        if: ${{ steps.guest-compiler.outputs.cache-hit != 'true' }}
+        uses: actions/cache/save@v4
+        with:
+          path: third_party/anyiose-engine/tests/llvm
+          key: ${{ steps.guest-compiler.outputs.cache-primary-key }}
       - name: Install guest SDK
         working-directory: third_party/anyiose-engine/tests
         run: |
@@ -95,9 +108,13 @@ jobs:
           from pathlib import Path
 
           log = Path(os.environ['RUNNER_TEMP']) / 'anyiose-cargo-tests.log'
-          tail = log.read_text(errors='replace')[-30000:]
-          tail = tail.replace('%', '%25').replace('\r', '%0D').replace('\n', '%0A')
-          print(f'::error title=AnyiOSEMU Cargo and TestApp failure::{tail}')
+          tail = log.read_text(errors='replace')[-18000:]
+          chunks = [tail[i:i + 3000] for i in range(0, len(tail), 3000)]
+          # GitHub caps an individual annotation at 4096 characters. Emit
+          # the last chunk first, then earlier context without truncation.
+          for number, chunk in enumerate(reversed(chunks), start=1):
+              escaped = chunk.replace('%', '%25').replace('\r', '%0D').replace('\n', '%0A')
+              print(f'::error title=AnyiOSEMU test failure (tail {number})::{escaped}')
           PY
           fi
           exit "$status"

@@ -1,6 +1,6 @@
 # Changelog
 
-## 2026-10-28 — Screen insets, numeric dictionary keys and FAT diagnostics
+## 2026-10-29 — Screen insets, numeric dictionary keys and FAT diagnostics
 
 ### Added / wired
 - AnyiOSEMU now implements `UIScreen.overscanCompensation` with the documented
