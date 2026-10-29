@@ -52,6 +52,7 @@ jobs:
         uses: Swatinem/rust-cache@v2
         with:
           workspaces: third_party/anyiose-engine -> target
+          cache-on-failure: true
       - name: Cache guest compiler
         id: guest-compiler
         uses: actions/cache@v4
@@ -77,4 +78,26 @@ jobs:
           rm sdk.tar.gz
       - name: Run full Cargo suite including guest TestApp
         working-directory: third_party/anyiose-engine
-        run: cargo test --locked --target x86_64-apple-darwin
+        env:
+          CARGO_TERM_COLOR: never
+        run: |
+          set -o pipefail
+          set +e
+          cargo test --locked --target x86_64-apple-darwin 2>&1 | tee "$RUNNER_TEMP/anyiose-cargo-tests.log"
+          status=$?
+          set -e
+          if [ "$status" -ne 0 ]; then
+            # Keep failure details visible in check annotations even when a
+            # client cannot retrieve the Actions log archive. Do not mask the
+            # original test failure or its exit status.
+            python3 - <<'PY'
+          import os
+          from pathlib import Path
+
+          log = Path(os.environ['RUNNER_TEMP']) / 'anyiose-cargo-tests.log'
+          tail = log.read_text(errors='replace')[-30000:]
+          tail = tail.replace('%', '%25').replace('\r', '%0D').replace('\n', '%0A')
+          print(f'::error title=AnyiOSEMU Cargo and TestApp failure::{tail}')
+          PY
+          fi
+          exit "$status"
