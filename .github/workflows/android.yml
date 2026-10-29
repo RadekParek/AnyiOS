@@ -49,6 +49,12 @@ jobs:
           key: ${{ runner.os }}-engine-boost-${{ hashFiles('third_party/anyiose-runtime-boost-version.txt') }}
       - name: Prepare Boost headers
         run: scripts/prepare-anyiose-runtime-boost.sh
+      - name: Install supported CMake
+        uses: lukka/get-cmake@v4.4.5
+        with:
+          # The pinned SDL and OpenAL still declare CMake 3.0 compatibility,
+          # which CMake 4 removed. Match the upstream engine's tested version.
+          cmakeVersion: '3.29.6'
       - name: Save pinned Boost headers
         if: ${{ steps.engine-boost.outputs.cache-hit != 'true' }}
         uses: actions/cache/save@v4
