@@ -796,7 +796,8 @@ class Library(private val context: Context) {
             val reason = when {
                 encrypted -> "Protected/encrypted Mach-O. Conversion prohibited; no DRM or FairPlay bypass."
                 !hasCandidate -> "No supported ARM64/ARMv7/ARMv6 slice. ARM64e PAC reconstruction is blocked."
-                analysisErrors.length() > 0 -> "This bundle links embedded frameworks or libraries; ${analysisErrors.length()} image(s) could not be decoded on-device, and frameworks, imports or metadata need unsupported compatibility/linker implementations.$apiBlocker The analysis itself completed."
+                analysisErrors.length() > 0 -> "${analysisErrors.length()} embedded Mach-O candidate(s) could not be verified. " +
+                    "Packaging remains blocked until their contents can be checked.$apiBlocker The analysis itself completed."
                 incompatible -> {
                     // Name what actually blocks instead of a catch-all phrase; a
                     // 100%-triaged IPA must not read "requires unsupported
@@ -865,6 +866,8 @@ class Library(private val context: Context) {
             val nextBlocker = when {
                 encrypted -> "Encrypted (FairPlay/DRM) executable — decryption is unsupported and will not be bypassed."
                 !hasCandidate -> "No supported ARM32 slice — nothing convertible in this IPA."
+                analysisErrors.length() > 0 -> ImageDiagnostics.firstFailure(analysisErrors)
+                    ?: "An embedded Mach-O image could not be verified."
                 incompatible -> "Loader: " + incompatibleReasons.sorted().joinToString("; ")
                     .ifBlank { "unsupported compatibility/linker implementations required" }
                 // deviceProven reaching this line means the auto-conversion
